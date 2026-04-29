@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
@@ -57,11 +58,16 @@ func (m *mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 }
 
 func main() {
+	if os.Getenv("ZHIPU_API_KEY") == "" {
+		panic("请先导出 ZHIPU_API_KEY 环境变量")
+	}
+
 	fmt.Println("🚀 欢迎来到 fox-harness-go 引擎启动序列")
+
 	// TODO 1. 初始化大模型 Provider (大脑)
 	// provider := provider.NewClaudeProvider(...)
 	workDir, _ := os.Getwd()
-	p := &mockProvider{}
+	p := provider.NewZhipuOpenAIProvider("glm-4.5-air")
 	r := &mockRegistry{}
 
 	eng := engine.NewAgentEngine(p, r, workDir, true)
