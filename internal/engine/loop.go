@@ -57,6 +57,7 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 
 			if thinkingResponse.Content != "" {
 				log.Printf("🧠 [内部思考 Trace]: %s\n", thinkingResponse.Content)
+				contextHistory = append(contextHistory, *thinkingResponse)
 			}
 
 		}
@@ -89,7 +90,7 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 			}
 
 			observationMessage := schema.Message{
-				Role:       schema.RoleAssistant,
+				Role:       schema.RoleUser,
 				Content:    result.Output,
 				ToolCallID: toolCall.ID,
 			}

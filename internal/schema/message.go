@@ -7,7 +7,7 @@ type Role string
 const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"
-	RoleAssistant Role = "assitant"
+	RoleAssistant Role = "assistant"
 )
 
 type Message struct {
