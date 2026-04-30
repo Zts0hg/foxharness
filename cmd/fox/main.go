@@ -24,6 +24,8 @@ func main() {
 
 	readFileTool := tools.NewReadFileTool(workDir)
 	registry.Register(readFileTool)
+	writeFileTool := tools.NewWriteFileTool(workDir)
+	registry.Register(writeFileTool)
 
 	// TODO 3. 初始化上下文管理器 (内存管理器)
 	// ctxManager := context.NewManager(...)
@@ -31,7 +33,7 @@ func main() {
 	eng := engine.NewAgentEngine(llmProvider, registry, workDir, false)
 
 	fmt.Println("开始执行任务...")
-	prompt := "请调用工具读取一下当前工作区目录下 hello.txt 文件的内容，并用一句话向我总结它说了什么。"
+	prompt := "请调用工具读取一下当前工作区目录下 hello.txt 文件的内容，并用一句话向我总结它说了什么。然后新建一个reply.txt文件，在文件中写入一句对于 hello.txt 内容的友好回复。"
 	err := eng.Run(context.Background(), prompt)
 	if err != nil {
 		log.Fatalf("引擎运行崩溃: %v", err)
