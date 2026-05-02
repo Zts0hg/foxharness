@@ -28,7 +28,7 @@ func (t *BashTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name:        t.Name(),
 		Description: "在当前工作区执行任意的 bash 命令。支持链式命令(如 && )。返回标准输出(stdout)和标准错误(stderr)。",
-		InputScheme: map[string]interface{}{
+		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"command": map[string]interface{}{

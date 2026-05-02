@@ -12,7 +12,7 @@ import (
 type Registry interface {
 	Register(tool BaseTool)
 	GetAvailableTools() []schema.ToolDefinition
-	Execute(ctx context.Context, call schema.ToolCall) schema.ToolReuslt
+	Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult
 }
 
 type BaseTool interface {
@@ -49,11 +49,11 @@ func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
 	return defs
 }
 
-func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema.ToolReuslt {
+func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
 	tool, exists := r.tools[call.Name]
 	if !exists {
 		errMsg := fmt.Sprintf("Error: 系统中不存在 '%s' 的工具。", call.Name)
-		return schema.ToolReuslt{
+		return schema.ToolResult{
 			ToolCallID: call.ID,
 			Output:     errMsg,
 			IsError:    true,
@@ -63,14 +63,14 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 	output, err := tool.Execute(ctx, call.Arguments)
 	if err != nil {
 		errMsg := fmt.Sprintf("Error executing %s: %v", call.Name, err)
-		return schema.ToolReuslt{
+		return schema.ToolResult{
 			ToolCallID: call.ID,
 			Output:     errMsg,
 			IsError:    true,
 		}
 	}
 
-	return schema.ToolReuslt{
+	return schema.ToolResult{
 		ToolCallID: call.ID,
 		Output:     output,
 		IsError:    false,

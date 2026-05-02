@@ -78,10 +78,10 @@ func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message
 	for _, toolDef := range availableTools {
 		var params shared.FunctionParameters
 
-		if m, ok := toolDef.InputScheme.(map[string]interface{}); ok {
+		if m, ok := toolDef.InputSchema.(map[string]interface{}); ok {
 			params = shared.FunctionParameters(m)
 		} else {
-			b, _ := json.Marshal(toolDef.InputScheme)
+			b, _ := json.Marshal(toolDef.InputSchema)
 			_ = json.Unmarshal(b, &params)
 		}
 

@@ -27,7 +27,7 @@ func (t *ReadFileTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name:        t.Name(),
 		Description: "读取指定路径的文件内容。请提醒相对工作区的路径。",
-		InputScheme: map[string]interface{}{
+		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"path": map[string]interface{}{

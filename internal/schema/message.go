@@ -23,7 +23,7 @@ type ToolCall struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-type ToolReuslt struct {
+type ToolResult struct {
 	ToolCallID string `json:"tool_call_id"`
 	Output     string `json:"output"`
 	IsError    bool   `json:"is_error"`
@@ -32,5 +32,5 @@ type ToolReuslt struct {
 type ToolDefinition struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
-	InputScheme interface{} `json:"input_scheme"`
+	InputSchema interface{} `json:"input_scheme"`
 }
