@@ -66,6 +66,8 @@ func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message
 						},
 					})
 				}
+
+				assistantParam.ToolCalls = toolCalls
 			}
 
 			openaiMessages = append(openaiMessages, openai.ChatCompletionMessageParamUnion{
