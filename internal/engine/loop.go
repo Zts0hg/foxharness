@@ -8,6 +8,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
@@ -87,9 +88,12 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolC
 	return results
 }
 
-func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
-	log.Printf("[Engine] 引擎启动，锁定工作区：%s\n", e.workDir)
+func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt string) error {
+	log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", sess.ID, e.workDir)
 	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.enableThinking)
+
+	transcript := session.NewTranscript(sess)
+	_ = transcript.Append("user_prompt", map[string]string{"prompt": userPrompt})
 
 	systemPrompt, err := e.composer.Compose(userPrompt)
 	if err != nil {

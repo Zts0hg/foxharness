@@ -10,11 +10,18 @@ import (
 )
 
 type Composer struct {
-	workDir string
+	workDir    string
+	memoryPath string
 }
 
 func NewComposer(workDir string) *Composer {
 	return &Composer{workDir: workDir}
+}
+
+func (c *Composer) WithMemory(path string) *Composer {
+	clone := *c
+	clone.memoryPath = path
+	return &clone
 }
 
 func (c *Composer) Compose(userPrompt string) (string, error) {
@@ -36,6 +43,14 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 	}
 	for _, skill := range skills {
 		parts = append(parts, section("Loaded Skill: "+skill.Name, skill.Content))
+	}
+
+	memory, err := c.loadWorkingMemory()
+	if err != nil {
+		return "", err
+	}
+	if memory != "" {
+		parts = append(parts, section("Session Working Memory", memory))
 	}
 
 	return strings.Join(parts, "\n\n"), nil
@@ -138,4 +153,20 @@ func (c *Composer) loadSkill(name string) (string, error) {
 	}
 
 	return string(content), nil
+}
+
+func (c *Composer) loadWorkingMemory() (string, error) {
+	if c.memoryPath == "" {
+		return "", nil
+	}
+
+	data, err := os.ReadFile(c.memoryPath)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("读取 Working Memory 失败: %w", err)
+	}
+
+	return string(data), nil
 }

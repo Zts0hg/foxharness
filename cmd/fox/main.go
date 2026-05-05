@@ -9,6 +9,7 @@ import (
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
@@ -30,13 +31,20 @@ func main() {
 
 	// TODO 3. 初始化上下文管理器 (内存管理器)
 	// ctxManager := context.NewManager(...)
-	composer := prompt.NewComposer(workDir)
-
+	manager := session.NewManager(workDir)
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
 	eng := engine.NewAgentEngine(llmProvider, registry, workDir, true, composer)
 
 	fmt.Println("开始执行任务...")
 	prompt := `使用 $go-refactor 帮我分析 internal/engine/loop.go 有没有可以简化的地方。`
-	err := eng.Run(context.Background(), prompt)
+	err = eng.Run(context.Background(), sess, prompt)
 	if err != nil {
 		log.Fatalf("引擎运行崩溃: %v", err)
 	}
