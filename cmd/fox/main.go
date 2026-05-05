@@ -34,9 +34,11 @@ func main() {
 
 	fmt.Println("开始执行任务...")
 	prompt := `
-    demo/calc.go 里的 Add 函数有 bug。
-    请你读取文件，使用 edit_file 做最小局部修改，然后运行 go test ./... 验证。
-    `
+	请同时读取以下三个文件，并总结它们分别负责什么：
+	1. go.mod
+	2. internal/engine/loop.go
+	3. internal/tools/registry.go
+	`
 	err := eng.Run(context.Background(), prompt)
 	if err != nil {
 		log.Fatalf("引擎运行崩溃: %v", err)

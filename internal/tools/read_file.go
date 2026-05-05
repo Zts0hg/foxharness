@@ -70,3 +70,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 
 	return string(content), nil
 }
+
+func (t *ReadFileTool) ParallelSafe() bool {
+	return true
+}

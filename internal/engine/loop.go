@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -17,6 +18,12 @@ type AgentEngine struct {
 	enableThinking bool
 }
 
+type indexedToolResult struct {
+	Index  int
+	Call   schema.ToolCall
+	Result schema.ToolResult
+}
+
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool) *AgentEngine {
 	return &AgentEngine{
 		provider:       p,
@@ -24,6 +31,54 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 		workDir:        workDir,
 		enableThinking: enableThinking,
 	}
+}
+
+func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolCall) []indexedToolResult {
+	results := make([]indexedToolResult, len(calls))
+
+	flushParallelBatch := func(batch []int) {
+		if len(batch) == 0 {
+			return
+		}
+		var wg sync.WaitGroup
+		wg.Add(len(batch))
+
+		for _, idx := range batch {
+			idx := idx
+			go func() {
+				defer wg.Done()
+				call := calls[idx]
+				result := e.registry.Execute(ctx, call)
+				results[idx] = indexedToolResult{
+					Index:  idx,
+					Call:   call,
+					Result: result,
+				}
+			}()
+		}
+		wg.Wait()
+	}
+
+	var parallelBatch []int
+	for i, call := range calls {
+		if e.registry.IsParallelSafe(call.Name) {
+			parallelBatch = append(parallelBatch, i)
+			continue
+		}
+
+		flushParallelBatch(parallelBatch)
+		parallelBatch = nil
+
+		result := e.registry.Execute(ctx, call)
+		results[i] = indexedToolResult{
+			Index:  i,
+			Call:   call,
+			Result: result,
+		}
+	}
+
+	flushParallelBatch(parallelBatch)
+	return results
 }
 
 func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
@@ -79,23 +134,21 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 
 		log.Printf("[Engine] 模型请求调用 %d 个工具\n", len(actionResponse.ToolCalls))
 
-		for _, toolCall := range actionResponse.ToolCalls {
-			log.Printf("执行工具: %s, 参数: %s\n", toolCall.Name, toolCall.Arguments)
-
-			result := e.registry.Execute(ctx, toolCall)
-			if result.IsError {
-				log.Printf("  -> ❌ 工具执行报错: %s\n", result.Output)
+		toolResults := e.executeToolCalls(ctx, actionResponse.ToolCalls)
+		for _, item := range toolResults {
+			if item.Result.IsError {
+				log.Printf("  -> ❌ 工具执行报错: %s, 输出：%s\n", item.Call.Name, item.Result.Output)
 			} else {
-				log.Printf("  -> ✅ 工具执行成功（返回 %d 字节）\n", len(result.Output))
+				log.Printf("  -> ✅ 工具执行成功: %s（返回 %d 字节）\n", item.Call.Name, len(item.Result.Output))
 			}
 
 			observationMessage := schema.Message{
 				Role:       schema.RoleUser,
-				Content:    result.Output,
-				ToolCallID: toolCall.ID,
+				Content:    item.Result.Output,
+				ToolCallID: item.Call.ID,
 			}
-
 			contextHistory = append(contextHistory, observationMessage)
+
 		}
 	}
 

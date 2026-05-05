@@ -13,12 +13,17 @@ type Registry interface {
 	Register(tool BaseTool)
 	GetAvailableTools() []schema.ToolDefinition
 	Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult
+	IsParallelSafe(toolName string) bool
 }
 
 type BaseTool interface {
 	Name() string
 	Definition() schema.ToolDefinition
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
+}
+
+type ParallelSafeTool interface {
+	ParallelSafe() bool
 }
 
 type registryImpl struct {
@@ -75,4 +80,14 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 		Output:     output,
 		IsError:    false,
 	}
+}
+
+func (r *registryImpl) IsParallelSafe(toolName string) bool {
+	tool, exists := r.tools[toolName]
+	if !exists {
+		return false
+	}
+
+	safeTool, ok := tool.(ParallelSafeTool)
+	return ok && safeTool.ParallelSafe()
 }
