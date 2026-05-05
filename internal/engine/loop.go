@@ -11,11 +11,16 @@ import (
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
+type PromptComposer interface {
+	Compose(userPrompt string) (string, error)
+}
+
 type AgentEngine struct {
 	provider       provider.LLMProvider
 	registry       tools.Registry
 	workDir        string
 	enableThinking bool
+	composer       PromptComposer
 }
 
 type indexedToolResult struct {
@@ -24,12 +29,13 @@ type indexedToolResult struct {
 	Result schema.ToolResult
 }
 
-func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool) *AgentEngine {
+func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool, composer PromptComposer) *AgentEngine {
 	return &AgentEngine{
 		provider:       p,
 		registry:       r,
 		workDir:        workDir,
 		enableThinking: enableThinking,
+		composer:       composer,
 	}
 }
 
@@ -85,10 +91,15 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 	log.Printf("[Engine] 引擎启动，锁定工作区：%s\n", e.workDir)
 	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.enableThinking)
 
+	systemPrompt, err := e.composer.Compose(userPrompt)
+	if err != nil {
+		return fmt.Errorf("组装系统提示词失败: %w", err)
+	}
+
 	contextHistory := []schema.Message{
 		{
 			Role:    schema.RoleSystem,
-			Content: "You are fox-harness-go, an expert coding assistant. You have full access to tools in the workspace.",
+			Content: systemPrompt,
 		},
 		{
 			Role:    schema.RoleUser,

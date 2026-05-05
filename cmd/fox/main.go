@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 
+	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -29,16 +30,12 @@ func main() {
 
 	// TODO 3. 初始化上下文管理器 (内存管理器)
 	// ctxManager := context.NewManager(...)
+	composer := prompt.NewComposer(workDir)
 
-	eng := engine.NewAgentEngine(llmProvider, registry, workDir, false)
+	eng := engine.NewAgentEngine(llmProvider, registry, workDir, true, composer)
 
 	fmt.Println("开始执行任务...")
-	prompt := `
-	请同时读取以下三个文件，并总结它们分别负责什么：
-	1. go.mod
-	2. internal/engine/loop.go
-	3. internal/tools/registry.go
-	`
+	prompt := `使用 $go-refactor 帮我分析 internal/engine/loop.go 有没有可以简化的地方。`
 	err := eng.Run(context.Background(), prompt)
 	if err != nil {
 		log.Fatalf("引擎运行崩溃: %v", err)

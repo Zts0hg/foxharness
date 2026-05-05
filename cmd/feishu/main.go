@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/feishu"
 	"github.com/Zts0hg/foxharness/internal/provider"
@@ -30,7 +31,8 @@ func main() {
 	registry.Register(tools.NewEditFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
 
-	eng := engine.NewAgentEngine(LLMProvider, registry, workDir, true)
+	composer := prompt.NewComposer(workDir)
+	eng := engine.NewAgentEngine(LLMProvider, registry, workDir, true, composer)
 
 	tasks := make(chan feishu.Task, 32)
 	messenger := feishu.NewMessenger(appID, appSecret)
