@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 
+	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -22,6 +23,7 @@ type AgentEngine struct {
 	workDir        string
 	enableThinking bool
 	composer       PromptComposer
+	compactor      *compaction.Compactor
 }
 
 type indexedToolResult struct {
@@ -38,6 +40,10 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 		enableThinking: enableThinking,
 		composer:       composer,
 	}
+}
+
+func (e *AgentEngine) WithCompactor(c *compaction.Compactor) {
+	e.compactor = c
 }
 
 func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolCall) []indexedToolResult {
@@ -116,6 +122,19 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 	for {
 		turnCount++
 		log.Printf("====== [Turn %d] 开始", turnCount)
+
+		if e.compactor != nil {
+			compacted, err := e.compactor.MaybeCompact(ctx, contextHistory)
+			if err != nil {
+				log.Printf("[Compactor] 压缩失败，将继续使用原始上下文: %v", err)
+			} else if len(compacted) != len(contextHistory) {
+				log.Printf("[Compactor] 上下文已压缩: %d -> %d 条消息", len(contextHistory), len(compacted))
+				contextHistory = compacted
+				_ = transcript.Append("context_compacted", map[string]any{
+					"turn": turnCount,
+				})
+			}
+		}
 
 		availableTools := e.registry.GetAvailableTools()
 		if e.enableThinking {

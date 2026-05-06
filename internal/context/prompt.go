@@ -64,7 +64,7 @@ type loadedSkill struct {
 
 func baseSystemPrompt() string {
 	return strings.TrimSpace(`
-You are go-tiny-claw, an expert coding assistant running inside an Agent Harness.
+You are fox-harness, an expert coding assistant running inside an Agent Harness.
 
 Core rules:
 - You operate inside the current workspace.

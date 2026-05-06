@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
@@ -66,6 +67,13 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 
 	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
 	eng := engine.NewAgentEngine(r.provider, r.registry, r.workDir, true, composer)
+	eng.WithCompactor(
+		compaction.NewCompactor(
+			r.provider,
+			compaction.RoughEstimator{},
+			compaction.DefaultConfig(),
+		),
+	)
 
 	if err := eng.Run(runCtx, sess, taskPrompt); err != nil {
 		log.Printf("[Feishu Runner] task=%s session=%s  failed: %v", task.TaskID, sess.ID, err)

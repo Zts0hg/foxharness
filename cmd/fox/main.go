@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
@@ -21,7 +22,7 @@ func main() {
 	fmt.Println("🚀 欢迎来到 fox-harness-go 引擎启动序列")
 
 	workDir, _ := os.Getwd()
-	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.7")
 	registry := tools.NewRegistry()
 
 	registry.Register(tools.NewReadFileTool(workDir))
@@ -41,9 +42,20 @@ func main() {
 	}
 	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
 	eng := engine.NewAgentEngine(llmProvider, registry, workDir, true, composer)
+	eng.WithCompactor(compaction.NewCompactor(
+		llmProvider,
+		compaction.RoughEstimator{},
+		// compaction.DefaultConfig(),
+		compaction.Config{
+			MaxTokens:        4000,
+			SoftRatio:        0.5,
+			RecentKeep:       2,
+			SummaryMaxTokens: 1024,
+		},
+	))
 
 	fmt.Println("开始执行任务...")
-	prompt := `使用 $go-refactor 帮我分析 internal/engine/loop.go 有没有可以简化的地方。`
+	prompt := `请你读取当前项目下的所有文件，帮我在项目根目录生成一份 README.md 文档`
 	err = eng.Run(context.Background(), sess, prompt)
 	if err != nil {
 		log.Fatalf("引擎运行崩溃: %v", err)
