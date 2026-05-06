@@ -9,6 +9,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -40,23 +41,37 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	store := memory.NewStore(workDir)
+	if err := store.EnsureFiles(); err != nil {
+		log.Fatal(err)
+	}
+
+	userPrompt := `请读取 go.mod，总结当前项目的模块名、Go 版本和直接依赖，并把这些结论写入 MEMORY.md。`
+	enablePlanMode := true
+	enableThinking := false
+	if enablePlanMode {
+		planner := memory.NewPlanner(llmProvider, store)
+		log.Printf("[PlanMode] 开始生成计划...")
+		if err := planner.BuildPlan(context.Background(), userPrompt); err != nil {
+			log.Printf("[PlanMode] 生成计划失败，将回退到旧版每轮 Thinking: %v", err)
+			enableThinking = true
+		} else {
+			log.Printf("[PlanMode] 计划已生成，本次任务关闭每轮 Thinking")
+
+		}
+
+	}
+
 	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
-	eng := engine.NewAgentEngine(llmProvider, registry, workDir, true, composer)
+	eng := engine.NewAgentEngine(llmProvider, registry, workDir, enableThinking, composer)
 	eng.WithCompactor(compaction.NewCompactor(
 		llmProvider,
 		compaction.RoughEstimator{},
-		// compaction.DefaultConfig(),
-		compaction.Config{
-			MaxTokens:        4000,
-			SoftRatio:        0.5,
-			RecentKeep:       2,
-			SummaryMaxTokens: 1024,
-		},
+		compaction.DefaultConfig(),
 	))
 
 	fmt.Println("开始执行任务...")
-	prompt := `请你读取当前项目下的所有文件，帮我在项目根目录生成一份 README.md 文档`
-	err = eng.Run(context.Background(), sess, prompt)
+	err = eng.Run(context.Background(), sess, userPrompt)
 	if err != nil {
 		log.Fatalf("引擎运行崩溃: %v", err)
 	}

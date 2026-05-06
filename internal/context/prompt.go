@@ -28,6 +28,7 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 	parts := []string{
 		baseSystemPrompt(),
 	}
+	parts = append(parts, section("Persistent File Memory", memoryInstructions()))
 
 	agents, err := c.loadAgentsFile()
 	if err != nil {
@@ -60,6 +61,22 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 type loadedSkill struct {
 	Name    string
 	Content string
+}
+
+func memoryInstructions() string {
+	return strings.TrimSpace(`
+Project memory files:
+- PLAN.md stores the high-level plan for complex tasks.
+- TODO.md stores concrete checlist items. Keep it updated when progress changes.
+- MEMORY.md stores durable project facts that are useful across sessions.
+
+Rules:
+- For complex multi-step tasks, inspect or update PLAN.md before making broad changes.
+- Use TODO.md to track progress instead of relying only on hidden reasoning.
+- Add only durable, high-value facts to MEMORY.md.
+- DO not dump raw logs or large file contents into memory files.
+- Prefer edit_file for focused updates to these markdown files.
+`)
 }
 
 func baseSystemPrompt() string {
