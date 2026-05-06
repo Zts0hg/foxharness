@@ -8,6 +8,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/recovery"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -24,6 +25,7 @@ type AgentEngine struct {
 	enableThinking bool
 	composer       PromptComposer
 	compactor      *compaction.Compactor
+	recovery       *recovery.Tracker
 }
 
 type indexedToolResult struct {
@@ -39,6 +41,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 		workDir:        workDir,
 		enableThinking: enableThinking,
 		composer:       composer,
+		recovery:       recovery.NewTracker(),
 	}
 }
 
@@ -135,6 +138,21 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 				})
 			}
 		}
+		if e.recovery.ShouldInject() {
+			recoveryPrompt := e.recovery.BuildPrompt()
+			if recoveryPrompt != "" {
+				contextHistory = append(contextHistory, schema.Message{
+					Role:    schema.RoleUser,
+					Content: "[Runtime System Notice]\n\n" + recoveryPrompt,
+				})
+
+				_ = transcript.Append("error_recovery_injected", map[string]any{
+					"prompt": recoveryPrompt,
+				})
+				log.Printf("[Recovery] 已注入错误恢复提示")
+				e.recovery.MarkInject()
+			}
+		}
 
 		availableTools := e.registry.GetAvailableTools()
 		if e.enableThinking {
@@ -170,6 +188,8 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 
 		toolResults := e.executeToolCalls(ctx, actionResponse.ToolCalls)
 		for _, item := range toolResults {
+			e.recovery.Record(item.Call, item.Result)
+
 			if item.Result.IsError {
 				log.Printf("  -> ❌ 工具执行报错: %s, 输出：%s\n", item.Call.Name, item.Result.Output)
 			} else {

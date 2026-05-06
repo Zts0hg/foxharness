@@ -46,7 +46,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	userPrompt := `请读取 go.mod，总结当前项目的模块名、Go 版本和直接依赖，并把这些结论写入 MEMORY.md。`
+	userPrompt := `请严格按顺序执行这个验证任务：
+
+1. 第一步必须调用 read_file，读取 ./DOES_NOT_EXIST_FOR_RECOVERY.md。
+2. 这个文件不存在。读取失败后，不要直接结束，也不要重复读取同一路径。
+3. 读到 Harness 注入的 Error Recovery Notice 后，先用 bash 查看当前目录文件。
+4. 然后读取 go.mod，总结 module 名称和 Go 版本。`
 	enablePlanMode := true
 	enableThinking := false
 	if enablePlanMode {
