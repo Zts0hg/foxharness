@@ -75,9 +75,15 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 		),
 	)
 
-	if err := eng.Run(runCtx, sess, taskPrompt); err != nil {
+	result, err := eng.Run(runCtx, sess, taskPrompt)
+	if err != nil {
 		log.Printf("[Feishu Runner] task=%s session=%s  failed: %v", task.TaskID, sess.ID, err)
 		_ = r.Messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("Session %s 执行失败：%v", sess.ID, err))
+		return
+	}
+
+	if result != nil && result.FinalMessage != "" {
+		_ = r.Messenger.SendText(runCtx, task.ChatID, result.FinalMessage)
 		return
 	}
 

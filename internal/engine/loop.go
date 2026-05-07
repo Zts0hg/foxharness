@@ -19,6 +19,11 @@ type PromptComposer interface {
 	Compose(userPrompt string) (string, error)
 }
 
+type RunResult struct {
+	FinalMessage string
+	SessionID    string
+}
+
 type AgentEngine struct {
 	provider       provider.LLMProvider
 	registry       tools.Registry
@@ -100,7 +105,7 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolC
 	return results
 }
 
-func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt string) error {
+func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt string) (*RunResult, error) {
 	log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", sess.ID, e.workDir)
 	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.enableThinking)
 
@@ -109,7 +114,7 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 
 	systemPrompt, err := e.composer.Compose(userPrompt)
 	if err != nil {
-		return fmt.Errorf("组装系统提示词失败: %w", err)
+		return nil, fmt.Errorf("组装系统提示词失败: %w", err)
 	}
 
 	contextHistory := []schema.Message{
@@ -124,6 +129,7 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 	}
 
 	turnCount := 0
+	final := ""
 
 	for {
 		turnCount++
@@ -176,7 +182,7 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 			log.Println("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")
 			thinkingResponse, err := e.provider.Generate(ctx, contextHistory, nil)
 			if err != nil {
-				return fmt.Errorf("Thinking 阶段生成失败: %w", err)
+				return nil, fmt.Errorf("Thinking 阶段生成失败: %w", err)
 			}
 
 			if thinkingResponse.Content != "" {
@@ -188,17 +194,21 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 		log.Println("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...")
 		actionResponse, err := e.provider.Generate(ctx, contextHistory, availableTools)
 		if err != nil {
-			return fmt.Errorf("模型生成失败: %w", err)
+			return nil, fmt.Errorf("模型生成失败: %w", err)
 		}
 		contextHistory = append(contextHistory, *actionResponse)
 
 		if actionResponse.Content != "" {
+			final = actionResponse.Content
 			fmt.Printf("🤖 [对外回复]: %s\n", actionResponse.Content)
 		}
 
 		if len(actionResponse.ToolCalls) == 0 {
 			log.Printf("[Engine] 模型不再需要调用工具，宣告任务完成！")
-			break
+			return &RunResult{
+				FinalMessage: final,
+				SessionID:    sess.ID,
+			}, nil
 		}
 
 		log.Printf("[Engine] 模型请求调用 %d 个工具\n", len(actionResponse.ToolCalls))
@@ -223,6 +233,4 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 
 		}
 	}
-
-	return nil
 }

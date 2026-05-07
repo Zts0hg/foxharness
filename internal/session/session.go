@@ -13,8 +13,9 @@ import (
 type Source string
 
 const (
-	SOURCECLI    Source = "cli"
-	SOURCEFeishu Source = "feishu"
+	SOURCECLI      Source = "cli"
+	SOURCEFeishu   Source = "feishu"
+	SOURCESubagent Source = "subagent"
 )
 
 type Session struct {

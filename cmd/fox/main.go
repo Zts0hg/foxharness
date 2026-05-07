@@ -12,6 +12,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/subagent"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
@@ -41,6 +42,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	subManager := subagent.NewManager(llmProvider, workDir)
+	registry.Register(subagent.NewTool(subManager, sess.ID))
+
 	store := memory.NewStore(workDir)
 	if err := store.EnsureFiles(); err != nil {
 		log.Fatal(err)
@@ -48,10 +52,10 @@ func main() {
 
 	userPrompt := `请严格按顺序执行这个验证任务：
 
-1. 连续 3 次调用 read_file（每次只请求调用1个工具，重复3轮），读取同一个文件 go.mod。
-2. 三次读取必须使用完全相同的参数：{"path":"go.mod"}。
-3. 完成三次读取后，等待 Harness 的 System Reminder。
-4. 读到 System Reminder 后，不要再次读取 go.mod，请总结你为什么应该停止重复读取，并给出下一步不同策略。`
+1. 第一步必须调用 delegate_task。
+2. 委派任务内容是：只读探索当前项目的工具系统，重点查看 internal/tools 和 go.mod，总结已经实现了哪些工具、模块名是什么、工具注册入口在哪里。
+3. delegate_task 必须设置 read_only=true。
+4. 收到 Subagent 报告后，主 Agent 再用不超过 300 字总结报告结论，不要自己重新读取所有文件。`
 	enablePlanMode := true
 	enableThinking := false
 	if enablePlanMode {
@@ -76,7 +80,7 @@ func main() {
 	))
 
 	fmt.Println("开始执行任务...")
-	err = eng.Run(context.Background(), sess, userPrompt)
+	_, err = eng.Run(context.Background(), sess, userPrompt)
 	if err != nil {
 		log.Fatalf("引擎运行崩溃: %v", err)
 	}
