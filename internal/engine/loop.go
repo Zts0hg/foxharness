@@ -9,6 +9,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/recovery"
+	"github.com/Zts0hg/foxharness/internal/reminder"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -26,6 +27,7 @@ type AgentEngine struct {
 	composer       PromptComposer
 	compactor      *compaction.Compactor
 	recovery       *recovery.Tracker
+	reminder       *reminder.Manager
 }
 
 type indexedToolResult struct {
@@ -42,6 +44,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, en
 		enableThinking: enableThinking,
 		composer:       composer,
 		recovery:       recovery.NewTracker(),
+		reminder:       reminder.NewManager(),
 	}
 }
 
@@ -154,6 +157,20 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 			}
 		}
 
+		if msg, ok := e.reminder.MaybeBuild(turnCount); ok {
+			contextHistory = append(contextHistory, schema.Message{
+				Role:    schema.RoleUser,
+				Content: "[Runtime System Reminder]\n\n" + msg,
+			})
+
+			_ = transcript.Append("system_reminder_injected", map[string]any{
+				"turn":    turnCount,
+				"message": msg,
+			})
+
+			log.Printf("[Reminder] 已注入系统提醒")
+		}
+
 		availableTools := e.registry.GetAvailableTools()
 		if e.enableThinking {
 			log.Println("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")
@@ -188,6 +205,7 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 
 		toolResults := e.executeToolCalls(ctx, actionResponse.ToolCalls)
 		for _, item := range toolResults {
+			e.reminder.Record(turnCount, item.Call, item.Result)
 			e.recovery.Record(item.Call, item.Result)
 
 			if item.Result.IsError {

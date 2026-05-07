@@ -48,10 +48,10 @@ func main() {
 
 	userPrompt := `请严格按顺序执行这个验证任务：
 
-1. 第一步必须调用 read_file，读取 ./DOES_NOT_EXIST_FOR_RECOVERY.md。
-2. 这个文件不存在。读取失败后，不要直接结束，也不要重复读取同一路径。
-3. 读到 Harness 注入的 Error Recovery Notice 后，先用 bash 查看当前目录文件。
-4. 然后读取 go.mod，总结 module 名称和 Go 版本。`
+1. 连续 3 次调用 read_file（每次只请求调用1个工具，重复3轮），读取同一个文件 go.mod。
+2. 三次读取必须使用完全相同的参数：{"path":"go.mod"}。
+3. 完成三次读取后，等待 Harness 的 System Reminder。
+4. 读到 System Reminder 后，不要再次读取 go.mod，请总结你为什么应该停止重复读取，并给出下一步不同策略。`
 	enablePlanMode := true
 	enableThinking := false
 	if enablePlanMode {
