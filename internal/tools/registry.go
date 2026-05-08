@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
 type Registry interface {
 	Register(tool BaseTool)
+	Use(middleware middleware.Middleware)
 	GetAvailableTools() []schema.ToolDefinition
 	Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult
 	IsParallelSafe(toolName string) bool
@@ -27,7 +29,12 @@ type ParallelSafeTool interface {
 }
 
 type registryImpl struct {
-	tools map[string]BaseTool
+	tools       map[string]BaseTool
+	middlewares []middleware.Middleware
+}
+
+func (r *registryImpl) Use(m middleware.Middleware) {
+	r.middlewares = append(r.middlewares, m)
 }
 
 func NewRegistry() Registry {
@@ -62,6 +69,26 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 			ToolCallID: call.ID,
 			Output:     errMsg,
 			IsError:    true,
+		}
+	}
+
+	for _, m := range r.middlewares {
+		decision, err := m.BeforeExecute(ctx, call)
+		if err != nil {
+			return schema.ToolResult{
+				ToolCallID: call.ID,
+				Output:     "Middleware error: " + err.Error(),
+				IsError:    true,
+			}
+		}
+
+		if decision.Type == middleware.DecisionDeny {
+			return schema.ToolResult{
+				ToolCallID: call.ID,
+				Output:     "Tool execution denied by middleware: " + decision.Reason,
+				IsError:    true,
+			}
+
 		}
 	}
 

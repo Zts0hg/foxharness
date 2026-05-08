@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Zts0hg/foxharness/internal/approval"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	"github.com/larksuite/oapi-sdk-go/v3/core/httpserverext"
 	larkevent "github.com/larksuite/oapi-sdk-go/v3/event"
@@ -21,13 +22,15 @@ type Gateway struct {
 	verificationToken string
 	encryptKey        string
 	tasks             chan<- Task
+	approvalStore     *approval.Store
 }
 
-func NewGateway(verificationToken, encryptKey string, tasks chan<- Task) *Gateway {
+func NewGateway(verificationToken, encryptKey string, tasks chan<- Task, approvalStore *approval.Store) *Gateway {
 	return &Gateway{
 		verificationToken: verificationToken,
 		encryptKey:        encryptKey,
 		tasks:             tasks,
+		approvalStore:     approvalStore,
 	}
 }
 
@@ -108,4 +111,11 @@ func newTaskID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
+}
+
+func (g *Gateway) OnApprovalCallback(approvalID string, approved bool, reason string) error {
+	return g.approvalStore.Resolve(approvalID, approval.Result{
+		Approved: approved,
+		Reason:   reason,
+	})
 }

@@ -5,9 +5,10 @@ import (
 	"log"
 	"os"
 
+	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/feishu"
 	"github.com/Zts0hg/foxharness/internal/provider"
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/session"
 )
 
 func main() {
@@ -22,17 +23,15 @@ func main() {
 
 	workDir, _ := os.Getwd()
 
-	LLMProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
-	registry := tools.NewRegistry()
-	registry.Register(tools.NewReadFileTool(workDir))
-	registry.Register(tools.NewWriteFileTool(workDir))
-	registry.Register(tools.NewEditFileTool(workDir))
-	registry.Register(tools.NewBashTool(workDir))
+	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	sessionManager := session.NewManager(workDir)
+	messenger := feishu.NewMessenger(appID, appSecret)
+	approvalStore := approval.NewStore()
 
 	tasks := make(chan feishu.Task, 32)
-	messenger := feishu.NewMessenger(appID, appSecret)
-	runner := feishu.NewRunner(LLMProvider, registry, workDir, messenger)
-	gateway := feishu.NewGateway(verificationToken, encryptKey, tasks)
+
+	runner := feishu.NewRunner(llmProvider, workDir, messenger, sessionManager, approvalStore)
+	gateway := feishu.NewGateway(verificationToken, encryptKey, tasks, approvalStore)
 
 	ctx := context.Background()
 	go runner.Start(ctx, tasks)
