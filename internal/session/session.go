@@ -40,6 +40,10 @@ func (s *Session) ArtifactsDir() string {
 	return filepath.Join(s.RootDir, "artifacts")
 }
 
+func (s *Session) MetricsPath() string {
+	return filepath.Join(s.RootDir, "metrics.jsonl")
+}
+
 type Manager struct {
 	baseDir string
 }

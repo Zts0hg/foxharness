@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
+
 	"sync"
 
 	"github.com/Zts0hg/foxharness/internal/compaction"
+	"github.com/Zts0hg/foxharness/internal/metrics"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/recovery"
 	"github.com/Zts0hg/foxharness/internal/reminder"
@@ -36,9 +39,10 @@ type AgentEngine struct {
 }
 
 type indexedToolResult struct {
-	Index  int
-	Call   schema.ToolCall
-	Result schema.ToolResult
+	Index      int
+	Call       schema.ToolCall
+	Result     schema.ToolResult
+	DurationMS int64
 }
 
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool, composer PromptComposer) *AgentEngine {
@@ -71,12 +75,16 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolC
 			idx := idx
 			go func() {
 				defer wg.Done()
+
 				call := calls[idx]
+				started := time.Now()
 				result := e.registry.Execute(ctx, call)
+				durationMS := time.Since(started).Milliseconds()
 				results[idx] = indexedToolResult{
-					Index:  idx,
-					Call:   call,
-					Result: result,
+					Index:      idx,
+					Call:       call,
+					Result:     result,
+					DurationMS: durationMS,
 				}
 			}()
 		}
@@ -93,11 +101,14 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolC
 		flushParallelBatch(parallelBatch)
 		parallelBatch = nil
 
+		started := time.Now()
 		result := e.registry.Execute(ctx, call)
+		durationMS := time.Since(started).Milliseconds()
 		results[i] = indexedToolResult{
-			Index:  i,
-			Call:   call,
-			Result: result,
+			Index:      i,
+			Call:       call,
+			Result:     result,
+			DurationMS: durationMS,
 		}
 	}
 
@@ -108,6 +119,17 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolC
 func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt string) (*RunResult, error) {
 	log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", sess.ID, e.workDir)
 	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.enableThinking)
+
+	recorder := metrics.NewRecorder(sess.MetricsPath())
+	aggregator := metrics.NewAggregator()
+	estimator := metrics.RoughEstimator{}
+
+	summaryWritten := false
+	defer func() {
+		if !summaryWritten {
+			_ = recorder.Append(aggregator.Summary(sess.ID))
+		}
+	}()
 
 	transcript := session.NewTranscript(sess)
 	_ = transcript.Append("user_prompt", map[string]string{"prompt": userPrompt})
@@ -180,7 +202,17 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 		availableTools := e.registry.GetAvailableTools()
 		if e.enableThinking {
 			log.Println("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")
-			thinkingResponse, err := e.provider.Generate(ctx, contextHistory, nil)
+			thinkingResponse, err := e.callModel(
+				ctx,
+				sess,
+				recorder,
+				aggregator,
+				estimator,
+				turnCount,
+				"thinking",
+				contextHistory,
+				nil,
+			)
 			if err != nil {
 				return nil, fmt.Errorf("Thinking 阶段生成失败: %w", err)
 			}
@@ -192,7 +224,17 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 
 		}
 		log.Println("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...")
-		actionResponse, err := e.provider.Generate(ctx, contextHistory, availableTools)
+		actionResponse, err := e.callModel(
+			ctx,
+			sess,
+			recorder,
+			aggregator,
+			estimator,
+			turnCount,
+			"action",
+			contextHistory,
+			availableTools,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("模型生成失败: %w", err)
 		}
@@ -205,6 +247,9 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 
 		if len(actionResponse.ToolCalls) == 0 {
 			log.Printf("[Engine] 模型不再需要调用工具，宣告任务完成！")
+			_ = recorder.Append(aggregator.Summary(sess.ID))
+			summaryWritten = true
+
 			return &RunResult{
 				FinalMessage: final,
 				SessionID:    sess.ID,
@@ -224,6 +269,19 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 				log.Printf("  -> ✅ 工具执行成功: %s（返回 %d 字节）\n", item.Call.Name, len(item.Result.Output))
 			}
 
+			_ = recorder.Append(metrics.ToolCall{
+				Time:        time.Now(),
+				Type:        metrics.EventToolCall,
+				SessionID:   sess.ID,
+				Turn:        turnCount,
+				ToolName:    item.Call.Name,
+				ToolCallID:  item.Call.ID,
+				DurationMS:  item.DurationMS,
+				OutputBytes: len(item.Result.Output),
+				IsError:     item.Result.IsError,
+			})
+			aggregator.AddTool(item.Result.IsError)
+
 			observationMessage := schema.Message{
 				Role:       schema.RoleUser,
 				Content:    item.Result.Output,
@@ -233,4 +291,51 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 
 		}
 	}
+}
+
+func (e *AgentEngine) callModel(
+	ctx context.Context,
+	sess *session.Session,
+	recorder *metrics.Recorder,
+	aggregator *metrics.Aggregator,
+	estimator metrics.TokenEstimator,
+	turn int,
+	phase string,
+	messages []schema.Message,
+	tools []schema.ToolDefinition,
+) (*schema.Message, error) {
+	inputTokens := estimator.EstimateMessages(messages) +
+		metrics.EstimateToolDefinitions(estimator, tools)
+
+	started := time.Now()
+	resp, err := e.provider.Generate(ctx, messages, tools)
+	duration := time.Since(started)
+
+	outputTokens := 0
+	if resp != nil {
+		outputTokens = estimator.EstimateText(resp.Content)
+		for _, call := range resp.ToolCalls {
+			outputTokens += estimator.EstimateText(call.Name)
+			outputTokens += estimator.EstimateText(string(call.Arguments))
+		}
+	}
+
+	event := metrics.ModelCall{
+		Time:         time.Now(),
+		Type:         metrics.EventModelCall,
+		SessionID:    sess.ID,
+		Turn:         turn,
+		Phase:        phase,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		DurationMS:   duration.Milliseconds(),
+	}
+
+	if err != nil {
+		event.Error = err.Error()
+	}
+
+	_ = recorder.Append(event)
+	aggregator.AddModel(inputTokens, outputTokens, err != nil)
+	return resp, err
 }

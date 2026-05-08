@@ -50,12 +50,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	userPrompt := `请严格按顺序执行这个验证任务：
-
-1. 第一步必须调用 delegate_task。
-2. 委派任务内容是：只读探索当前项目的工具系统，重点查看 internal/tools 和 go.mod，总结已经实现了哪些工具、模块名是什么、工具注册入口在哪里。
-3. delegate_task 必须设置 read_only=true。
-4. 收到 Subagent 报告后，主 Agent 再用不超过 300 字总结报告结论，不要自己重新读取所有文件。`
+	userPrompt := `请读取 go.mod，总结当前项目的 module 名称和 Go 版本。`
 	enablePlanMode := true
 	enableThinking := false
 	if enablePlanMode {
