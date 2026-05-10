@@ -16,6 +16,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/tracing"
 )
 
 type PromptComposer interface {
@@ -61,7 +62,7 @@ func (e *AgentEngine) WithCompactor(c *compaction.Compactor) {
 	e.compactor = c
 }
 
-func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolCall) []indexedToolResult {
+func (e *AgentEngine) executeToolCalls(ctx context.Context, tracer *tracing.Tracer, parentSpanID string, calls []schema.ToolCall) []indexedToolResult {
 	results := make([]indexedToolResult, len(calls))
 
 	flushParallelBatch := func(batch []int) {
@@ -77,6 +78,10 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolC
 				defer wg.Done()
 
 				call := calls[idx]
+				span := tracer.StartSpan(parentSpanID, "tool_call", map[string]any{
+					"tool":         call.Name,
+					"tool_call_id": call.ID,
+				})
 				started := time.Now()
 				result := e.registry.Execute(ctx, call)
 				durationMS := time.Since(started).Milliseconds()
@@ -86,6 +91,15 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolC
 					Result:     result,
 					DurationMS: durationMS,
 				}
+
+				status := "ok"
+				if result.IsError {
+					status = "error"
+				}
+				span.End(status, map[string]any{
+					"is_error":     result.IsError,
+					"output_bytes": len(result.Output),
+				})
 			}()
 		}
 		wg.Wait()
@@ -101,6 +115,10 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolC
 		flushParallelBatch(parallelBatch)
 		parallelBatch = nil
 
+		span := tracer.StartSpan(parentSpanID, "tool_call", map[string]any{
+			"tool":         call.Name,
+			"tool_call_id": call.ID,
+		})
 		started := time.Now()
 		result := e.registry.Execute(ctx, call)
 		durationMS := time.Since(started).Milliseconds()
@@ -110,6 +128,15 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolC
 			Result:     result,
 			DurationMS: durationMS,
 		}
+
+		status := "ok"
+		if result.IsError {
+			status = "error"
+		}
+		span.End(status, map[string]any{
+			"is_error":     result.IsError,
+			"output_bytes": len(result.Output),
+		})
 	}
 
 	flushParallelBatch(parallelBatch)
@@ -119,6 +146,23 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, calls []schema.ToolC
 func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt string) (*RunResult, error) {
 	log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", sess.ID, e.workDir)
 	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.enableThinking)
+
+	tracer := tracing.NewTracer(sess.TracePath())
+	runSpan := tracer.StartSpan("", "run", map[string]any{
+		"session_id": sess.ID,
+		"source":     sess.Source,
+		"work_dir":   sess.WorkDir,
+	})
+	runStatus := "ok"
+	runAttrs := map[string]any{}
+	defer func() {
+		runSpan.End(runStatus, runAttrs)
+	}()
+
+	markRunError := func(err error) {
+		runStatus = "error"
+		runAttrs["error"] = err.Error()
+	}
 
 	recorder := metrics.NewRecorder(sess.MetricsPath())
 	aggregator := metrics.NewAggregator()
@@ -136,7 +180,9 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 
 	systemPrompt, err := e.composer.Compose(userPrompt)
 	if err != nil {
-		return nil, fmt.Errorf("组装系统提示词失败: %w", err)
+		wrapped := fmt.Errorf("组装系统提示词失败: %w", err)
+		markRunError(wrapped)
+		return nil, wrapped
 	}
 
 	contextHistory := []schema.Message{
@@ -156,6 +202,17 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 	for {
 		turnCount++
 		log.Printf("====== [Turn %d] 开始", turnCount)
+		turnSpan := tracer.StartSpan(runSpan.ID(), "turn", map[string]any{
+			"turn": turnCount,
+		})
+		turnEnded := false
+		finishTurn := func(status string, attrs map[string]any) {
+			if turnEnded {
+				return
+			}
+			turnEnded = true
+			turnSpan.End(status, attrs)
+		}
 
 		if e.compactor != nil {
 			compacted, err := e.compactor.MaybeCompact(ctx, contextHistory)
@@ -168,6 +225,11 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 					"turn": turnCount,
 				})
 			}
+
+			// tracer.Annotate(turnSpan.ID(), "context_compacted", map[string]any{
+			// 	"before_messages": before,
+			// 	"after_messages":  after,
+			// })
 		}
 		if e.recovery.ShouldInject() {
 			recoveryPrompt := e.recovery.BuildPrompt()
@@ -182,6 +244,10 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 				})
 				log.Printf("[Recovery] 已注入错误恢复提示")
 				e.recovery.MarkInject()
+
+				tracer.Annotate(turnSpan.ID(), "error_recovery_injected", map[string]any{
+					"turn": turnCount,
+				})
 			}
 		}
 
@@ -197,6 +263,10 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 			})
 
 			log.Printf("[Reminder] 已注入系统提醒")
+
+			tracer.Annotate(turnSpan.ID(), "system_reminder_injected", map[string]any{
+				"turn": turnCount,
+			})
 		}
 
 		availableTools := e.registry.GetAvailableTools()
@@ -208,13 +278,18 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 				recorder,
 				aggregator,
 				estimator,
+				tracer,
+				turnSpan.ID(),
 				turnCount,
 				"thinking",
 				contextHistory,
 				nil,
 			)
 			if err != nil {
-				return nil, fmt.Errorf("Thinking 阶段生成失败: %w", err)
+				wrapped := fmt.Errorf("Thinking 阶段生成失败: %w", err)
+				finishTurn("error", map[string]any{"error": wrapped.Error()})
+				markRunError(wrapped)
+				return nil, wrapped
 			}
 
 			if thinkingResponse.Content != "" {
@@ -230,13 +305,18 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 			recorder,
 			aggregator,
 			estimator,
+			tracer,
+			turnSpan.ID(),
 			turnCount,
 			"action",
 			contextHistory,
 			availableTools,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("模型生成失败: %w", err)
+			wrapped := fmt.Errorf("模型生成失败: %w", err)
+			finishTurn("error", map[string]any{"error": wrapped.Error()})
+			markRunError(wrapped)
+			return nil, wrapped
 		}
 		contextHistory = append(contextHistory, *actionResponse)
 
@@ -250,6 +330,11 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 			_ = recorder.Append(aggregator.Summary(sess.ID))
 			summaryWritten = true
 
+			finishTurn("ok", map[string]any{
+				"tool_calls": 0,
+				"final":      true,
+			})
+
 			return &RunResult{
 				FinalMessage: final,
 				SessionID:    sess.ID,
@@ -258,7 +343,7 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 
 		log.Printf("[Engine] 模型请求调用 %d 个工具\n", len(actionResponse.ToolCalls))
 
-		toolResults := e.executeToolCalls(ctx, actionResponse.ToolCalls)
+		toolResults := e.executeToolCalls(ctx, tracer, turnSpan.ID(), actionResponse.ToolCalls)
 		for _, item := range toolResults {
 			e.reminder.Record(turnCount, item.Call, item.Result)
 			e.recovery.Record(item.Call, item.Result)
@@ -290,6 +375,10 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 			contextHistory = append(contextHistory, observationMessage)
 
 		}
+
+		finishTurn("ok", map[string]any{
+			"tool_calls": len(actionResponse.ToolCalls),
+		})
 	}
 }
 
@@ -299,11 +388,20 @@ func (e *AgentEngine) callModel(
 	recorder *metrics.Recorder,
 	aggregator *metrics.Aggregator,
 	estimator metrics.TokenEstimator,
+	tracer *tracing.Tracer,
+	parentSpanID string,
 	turn int,
 	phase string,
 	messages []schema.Message,
 	tools []schema.ToolDefinition,
 ) (*schema.Message, error) {
+	span := tracer.StartSpan(parentSpanID, "model_call", map[string]any{
+		"phase":       phase,
+		"turn":        turn,
+		"message_len": len(messages),
+		"tools":       len(tools),
+	})
+
 	inputTokens := estimator.EstimateMessages(messages) +
 		metrics.EstimateToolDefinitions(estimator, tools)
 
@@ -337,5 +435,14 @@ func (e *AgentEngine) callModel(
 
 	_ = recorder.Append(event)
 	aggregator.AddModel(inputTokens, outputTokens, err != nil)
-	return resp, err
+	if err != nil {
+		span.End("error", map[string]any{"error": err.Error()})
+		return nil, err
+	}
+	span.End("ok", map[string]any{
+		"content_bytes": len(resp.Content),
+		"tool_calls":    len(resp.ToolCalls),
+	})
+
+	return resp, nil
 }

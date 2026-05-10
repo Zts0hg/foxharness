@@ -44,6 +44,10 @@ func (s *Session) MetricsPath() string {
 	return filepath.Join(s.RootDir, "metrics.jsonl")
 }
 
+func (s *Session) TracePath() string {
+	return filepath.Join(s.RootDir, "trace.jsonl")
+}
+
 type Manager struct {
 	baseDir string
 }

@@ -50,7 +50,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	userPrompt := `请读取 go.mod，总结当前项目的 module 名称和 Go 版本。`
+	userPrompt := `请严格按顺序执行这个验证任务：
+
+1. 第一步必须调用 read_file，读取 ./DOES_NOT_EXIST_FOR_TRACE.md。
+2. 这个文件不存在。读取失败后，等待 Harness 的 Error Recovery Notice。
+3. 收到恢复提示后，使用 bash 查看当前目录。
+4. 然后读取 go.mod，总结 module 名称和 Go 版本。`
 	enablePlanMode := true
 	enableThinking := false
 	if enablePlanMode {
