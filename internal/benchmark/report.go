@@ -29,6 +29,6 @@ func PrintSummary(results []*Result) {
 		if r.Success {
 			status = "PASS"
 		}
-		fmt.Printf("- [%s] %s duration=%dms session=%s workspace=%s\n", status, r.CaseID, r.DurationMS, r.SessionID, r.WorkSpace)
+		fmt.Printf("- [%s] %s duration=%dms session=%s workspace=%s\n", status, r.CaseID, r.DurationMS, r.SessionID, r.Workspace)
 	}
 }

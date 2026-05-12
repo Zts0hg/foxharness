@@ -47,6 +47,47 @@ func TestBuildPlanWritesPlanAndTodoFromJSON(t *testing.T) {
 	}
 }
 
+func TestBuildPlanWritesPlanAndTodoFromFencedJSON(t *testing.T) {
+	content := "```json\n" + marshalPlanDraft(t, planDraft{
+		Plan: "# PLAN\n\n## Goal\n\nFix counter.\n",
+		Todo: "# TODO\n\n- [ ] Run tests\n",
+	}) + "\n```"
+	store := NewStore(t.TempDir())
+	planner := NewPlanner(fakePlanProvider{content: content}, store)
+
+	if err := planner.BuildPlan(context.Background(), "修复 counter"); err != nil {
+		t.Fatalf("BuildPlan returned error: %v", err)
+	}
+
+	plan := readTestFile(t, store.PlanPath())
+	if !strings.Contains(plan, "Fix counter") {
+		t.Fatalf("PLAN.md content = %q", plan)
+	}
+
+	todo := readTestFile(t, store.TodoPath())
+	if !strings.Contains(todo, "- [ ] Run tests") {
+		t.Fatalf("TODO.md content = %q", todo)
+	}
+}
+
+func TestBuildPlanWritesPlanAndTodoFromFencedJSONWithText(t *testing.T) {
+	content := "下面是计划：\n\n```json\n" + marshalPlanDraft(t, planDraft{
+		Plan: "# PLAN\n\n## Goal\n\nInspect logs.\n",
+		Todo: "# TODO\n\n- [ ] Search logs\n",
+	}) + "\n```\n\n请继续。"
+	store := NewStore(t.TempDir())
+	planner := NewPlanner(fakePlanProvider{content: content}, store)
+
+	if err := planner.BuildPlan(context.Background(), "分析日志"); err != nil {
+		t.Fatalf("BuildPlan returned error: %v", err)
+	}
+
+	plan := readTestFile(t, store.PlanPath())
+	if !strings.Contains(plan, "Inspect logs") {
+		t.Fatalf("PLAN.md content = %q", plan)
+	}
+}
+
 func TestBuildPlanRejectsInvalidJSON(t *testing.T) {
 	store := NewStore(t.TempDir())
 	planner := NewPlanner(fakePlanProvider{content: "```markdown\n# PLAN.md\n```"}, store)

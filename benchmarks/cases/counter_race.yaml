@@ -11,6 +11,5 @@ max_turns: 12
 validations:
   - type: command
     command: go test ./...
-  - type: file_contains
-    path: counter/counter.go
-    contains: sync.Mutex
+  - type: command
+    command: go test -race ./...

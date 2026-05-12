@@ -25,7 +25,7 @@ func NewRunner(factory HarnessFactory) *Runner {
 type Result struct {
 	CaseID      string             `json:"case_id"`
 	Success     bool               `json:"success"`
-	WorkSpace   string             `json:"workspace"`
+	Workspace   string             `json:"workspace"`
 	SessionID   string             `json:"session_id"`
 	DurationMS  int64              `json:"duration_ms"`
 	Error       string             `json:"error,omitempty"`
@@ -49,7 +49,7 @@ func (r *Runner) RunCase(ctx context.Context, c *Case) (*Result, error) {
 
 	result := &Result{
 		CaseID:    c.ID,
-		WorkSpace: workspace,
+		Workspace: workspace,
 		SessionID: sess.ID,
 	}
 

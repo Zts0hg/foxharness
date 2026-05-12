@@ -53,8 +53,8 @@ func (p *Planner) BuildPlan(ctx context.Context, userPrompt string) error {
 		return fmt.Errorf("生成 Plan 失败: provider 返回空响应")
 	}
 
-	var draft planDraft
-	if err := json.Unmarshal([]byte(resp.Content), &draft); err != nil {
+	draft, err := parsePlanDraft(resp.Content)
+	if err != nil {
 		return fmt.Errorf("解析 Plan JSON 失败: %w\nRaw Response Content:\n%s", err, resp.Content)
 	}
 
@@ -72,6 +72,111 @@ func (p *Planner) BuildPlan(ctx context.Context, userPrompt string) error {
 	}
 
 	return nil
+}
+
+func parsePlanDraft(raw string) (planDraft, error) {
+	candidates := planJSONCandidates(raw)
+	var lastErr error
+	for _, candidate := range candidates {
+		var draft planDraft
+		if err := json.Unmarshal([]byte(candidate), &draft); err != nil {
+			lastErr = err
+			continue
+		}
+		return draft, nil
+	}
+	if lastErr != nil {
+		return planDraft{}, lastErr
+	}
+	return planDraft{}, fmt.Errorf("响应中没有找到 JSON 对象")
+}
+
+func planJSONCandidates(raw string) []string {
+	var candidates []string
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == candidate {
+				return
+			}
+		}
+		candidates = append(candidates, candidate)
+	}
+
+	add(raw)
+	for _, block := range fencedBlocks(raw) {
+		add(block)
+	}
+	if object, ok := firstJSONObject(raw); ok {
+		add(object)
+	}
+
+	return candidates
+}
+
+func fencedBlocks(raw string) []string {
+	lines := strings.Split(raw, "\n")
+	var blocks []string
+	for i := 0; i < len(lines); i++ {
+		if !strings.HasPrefix(strings.TrimSpace(lines[i]), "```") {
+			continue
+		}
+
+		start := i + 1
+		for j := start; j < len(lines); j++ {
+			if strings.HasPrefix(strings.TrimSpace(lines[j]), "```") {
+				blocks = append(blocks, strings.Join(lines[start:j], "\n"))
+				i = j
+				break
+			}
+		}
+	}
+	return blocks
+}
+
+func firstJSONObject(raw string) (string, bool) {
+	start := strings.Index(raw, "{")
+	if start < 0 {
+		return "", false
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(raw); i++ {
+		ch := raw[i]
+
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return raw[start : i+1], true
+			}
+		}
+	}
+
+	return "", false
 }
 
 func ensureTrailingNewline(text string) string {
