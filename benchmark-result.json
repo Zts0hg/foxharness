@@ -1,0 +1,55 @@
+[
+  {
+    "case_id": "counter_race",
+    "success": false,
+    "workspace": "/var/folders/km/2hlzbxcj4d39bwq69wrxm9_c0000gp/T/foxharness-benchmark-2580492410",
+    "session_id": "20260512-221836-76f230",
+    "duration_ms": 88223,
+    "validations": [
+      {
+        "type": "command",
+        "passed": true
+      },
+      {
+        "type": "file_contains",
+        "passed": false,
+        "message": "counter/counter.go 不包括目标文本"
+      }
+    ]
+  },
+  {
+    "case_id": "counter_race",
+    "success": false,
+    "workspace": "/var/folders/km/2hlzbxcj4d39bwq69wrxm9_c0000gp/T/foxharness-benchmark-448569303",
+    "session_id": "20260512-222049-5c59e4",
+    "duration_ms": 35553,
+    "validations": [
+      {
+        "type": "command",
+        "passed": true
+      },
+      {
+        "type": "file_contains",
+        "passed": false,
+        "message": "counter/counter.go 不包括目标文本"
+      }
+    ]
+  },
+  {
+    "case_id": "counter_race",
+    "success": true,
+    "workspace": "/var/folders/km/2hlzbxcj4d39bwq69wrxm9_c0000gp/T/foxharness-benchmark-4018248956",
+    "session_id": "20260512-222200-952d88",
+    "duration_ms": 38999,
+    "validations": [
+      {
+        "type": "command",
+        "passed": true
+      },
+      {
+        "type": "file_contains",
+        "passed": true
+      }
+    ]
+  }
+]

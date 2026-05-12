@@ -1,0 +1,16 @@
+id: counter_race
+name: 修复 Counter 并发累加问题
+fixture: benchmarks/fixtures/counter_race
+prompt: |
+  修复 counter 包中的并发累加问题。
+  要求：
+  1. 找到导致 go test ./... 失败的原因。
+  2. 做最小修改。
+  3. 确保 go test ./... 通过。
+max_turns: 12
+validations:
+  - type: command
+    command: go test ./...
+  - type: file_contains
+    path: counter/counter.go
+    contains: sync.Mutex
