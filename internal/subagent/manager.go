@@ -62,8 +62,11 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 		m.provider,
 		registry,
 		m.workDir,
-		false,
 		composer,
+		engine.Config{
+			EnableThinking: false,
+			MaxTurns:       8,
+		},
 	)
 
 	subPrompt := fmt.Sprintf(`

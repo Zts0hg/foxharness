@@ -79,7 +79,16 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engi
 		log.Printf("[PlanMode] 计划已生成，本次 Benchmark Run 关闭每轮 Thinking")
 	}
 
-	eng := engine.NewAgentEngine(llmProvider, registry, workDir, enableThinking, composer)
+	eng := engine.NewAgentEngine(
+		llmProvider,
+		registry,
+		workDir,
+		composer,
+		engine.Config{
+			EnableThinking: enableThinking,
+			MaxTurns:       c.MaxTurns,
+		},
+	)
 
 	return eng, sess, nil
 }

@@ -85,7 +85,16 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	registry.Use(middleware.NewDangerMiddleware(approver))
 
 	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
-	eng := engine.NewAgentEngine(r.provider, registry, r.workDir, false, composer)
+	eng := engine.NewAgentEngine(
+		r.provider,
+		registry,
+		r.workDir,
+		composer,
+		engine.Config{
+			EnableThinking: false,
+			MaxTurns:       20,
+		},
+	)
 	eng.WithCompactor(
 		compaction.NewCompactor(
 			r.provider,

@@ -29,14 +29,14 @@ type RunResult struct {
 }
 
 type AgentEngine struct {
-	provider       provider.LLMProvider
-	registry       tools.Registry
-	workDir        string
-	enableThinking bool
-	composer       PromptComposer
-	compactor      *compaction.Compactor
-	recovery       *recovery.Tracker
-	reminder       *reminder.Manager
+	provider  provider.LLMProvider
+	registry  tools.Registry
+	workDir   string
+	composer  PromptComposer
+	config    Config
+	compactor *compaction.Compactor
+	recovery  *recovery.Tracker
+	reminder  *reminder.Manager
 }
 
 type indexedToolResult struct {
@@ -46,15 +46,25 @@ type indexedToolResult struct {
 	DurationMS int64
 }
 
-func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, enableThinking bool, composer PromptComposer) *AgentEngine {
+func NewAgentEngine(
+	p provider.LLMProvider,
+	r tools.Registry,
+	workDir string,
+	composer PromptComposer,
+	config Config,
+) *AgentEngine {
+	if config.MaxTurns <= 0 {
+		config.MaxTurns = 20
+	}
+
 	return &AgentEngine{
-		provider:       p,
-		registry:       r,
-		workDir:        workDir,
-		enableThinking: enableThinking,
-		composer:       composer,
-		recovery:       recovery.NewTracker(),
-		reminder:       reminder.NewManager(),
+		provider: p,
+		registry: r,
+		workDir:  workDir,
+		composer: composer,
+		config:   config,
+		recovery: recovery.NewTracker(),
+		reminder: reminder.NewManager(),
 	}
 }
 
@@ -145,7 +155,7 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, tracer *tracing.Trac
 
 func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt string) (*RunResult, error) {
 	log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", sess.ID, e.workDir)
-	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.enableThinking)
+	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.config.EnableThinking)
 
 	tracer := tracing.NewTracer(sess.TracePath())
 	runSpan := tracer.StartSpan("", "run", map[string]any{
@@ -201,6 +211,14 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 
 	for {
 		turnCount++
+		if e.config.MaxTurns > 0 && turnCount > e.config.MaxTurns {
+			wrapped := fmt.Errorf("超过最大 Turn 数限制: %d", e.config.MaxTurns)
+			markRunError(wrapped)
+			return &RunResult{
+				FinalMessage: final,
+				SessionID:    sess.ID,
+			}, wrapped
+		}
 		log.Printf("====== [Turn %d] 开始", turnCount)
 		turnSpan := tracer.StartSpan(runSpan.ID(), "turn", map[string]any{
 			"turn": turnCount,
@@ -270,7 +288,7 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 		}
 
 		availableTools := e.registry.GetAvailableTools()
-		if e.enableThinking {
+		if e.config.EnableThinking {
 			log.Println("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")
 			thinkingResponse, err := e.callModel(
 				ctx,
