@@ -152,7 +152,7 @@ func (r *Runner) buildRegistry(task Task, sess *session.Session) tools.Registry 
 	registry.Register(tools.NewReadFileTool(r.workDir))
 	registry.Register(tools.NewWriteFileTool(r.workDir))
 	registry.Register(tools.NewBashTool(r.workDir))
-	registry.Register(tools.NewBashTool(r.workDir))
+	registry.Register(tools.NewEditFileTool(r.workDir))
 
 	approver := approval.NewFeishuApprover(task.ChatID, r.messenger, r.approvalStore)
 	registry.Use(middleware.NewDangerMiddleware(approver))

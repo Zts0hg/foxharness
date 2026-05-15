@@ -168,7 +168,7 @@ func applyBestEffortEdit(content, oldString, newString string) (string, editMatc
 
 	if count := strings.Count(normalizedContent, normalizedOld); count == 1 {
 		idx := strings.Index(normalizedContent, normalizedOld)
-		updated := normalizedContent[:idx] + normalizedNew + normalizedContent[idx+len(oldString):]
+		updated := normalizedContent[:idx] + normalizedNew + normalizedContent[idx+len(normalizedOld):]
 		return restoreLineEnding(updated, eol), editMatch{
 			Strategy: "exact_after_new_normalization",
 			Line:     lineNumberAt(normalizedContent, idx),

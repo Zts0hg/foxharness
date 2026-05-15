@@ -129,7 +129,6 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	final := fmt.Sprintf("任务 %s 执行完成，Session: %s", task.TaskID, sess.ID)
 	if result != nil && result.FinalMessage != "" {
 		final = result.FinalMessage
-		return
 	}
 	_ = r.messenger.SendText(runCtx, task.ChatID, final)
 }

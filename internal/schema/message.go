@@ -48,5 +48,5 @@ type ToolResult struct {
 type ToolDefinition struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
-	InputSchema interface{} `json:"input_scheme"`
+	InputSchema interface{} `json:"input_schema"`
 }

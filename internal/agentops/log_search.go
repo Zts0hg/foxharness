@@ -55,7 +55,7 @@ func (t *LogSearchTool) Definition() schema.ToolDefinition {
 				},
 				"limit": map[string]interface{}{
 					"type":         "integer",
-					"descriptioin": "最多返回多少行，默认50",
+					"description": "最多返回多少行，默认50",
 				},
 			},
 			"required": []string{"service", "query"},

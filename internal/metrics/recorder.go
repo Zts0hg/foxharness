@@ -42,7 +42,7 @@ type ModelCall struct {
 type ToolCall struct {
 	Time        time.Time `json:"time"`
 	Type        EventType `json:"type"`
-	SessionID   string    `json:"sesssion_id"`
+	SessionID   string    `json:"session_id"`
 	Turn        int       `json:"turn"`
 	ToolName    string    `json:"tool_name"`
 	ToolCallID  string    `json:"tool_call_id"`

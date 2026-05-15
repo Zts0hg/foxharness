@@ -63,7 +63,7 @@ func main() {
 		}
 	}()
 
-	log.Println("[AgentOps] listending on :7777")
+	log.Println("[AgentOps] listening on :7777")
 	if err := gateway.Listen(":7777"); err != nil {
 		log.Fatal(err)
 	}
