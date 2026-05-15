@@ -1,3 +1,8 @@
+// Package compaction provides automatic context summarization for
+// long-running agent sessions. When the estimated token count approaches
+// the configured threshold, the Compactor replaces older messages with an
+// LLM-generated summary while preserving the system prompt, the original
+// user message anchor, and a configurable window of recent messages.
 package compaction
 
 import (
@@ -10,12 +15,16 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// TokenEstimator estimates the token cost of a message slice.
 type TokenEstimator interface {
 	Estimate(messages []schema.Message) int
 }
 
+// RoughEstimator provides a fast, rune-count-based token approximation.
 type RoughEstimator struct{}
 
+// Estimate returns a rough token count for the given messages by summing
+// Unicode rune counts across content and tool call fields.
 func (RoughEstimator) Estimate(messages []schema.Message) int {
 	chars := 0
 	for _, msg := range messages {
@@ -33,6 +42,8 @@ func (RoughEstimator) Estimate(messages []schema.Message) int {
 	return chars + 1
 }
 
+// Config controls the compaction behavior including token thresholds and
+// how many recent messages to preserve.
 type Config struct {
 	MaxTokens        int
 	SoftRatio        float64
@@ -40,6 +51,8 @@ type Config struct {
 	SummaryMaxTokens int
 }
 
+// DefaultConfig returns a Config with sensible defaults for a 128k-token
+// context window.
 func DefaultConfig() Config {
 	return Config{
 		MaxTokens:        128000,
@@ -50,12 +63,17 @@ func DefaultConfig() Config {
 
 }
 
+// Compactor decides when and how to summarize conversation history to
+// stay within token limits. It uses an LLM provider to generate summaries
+// of older messages while keeping recent context intact.
 type Compactor struct {
 	provider  provider.LLMProvider
 	estimator TokenEstimator
 	config    Config
 }
 
+// NewCompactor creates a Compactor with the given LLM provider, token
+// estimator, and configuration.
 func NewCompactor(p provider.LLMProvider, estimator TokenEstimator, config Config) *Compactor {
 	return &Compactor{
 		provider:  p,
@@ -64,6 +82,11 @@ func NewCompactor(p provider.LLMProvider, estimator TokenEstimator, config Confi
 	}
 }
 
+// MaybeCompact checks whether the estimated token usage exceeds the
+// soft threshold and, if so, summarizes older messages into the system
+// prompt. It preserves the system message, the first user message as an
+// anchor, and the most recent messages. If compaction is not needed the
+// original slice is returned unchanged.
 func (c *Compactor) MaybeCompact(ctx context.Context, messages []schema.Message) ([]schema.Message, error) {
 	used := c.estimator.Estimate(messages)
 	threshold := int(float64(c.config.MaxTokens) * c.config.SoftRatio)

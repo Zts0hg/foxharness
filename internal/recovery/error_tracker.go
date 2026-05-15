@@ -1,3 +1,7 @@
+// Package recovery tracks tool execution failures and generates recovery
+// prompts that guide the agent away from repeating the same failing calls.
+// It maintains a sliding window of recent errors with deduplication counts
+// so that the agent is forced to change strategy after repeated failures.
 package recovery
 
 import (
@@ -9,6 +13,9 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// ToolError records a single tool invocation failure together with its
+// arguments, truncated output, and the number of times the same tool call
+// (by fingerprint) has failed.
 type ToolError struct {
 	ToolName  string
 	Arguments string
@@ -16,18 +23,25 @@ type ToolError struct {
 	Count     int
 }
 
+// Tracker observes tool call results, retains the most recent failures,
+// and decides when to inject a recovery prompt into the agent's context.
 type Tracker struct {
 	recent  []ToolError
 	counts  map[string]int
 	pending bool
 }
 
+// NewTracker returns a Tracker ready to record failures.
 func NewTracker() *Tracker {
 	return &Tracker{
 		counts: make(map[string]int),
 	}
 }
 
+// Record registers a failed tool call result. Successful calls are
+// ignored. The call is fingerprinted by tool name and arguments so that
+// repeated identical failures are counted. A sliding window of the five
+// most recent errors is maintained.
 func (t *Tracker) Record(call schema.ToolCall, result schema.ToolResult) {
 	if !result.IsError {
 		return
@@ -66,6 +80,9 @@ func truncate(s string, max int) string {
 	return s[:max] + "\n...[truncated]..."
 }
 
+// ShouldInject reports whether a recovery prompt should be injected into
+// the agent's next turn. It returns true when there is at least one
+// pending un-injected error.
 func (t *Tracker) ShouldInject() bool {
 	if !t.pending || len(t.recent) == 0 {
 		return false
@@ -75,10 +92,17 @@ func (t *Tracker) ShouldInject() bool {
 	return last.Count >= 1
 }
 
+// MarkInject clears the pending flag so the recovery prompt is not
+// injected again until the next error is recorded.
 func (t *Tracker) MarkInject() {
 	t.pending = false
 }
 
+// BuildPrompt constructs a recovery prompt for the agent describing the
+// most recent failure, its repetition count, and a set of rules the agent
+// should follow to diagnose and recover. When the same call has failed
+// two or more times, a stronger directive prohibiting a direct retry is
+// included.
 func (t *Tracker) BuildPrompt() string {
 	if len(t.recent) == 0 {
 		return ""

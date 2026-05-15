@@ -1,3 +1,7 @@
+// Package subagent provides isolated sub-task execution within the foxharness
+// agent framework. A Manager spins up a dedicated engine and session for each
+// delegated task, optionally restricting the subagent to read-only tools, and
+// returns a high-density report to the parent agent.
 package subagent
 
 import (
@@ -11,22 +15,31 @@ import (
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
+// Request describes a subagent task, including the parent session reference,
+// the task description, and whether the subagent should operate in read-only
+// mode.
 type Request struct {
 	ParentSessionID string
 	Task            string
 	ReadOnly        bool
 }
 
+// Result holds the subagent's session identifier and the final report text
+// produced by the subagent's engine run.
 type Result struct {
 	SessionID string
 	Report    string
 }
 
+// Manager creates and runs isolated subagent sessions using a shared LLM
+// provider and workspace root.
 type Manager struct {
 	provider provider.LLMProvider
 	workDir  string
 }
 
+// NewManager creates a Manager that delegates LLM calls to p and roots
+// subagent sessions under workDir.
 func NewManager(p provider.LLMProvider, workDir string) *Manager {
 	return &Manager{provider: p, workDir: workDir}
 }
@@ -44,6 +57,10 @@ func (m *Manager) buildRegistry(readOnly bool) tools.Registry {
 	return registry
 }
 
+// Run executes the subagent task described by req. It creates a new session,
+// builds a scoped tool registry (read-only when requested), and runs the
+// engine for up to 8 turns. The returned Result contains the session ID and
+// the agent's final message as a report.
 func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 	manager := session.NewManager(m.workDir)
 	sess, err := manager.Create(session.CreateOptions{

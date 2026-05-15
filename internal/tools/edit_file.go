@@ -12,37 +12,50 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// EditFileTool performs targeted edits to files by replacing old text with new text.
+// It supports multiple matching strategies for robustness:
+//  1. Exact match
+//  2. Newline normalization
+//  3. Line-level whitespace normalization
+//  4. Fuzzy matching with similarity scoring
 type EditFileTool struct {
+	// workDir is the base directory for resolving relative file paths.
 	workDir string
 }
 
+// NewEditFileTool creates a new EditFileTool that edits files relative to the specified directory.
+// The workDir parameter sets the base directory for file path resolution.
+// Returns a configured EditFileTool.
 func NewEditFileTool(workDir string) *EditFileTool {
 	return &EditFileTool{workDir: workDir}
 }
 
+// Name returns the tool identifier "edit_file".
 func (t *EditFileTool) Name() string {
 	return "edit_file"
 }
 
+// Definition returns the tool schema for the edit_file tool.
+// It describes the tool's capabilities and expected input format.
 func (t *EditFileTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name:        t.Name(),
-		Description: "对指定文件执行局部替换。优先精确匹配old_string；如果失败，会自动尝试换行归一化、行级空白归一化和高置信模糊匹配。old_string必须尽量唯一",
+		Description: "Perform targeted edits to a file by replacing old_string with new_string. Uses exact match first; falls back to newline normalization, line-level whitespace normalization, and high-confidence fuzzy matching. old_string should be unique.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"path": map[string]interface{}{
 					"type":        "string",
-					"description": "要修改的文件路径，如 internal/foo/bar.go。请使用相对工作区路径。",
+					"description": "Path to the file to edit, e.g., internal/foo/bar.go. Use relative paths from working directory.",
 				},
 				"old_string": map[string]interface{}{
 					"type":        "string",
-					"description": "要被替换的原始文本片段。请提供足够长、足够唯一的上下文。",
+					"description": "The original text fragment to replace. Provide sufficient unique context.",
 				},
 
 				"new_string": map[string]interface{}{
 					"type":        "string",
-					"description": "替换后的新文本片段。",
+					"description": "The new text fragment to replace with.",
 				},
 			},
 			"required": []string{"path", "old_string", "new_string"},
@@ -50,12 +63,25 @@ func (t *EditFileTool) Definition() schema.ToolDefinition {
 	}
 }
 
+// editFileArgs represents the input arguments for the edit_file tool.
 type editFileArgs struct {
-	Path      string `json:"path"`
+	// Path is the relative path to the file to edit.
+	Path string `json:"path"`
+	// OldString is the original text to be replaced.
 	OldString string `json:"old_string"`
+	// NewString is the replacement text.
 	NewString string `json:"new_string"`
 }
 
+// Execute performs a targeted edit on the specified file.
+// Uses multiple matching strategies in order:
+//  1. Exact match of old_string
+//  2. Match after normalizing line endings
+//  3. Match after trimming line-level whitespace
+//  4. Fuzzy matching with similarity scoring
+//
+// Returns a success message with match strategy and line number,
+// or an error if the edit cannot be performed safely.
 func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input editFileArgs
 	if err := json.Unmarshal(args, &input); err != nil {
@@ -106,12 +132,19 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	), nil
 }
 
+// editMatch describes the result of a successful edit operation.
 type editMatch struct {
+	// Strategy is the matching method used (e.g., "exact", "fuzzy_line_window").
 	Strategy string
-	Line     int
-	Score    float64
+	// Line is the 1-based line number where the edit was applied.
+	Line int
+	// Score is the similarity score for fuzzy matches (1.0 = exact).
+	Score float64
 }
 
+// applyBestEffortEdit attempts to replace old_string with newString in the content.
+// Tries multiple matching strategies in order of precision.
+// Returns the updated content, match information, or an error if no unique match is found.
 func applyBestEffortEdit(content, oldString, newString string) (string, editMatch, error) {
 	if count := strings.Count(content, oldString); count == 1 {
 		idx := strings.Index(content, oldString)

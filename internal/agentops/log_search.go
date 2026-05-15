@@ -11,22 +11,33 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// LogSearchTool is a read-only tool that searches local service log files for
+// lines matching a keyword query.  It is the primary evidence-gathering tool
+// for AgentOps incident analysis and is registered as parallel-safe.
 type LogSearchTool struct {
 	logDir string
 }
 
+// NewLogSearchTool creates a LogSearchTool rooted at logDir.  Log files are
+// expected at <logDir>/<service>.log.
 func NewLogSearchTool(logDir string) *LogSearchTool {
 	return &LogSearchTool{logDir: logDir}
 }
 
+// Name returns the tool identifier "log_search".
 func (t *LogSearchTool) Name() string {
 	return "log_search"
 }
 
+// ParallelSafe reports true, indicating this tool may execute concurrently
+// with other tools.
 func (t *LogSearchTool) ParallelSafe() bool {
 	return true
 }
 
+// Definition returns the JSON-schema tool definition accepted by the LLM.
+// Required parameters are "service" and "query"; "limit" is optional and
+// defaults to 50.
 func (t *LogSearchTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name:        t.Name(),
@@ -58,6 +69,9 @@ type logSearchArgs struct {
 	Limit   int    `json:"limit"`
 }
 
+// Execute deserialises the arguments, reads the matching log file, and
+// returns up to args.Limit lines containing the query (case-insensitive).
+// It respects context cancellation during line scanning.
 func (t *LogSearchTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	var args logSearchArgs
 	if err := json.Unmarshal(raw, &args); err != nil {

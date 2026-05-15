@@ -6,6 +6,8 @@ import (
 	"os"
 )
 
+// WriteJSON serializes benchmark results as indented JSON and writes them to
+// the file at path, appending a trailing newline.
 func WriteJSON(path string, results []*Result) error {
 	data, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
@@ -14,6 +16,8 @@ func WriteJSON(path string, results []*Result) error {
 	return os.WriteFile(path, append(data, '\n'), 0644)
 }
 
+// PrintSummary writes a human-readable pass/fail summary to stdout, showing
+// each case's status, duration, session, and workspace path.
 func PrintSummary(results []*Result) {
 	total := len(results)
 	passed := 0

@@ -1,3 +1,7 @@
+// Package context assembles the system prompt for foxharness agent sessions.
+// A Composer loads project-level instructions (AGENTS.md), optional skill
+// files referenced via $name syntax in the user prompt, and session working
+// memory, combining them into a single system prompt ready for the LLM.
 package context
 
 import (
@@ -9,21 +13,29 @@ import (
 	"strings"
 )
 
+// Composer builds the full system prompt by layering base instructions,
+// project-level AGENTS.md, referenced skills, and session working memory.
 type Composer struct {
 	workDir    string
 	memoryPath string
 }
 
+// NewComposer creates a Composer rooted at the given workspace directory.
 func NewComposer(workDir string) *Composer {
 	return &Composer{workDir: workDir}
 }
 
+// WithMemory returns a copy of the Composer configured to load session
+// working memory from the given file path.
 func (c *Composer) WithMemory(path string) *Composer {
 	clone := *c
 	clone.memoryPath = path
 	return &clone
 }
 
+// Compose assembles the full system prompt string by loading AGENTS.md,
+// resolving $name skill references found in the user prompt, and appending
+// session working memory when available.
 func (c *Composer) Compose(userPrompt string) (string, error) {
 	parts := []string{
 		baseSystemPrompt(),

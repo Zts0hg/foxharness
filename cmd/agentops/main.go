@@ -1,3 +1,20 @@
+// Package main is the entry point for the AgentOps server.
+//
+// The AgentOps server provides Feishu/Lark integration for production
+// incident analysis. It receives incident reports via Feishu webhooks
+// and dispatches AI-powered analysis tasks.
+//
+// Required environment variables:
+//
+//	FEISHU_APP_ID           - Feishu application ID
+//	FEISHU_APP_SECRET       - Feishu application secret
+//	FEISHU_VERIFICATION_TOKEN - Feishu webhook verification token
+//	FEISHU_ENCRYPT_KEY      - Feishu webhook encryption key
+//	AGENTOPS_WORKDIR        - Working directory for agent execution
+//	AGENTOPS_LOGDIR         - Directory for log storage
+//	ZHIPU_API_KEY           - Zhipu AI API key
+//
+// The server listens on :7777 for incoming Feishu webhook events.
 package main
 
 import (
@@ -52,23 +69,28 @@ func main() {
 	}
 }
 
+// mustEnv reads an environment variable and exits if it is not set.
 func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
-		log.Fatalf("缺少环境变量: %s", key)
+		log.Fatalf("missing environment variable: %s", key)
 	}
 	return v
 }
 
+// Deduper prevents duplicate processing of Feishu messages by tracking seen message IDs.
 type Deduper struct {
 	mu   sync.Mutex
 	seen map[string]bool
 }
 
+// NewDeduper creates a new Deduper with an empty seen set.
 func NewDeduper() *Deduper {
 	return &Deduper{seen: make(map[string]bool)}
 }
 
+// Mark records a message ID and reports whether it was seen for the first time.
+// Returns true if the ID is new (should be processed), false if already seen.
 func (d *Deduper) Mark(id string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()

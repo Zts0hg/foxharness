@@ -7,6 +7,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Case defines a single benchmark scenario: the prompt to send the agent,
+// the fixture directory to copy as the workspace, and the validations that
+// determine whether the run succeeded.
 type Case struct {
 	ID          string       `yaml:"id"`
 	Name        string       `yaml:"name"`
@@ -16,6 +19,9 @@ type Case struct {
 	Validations []Validation `yaml:"validations"`
 }
 
+// Validation specifies a single post-run check. The Type field selects the
+// validation strategy: "command" runs a shell command and expects exit zero;
+// "file_contains" asserts that a file in the workspace includes a substring.
 type Validation struct {
 	Type     string `yaml:"type"`
 	Command  string `yaml:"command,omitempty"`
@@ -23,6 +29,9 @@ type Validation struct {
 	Contains string `yaml:"contains,omitempty"`
 }
 
+// LoadCase reads and parses a YAML benchmark case file. It validates that
+// required fields (id, fixture, prompt) and at least one validation are
+// present, defaulting MaxTurns to 12 when zero.
 func LoadCase(path string) (*Case, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

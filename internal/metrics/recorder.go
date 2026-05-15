@@ -1,3 +1,7 @@
+// Package metrics provides session-level recording and aggregation of
+// agent runtime metrics including model call token usage, tool call
+// performance, and per-run summaries. Events are appended as JSONL for
+// later analysis.
 package metrics
 
 import (
@@ -8,14 +12,19 @@ import (
 	"time"
 )
 
+// EventType distinguishes the kind of metrics event being recorded.
 type EventType string
 
 const (
-	EventModelCall  EventType = "model_call"
-	EventToolCall   EventType = "tool_call"
+	// EventModelCall records a single LLM model invocation.
+	EventModelCall EventType = "model_call"
+	// EventToolCall records a single tool invocation.
+	EventToolCall EventType = "tool_call"
+	// EventRunSummary records an aggregated summary at the end of a run.
 	EventRunSummary EventType = "run_summary"
 )
 
+// ModelCall captures token usage and latency for one LLM invocation.
 type ModelCall struct {
 	Time         time.Time `json:"time"`
 	Type         EventType `json:"type"`
@@ -29,6 +38,7 @@ type ModelCall struct {
 	Error        string    `json:"error"`
 }
 
+// ToolCall captures timing and result metadata for one tool invocation.
 type ToolCall struct {
 	Time        time.Time `json:"time"`
 	Type        EventType `json:"type"`
@@ -41,6 +51,7 @@ type ToolCall struct {
 	IsError     bool      `json:"is_error"`
 }
 
+// RunSummary aggregates all metrics for a completed agent run.
 type RunSummary struct {
 	Time              time.Time `json:"time"`
 	Type              EventType `json:"type"`
@@ -53,15 +64,20 @@ type RunSummary struct {
 	ErrorCount        int       `json:"error_count"`
 }
 
+// Recorder appends JSONL metric events to a single file in a
+// concurrency-safe manner.
 type Recorder struct {
 	path string
 	mu   sync.Mutex
 }
 
+// NewRecorder creates a Recorder that writes events to path.
 func NewRecorder(path string) *Recorder {
 	return &Recorder{path: path}
 }
 
+// Append serializes event as JSON and appends it as a new line to the
+// underlying file. The file is created if it does not exist.
 func (r *Recorder) Append(event any) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

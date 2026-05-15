@@ -1,3 +1,23 @@
+// Package tools provides a tool registry and built-in tool implementations for the foxharness agent.
+//
+// The tool system allows the LLM agent to extend its capabilities by invoking
+// external functions. Tools can perform file operations, execute shell commands,
+// and interact with the system in a controlled manner.
+//
+// Key Components:
+//   - Registry: Interface for registering and executing tools with middleware support
+//   - BaseTool: Core interface that all tools must implement
+//   - ParallelSafeTool: Optional interface for marking tools safe for parallel execution
+//
+// Built-in Tools:
+//   - bash: Execute shell commands
+//   - read_file: Read file contents
+//   - write_file: Create or overwrite files
+//   - edit_file: Make targeted edits to files
+//
+// Middleware Support:
+// Tools can be wrapped with middleware for approval workflows, safety checks,
+// and other cross-cutting concerns.
 package tools
 
 import (
@@ -10,21 +30,58 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// Registry defines the interface for tool registration and execution.
+// It manages the lifecycle of tools, executes tool calls, and provides
+// tool discovery for the LLM.
 type Registry interface {
+	// Register adds a tool to the registry. If a tool with the same name
+	// already exists, it will be overwritten.
 	Register(tool BaseTool)
+
+	// Use adds a middleware that will be invoked before each tool execution.
+	// Multiple middlewares can be added; they are executed in registration order.
 	Use(middleware middleware.Middleware)
+
+	// GetAvailableTools returns definitions for all registered tools.
+	// This is used to inform the LLM about available capabilities.
 	GetAvailableTools() []schema.ToolDefinition
+
+	// Execute invokes a tool by name with the provided arguments.
+	// All registered middlewares are invoked before the tool execution.
+	// Returns the tool's output or an error if execution fails.
 	Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult
+
+	// IsParallelSafe reports whether a tool can be executed in parallel
+	// with other tools. Tools must explicitly implement ParallelSafeTool
+	// and return true to be considered parallel-safe.
 	IsParallelSafe(toolName string) bool
 }
 
+// BaseTool defines the core interface that all tools must implement.
+// Tools provide name, definition, and execution logic.
 type BaseTool interface {
+	// Name returns the unique identifier for this tool.
+	// This name is used to invoke the tool and must match the
+	// name in the tool definition.
 	Name() string
+
+	// Definition returns the tool's schema including name, description,
+	// and input schema. This is sent to the LLM to describe the tool's usage.
 	Definition() schema.ToolDefinition
+
+	// Execute runs the tool with the provided arguments.
+	// The args parameter contains the JSON-encoded tool arguments.
+	// Returns the tool's output as a string, or an error if execution fails.
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
 
+// ParallelSafeTool is an optional interface that tools can implement
+// to indicate they are safe for parallel execution with other tools.
+// Only tools implementing this interface and returning true from ParallelSafe
+// will be executed in parallel batches.
 type ParallelSafeTool interface {
+	// ParallelSafe reports whether this tool can be executed concurrently
+	// with other parallel-safe tools. Returns true if safe, false otherwise.
 	ParallelSafe() bool
 }
 
@@ -33,26 +90,34 @@ type registryImpl struct {
 	middlewares []middleware.Middleware
 }
 
+// Use adds a middleware to the registry's middleware chain.
+// Middlewares are invoked in the order they were added during tool execution.
 func (r *registryImpl) Use(m middleware.Middleware) {
 	r.middlewares = append(r.middlewares, m)
 }
 
+// NewRegistry creates a new empty tool registry.
+// Returns a Registry ready for tool registration.
 func NewRegistry() Registry {
 	return &registryImpl{
 		tools: make(map[string]BaseTool),
 	}
 }
 
+// Register adds a tool to the registry. If a tool with the same name
+// already exists, it logs a warning and overwrites the previous registration.
 func (r *registryImpl) Register(tool BaseTool) {
 	name := tool.Name()
 	if _, exists := r.tools[name]; exists {
-		log.Printf("[Warning] 工具 '%s' 已经被注册，将被覆盖。\n", name)
+		log.Printf("[Warning] tool '%s' already registered, will be overwritten\n", name)
 	}
 
 	r.tools[name] = tool
-	log.Printf("[Registry] 成功挂载工具: %s\n", name)
+	log.Printf("[Registry] successfully mounted tool: %s\n", name)
 }
 
+// GetAvailableTools returns the tool definitions for all registered tools.
+// This is used to inform the LLM about the available tool capabilities.
 func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
 	var defs []schema.ToolDefinition
 	for _, tool := range r.tools {
@@ -61,10 +126,14 @@ func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
 	return defs
 }
 
+// Execute invokes a tool by name with the provided arguments.
+// All registered middlewares are invoked before the tool execution.
+// If the tool doesn't exist, or any middleware denies execution,
+// or the tool execution fails, an error result is returned.
 func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
 	tool, exists := r.tools[call.Name]
 	if !exists {
-		errMsg := fmt.Sprintf("Error: 系统中不存在 '%s' 的工具。", call.Name)
+		errMsg := fmt.Sprintf("Error: tool '%s' does not exist in the system", call.Name)
 		return schema.ToolResult{
 			ToolCallID: call.ID,
 			Output:     errMsg,
@@ -109,6 +178,9 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 	}
 }
 
+// IsParallelSafe reports whether a tool can be executed in parallel with other tools.
+// Returns true only if the tool implements ParallelSafeTool and its ParallelSafe method returns true.
+// Non-existent tools are considered not parallel-safe.
 func (r *registryImpl) IsParallelSafe(toolName string) bool {
 	tool, exists := r.tools[toolName]
 	if !exists {

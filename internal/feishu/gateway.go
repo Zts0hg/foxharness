@@ -1,3 +1,9 @@
+// Package feishu provides Feishu (Lark) integration components for the
+// foxharness agent framework.  It implements an HTTP webhook gateway that
+// receives message events from the Feishu bot platform, converts them into
+// Task values, and dispatches them to a Runner for execution.  It also
+// exposes an approval callback endpoint so that human operators can approve
+// or reject dangerous tool invocations initiated by the agent.
 package feishu
 
 import (
@@ -18,6 +24,9 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
+// Gateway receives Feishu webhook events over HTTP, deserialises message
+// payloads into Task values, and pushes them onto the tasks channel for
+// consumption by a Runner.  It also handles approval callback resolution.
 type Gateway struct {
 	verificationToken string
 	encryptKey        string
@@ -25,6 +34,9 @@ type Gateway struct {
 	approvalStore     *approval.Store
 }
 
+// NewGateway creates a Gateway that validates incoming events with the given
+// verificationToken and encryptKey, dispatches parsed tasks to the tasks
+// channel, and resolves approval requests through approvalStore.
 func NewGateway(verificationToken, encryptKey string, tasks chan<- Task, approvalStore *approval.Store) *Gateway {
 	return &Gateway{
 		verificationToken: verificationToken,
@@ -34,6 +46,8 @@ func NewGateway(verificationToken, encryptKey string, tasks chan<- Task, approva
 	}
 }
 
+// Listen registers the Feishu event dispatcher on /webhook/event and starts
+// an HTTP server bound to addr.  It blocks until the server exits.
 func (g *Gateway) Listen(addr string) error {
 	handler := dispatcher.NewEventDispatcher(g.verificationToken, g.encryptKey)
 
@@ -113,6 +127,8 @@ func newTaskID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// OnApprovalCallback resolves a pending approval request identified by
+// approvalID with the operator's decision and optional reason.
 func (g *Gateway) OnApprovalCallback(approvalID string, approved bool, reason string) error {
 	return g.approvalStore.Resolve(approvalID, approval.Result{
 		Approved: approved,

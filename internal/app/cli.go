@@ -1,3 +1,6 @@
+// Package app wires together the foxharness CLI entry point. It orchestrates
+// session creation, plan-mode planning, tool registration, subagent setup,
+// compaction, and the engine run for a single user prompt.
 package app
 
 import (
@@ -16,6 +19,9 @@ import (
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
+// CLIConfig holds the configuration for a CLI agent run, including the
+// workspace directory, user prompt, model identifier, and feature flags for
+// thinking and plan mode.
 type CLIConfig struct {
 	WorkDir        string
 	Prompt         string
@@ -25,6 +31,11 @@ type CLIConfig struct {
 	MaxTurns       int
 }
 
+// RunCLI executes a single agent session from prompt to final output. It
+// initializes file-based memory, creates a session, optionally generates a
+// plan when plan mode is enabled, registers tools and subagent support, and
+// runs the engine. Session metadata (transcript, metrics, trace) is printed
+// on completion.
 func RunCLI(ctx context.Context, cfg CLIConfig) error {
 	workDir, err := filepath.Abs(cfg.WorkDir)
 	if err != nil {

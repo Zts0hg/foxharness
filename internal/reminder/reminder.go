@@ -1,3 +1,7 @@
+// Package reminder provides a system-reminder manager that monitors agent tool
+// usage and injects contextual prompts when it detects loops, missing
+// verification after edits, or excessive turns. Reminders are rate-limited by
+// a cooldown to avoid flooding the conversation.
 package reminder
 
 import (
@@ -9,6 +13,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// ToolAction records a single tool invocation for pattern analysis.
 type ToolAction struct {
 	Turn      int
 	ToolName  string
@@ -16,18 +21,24 @@ type ToolAction struct {
 	IsError   bool
 }
 
+// Manager tracks tool actions across turns and builds system reminders when
+// it detects repetition, missing verification, or prolonged execution.
 type Manager struct {
 	actions          []ToolAction
 	lastReminderTurn int
 	cooldownTurns    int
 }
 
+// NewManager creates a Manager with a default cooldown of 3 turns between
+// consecutive reminders.
 func NewManager() *Manager {
 	return &Manager{
 		cooldownTurns: 3,
 	}
 }
 
+// Record logs a tool call and its result for the given turn. The Manager
+// retains up to 30 recent actions for pattern analysis.
 func (m *Manager) Record(turn int, call schema.ToolCall, result schema.ToolResult) {
 	m.actions = append(m.actions, ToolAction{
 		Turn:      turn,
@@ -93,6 +104,10 @@ func looksLikeVerification(args string) bool {
 		strings.Contains(args, "cargo test")
 }
 
+// MaybeBuild checks whether a system reminder should be injected at the
+// given turn. It returns the reminder text and true when one is warranted, or
+// an empty string and false otherwise. Reminders are suppressed when the
+// cooldown since the last reminder has not elapsed.
 func (m *Manager) MaybeBuild(turn int) (string, bool) {
 	if turn-m.lastReminderTurn < m.cooldownTurns {
 		return "", false

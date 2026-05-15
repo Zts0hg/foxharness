@@ -12,15 +12,31 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 )
 
+// OpenAIProvider implements the LLMProvider interface using the OpenAI API.
+// It supports any OpenAI-compatible endpoint, including Zhipu AI's BigModel platform.
+//
+// The provider handles:
+//   - Message format conversion between schema and OpenAI types
+//   - Tool/function calling with proper parameter schemas
+//   - Multi-turn conversations with full conversation history
 type OpenAIProvider struct {
+	// client is the OpenAI SDK client for making API requests.
 	client openai.Client
-	model  string
+	// model specifies the model identifier to use for generation.
+	model string
 }
 
+// NewZhipuOpenAIProvider creates an OpenAIProvider configured for Zhipu AI's BigModel platform.
+//
+// The model parameter specifies which model to use (e.g., "glm-4.5-air").
+// Reads the ZHIPU_API_KEY environment variable for authentication.
+// Panics if ZHIPU_API_KEY is not set.
+//
+// Returns a configured OpenAIProvider ready for use with the Zhipu API.
 func NewZhipuOpenAIProvider(model string) *OpenAIProvider {
 	apiKey := os.Getenv("ZHIPU_API_KEY")
 	if apiKey == "" {
-		panic("请设置 ZHIPU_API_AKY 环境变量")
+		panic("ZHIPU_API_KEY environment variable must be set")
 	}
 	baseUrl := "https://open.bigmodel.cn/api/coding/paas/v4"
 
@@ -30,6 +46,14 @@ func NewZhipuOpenAIProvider(model string) *OpenAIProvider {
 	}
 }
 
+// Generate produces a response from the OpenAI-compatible API.
+//
+// The ctx parameter enables cancellation of long-running requests.
+// The messages parameter contains the full conversation history.
+// The availableTools parameter lists tools the LLM may invoke.
+//
+// Returns a schema.Message with the LLM's response, including any tool calls,
+// or an error if the API request fails or returns an empty response.
 func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
 	var openaiMessages []openai.ChatCompletionMessageParamUnion
 

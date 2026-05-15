@@ -1,3 +1,19 @@
+// Package main is the entry point for the fox CLI agent.
+//
+// Usage:
+//
+//	fox -prompt "your task" -model "glm-4.5-air"
+//	fox -plan -prompt "your task"
+//	echo "your task" | fox
+//
+// Flags:
+//
+//	-workdir    Working directory (default: current directory)
+//	-prompt     User task prompt; reads from stdin if empty
+//	-model      LLM model name (default: "glm-4.5-air")
+//	-thinking   Enable legacy per-turn Thinking mode
+//	-plan       Enable Plan Mode (default: true)
+//	-max-turns  Maximum number of agent turns (default: 20)
 package main
 
 import (
@@ -14,12 +30,12 @@ import (
 
 func main() {
 	var cfg app.CLIConfig
-	flag.StringVar(&cfg.WorkDir, "workdir", ".", "工作区目录")
-	flag.StringVar(&cfg.Prompt, "prompt", "", "用户任务；为空时从 stdin 读取")
-	flag.StringVar(&cfg.Model, "model", "glm-4.5-air", "模型名称")
-	flag.BoolVar(&cfg.EnableThinking, "thinking", false, "是否启用旧版每轮 Thinking；Plan Mode 成功时会关闭它")
-	flag.BoolVar(&cfg.EnablePlanMode, "plan", true, "是否启用 Plan Mode")
-	flag.IntVar(&cfg.MaxTurns, "max-turns", 20, "最大 Turn 数")
+	flag.StringVar(&cfg.WorkDir, "workdir", ".", "working directory")
+	flag.StringVar(&cfg.Prompt, "prompt", "", "user task prompt; reads from stdin if empty")
+	flag.StringVar(&cfg.Model, "model", "glm-4.5-air", "LLM model name")
+	flag.BoolVar(&cfg.EnableThinking, "thinking", false, "enable legacy per-turn Thinking mode; disabled when Plan Mode succeeds")
+	flag.BoolVar(&cfg.EnablePlanMode, "plan", true, "enable Plan Mode")
+	flag.IntVar(&cfg.MaxTurns, "max-turns", 20, "maximum number of agent turns")
 	flag.Parse()
 
 	prompt, err := readPrompt(cfg.Prompt)

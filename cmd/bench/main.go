@@ -1,3 +1,18 @@
+// Package main is the entry point for the benchmark runner.
+//
+// The benchmark runner executes agent tasks defined in YAML case files
+// and validates the results against expected outcomes.
+//
+// Usage:
+//
+//	go run cmd/bench/main.go -case benchmarks/fixtures/counter_race/case.yaml
+//	go run cmd/bench/main.go -case case.yaml -out results.json -repeat 3
+//
+// Flags:
+//
+//	-case   Path to the benchmark case YAML file (required)
+//	-out    Path for the JSON results file (default: "benchmark-result.json")
+//	-repeat Number of times to repeat the benchmark (default: 1)
 package main
 
 import (
@@ -17,7 +32,7 @@ import (
 func main() {
 	casePath := flag.String("case", "", "benchmark case yaml path")
 	outPath := flag.String("out", "benchmark-result.json", "result json path")
-	repeat := flag.Int("repeat", 1, "repeat count")
+	repeat := flag.Int("repeat", 1, "number of times to repeat the benchmark")
 	flag.Parse()
 
 	if *casePath == "" {
@@ -46,6 +61,9 @@ func main() {
 	}
 }
 
+// buildHarness creates an AgentEngine and Session for a benchmark run.
+// It sets up the LLM provider, tool registry, memory store, and session
+// manager configured for the given benchmark case.
 func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engine.AgentEngine, *session.Session, error) {
 	manager := session.NewManager(workDir)
 	sess, err := manager.Create(session.CreateOptions{

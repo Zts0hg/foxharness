@@ -8,24 +8,39 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// ApprovalRequest describes a tool call that has been classified as
+// potentially dangerous, forwarded to an Approver for human judgment.
 type ApprovalRequest struct {
 	ToolName  string
 	Arguments string
 	Risk      string
 }
 
+// Approver determines whether a flagged tool call should be permitted.
+// Implementations typically prompt a human reviewer and return the approval
+// decision along with an optional reason.
 type Approver interface {
 	Approve(ctx context.Context, req ApprovalRequest) (bool, string, error)
 }
 
+// DangerMiddle is a Middleware that inspects bash tool calls for patterns
+// associated with destructive or high-risk operations (e.g., recursive
+// deletion, privilege escalation, infrastructure changes). Flagged calls are
+// forwarded to the configured Approver for explicit human approval before
+// execution proceeds.
 type DangerMiddle struct {
 	approver Approver
 }
 
+// NewDangerMiddleware creates a DangerMiddle that delegates approval
+// decisions to the given Approver.
 func NewDangerMiddleware(approver Approver) *DangerMiddle {
 	return &DangerMiddle{approver: approver}
 }
 
+// BeforeExecute classifies the tool call's risk level. If the call is
+// deemed dangerous, it requests approval from the Approver; otherwise it
+// returns Allow.
 func (m *DangerMiddle) BeforeExecute(ctx context.Context, call schema.ToolCall) (Decision, error) {
 	risk := classifyRisk(call)
 	if risk == "" {

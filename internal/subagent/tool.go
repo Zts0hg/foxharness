@@ -9,11 +9,16 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// Tool implements the agent tool interface for delegating tasks to a
+// subagent. It is registered under the name "delegate_task" and accepts a
+// task description and optional read-only flag as JSON input.
 type Tool struct {
 	manager         *Manager
 	ParentSessionID string
 }
 
+// NewTool creates a delegate_task tool backed by the given Manager and
+// associated with the specified parent session.
 func NewTool(manager *Manager, parentSessionID string) *Tool {
 	return &Tool{
 		manager:         manager,
@@ -21,10 +26,13 @@ func NewTool(manager *Manager, parentSessionID string) *Tool {
 	}
 }
 
+// Name returns the tool identifier "delegate_task".
 func (t *Tool) Name() string {
 	return "delegate_task"
 }
 
+// Definition returns the JSON schema definition for the delegate_task tool,
+// describing its parameters and usage constraints.
 func (t *Tool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name:        t.Name(),
@@ -51,6 +59,9 @@ type args struct {
 	ReadOnly *bool  `json:"read_only"`
 }
 
+// Execute parses the JSON input, delegates the task to the subagent Manager,
+// and returns the session ID and report. It defaults to read-only mode when
+// the read_only field is omitted.
 func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	var input args
 	if err := json.Unmarshal(raw, &input); err != nil {

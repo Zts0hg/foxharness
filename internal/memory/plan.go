@@ -11,20 +11,34 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// Planner generates execution plans using an LLM for Plan Mode.
+// It analyzes the user's request and creates structured plans (PLAN.md)
+// and task lists (TODO.md) before the agent begins execution.
 type Planner struct {
+	// provider is the LLM provider used for plan generation.
 	provider provider.LLMProvider
-	store    *Store
+	// store manages the memory files where plans are written.
+	store *Store
 }
 
+// planDraft represents the parsed JSON response from plan generation.
 type planDraft struct {
+	// Plan is the Markdown content for PLAN.md.
 	Plan string `json:"plan"`
+	// Todo is the Markdown content for TODO.md.
 	Todo string `json:"todo"`
 }
 
+// NewPlanner creates a new Planner with the given provider and store.
+// Returns a Planner ready to generate execution plans.
 func NewPlanner(p provider.LLMProvider, store *Store) *Planner {
 	return &Planner{provider: p, store: store}
 }
 
+// BuildPlan generates an execution plan for the given user prompt.
+// The LLM is prompted to create a structured plan with goals, strategies,
+// and a task list. The plan is written to PLAN.md and TODO.md.
+// Returns an error if plan generation or parsing fails.
 func (p *Planner) BuildPlan(ctx context.Context, userPrompt string) error {
 	prompt := fmt.Sprintf(`
 请为下面的 Agent 任务生成一份可执行计划。

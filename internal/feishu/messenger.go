@@ -9,16 +9,23 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
+// Messenger wraps the Lark SDK client and sends plain-text messages to
+// Feishu group chats.
 type Messenger struct {
 	client *lark.Client
 }
 
+// NewMessenger creates a Messenger backed by a Lark SDK client initialised
+// with the given appID and appSecret credentials.
 func NewMessenger(appID, appSecret string) *Messenger {
 	return &Messenger{
 		client: lark.NewClient(appID, appSecret),
 	}
 }
 
+// SendText posts a plain-text message to the Feishu chat identified by
+// chatID.  It returns an error if the Lark API call fails or the response
+// indicates a non-success status.
 func (m *Messenger) SendText(ctx context.Context, chatID, text string) error {
 	contentBytes, _ := json.Marshal(map[string]string{
 		"text": text,

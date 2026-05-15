@@ -1,3 +1,19 @@
+// Package engine provides the core agent execution loop for foxharness.
+//
+// The engine orchestrates tool-using LLM agents through a turn-based reasoning
+// process. Each turn consists of an optional Thinking phase (for planning)
+// followed by an Action phase where tools may be invoked. The Loop manages
+// context history, tool execution, result aggregation, and integrates with
+// compaction, error recovery, and system reminders.
+//
+// Key Components:
+//   - AgentEngine: Main execution engine managing turns and context
+//   - Config: Engine configuration for thinking mode and turn limits
+//   - PromptComposer: Interface for composing system prompts
+//
+// The engine supports parallel-safe tool execution, context compaction when
+// approaching token limits, automatic error recovery prompt injection, and
+// comprehensive tracing and metrics collection.
 package engine
 
 import (
@@ -19,24 +35,54 @@ import (
 	"github.com/Zts0hg/foxharness/internal/tracing"
 )
 
+// PromptComposer defines the interface for composing system prompts
+// from user input. Implementations can inject system instructions,
+// context, and formatting into the prompt sent to the LLM.
 type PromptComposer interface {
+	// Compose creates a system prompt from the user's input.
+	// The returned prompt should include any necessary system instructions,
+	// context, or formatting required for the LLM to process the user's request.
 	Compose(userPrompt string) (string, error)
 }
 
+// RunResult contains the final output from an engine run.
+// It provides the agent's final message and the associated session ID.
 type RunResult struct {
+	// FinalMessage is the last text content produced by the agent.
 	FinalMessage string
-	SessionID    string
+	// SessionID uniquely identifies the session that produced this result.
+	SessionID string
 }
 
+// AgentEngine manages the main agent execution loop with turn-based reasoning.
+// It orchestrates the flow between the LLM provider, tool registry, and
+// supporting systems (compaction, recovery, reminders, tracing, metrics).
+//
+// The engine executes turns until:
+//   - The agent produces a response with no tool calls
+//   - The maximum turn limit is reached
+//   - A fatal error occurs
+//
+// Each turn can optionally include a Thinking phase (for planning) followed
+// by an Action phase where tools may be invoked. Tool calls are executed
+// with parallelization support for tools marked as parallel-safe.
 type AgentEngine struct {
-	provider  provider.LLMProvider
-	registry  tools.Registry
-	workDir   string
-	composer  PromptComposer
-	config    Config
+	// provider is the LLM provider for generating responses.
+	provider provider.LLMProvider
+	// registry manages available tools and executes tool calls.
+	registry tools.Registry
+	// workDir is the working directory for file-based operations.
+	workDir string
+	// composer creates system prompts from user input.
+	composer PromptComposer
+	// config contains engine behavior configuration.
+	config Config
+	// compactor optionally compresses context history when approaching limits.
 	compactor *compaction.Compactor
-	recovery  *recovery.Tracker
-	reminder  *reminder.Manager
+	// recovery tracks tool failures and injects recovery prompts.
+	recovery *recovery.Tracker
+	// reminder manages system reminder injection based on tool patterns.
+	reminder *reminder.Manager
 }
 
 type indexedToolResult struct {
@@ -46,6 +92,15 @@ type indexedToolResult struct {
 	DurationMS int64
 }
 
+// NewAgentEngine creates a new AgentEngine with the provided configuration.
+//
+// The p parameter is the LLM provider for generating responses.
+// The r parameter is the tool registry for managing and executing tools.
+// The workDir parameter specifies the working directory for file operations.
+// The composer parameter creates system prompts from user input.
+// The config parameter controls engine behavior; if MaxTurns is <= 0, it defaults to 20.
+//
+// Returns a configured AgentEngine ready to run agent sessions.
 func NewAgentEngine(
 	p provider.LLMProvider,
 	r tools.Registry,
@@ -68,6 +123,10 @@ func NewAgentEngine(
 	}
 }
 
+// WithCompactor sets the context compactor for the engine.
+// The compactor is invoked at the start of each turn to potentially
+// compress the conversation history when approaching token limits.
+// If c is nil, no compaction is performed.
 func (e *AgentEngine) WithCompactor(c *compaction.Compactor) {
 	e.compactor = c
 }
@@ -153,6 +212,26 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, tracer *tracing.Trac
 	return results
 }
 
+// Run executes the agent loop with the provided session and user prompt.
+//
+// The ctx parameter provides cancellation support for the entire run.
+// The sess parameter contains the session state for persistence and tracking.
+// The userPrompt parameter is the initial user request to process.
+//
+// The engine executes turns, each consisting of:
+//  1. Optional context compaction (if compactor is configured)
+//  2. Optional error recovery prompt injection
+//  3. Optional system reminder injection
+//  4. Optional Thinking phase (if EnableThinking is true)
+//  5. Action phase with tool access
+//
+// The loop continues until:
+//   - The agent produces a response with no tool calls
+//   - The maximum turn limit (Config.MaxTurns) is reached
+//   - A fatal error occurs
+//
+// Returns a RunResult containing the final agent message and session ID,
+// or an error if the run fails catastrophically.
 func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt string) (*RunResult, error) {
 	log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", sess.ID, e.workDir)
 	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.config.EnableThinking)

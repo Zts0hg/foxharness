@@ -10,12 +10,17 @@ import (
 	"time"
 )
 
+// ValidationResult records the outcome of a single validation check, including
+// whether it passed and a human-readable message on failure.
 type ValidationResult struct {
 	Type    string `json:"type"`
 	Passed  bool   `json:"passed"`
 	Message string `json:"message,omitempty"`
 }
 
+// ValidateAll runs every validation in order against the workspace directory
+// and returns one ValidationResult per entry. Command validations are
+// executed with a two-minute timeout.
 func ValidateAll(ctx context.Context, workDir string, validations []Validation) []ValidationResult {
 	results := make([]ValidationResult, 0, len(validations))
 	for _, v := range validations {

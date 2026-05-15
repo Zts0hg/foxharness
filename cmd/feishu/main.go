@@ -1,3 +1,17 @@
+// Package main is the entry point for the Feishu webhook gateway server.
+//
+// The gateway receives Feishu/Lark webhook events and dispatches them
+// to a runner that executes agent tasks and responds via Feishu messages.
+//
+// Required environment variables:
+//
+//	FEISHU_APP_ID           - Feishu application ID
+//	FEISHU_APP_SECRET       - Feishu application secret
+//	FEISHU_VERIFICATION_TOKEN - Feishu webhook verification token
+//	FEISHU_ENCRYPT_KEY      - Feishu webhook encryption key
+//	ZHIPU_API_KEY           - Zhipu AI API key
+//
+// The server listens on :7777 for incoming Feishu webhook events.
 package main
 
 import (
@@ -43,10 +57,11 @@ func main() {
 
 }
 
+// mustEnv reads an environment variable and exits if it is not set.
 func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
-		log.Fatalf("缺少环境变量: %s", key)
+		log.Fatalf("missing environment variable: %s", key)
 	}
 
 	return v

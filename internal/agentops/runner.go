@@ -1,3 +1,9 @@
+// Package agentops provides an automated incident-analysis agent that receives
+// tasks from team IM (e.g. Feishu), searches local service logs, and runs an
+// LLM-powered engine loop to diagnose root causes and propose fixes.  It
+// integrates plan generation, context compaction, sub-agent delegation, and a
+// danger-action approval middleware so that high-risk operations require human
+// confirmation before execution.
 package agentops
 
 import (
@@ -17,10 +23,19 @@ import (
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
+// Messenger abstracts the ability to send a plain-text message to a chat
+// identified by chatID.  Implementations are typically backed by an IM
+// platform such as Feishu.
 type Messenger interface {
+	// SendText delivers text to the specified chat.  A non-nil error
+	// indicates a delivery failure.
 	SendText(ctx context.Context, chatID, text string) error
 }
 
+// Runner orchestrates a single AgentOps incident-analysis task.  It creates a
+// session, generates an execution plan, wires up tools (log search, file I/O,
+// bash, sub-agent) with a danger-action approval middleware, and drives the
+// engine loop to completion.
 type Runner struct {
 	provider      provider.LLMProvider
 	workDir       string
@@ -30,6 +45,9 @@ type Runner struct {
 	approvalStore *approval.Store
 }
 
+// NewRunner constructs a Runner with the given LLM provider, working and log
+// directories, messenger for user notifications, and approval store for
+// danger-action gating.
 func NewRunner(
 	p provider.LLMProvider,
 	workDir, logDir string,
@@ -46,6 +64,8 @@ func NewRunner(
 	}
 }
 
+// Run executes the task to completion.  On failure it logs the error and
+// attempts to notify the originating chat.
 func (r *Runner) Run(ctx context.Context, task Task) {
 	if err := r.run(ctx, task); err != nil {
 		log.Printf("[AgentOps] task=%s failed: %v", task.TaskID, err)

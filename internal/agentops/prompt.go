@@ -2,6 +2,11 @@ package agentops
 
 import "fmt"
 
+// BuildPrompt assembles the system prompt for an AgentOps incident-analysis
+// run.  It embeds the user's original message text and appends a set of
+// operational rules that guide the agent to collect evidence before drawing
+// conclusions, prefer read-only tools, avoid speculative root causes, and
+// require human approval for dangerous operations.
 func BuildPrompt(task Task) string {
 	return fmt.Sprintf(`
 你正在作为 AgentOps 小助手处理一条来自团队 IM 的故障分析任务。

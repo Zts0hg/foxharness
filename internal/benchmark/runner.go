@@ -1,3 +1,8 @@
+// Package benchmark provides a framework for running automated benchmark cases
+// against the foxharness agent engine. Each case defines a prompt, a fixture
+// directory, and a set of validations that determine success. Results are
+// collected into structured reports suitable for JSON serialization and
+// human-readable summaries.
 package benchmark
 
 import (
@@ -12,16 +17,22 @@ import (
 	"github.com/Zts0hg/foxharness/internal/session"
 )
 
+// HarnessFactory creates an AgentEngine and Session for a benchmark case,
+// allowing callers to customize engine configuration per case.
 type HarnessFactory func(ctx context.Context, workDir string, c *Case) (*engine.AgentEngine, *session.Session, error)
 
+// Runner executes benchmark cases using a caller-provided HarnessFactory.
 type Runner struct {
 	factory HarnessFactory
 }
 
+// NewRunner creates a Runner that delegates engine creation to the given factory.
 func NewRunner(factory HarnessFactory) *Runner {
 	return &Runner{factory: factory}
 }
 
+// Result captures the outcome of a single benchmark case execution, including
+// timing, validation details, and any error that terminated the run.
 type Result struct {
 	CaseID      string             `json:"case_id"`
 	Success     bool               `json:"success"`
@@ -32,6 +43,10 @@ type Result struct {
 	Validations []ValidationResult `json:"validations"`
 }
 
+// RunCase copies the case fixture into a temporary workspace, runs the agent
+// engine via the configured factory, and validates the results. It returns a
+// Result regardless of whether the engine run itself errored; the Success
+// field reflects both engine completion and validation outcomes.
 func (r *Runner) RunCase(ctx context.Context, c *Case) (*Result, error) {
 	workspace, err := os.MkdirTemp("", "foxharness-benchmark-*")
 	if err != nil {

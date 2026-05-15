@@ -7,6 +7,8 @@ import (
 	"os"
 )
 
+// Load reads a JSONL trace file and returns all parsed SpanEvent records
+// in file order.
 func Load(path string) ([]SpanEvent, error) {
 	f, err := os.Open(path)
 	if err != nil {

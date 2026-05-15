@@ -10,30 +10,40 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// BashTool executes shell commands in a bash environment.
+// Commands run with a 30-second timeout and are executed in the
+// configured working directory.
 type BashTool struct {
+	// workDir is the directory where commands will be executed.
 	workDir string
 }
 
+// NewBashTool creates a new BashTool that executes commands in the specified directory.
+// The workDir parameter sets the working directory for command execution.
+// Returns a configured BashTool.
 func NewBashTool(workDir string) *BashTool {
 	return &BashTool{
 		workDir: workDir,
 	}
 }
 
+// Name returns the tool identifier "bash".
 func (t *BashTool) Name() string {
 	return "bash"
 }
 
+// Definition returns the tool schema for the bash tool.
+// It describes the tool's capabilities and expected input format.
 func (t *BashTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name:        t.Name(),
-		Description: "在当前工作区执行任意的 bash 命令。支持链式命令(如 && )。返回标准输出(stdout)和标准错误(stderr)。",
+		Description: "Execute arbitrary bash commands in the current working directory. Supports chained commands (e.g., &&). Returns both stdout and stderr.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"command": map[string]interface{}{
 					"type":        "string",
-					"description": "要执行的 bash 命令。例如：ls -la 或者 go test ./...",
+					"description": "The bash command to execute. Examples: ls -la or go test ./...",
 				},
 			},
 			"required": []string{"command"},
@@ -41,10 +51,16 @@ func (t *BashTool) Definition() schema.ToolDefinition {
 	}
 }
 
+// bashArgs represents the input arguments for the bash tool.
 type bashArgs struct {
+	// Command is the bash command string to execute.
 	Command string `json:"command"`
 }
 
+// Execute runs a bash command with the provided arguments.
+// The command executes with a 30-second timeout in the tool's working directory.
+// Returns the command output (combined stdout and stderr), or an error if argument parsing fails.
+// Timeouts are reported in the output rather than returning an error.
 func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input bashArgs
 	if err := json.Unmarshal(args, &input); err != nil {

@@ -17,6 +17,10 @@ import (
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
+// Runner consumes Task values from a channel and executes each one in a
+// dedicated goroutine using the full agent engine stack: session creation,
+// tool registration (file I/O, bash, sub-agent), danger-action approval
+// middleware, context compaction, and a 5-minute per-task timeout.
 type Runner struct {
 	provider       provider.LLMProvider
 	workDir        string
@@ -25,6 +29,9 @@ type Runner struct {
 	approvalStore  *approval.Store
 }
 
+// NewRunner constructs a Runner with the given LLM provider, working
+// directory, Feishu messenger for user notifications, session manager, and
+// approval store.
 func NewRunner(
 	provider provider.LLMProvider,
 	workDir string,
@@ -41,6 +48,9 @@ func NewRunner(
 	}
 }
 
+// Start begins consuming tasks from the tasks channel.  Each task is
+// dispatched to a separate goroutine.  Start blocks until the context is
+// cancelled or the tasks channel is closed.
 func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 	for {
 		select {
