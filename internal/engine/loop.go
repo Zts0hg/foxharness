@@ -52,6 +52,12 @@ type RunResult struct {
 	FinalMessage string
 	// SessionID uniquely identifies the session that produced this result.
 	SessionID string
+	// RunID uniquely identifies this user-submitted run within the session.
+	RunID string
+	// MetricsPath is the run-local metrics file.
+	MetricsPath string
+	// TracePath is the run-local trace file.
+	TracePath string
 }
 
 // AgentEngine manages the main agent execution loop with turn-based reasoning.
@@ -243,9 +249,20 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", sess.ID, e.workDir)
 	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.config.EnableThinking)
 
-	tracer := tracing.NewTracer(sess.TracePath())
+	run, err := sess.StartRun(userPrompt)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := run.Finish(); err != nil {
+			log.Printf("[Engine] 写入 Run 完成状态失败: %v", err)
+		}
+	}()
+
+	tracer := tracing.NewTracer(run.TracePath())
 	runSpan := tracer.StartSpan("", "run", map[string]any{
 		"session_id": sess.ID,
+		"run_id":     run.ID,
 		"source":     sess.Source,
 		"work_dir":   sess.WorkDir,
 	})
@@ -260,7 +277,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		runAttrs["error"] = err.Error()
 	}
 
-	recorder := metrics.NewRecorder(sess.MetricsPath())
+	recorder := metrics.NewRecorder(run.MetricsPath())
 	aggregator := metrics.NewAggregator()
 	estimator := metrics.RoughEstimator{}
 
@@ -272,7 +289,14 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	}()
 
 	transcript := session.NewTranscript(sess)
-	_ = transcript.Append("user_prompt", map[string]string{"prompt": userPrompt})
+	messageLog := session.NewMessageLog(sess)
+	history, err := messageLog.LoadMessages()
+	if err != nil {
+		wrapped := fmt.Errorf("读取 Session 消息历史失败: %w", err)
+		markRunError(wrapped)
+		return nil, wrapped
+	}
+	_ = transcript.AppendRun(run.ID, "user_prompt", map[string]string{"prompt": userPrompt})
 
 	systemPrompt, err := e.composer.Compose(userPrompt)
 	if err != nil {
@@ -281,16 +305,23 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		return nil, wrapped
 	}
 
-	contextHistory := []schema.Message{
-		{
-			Role:    schema.RoleSystem,
-			Content: systemPrompt,
-		},
-		{
-			Role:    schema.RoleUser,
-			Content: userPrompt,
-		},
+	userMessage := schema.Message{
+		Role:    schema.RoleUser,
+		Content: userPrompt,
 	}
+	if err := messageLog.Append(run.ID, userMessage); err != nil {
+		wrapped := fmt.Errorf("写入 Session 用户消息失败: %w", err)
+		markRunError(wrapped)
+		return nil, wrapped
+	}
+
+	contextHistory := make([]schema.Message, 0, len(history)+2)
+	contextHistory = append(contextHistory, schema.Message{
+		Role:    schema.RoleSystem,
+		Content: systemPrompt,
+	})
+	contextHistory = append(contextHistory, history...)
+	contextHistory = append(contextHistory, userMessage)
 
 	turnCount := 0
 	final := ""
@@ -303,6 +334,9 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			return &RunResult{
 				FinalMessage: final,
 				SessionID:    sess.ID,
+				RunID:        run.ID,
+				MetricsPath:  run.MetricsPath(),
+				TracePath:    run.TracePath(),
 			}, wrapped
 		}
 		log.Printf("====== [Turn %d] 开始", turnCount)
@@ -325,7 +359,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			} else if len(compacted) != len(contextHistory) {
 				log.Printf("[Compactor] 上下文已压缩: %d -> %d 条消息", len(contextHistory), len(compacted))
 				contextHistory = compacted
-				_ = transcript.Append("context_compacted", map[string]any{
+				_ = transcript.AppendRun(run.ID, "context_compacted", map[string]any{
 					"turn": turnCount,
 				})
 			}
@@ -343,7 +377,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 					Content: "[Runtime System Notice]\n\n" + recoveryPrompt,
 				})
 
-				_ = transcript.Append("error_recovery_injected", map[string]any{
+				_ = transcript.AppendRun(run.ID, "error_recovery_injected", map[string]any{
 					"prompt": recoveryPrompt,
 				})
 				log.Printf("[Recovery] 已注入错误恢复提示")
@@ -361,7 +395,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				Content: "[Runtime System Reminder]\n\n" + msg,
 			})
 
-			_ = transcript.Append("system_reminder_injected", map[string]any{
+			_ = transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
 				"turn":    turnCount,
 				"message": msg,
 			})
@@ -426,6 +460,12 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			return nil, wrapped
 		}
 		contextHistory = append(contextHistory, *actionResponse)
+		if err := messageLog.Append(run.ID, *actionResponse); err != nil {
+			wrapped := fmt.Errorf("写入 Session 助手消息失败: %w", err)
+			finishTurn("error", map[string]any{"error": wrapped.Error()})
+			markRunError(wrapped)
+			return nil, wrapped
+		}
 
 		if actionResponse.Content != "" {
 			final = actionResponse.Content
@@ -449,6 +489,9 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			return &RunResult{
 				FinalMessage: final,
 				SessionID:    sess.ID,
+				RunID:        run.ID,
+				MetricsPath:  run.MetricsPath(),
+				TracePath:    run.TracePath(),
 			}, nil
 		}
 
@@ -497,6 +540,12 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				ToolCallID: item.Call.ID,
 			}
 			contextHistory = append(contextHistory, observationMessage)
+			if err := messageLog.Append(run.ID, observationMessage); err != nil {
+				wrapped := fmt.Errorf("写入 Session 工具结果失败: %w", err)
+				finishTurn("error", map[string]any{"error": wrapped.Error()})
+				markRunError(wrapped)
+				return nil, wrapped
+			}
 
 		}
 

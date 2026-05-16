@@ -130,15 +130,28 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 	}
 
 	final := "任务执行完成。"
+	runID := ""
+	tracePath := sess.TracePath()
+	metricsPath := sess.MetricsPath()
 	if result != nil && result.FinalMessage != "" {
 		final = result.FinalMessage
 	}
+	if result != nil {
+		runID = result.RunID
+		if result.TracePath != "" {
+			tracePath = result.TracePath
+		}
+		if result.MetricsPath != "" {
+			metricsPath = result.MetricsPath
+		}
+	}
 
 	final += fmt.Sprintf(
-		"\n\nSession: %s\nTrace: %s\nMetrics: %s",
+		"\n\nSession: %s\nRun: %s\nTrace: %s\nMetrics: %s",
 		sess.ID,
-		sess.TracePath(),
-		sess.MetricsPath(),
+		runID,
+		tracePath,
+		metricsPath,
 	)
 
 	return r.messenger.SendText(ctx, task.ChatID, final)

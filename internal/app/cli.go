@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -23,12 +24,15 @@ import (
 // workspace directory, user prompt, model identifier, and feature flags for
 // thinking and plan mode.
 type CLIConfig struct {
-	WorkDir        string
-	Prompt         string
-	Model          string
-	EnableThinking bool
-	EnablePlanMode bool
-	MaxTurns       int
+	WorkDir         string
+	Prompt          string
+	Model           string
+	EnableThinking  bool
+	EnablePlanMode  bool
+	MaxTurns        int
+	SessionID       string
+	ContinueSession bool
+	NewSession      bool
 }
 
 // RunCLI executes a single agent session from prompt to final output. It
@@ -48,12 +52,9 @@ func RunCLI(ctx context.Context, cfg CLIConfig) error {
 	}
 
 	manager := session.NewManager(workDir)
-	sess, err := manager.Create(session.CreateOptions{
-		Source:  session.SOURCECLI,
-		WorkDir: workDir,
-	})
+	sess, err := resolveCLISession(manager, workDir, cfg)
 	if err != nil {
-		return fmt.Errorf("创建 Session 失败: %w", err)
+		return err
 	}
 
 	log.Printf("[CLI] Session: %s", sess.ID)
@@ -111,7 +112,50 @@ func RunCLI(ctx context.Context, cfg CLIConfig) error {
 	fmt.Println()
 	fmt.Println("Session: ", sess.ID)
 	fmt.Println("Transcript: ", sess.TranscriptPath())
-	fmt.Println("Metrics: ", sess.MetricsPath())
-	fmt.Println("Trace: ", sess.TracePath())
+	if result != nil {
+		fmt.Println("Run: ", result.RunID)
+		fmt.Println("Metrics: ", result.MetricsPath)
+		fmt.Println("Trace: ", result.TracePath)
+	}
 	return err
+}
+
+func resolveCLISession(manager *session.Manager, workDir string, cfg CLIConfig) (*session.Session, error) {
+	if cfg.NewSession && (cfg.SessionID != "" || cfg.ContinueSession) {
+		return nil, fmt.Errorf("-new 不能和 -session 或 -continue 同时使用")
+	}
+	if cfg.SessionID != "" && cfg.ContinueSession {
+		return nil, fmt.Errorf("-session 不能和 -continue 同时使用")
+	}
+
+	if cfg.SessionID != "" {
+		sess, err := manager.Open(cfg.SessionID)
+		if err != nil {
+			if errors.Is(err, session.ErrNotFound) {
+				return nil, fmt.Errorf("Session %s 不存在", cfg.SessionID)
+			}
+			return nil, err
+		}
+		return sess, nil
+	}
+
+	if cfg.ContinueSession {
+		sess, err := manager.Latest(session.LookupOptions{Source: session.SOURCECLI})
+		if err != nil {
+			if errors.Is(err, session.ErrNotFound) {
+				return nil, fmt.Errorf("没有可继续的 CLI Session")
+			}
+			return nil, err
+		}
+		return sess, nil
+	}
+
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("创建 Session 失败: %w", err)
+	}
+	return sess, nil
 }

@@ -2,8 +2,11 @@ package feishu
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
@@ -27,6 +30,8 @@ type Runner struct {
 	messenger      *Messenger
 	sessionManager *session.Manager
 	approvalStore  *approval.Store
+	locksMu        sync.Mutex
+	locks          map[string]*sync.Mutex
 }
 
 // NewRunner constructs a Runner with the given LLM provider, working
@@ -45,6 +50,7 @@ func NewRunner(
 		messenger:      messenger,
 		sessionManager: sessionManager,
 		approvalStore:  approvalStore,
+		locks:          make(map[string]*sync.Mutex),
 	}
 }
 
@@ -71,18 +77,23 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 
 	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("已收到任务 %s，开始执行。", task.TaskID))
 
-	sess, err := r.sessionManager.Create(session.CreateOptions{
-		Source:  session.SOURCEFeishu,
-		WorkDir: r.workDir,
-		UserID:  task.SenderID,
-		ChatID:  task.ChatID,
-	})
+	sessionKey := task.ChatID + ":" + task.SenderID
+	lock := r.lockFor(sessionKey)
+	lock.Lock()
+	defer lock.Unlock()
+
+	forceNew, taskText := parseSessionDirective(task.Text)
+	sess, created, err := r.resolveSession(forceNew, task)
 	if err != nil {
 		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("创建 Session 失败: %v", err))
 		return
 	}
 
-	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("任务已进入 Session: %s", sess.ID))
+	if created {
+		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("任务已进入新 Session: %s", sess.ID))
+	} else {
+		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("继续使用 Session: %s", sess.ID))
+	}
 
 	approver := approval.NewFeishuApprover(task.ChatID, r.messenger, r.approvalStore)
 	subManager := subagent.NewManager(r.provider, r.workDir)
@@ -117,7 +128,7 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 		"以下任务来自飞书用户 %s，消息 ID 为 %s。\n\n%s",
 		task.SenderID,
 		task.MessageID,
-		task.Text,
+		taskText,
 	)
 
 	reporter := NewReporter(r.messenger, task.ChatID, task.TaskID)
@@ -133,5 +144,57 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 		return
 	}
 
-	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("任务 %s 已完成，Session: %s", task.TaskID, sess.ID))
+	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("任务 %s 已完成，Session: %s，Run: %s", task.TaskID, sess.ID, result.RunID))
+}
+
+func (r *Runner) resolveSession(forceNew bool, task Task) (*session.Session, bool, error) {
+	if !forceNew {
+		sess, err := r.sessionManager.Latest(session.LookupOptions{
+			Source: session.SOURCEFeishu,
+			UserID: task.SenderID,
+			ChatID: task.ChatID,
+		})
+		if err == nil {
+			return sess, false, nil
+		}
+		if !errors.Is(err, session.ErrNotFound) {
+			return nil, false, err
+		}
+	}
+
+	sess, err := r.sessionManager.Create(session.CreateOptions{
+		Source:  session.SOURCEFeishu,
+		WorkDir: r.workDir,
+		UserID:  task.SenderID,
+		ChatID:  task.ChatID,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return sess, true, nil
+}
+
+func (r *Runner) lockFor(key string) *sync.Mutex {
+	r.locksMu.Lock()
+	defer r.locksMu.Unlock()
+
+	lock, ok := r.locks[key]
+	if !ok {
+		lock = &sync.Mutex{}
+		r.locks[key] = lock
+	}
+	return lock
+}
+
+func parseSessionDirective(text string) (bool, string) {
+	trimmed := strings.TrimSpace(text)
+	for _, prefix := range []string{"/new", "新会话"} {
+		if trimmed == prefix {
+			return true, trimmed
+		}
+		if strings.HasPrefix(trimmed, prefix+" ") {
+			return true, strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+		}
+	}
+	return false, trimmed
 }

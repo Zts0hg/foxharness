@@ -25,6 +25,8 @@ func NewTranscript(s *Session) *Transcript {
 type Event struct {
 	// Time is when the event occurred.
 	Time time.Time `json:"time"`
+	// RunID identifies the run that produced this event, when applicable.
+	RunID string `json:"run_id,omitempty"`
 	// Type identifies the kind of event (e.g., "user_prompt", "tool_call").
 	Type string `json:"type"`
 	// Payload contains the event-specific data.
@@ -35,6 +37,11 @@ type Event struct {
 // The event is serialized as JSON and appended to the transcript file.
 // Returns an error if the file cannot be written.
 func (t *Transcript) Append(eventType string, payload any) error {
+	return t.AppendRun("", eventType, payload)
+}
+
+// AppendRun adds a new run-scoped event to the transcript.
+func (t *Transcript) AppendRun(runID, eventType string, payload any) error {
 	f, err := os.OpenFile(t.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open transcript: %w", err)
@@ -43,6 +50,7 @@ func (t *Transcript) Append(eventType string, payload any) error {
 
 	line, err := json.Marshal(Event{
 		Time:    time.Now(),
+		RunID:   runID,
 		Type:    eventType,
 		Payload: payload,
 	})

@@ -14,6 +14,9 @@
 //	-thinking   Enable legacy per-turn Thinking mode
 //	-plan       Enable Plan Mode (default: true)
 //	-max-turns  Maximum number of agent turns (default: 20)
+//	-session    Resume a specific session ID
+//	-continue   Resume the latest CLI session
+//	-new        Force creation of a new session (default behavior)
 package main
 
 import (
@@ -36,6 +39,9 @@ func main() {
 	flag.BoolVar(&cfg.EnableThinking, "thinking", false, "enable legacy per-turn Thinking mode; disabled when Plan Mode succeeds")
 	flag.BoolVar(&cfg.EnablePlanMode, "plan", true, "enable Plan Mode")
 	flag.IntVar(&cfg.MaxTurns, "max-turns", 20, "maximum number of agent turns")
+	flag.StringVar(&cfg.SessionID, "session", "", "resume a specific session ID")
+	flag.BoolVar(&cfg.ContinueSession, "continue", false, "resume the latest CLI session")
+	flag.BoolVar(&cfg.NewSession, "new", false, "force creation of a new session")
 	flag.Parse()
 
 	prompt, err := readPrompt(cfg.Prompt)
