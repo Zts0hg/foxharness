@@ -55,7 +55,7 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 		return "", err
 	}
 	for _, skill := range skills {
-		parts = append(parts, section("Loaded Skill: "+skill.Name, skill.Content))
+		parts = append(parts, skillSection(skill))
 	}
 
 	memory, err := c.loadWorkingMemory()
@@ -71,8 +71,10 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 }
 
 type loadedSkill struct {
-	Name    string
-	Content string
+	RequestedName string
+	Name          string
+	Description   string
+	Content       string
 }
 
 func memoryInstructions() string {
@@ -139,11 +141,11 @@ func (c *Composer) loadMentionedSkills(userPrompt string) ([]loadedSkill, error)
 
 	var result []loadedSkill
 	for _, name := range names {
-		content, err := c.loadSkill(name)
+		skill, err := c.loadSkill(name)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, loadedSkill{Name: name, Content: content})
+		result = append(result, skill)
 	}
 
 	return result, nil
@@ -170,18 +172,80 @@ func mentionedSkillNames(input string) []string {
 	return names
 }
 
-func (c *Composer) loadSkill(name string) (string, error) {
+func (c *Composer) loadSkill(name string) (loadedSkill, error) {
 	path := filepath.Join(c.workDir, ".foxharness", "skills", name, "SKILL.md")
 
 	content, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return "", fmt.Errorf("用户请求了 Skill $%s，但文件不存在: %s", name, path)
+		return loadedSkill{}, fmt.Errorf("用户请求了 Skill $%s，但文件不存在: %s", name, path)
 	}
 	if err != nil {
-		return "", fmt.Errorf("读取 Skill $%s 失败: %w", name, err)
+		return loadedSkill{}, fmt.Errorf("读取 Skill $%s 失败: %w", name, err)
 	}
 
-	return string(content), nil
+	return parseSkillMarkdown(name, string(content)), nil
+}
+
+func parseSkillMarkdown(requestedName, content string) loadedSkill {
+	skill := loadedSkill{
+		RequestedName: requestedName,
+		Name:          requestedName,
+		Content:       strings.TrimSpace(content),
+	}
+
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return skill
+	}
+
+	closeIndex := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			closeIndex = i
+			break
+		}
+	}
+	if closeIndex == -1 {
+		return skill
+	}
+
+	frontmatter := strings.Join(lines[1:closeIndex], "\n")
+	body := strings.Join(lines[closeIndex+1:], "\n")
+	for _, line := range strings.Split(frontmatter, "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		switch strings.TrimSpace(strings.ToLower(key)) {
+		case "name":
+			if value != "" {
+				skill.Name = value
+			}
+		case "description":
+			skill.Description = value
+		}
+	}
+
+	skill.Content = strings.TrimSpace(body)
+	return skill
+}
+
+func skillSection(skill loadedSkill) string {
+	var b strings.Builder
+	if skill.RequestedName != "" && skill.RequestedName != skill.Name {
+		b.WriteString(fmt.Sprintf("Requested as: $%s\n\n", skill.RequestedName))
+	}
+	if skill.Description != "" {
+		b.WriteString("Description:\n")
+		b.WriteString(skill.Description)
+		b.WriteString("\n\n")
+	}
+	b.WriteString(skill.Content)
+
+	return section("Loaded Skill: "+skill.Name, b.String())
 }
 
 func (c *Composer) loadWorkingMemory() (string, error) {
