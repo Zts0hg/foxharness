@@ -233,6 +233,13 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, tracer *tracing.Trac
 // Returns a RunResult containing the final agent message and session ID,
 // or an error if the run fails catastrophically.
 func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt string) (*RunResult, error) {
+	return e.RunWithReporter(ctx, sess, userPrompt, nil)
+}
+
+// RunWithReporter executes the agent loop and streams lifecycle events to
+// reporter when one is provided. Passing nil keeps the legacy CLI-oriented
+// behavior.
+func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session, userPrompt string, reporter Reporter) (*RunResult, error) {
 	log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", sess.ID, e.workDir)
 	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.config.EnableThinking)
 
@@ -369,6 +376,9 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 		availableTools := e.registry.GetAvailableTools()
 		if e.config.EnableThinking {
 			log.Println("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")
+			if reporter != nil {
+				reporter.OnThinking(ctx, turnCount)
+			}
 			thinkingResponse, err := e.callModel(
 				ctx,
 				sess,
@@ -419,7 +429,11 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 
 		if actionResponse.Content != "" {
 			final = actionResponse.Content
-			fmt.Printf("🤖 [对外回复]: %s\n", actionResponse.Content)
+			if reporter != nil {
+				reporter.OnMessage(ctx, actionResponse.Content)
+			} else {
+				fmt.Printf("🤖 [对外回复]: %s\n", actionResponse.Content)
+			}
 		}
 
 		if len(actionResponse.ToolCalls) == 0 {
@@ -439,11 +453,24 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 		}
 
 		log.Printf("[Engine] 模型请求调用 %d 个工具\n", len(actionResponse.ToolCalls))
+		if reporter != nil {
+			for _, toolCall := range actionResponse.ToolCalls {
+				reporter.OnToolCall(ctx, toolCall.Name, string(toolCall.Arguments))
+			}
+		}
 
 		toolResults := e.executeToolCalls(ctx, tracer, turnSpan.ID(), actionResponse.ToolCalls)
 		for _, item := range toolResults {
 			e.reminder.Record(turnCount, item.Call, item.Result)
 			e.recovery.Record(item.Call, item.Result)
+			if reporter != nil {
+				reporter.OnToolResult(
+					ctx,
+					item.Call.Name,
+					truncateReporterOutput(item.Result.Output, 800),
+					item.Result.IsError,
+				)
+			}
 
 			if item.Result.IsError {
 				log.Printf("  -> ❌ 工具执行报错: %s, 输出：%s\n", item.Call.Name, item.Result.Output)
@@ -477,6 +504,17 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 			"tool_calls": len(actionResponse.ToolCalls),
 		})
 	}
+}
+
+func truncateReporterOutput(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return fmt.Sprintf("%s\n... (已截断，原始输出约 %d 字节)", string(runes[:limit]), len(s))
 }
 
 func (e *AgentEngine) callModel(

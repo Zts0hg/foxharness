@@ -79,6 +79,7 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	})
 	if err != nil {
 		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("创建 Session 失败: %v", err))
+		return
 	}
 
 	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("任务已进入 Session: %s", sess.ID))
@@ -119,16 +120,18 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 		task.Text,
 	)
 
-	result, err := eng.Run(runCtx, sess, taskPrompt)
+	reporter := NewReporter(r.messenger, task.ChatID, task.TaskID)
+	result, err := eng.RunWithReporter(runCtx, sess, taskPrompt, reporter)
 	if err != nil {
 		log.Printf("[Feishu Runner] task=%s session=%s  failed: %v", task.TaskID, sess.ID, err)
 		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("Session %s 执行失败：%v", sess.ID, err))
 		return
 	}
 
-	final := fmt.Sprintf("任务 %s 执行完成，Session: %s", task.TaskID, sess.ID)
-	if result != nil && result.FinalMessage != "" {
-		final = result.FinalMessage
+	if result == nil || result.FinalMessage == "" {
+		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("任务 %s 执行完成，Session: %s", task.TaskID, sess.ID))
+		return
 	}
-	_ = r.messenger.SendText(runCtx, task.ChatID, final)
+
+	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("任务 %s 已完成，Session: %s", task.TaskID, sess.ID))
 }
