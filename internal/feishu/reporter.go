@@ -26,8 +26,16 @@ func NewReporter(messenger *Messenger, chatID, taskID string) *Reporter {
 	}
 }
 
+func (r *Reporter) OnRunStart(ctx context.Context, sessionID string, runID string) {
+	r.send(ctx, fmt.Sprintf("任务 %s：Run %s 已开始，Session: %s。", r.taskID, runID, sessionID))
+}
+
 func (r *Reporter) OnThinking(ctx context.Context, turn int) {
 	r.send(ctx, fmt.Sprintf("任务 %s：第 %d 轮正在规划。", r.taskID, turn))
+}
+
+func (r *Reporter) OnCompaction(ctx context.Context, scope string) {
+	r.send(ctx, fmt.Sprintf("任务 %s：上下文已压缩（%s）。", r.taskID, scope))
 }
 
 func (r *Reporter) OnToolCall(ctx context.Context, toolName string, args string) {
@@ -71,6 +79,12 @@ func (r *Reporter) OnMessage(ctx context.Context, content string) {
 		return
 	}
 	r.send(ctx, truncateFeishuText(content, 1800))
+}
+
+func (r *Reporter) OnRunComplete(ctx context.Context, result engine.RunResult) {
+}
+
+func (r *Reporter) OnRunError(ctx context.Context, sessionID string, runID string, err error) {
 }
 
 func (r *Reporter) send(ctx context.Context, text string) {

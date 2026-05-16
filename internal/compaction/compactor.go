@@ -82,14 +82,46 @@ func NewCompactor(p provider.LLMProvider, estimator TokenEstimator, config Confi
 	}
 }
 
+// Estimate returns the estimated token cost for messages using the configured
+// estimator.
+func (c *Compactor) Estimate(messages []schema.Message) int {
+	return c.estimator.Estimate(messages)
+}
+
+// Threshold returns the soft token threshold that triggers compaction.
+func (c *Compactor) Threshold() int {
+	return int(float64(c.config.MaxTokens) * c.config.SoftRatio)
+}
+
+// RecentKeep returns the number of recent messages preserved during compaction.
+func (c *Compactor) RecentKeep() int {
+	return c.config.RecentKeep
+}
+
+// Summarize produces a high-density summary for messages.
+func (c *Compactor) Summarize(ctx context.Context, messages []schema.Message) (string, error) {
+	return c.summarize(ctx, messages)
+}
+
+// SummaryMessage builds the model-visible summary marker used when projecting
+// a compacted session context.
+func SummaryMessage(summary string) schema.Message {
+	return schema.Message{
+		Role: schema.RoleUser,
+		Content: "## Compacted Context Summary\n\n" +
+			"以下是较早会话历史的压缩摘要。原始消息仍保存在 session 的 messages.jsonl 中；此摘要仅用于控制本轮上下文窗口。\n\n" +
+			strings.TrimSpace(summary),
+	}
+}
+
 // MaybeCompact checks whether the estimated token usage exceeds the
 // soft threshold and, if so, summarizes older messages into the system
 // prompt. It preserves the system message, the first user message as an
 // anchor, and the most recent messages. If compaction is not needed the
 // original slice is returned unchanged.
 func (c *Compactor) MaybeCompact(ctx context.Context, messages []schema.Message) ([]schema.Message, error) {
-	used := c.estimator.Estimate(messages)
-	threshold := int(float64(c.config.MaxTokens) * c.config.SoftRatio)
+	used := c.Estimate(messages)
+	threshold := c.Threshold()
 
 	if used < threshold {
 		return messages, nil

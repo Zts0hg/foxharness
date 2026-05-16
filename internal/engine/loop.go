@@ -253,9 +253,26 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	if err != nil {
 		return nil, err
 	}
+	var runErr error
+	var finalResult *RunResult
+	if reporter != nil {
+		reporter.OnRunStart(ctx, sess.ID, run.ID)
+	}
 	defer func() {
 		if err := run.Finish(); err != nil {
 			log.Printf("[Engine] 写入 Run 完成状态失败: %v", err)
+		}
+	}()
+	defer func() {
+		if reporter == nil {
+			return
+		}
+		if runErr != nil {
+			reporter.OnRunError(ctx, sess.ID, run.ID, runErr)
+			return
+		}
+		if finalResult != nil {
+			reporter.OnRunComplete(ctx, *finalResult)
 		}
 	}()
 
@@ -273,6 +290,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	}()
 
 	markRunError := func(err error) {
+		runErr = err
 		runStatus = "error"
 		runAttrs["error"] = err.Error()
 	}
@@ -290,7 +308,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 
 	transcript := session.NewTranscript(sess)
 	messageLog := session.NewMessageLog(sess)
-	history, err := messageLog.LoadMessages()
+	history, err := messageLog.LoadRecords()
 	if err != nil {
 		wrapped := fmt.Errorf("读取 Session 消息历史失败: %w", err)
 		markRunError(wrapped)
@@ -315,13 +333,20 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		return nil, wrapped
 	}
 
-	contextHistory := make([]schema.Message, 0, len(history)+2)
-	contextHistory = append(contextHistory, schema.Message{
-		Role:    schema.RoleSystem,
-		Content: systemPrompt,
-	})
-	contextHistory = append(contextHistory, history...)
-	contextHistory = append(contextHistory, userMessage)
+	contextHistory, compactedInitial, err := e.buildInitialContext(ctx, sess, systemPrompt, history, userMessage)
+	if err != nil {
+		wrapped := fmt.Errorf("组装 Session 上下文失败: %w", err)
+		markRunError(wrapped)
+		return nil, wrapped
+	}
+	if compactedInitial {
+		_ = transcript.AppendRun(run.ID, "context_compacted", map[string]any{
+			"scope": "session_history",
+		})
+		if reporter != nil {
+			reporter.OnCompaction(ctx, "session_history")
+		}
+	}
 
 	turnCount := 0
 	final := ""
@@ -362,6 +387,9 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				_ = transcript.AppendRun(run.ID, "context_compacted", map[string]any{
 					"turn": turnCount,
 				})
+				if reporter != nil {
+					reporter.OnCompaction(ctx, "turn_context")
+				}
 			}
 
 			// tracer.Annotate(turnSpan.ID(), "context_compacted", map[string]any{
@@ -486,13 +514,15 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				"final":      true,
 			})
 
-			return &RunResult{
+			result := &RunResult{
 				FinalMessage: final,
 				SessionID:    sess.ID,
 				RunID:        run.ID,
 				MetricsPath:  run.MetricsPath(),
 				TracePath:    run.TracePath(),
-			}, nil
+			}
+			finalResult = result
+			return result, nil
 		}
 
 		log.Printf("[Engine] 模型请求调用 %d 个工具\n", len(actionResponse.ToolCalls))

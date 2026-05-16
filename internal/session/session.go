@@ -87,6 +87,11 @@ func (s *Session) MessagesPath() string {
 	return filepath.Join(s.RootDir, "messages.jsonl")
 }
 
+// CompactStatePath returns the path to the persisted context compaction state.
+func (s *Session) CompactStatePath() string {
+	return filepath.Join(s.RootDir, "compact_state.json")
+}
+
 // ArtifactsDir returns the directory path for session artifacts.
 func (s *Session) ArtifactsDir() string {
 	return filepath.Join(s.RootDir, "artifacts")

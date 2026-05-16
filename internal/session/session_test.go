@@ -106,3 +106,42 @@ func TestManagerOpenAndLatest(t *testing.T) {
 		t.Fatalf("Latest(missing) error = %v, want ErrNotFound", err)
 	}
 }
+
+func TestCompactStateRoundTrip(t *testing.T) {
+	workDir := t.TempDir()
+	manager := NewManager(workDir)
+	sess, err := manager.Create(CreateOptions{
+		Source:  SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	empty, err := LoadCompactState(sess)
+	if err != nil {
+		t.Fatalf("LoadCompactState(empty) error = %v", err)
+	}
+	if empty.CoveredUntilSeq != -1 {
+		t.Fatalf("empty CoveredUntilSeq = %d, want -1", empty.CoveredUntilSeq)
+	}
+
+	want := &CompactState{
+		Summary:         "summary",
+		CoveredUntilSeq: 42,
+	}
+	if err := SaveCompactState(sess, want); err != nil {
+		t.Fatalf("SaveCompactState() error = %v", err)
+	}
+
+	got, err := LoadCompactState(sess)
+	if err != nil {
+		t.Fatalf("LoadCompactState(saved) error = %v", err)
+	}
+	if got.Summary != want.Summary || got.CoveredUntilSeq != want.CoveredUntilSeq {
+		t.Fatalf("state = %#v, want %#v", got, want)
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Fatalf("UpdatedAt was not set")
+	}
+}
