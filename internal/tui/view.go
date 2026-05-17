@@ -60,6 +60,7 @@ var (
 	toolLabelStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 	systemLabelStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("147"))
 	errorLabelStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
+	commandLabelStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("147"))
 	mutedStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	placeholderStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	cursorStyle         = lipgloss.NewStyle().Reverse(true)
@@ -210,6 +211,8 @@ func renderEntry(e entry, width int) string {
 		return renderToolResult(e, width)
 	case e.role == "assistant":
 		return renderAssistantEntry(e, width)
+	case e.role == "command":
+		return renderCommandEntry(e, width)
 	}
 
 	label := labelStyle(e).Render(strings.ToUpper(e.role))
@@ -237,6 +240,19 @@ func renderAssistantEntry(e entry, width int) string {
 	meta := assistantLabelStyle.Render("Foxharness") + " " + mutedStyle.Render(e.time.Format("15:04:05"))
 	body := indentLines(renderMarkdown(e.body, max(width-2, 20)), "  ")
 	return fitLine(meta, width) + "\n" + body
+}
+
+func renderCommandEntry(e entry, width int) string {
+	title := strings.TrimSpace(e.title)
+	if title == "" {
+		title = "Result"
+	}
+	header := fitLine(commandLabelStyle.Render(title), width)
+	body := renderPlainBlock(e.body, max(width-2, 20))
+	if body == "" {
+		return header
+	}
+	return header + "\n" + indentLines(body, "  ")
 }
 
 func renderToolCall(e entry, width int) string {
@@ -463,4 +479,69 @@ func shortValue(s string, limit int) string {
 	}
 	runes := []rune(s)
 	return string(runes[:limit-3]) + "..."
+}
+
+func renderPlainBlock(text string, width int) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		out = append(out, wrapPlainLine(line, width)...)
+	}
+	return strings.Join(out, "\n")
+}
+
+func wrapPlainLine(line string, width int) []string {
+	line = strings.TrimRight(line, " \t")
+	if line == "" {
+		return []string{""}
+	}
+	if lipgloss.Width(line) <= width {
+		return []string{line}
+	}
+
+	continuation := continuationIndent(line)
+	var lines []string
+	current := line
+	for lipgloss.Width(current) > width {
+		head, tail := splitLineAtWidth(current, width)
+		if strings.TrimSpace(head) == "" {
+			break
+		}
+		lines = append(lines, head)
+		if strings.TrimSpace(tail) == "" {
+			return lines
+		}
+		current = continuation + strings.TrimSpace(tail)
+	}
+	lines = append(lines, current)
+	return lines
+}
+
+func splitLineAtWidth(line string, width int) (string, string) {
+	runes := []rune(line)
+	lastSpace := -1
+	for i := range runes {
+		candidate := string(runes[:i+1])
+		if lipgloss.Width(candidate) > width {
+			if lastSpace > 0 {
+				return strings.TrimRight(string(runes[:lastSpace]), " "), strings.TrimLeft(string(runes[lastSpace+1:]), " ")
+			}
+			return strings.TrimRight(string(runes[:i]), " "), strings.TrimLeft(string(runes[i:]), " ")
+		}
+		if runes[i] == ' ' || runes[i] == '\t' {
+			lastSpace = i
+		}
+	}
+	return line, ""
+}
+
+func continuationIndent(line string) string {
+	index := strings.Index(line, "  ")
+	if index < 0 {
+		return "  "
+	}
+	return strings.Repeat(" ", min(index+2, 16))
 }

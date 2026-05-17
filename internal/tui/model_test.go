@@ -218,15 +218,15 @@ func TestModelSlashCommands(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("/help returned unexpected command")
 	}
-	if !entriesContain(m.entries, "system", "/session") {
+	if !entriesContain(m.entries, "command", "/session") ||
+		!entriesContain(m.entries, "command", "show current session paths") {
 		t.Fatalf("/help did not render commands: %#v", m.entries)
 	}
 
 	m, _ = update(t, m, keyRunes("/session"))
 	m, _ = update(t, m, keyEnter())
-	if !entriesContain(m.entries, "system", "### Session") ||
-		!entriesContain(m.entries, "system", "- ID: `sess-1`") ||
-		!entriesContain(m.entries, "system", "- Dir: `/tmp/sess-1`") {
+	if !entriesContain(m.entries, "command", "ID       sess-1") ||
+		!entriesContain(m.entries, "command", "Dir      /tmp/sess-1") {
 		t.Fatalf("/session did not render session details: %#v", m.entries)
 	}
 
@@ -245,7 +245,7 @@ func TestModelSlashCommands(t *testing.T) {
 	if m.sessionID != "sess-new" {
 		t.Fatalf("sessionID = %q, want sess-new", m.sessionID)
 	}
-	if !entriesContain(m.entries, "system", "Switched to session sess-new") {
+	if !entriesContain(m.entries, "command", "ID       sess-new") {
 		t.Fatalf("/new did not render switch message: %#v", m.entries)
 	}
 }
@@ -295,7 +295,7 @@ func TestModelSlashDropdownEnterRunsSelectedCommand(t *testing.T) {
 	if string(m.input) != "" {
 		t.Fatalf("input after selected slash command = %q, want empty", string(m.input))
 	}
-	if !entriesContain(m.entries, "system", "### Session") {
+	if !entriesContain(m.entries, "command", "ID       sess-1") {
 		t.Fatalf("enter did not execute selected /session command: %#v", m.entries)
 	}
 }
@@ -329,6 +329,55 @@ func TestSlashDropdownUsesForegroundOnlySelection(t *testing.T) {
 	rendered := m.renderSlashSuggestions(72)
 	if strings.Contains(rendered, "\x1b[48;") {
 		t.Fatalf("slash dropdown rendered background color escapes, want foreground colors only:\n%s", rendered)
+	}
+}
+
+func TestHelpCommandRendersCommandsOnSeparateLines(t *testing.T) {
+	rendered := renderEntry(entry{
+		role:  "command",
+		title: "Commands",
+		body:  slashCommandHelp(),
+		time:  time.Date(2026, 5, 17, 19, 18, 28, 0, time.Local),
+	}, 100)
+	plainRendered := stripANSI(rendered)
+	lines := strings.Split(plainRendered, "\n")
+
+	for _, forbidden := range []string{"SYSTEM commands", "###", "•"} {
+		if strings.Contains(plainRendered, forbidden) {
+			t.Fatalf("rendered help contains noisy fragment %q:\n%s", forbidden, rendered)
+		}
+	}
+	for _, command := range slashCommands {
+		if !lineContainsAll(lines, command.Name, command.Description) {
+			t.Fatalf("rendered help missing command row %q / %q:\n%s", command.Name, command.Description, rendered)
+		}
+	}
+	if strings.Contains(plainRendered, "/session show current session paths /clear") {
+		t.Fatalf("help commands collapsed onto one line:\n%s", rendered)
+	}
+	if strings.Count(plainRendered, "\n") < len(slashCommands) {
+		t.Fatalf("help commands did not render across separate lines:\n%s", rendered)
+	}
+}
+
+func TestSessionCommandRendersPlainAlignedRows(t *testing.T) {
+	rendered := renderEntry(entry{
+		role:  "command",
+		title: "Session",
+		body:  formatSessionRows("sess-1", "/tmp/sess-1", "/tmp/work", "fake-model"),
+		time:  time.Date(2026, 5, 17, 19, 25, 30, 0, time.Local),
+	}, 100)
+	plainRendered := stripANSI(rendered)
+
+	for _, forbidden := range []string{"SYSTEM session", "###", "• ID:", "`"} {
+		if strings.Contains(plainRendered, forbidden) {
+			t.Fatalf("rendered session contains noisy fragment %q:\n%s", forbidden, rendered)
+		}
+	}
+	for _, want := range []string{"Session", "ID       sess-1", "Dir      /tmp/sess-1", "Workdir  /tmp/work", "Model    fake-model"} {
+		if !strings.Contains(plainRendered, want) {
+			t.Fatalf("rendered session missing %q:\n%s", want, rendered)
+		}
 	}
 }
 
@@ -750,4 +799,20 @@ func nonEmptyLines(s string) []string {
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+func lineContainsAll(lines []string, fragments ...string) bool {
+	for _, line := range lines {
+		matches := true
+		for _, fragment := range fragments {
+			if !strings.Contains(line, fragment) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
 }

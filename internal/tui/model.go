@@ -182,7 +182,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionID = msg.sessionID
 		m.refreshRuntimeInfo()
 		m.status = "New session ready"
-		m.appendEntry("system", "new session", fmt.Sprintf("Switched to session %s", msg.sessionID), false)
+		m.appendCommandEntry("New session", formatSessionRows(
+			msg.sessionID,
+			m.runner.SessionDir(),
+			m.runner.WorkDir(),
+			m.runner.Model(),
+		))
 		return m, nil
 
 	case runningTickMsg:
@@ -454,16 +459,16 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 	cmd := strings.ToLower(fields[0])
 	switch cmd {
 	case "/help":
-		m.appendEntry("system", "commands", slashCommandHelp(), false)
+		m.appendCommandEntry("Commands", slashCommandHelp())
 		m.status = "Help"
 		return m, nil
 	case "/session":
-		m.appendEntry("system", "session", formatSessionDetails(
+		m.appendCommandEntry("Session", formatSessionRows(
 			m.runner.SessionID(),
 			m.runner.SessionDir(),
 			m.runner.WorkDir(),
 			m.runner.Model(),
-		), false)
+		))
 		m.status = "Session details"
 		return m, nil
 	case "/clear":
@@ -488,7 +493,7 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		}
 		m.cancelRun()
 		m.status = "Cancel requested"
-		m.appendEntry("system", "cancel", "Current run cancellation requested.", false)
+		m.appendCommandEntry("Cancel", "Current run cancellation requested.")
 		return m, nil
 	case "/exit", "/quit":
 		return m, tea.Quit
@@ -517,25 +522,40 @@ func (m Model) matchingSlashCommands() []slashCommand {
 }
 
 func slashCommandHelp() string {
+	commandWidth := 0
+	for _, command := range slashCommands {
+		if len(command.Name) > commandWidth {
+			commandWidth = len(command.Name)
+		}
+	}
 	lines := make([]string, 0, len(slashCommands))
 	for _, command := range slashCommands {
-		lines = append(lines, fmt.Sprintf("%-9s %s", command.Name, command.Description))
+		lines = append(lines, fmt.Sprintf("%-*s  %s", commandWidth, command.Name, command.Description))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func formatSessionDetails(sessionID, sessionDir, workDir, model string) string {
-	return fmt.Sprintf(
-		"### Session\n\n- ID: `%s`\n- Dir: `%s`\n- Workdir: `%s`\n- Model: `%s`",
-		escapeInlineCode(sessionID),
-		escapeInlineCode(sessionDir),
-		escapeInlineCode(workDir),
-		escapeInlineCode(model),
-	)
-}
-
-func escapeInlineCode(value string) string {
-	return strings.ReplaceAll(value, "`", "\\`")
+func formatSessionRows(sessionID, sessionDir, workDir, model string) string {
+	rows := []struct {
+		label string
+		value string
+	}{
+		{label: "ID", value: sessionID},
+		{label: "Dir", value: sessionDir},
+		{label: "Workdir", value: workDir},
+		{label: "Model", value: model},
+	}
+	labelWidth := 0
+	for _, row := range rows {
+		if len(row.label) > labelWidth {
+			labelWidth = len(row.label)
+		}
+	}
+	lines := make([]string, 0, len(rows))
+	for _, row := range rows {
+		lines = append(lines, fmt.Sprintf("%-*s  %s", labelWidth, row.label, row.value))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) nowTime() time.Time {
@@ -553,6 +573,10 @@ func (m *Model) appendEntry(role, title, body string, isError bool) {
 		err:   isError,
 		time:  time.Now(),
 	})
+}
+
+func (m *Model) appendCommandEntry(title, body string) {
+	m.appendEntry("command", title, body, false)
 }
 
 func (m Model) lastEntryContainsError(err error) bool {
