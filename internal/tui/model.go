@@ -27,6 +27,8 @@ type Runner interface {
 	SessionDir() string
 	WorkDir() string
 	Model() string
+	PlanMode() bool
+	SetPlanMode(enabled bool)
 }
 
 // Config controls the initial TUI presentation.
@@ -88,6 +90,7 @@ type Model struct {
 
 	sessionID string
 	modelName string
+	planMode  bool
 }
 
 func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
@@ -109,6 +112,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		status:    "Ready",
 		sessionID: runner.SessionID(),
 		modelName: modelName,
+		planMode:  runner.PlanMode(),
 		entries: []entry{{
 			role:  "system",
 			title: "session",
@@ -206,6 +210,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		return m.submitInput()
+	case "shift+tab":
+		return m.togglePlanMode()
 	case "tab":
 		if !m.running {
 			m.completeSlashCommand()
@@ -245,6 +251,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.Type == tea.KeyRunes {
 		m.input = append(m.input, msg.Runes...)
+	}
+	return m, nil
+}
+
+func (m Model) togglePlanMode() (tea.Model, tea.Cmd) {
+	if m.running {
+		m.status = "Cannot toggle plan mode while a run is active"
+		return m, nil
+	}
+	m.planMode = !m.planMode
+	m.runner.SetPlanMode(m.planMode)
+	if m.planMode {
+		m.status = "Plan mode enabled"
+	} else {
+		m.status = "Plan mode disabled"
 	}
 	return m, nil
 }

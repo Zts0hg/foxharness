@@ -91,7 +91,7 @@ func (m Model) View() string {
 
 func (m Model) renderHeader(width int) string {
 	title := headerStyle.Render("FOXHARNESS")
-	meta := fmt.Sprintf(" model %s  session %s", shortValue(m.modelName, 18), shortValue(m.sessionID, 24))
+	meta := fmt.Sprintf(" model %s  plan %s  session %s", shortValue(m.modelName, 18), planModeLabel(m.planMode), shortValue(m.sessionID, 24))
 	right := headerMetaStyle.Width(max(width-lipgloss.Width(title), 1)).Render(meta)
 	return lipgloss.JoinHorizontal(lipgloss.Top, title, right)
 }
@@ -236,12 +236,19 @@ func renderCursor() string {
 }
 
 func (m Model) renderFooter(width int) string {
-	help := "Enter send | Tab complete | Up/PgUp scroll | /session | /new | /clear | Ctrl+C twice quit"
+	help := "Enter send | Tab complete | Shift+Tab plan | Up/PgUp scroll | /session | /new | /clear | Ctrl+C twice quit"
 	if m.running {
 		help = "Esc cancel current run | Ctrl+C twice quit"
 	}
 	line := fmt.Sprintf("%s  %s", m.status, help)
 	return footerStyle.Width(width).Render(fitLine(line, width))
+}
+
+func planModeLabel(enabled bool) string {
+	if enabled {
+		return "on"
+	}
+	return "off"
 }
 
 func labelStyle(e entry) lipgloss.Style {

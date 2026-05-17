@@ -21,6 +21,7 @@ type fakeRunner struct {
 	runErr    error
 	newErr    error
 	nextRunID int
+	planMode  bool
 }
 
 func (r *fakeRunner) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
@@ -73,6 +74,14 @@ func (r *fakeRunner) WorkDir() string {
 
 func (r *fakeRunner) Model() string {
 	return r.model
+}
+
+func (r *fakeRunner) PlanMode() bool {
+	return r.planMode
+}
+
+func (r *fakeRunner) SetPlanMode(enabled bool) {
+	r.planMode = enabled
 }
 
 func TestModelSubmitsPromptAndRendersRunEvents(t *testing.T) {
@@ -220,6 +229,47 @@ func TestModelSlashSuggestionsAndTabCompletion(t *testing.T) {
 	}
 }
 
+func TestModelShiftTabTogglesPlanMode(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	if m.planMode {
+		t.Fatalf("initial planMode = true, want false")
+	}
+
+	m, _ = update(t, m, keyShiftTab())
+	if !m.planMode || !runner.planMode {
+		t.Fatalf("plan mode was not enabled: model=%v runner=%v", m.planMode, runner.planMode)
+	}
+	if m.status != "Plan mode enabled" {
+		t.Fatalf("status = %q, want Plan mode enabled", m.status)
+	}
+	if !strings.Contains(m.View(), "plan on") {
+		t.Fatalf("view missing plan on state:\n%s", m.View())
+	}
+
+	m, _ = update(t, m, keyShiftTab())
+	if m.planMode || runner.planMode {
+		t.Fatalf("plan mode was not disabled: model=%v runner=%v", m.planMode, runner.planMode)
+	}
+	if m.status != "Plan mode disabled" {
+		t.Fatalf("status = %q, want Plan mode disabled", m.status)
+	}
+}
+
+func TestModelDoesNotTogglePlanModeWhileRunning(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.running = true
+
+	m, _ = update(t, m, keyShiftTab())
+	if m.planMode || runner.planMode {
+		t.Fatalf("plan mode changed while running: model=%v runner=%v", m.planMode, runner.planMode)
+	}
+	if m.status != "Cannot toggle plan mode while a run is active" {
+		t.Fatalf("status = %q, want active run warning", m.status)
+	}
+}
+
 func TestModelExitSlashCommandQuits(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
@@ -316,7 +366,7 @@ func TestModelViewContainsSessionAndInput(t *testing.T) {
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	view := m.View()
-	for _, want := range []string{"FOXHARNESS", "fake-model", "sess-1", "Message foxharness"} {
+	for _, want := range []string{"FOXHARNESS", "fake-model", "plan off", "sess-1", "Message foxharness"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -422,6 +472,10 @@ func keyCtrlC() tea.KeyMsg {
 
 func keyTab() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyTab}
+}
+
+func keyShiftTab() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyShiftTab}
 }
 
 func keySpace() tea.KeyMsg {

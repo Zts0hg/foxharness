@@ -178,6 +178,18 @@ func (r *AgentRunner) Model() string {
 	return r.model
 }
 
+func (r *AgentRunner) PlanMode() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.enablePlanMode
+}
+
+func (r *AgentRunner) SetPlanMode(enabled bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.enablePlanMode = enabled
+}
+
 func (r *AgentRunner) buildRegistry(sess *session.Session) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(r.workDir))
