@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
 	tea "github.com/charmbracelet/bubbletea"
@@ -162,6 +163,68 @@ func TestModelSlashCommands(t *testing.T) {
 	}
 }
 
+func TestModelSlashSuggestionsAndTabCompletion(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/s"))
+	view := m.View()
+	if !strings.Contains(view, "/session") || !strings.Contains(view, "Tab complete") {
+		t.Fatalf("view missing slash suggestion:\n%s", view)
+	}
+
+	m, _ = update(t, m, keyTab())
+	if got := string(m.input); got != "/session" {
+		t.Fatalf("input after tab = %q, want /session", got)
+	}
+}
+
+func TestModelExitSlashCommandQuits(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/exit"))
+	_, cmd := update(t, m, keyEnter())
+	assertQuitCommand(t, cmd)
+}
+
+func TestModelCtrlCRequiresSecondPressWithinTwoSeconds(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	current := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return current }
+
+	m, cmd := update(t, m, keyCtrlC())
+	if cmd != nil {
+		t.Fatalf("first ctrl+c returned quit command")
+	}
+	if !strings.Contains(m.status, "again within 2s") {
+		t.Fatalf("status = %q, want confirmation prompt", m.status)
+	}
+
+	current = current.Add(time.Second)
+	_, cmd = update(t, m, keyCtrlC())
+	assertQuitCommand(t, cmd)
+}
+
+func TestModelCtrlCConfirmationExpires(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	current := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return current }
+
+	m, cmd := update(t, m, keyCtrlC())
+	if cmd != nil {
+		t.Fatalf("first ctrl+c returned quit command")
+	}
+
+	current = current.Add(3 * time.Second)
+	_, cmd = update(t, m, keyCtrlC())
+	if cmd != nil {
+		t.Fatalf("second ctrl+c after timeout returned quit command")
+	}
+}
+
 func TestModelBlocksInputWhileRunIsActiveAndCancels(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
@@ -290,8 +353,27 @@ func keyEsc() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyEsc}
 }
 
+func keyCtrlC() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyCtrlC}
+}
+
+func keyTab() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyTab}
+}
+
 func keySpace() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeySpace}
+}
+
+func assertQuitCommand(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatalf("quit command is nil")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("command returned %T, want tea.QuitMsg", msg)
+	}
 }
 
 func entriesContain(entries []entry, role string, text string) bool {

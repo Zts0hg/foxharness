@@ -35,6 +35,15 @@ var (
 				Background(lipgloss.Color("94")).
 				Padding(0, 1)
 
+	suggestionStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("252")).
+			Background(lipgloss.Color("235")).
+			Padding(0, 1)
+
+	suggestionCommandStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("81"))
+
 	footerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("245"))
 
@@ -54,9 +63,10 @@ func (m Model) View() string {
 
 	header := m.renderHeader(width)
 	notice := m.renderRunningNotice(width)
+	suggestions := m.renderSlashSuggestions(width)
 	input := m.renderInput(width)
 	footer := m.renderFooter(width)
-	bodyHeight := height - lipgloss.Height(header) - lipgloss.Height(notice) - lipgloss.Height(input) - lipgloss.Height(footer)
+	bodyHeight := height - lipgloss.Height(header) - lipgloss.Height(notice) - lipgloss.Height(suggestions) - lipgloss.Height(input) - lipgloss.Height(footer)
 	if bodyHeight < 6 {
 		bodyHeight = 6
 	}
@@ -65,6 +75,9 @@ func (m Model) View() string {
 	parts := []string{header, body}
 	if notice != "" {
 		parts = append(parts, notice)
+	}
+	if suggestions != "" {
+		parts = append(parts, suggestions)
 	}
 	parts = append(parts, input, footer)
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
@@ -136,14 +149,28 @@ func (m Model) renderRunningNotice(width int) string {
 	return runningNoticeStyle.Width(width - runningNoticeStyle.GetHorizontalFrameSize()).Render(text)
 }
 
+func (m Model) renderSlashSuggestions(width int) string {
+	matches := m.matchingSlashCommands()
+	if len(matches) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for _, command := range matches {
+		parts = append(parts, fmt.Sprintf("%s %s", suggestionCommandStyle.Render(command.Name), command.Description))
+	}
+	text := "Tab complete  " + strings.Join(parts, "   ")
+	return suggestionStyle.Width(width - suggestionStyle.GetHorizontalFrameSize()).Render(fitLine(text, width-suggestionStyle.GetHorizontalFrameSize()))
+}
+
 func renderCursor() string {
 	return cursorStyle.Render(" ")
 }
 
 func (m Model) renderFooter(width int) string {
-	help := "Enter send | Up/PgUp scroll | /session | /new | /clear | Ctrl+C quit"
+	help := "Enter send | Tab complete | Up/PgUp scroll | /session | /new | /clear | Ctrl+C twice quit"
 	if m.running {
-		help = "Esc cancel current run | Ctrl+C quit"
+		help = "Esc cancel current run | Ctrl+C twice quit"
 	}
 	line := fmt.Sprintf("%s  %s", m.status, help)
 	return footerStyle.Width(width).Render(fitLine(line, width))

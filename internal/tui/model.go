@@ -13,6 +13,8 @@ import (
 const (
 	minWidth  = 72
 	minHeight = 20
+
+	quitConfirmWindow = 2 * time.Second
 )
 
 // Runner is the app-facing runtime required by the TUI. It is intentionally
@@ -47,10 +49,25 @@ type entry struct {
 	time  time.Time
 }
 
+type slashCommand struct {
+	Name        string
+	Description string
+}
+
+var slashCommands = []slashCommand{
+	{Name: "/session", Description: "show current session paths"},
+	{Name: "/clear", Description: "clear the visible transcript"},
+	{Name: "/new", Description: "start a fresh session"},
+	{Name: "/cancel", Description: "cancel the active run"},
+	{Name: "/help", Description: "show available commands"},
+	{Name: "/exit", Description: "quit"},
+}
+
 type Model struct {
 	ctx    context.Context
 	runner Runner
 	events chan tea.Msg
+	now    func() time.Time
 
 	width  int
 	height int
@@ -62,6 +79,7 @@ type Model struct {
 	running      bool
 	scrollOffset int
 	cancelRun    context.CancelFunc
+	lastCtrlC    time.Time
 
 	sessionID string
 	modelName string
@@ -79,6 +97,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		ctx:       ctx,
 		runner:    runner,
 		events:    make(chan tea.Msg, 256),
+		now:       time.Now,
 		width:     96,
 		height:    28,
 		input:     []rune(cfg.InitialPrompt),
@@ -146,12 +165,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	key := msg.String()
+	if key != "ctrl+c" {
+		m.lastCtrlC = time.Time{}
+	}
+
+	switch key {
 	case "ctrl+c":
-		if m.cancelRun != nil {
-			m.cancelRun()
+		now := m.nowTime()
+		if !m.lastCtrlC.IsZero() && now.Sub(m.lastCtrlC) <= quitConfirmWindow {
+			if m.cancelRun != nil {
+				m.cancelRun()
+			}
+			return m, tea.Quit
 		}
-		return m, tea.Quit
+		m.lastCtrlC = now
+		m.status = "Press Ctrl+C again within 2s to quit"
+		return m, nil
 	case "esc":
 		if m.running && m.cancelRun != nil {
 			m.cancelRun()
@@ -163,6 +193,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		return m.submitInput()
+	case "tab":
+		if !m.running {
+			m.completeSlashCommand()
+		}
+		return m, nil
 	case "backspace", "ctrl+h":
 		if !m.running && len(m.input) > 0 {
 			m.input = m.input[:len(m.input)-1]
@@ -201,6 +236,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) completeSlashCommand() {
+	matches := m.matchingSlashCommands()
+	if len(matches) == 0 {
+		return
+	}
+	m.input = []rune(matches[0].Name)
+}
+
 func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	text := strings.TrimSpace(string(m.input))
 	if text == "" {
@@ -231,14 +274,7 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 	cmd := strings.ToLower(fields[0])
 	switch cmd {
 	case "/help":
-		m.appendEntry("system", "commands", strings.Join([]string{
-			"/help     show available commands",
-			"/session  show current session paths",
-			"/new      start a fresh session",
-			"/clear    clear the visible transcript",
-			"/cancel   cancel the active run",
-			"/exit     quit",
-		}, "\n"), false)
+		m.appendEntry("system", "commands", slashCommandHelp(), false)
 		m.status = "Help"
 		return m, nil
 	case "/session":
@@ -280,6 +316,38 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.status = "Unknown command"
 		return m, nil
 	}
+}
+
+func (m Model) matchingSlashCommands() []slashCommand {
+	if m.running {
+		return nil
+	}
+	text := strings.TrimSpace(string(m.input))
+	if !strings.HasPrefix(text, "/") || strings.ContainsAny(text, " \t\n") {
+		return nil
+	}
+	var matches []slashCommand
+	for _, command := range slashCommands {
+		if text == "/" || strings.HasPrefix(command.Name, text) {
+			matches = append(matches, command)
+		}
+	}
+	return matches
+}
+
+func slashCommandHelp() string {
+	lines := make([]string, 0, len(slashCommands))
+	for _, command := range slashCommands {
+		lines = append(lines, fmt.Sprintf("%-9s %s", command.Name, command.Description))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) nowTime() time.Time {
+	if m.now == nil {
+		return time.Now()
+	}
+	return m.now()
 }
 
 func (m *Model) appendEntry(role, title, body string, isError bool) {
