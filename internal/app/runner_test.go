@@ -140,6 +140,45 @@ func TestAgentRunnerContextUsage(t *testing.T) {
 	}
 }
 
+func TestAgentRunnerMessageHistory(t *testing.T) {
+	workDir := t.TempDir()
+	store := memory.NewStore(workDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := session.NewMessageLog(sess).Append("run-1", schema.Message{Role: schema.RoleUser, Content: "restore me"}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	runner := &AgentRunner{
+		workDir:        workDir,
+		model:          "fake-model",
+		enableThinking: false,
+		enablePlanMode: false,
+		maxTurns:       3,
+		store:          store,
+		manager:        manager,
+		llmProvider:    &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})},
+		currentSession: sess,
+	}
+
+	records, err := runner.MessageHistory()
+	if err != nil {
+		t.Fatalf("MessageHistory() error = %v", err)
+	}
+	if len(records) != 1 || records[0].Message.Content != "restore me" {
+		t.Fatalf("MessageHistory() = %#v, want one restored user message", records)
+	}
+}
+
 func TestFormatContextUsage(t *testing.T) {
 	cases := []struct {
 		used int

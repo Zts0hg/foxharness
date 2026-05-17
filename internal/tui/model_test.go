@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -25,6 +28,8 @@ type fakeRunner struct {
 	nextRunID    int
 	planMode     bool
 	contextUsage string
+	history      []session.MessageRecord
+	historyErr   error
 }
 
 func (r *fakeRunner) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
@@ -84,6 +89,13 @@ func (r *fakeRunner) ContextUsage() string {
 		return "7%"
 	}
 	return r.contextUsage
+}
+
+func (r *fakeRunner) MessageHistory() ([]session.MessageRecord, error) {
+	if r.historyErr != nil {
+		return nil, r.historyErr
+	}
+	return append([]session.MessageRecord(nil), r.history...), nil
 }
 
 func (r *fakeRunner) PlanMode() bool {
@@ -206,6 +218,130 @@ func TestModelAcceptsSpaces(t *testing.T) {
 
 	if got := string(m.input); got != "hello world" {
 		t.Fatalf("input = %q, want hello world", got)
+	}
+}
+
+func TestModelRestoresVisibleHistoryAndInputHistory(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "remember TUI_RESUME_001"}),
+		historyRecord(1, "run-1", schema.Message{Role: schema.RoleAssistant, Content: "ok"}),
+		historyRecord(2, "run-2", schema.Message{Role: schema.RoleUser, Content: "what did I ask you to remember?"}),
+		historyRecord(3, "run-2", schema.Message{Role: schema.RoleAssistant, Content: "TUI_RESUME_001"}),
+	}
+
+	m := NewModel(context.Background(), runner, Config{})
+	if m.status != "Resumed session: sess-1" {
+		t.Fatalf("status = %q, want resumed status", m.status)
+	}
+	if entriesContain(m.entries, "system", "Interactive session started") {
+		t.Fatalf("resumed model should not render fresh-session notice: %#v", m.entries)
+	}
+	for _, want := range []struct {
+		role string
+		body string
+	}{
+		{role: "user", body: "remember TUI_RESUME_001"},
+		{role: "assistant", body: "ok"},
+		{role: "user", body: "what did I ask you to remember?"},
+		{role: "assistant", body: "TUI_RESUME_001"},
+	} {
+		if !entriesContain(m.entries, want.role, want.body) {
+			t.Fatalf("restored entries missing %s %q: %#v", want.role, want.body, m.entries)
+		}
+	}
+
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != "what did I ask you to remember?" {
+		t.Fatalf("first restored history recall = %q, want latest user prompt", got)
+	}
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != "remember TUI_RESUME_001" {
+		t.Fatalf("second restored history recall = %q, want previous user prompt", got)
+	}
+}
+
+func TestModelRestoresToolHistoryWhenAvailable(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "what day is it?"}),
+		historyRecord(1, "run-1", schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID:        "call-1",
+				Name:      "bash",
+				Arguments: json.RawMessage(`{"command":"date"}`),
+			}},
+		}),
+		historyRecord(2, "run-1", schema.Message{Role: schema.RoleUser, ToolCallID: "call-1", Content: "2026年 5月17日 星期日"}),
+		historyRecord(3, "run-1", schema.Message{Role: schema.RoleAssistant, Content: "Today is Sunday."}),
+	}
+
+	m := NewModel(context.Background(), runner, Config{})
+	if !entriesContain(m.entries, "tool", "Ran date") {
+		t.Fatalf("restored entries missing tool call: %#v", m.entries)
+	}
+	if !entriesContain(m.entries, "tool", "2026年 5月17日") {
+		t.Fatalf("restored entries missing tool result: %#v", m.entries)
+	}
+	if !entriesContain(m.entries, "assistant", "Today is Sunday.") {
+		t.Fatalf("restored entries missing assistant response: %#v", m.entries)
+	}
+}
+
+func TestModelSkipsCompactionSummaryDuringRestore(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "first real prompt"}),
+		historyRecord(1, "run-1", schema.Message{Role: schema.RoleUser, Content: "## Compacted Context Summary\n\nold facts"}),
+		historyRecord(2, "run-1", schema.Message{Role: schema.RoleAssistant, Content: "done"}),
+	}
+
+	m := NewModel(context.Background(), runner, Config{})
+	if entriesContain(m.entries, "user", "Compacted Context Summary") {
+		t.Fatalf("compaction summary should not render in restored transcript: %#v", m.entries)
+	}
+	if len(m.inputHistory) != 1 || m.inputHistory[0] != "first real prompt" {
+		t.Fatalf("inputHistory = %#v, want only real user prompt", m.inputHistory)
+	}
+}
+
+func TestModelShowsHistoryLoadError(t *testing.T) {
+	runner := newFakeRunner()
+	runner.historyErr = errors.New("history unavailable")
+
+	m := NewModel(context.Background(), runner, Config{})
+	if m.status != "History load failed" {
+		t.Fatalf("status = %q, want history load failure", m.status)
+	}
+	if !entriesContain(m.entries, "error", "history unavailable") {
+		t.Fatalf("entries missing history load error: %#v", m.entries)
+	}
+}
+
+func TestNewSessionClearsRestoredHistory(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "old prompt"}),
+		historyRecord(1, "run-1", schema.Message{Role: schema.RoleAssistant, Content: "old answer"}),
+	}
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/new"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatalf("/new command is nil")
+	}
+	m, _ = update(t, m, cmd())
+
+	if entriesContain(m.entries, "user", "old prompt") || entriesContain(m.entries, "assistant", "old answer") {
+		t.Fatalf("/new should clear restored transcript entries: %#v", m.entries)
+	}
+	if len(m.inputHistory) != 0 {
+		t.Fatalf("/new inputHistory = %#v, want empty", m.inputHistory)
+	}
+	if !entriesContain(m.entries, "command", "ID       sess-new") {
+		t.Fatalf("/new did not render new session details: %#v", m.entries)
 	}
 }
 
@@ -689,6 +825,16 @@ func newFakeRunner() *fakeRunner {
 		workDir:      "/tmp/work",
 		model:        "fake-model",
 		contextUsage: "7%",
+	}
+}
+
+func historyRecord(seq int64, runID string, msg schema.Message) session.MessageRecord {
+	return session.MessageRecord{
+		Seq:     seq,
+		RunID:   runID,
+		Time:    time.Date(2026, 5, 17, 12, 0, int(seq), 0, time.Local),
+		Kind:    session.MessageKindNormal,
+		Message: msg,
 	}
 }
 

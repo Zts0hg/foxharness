@@ -200,6 +200,16 @@ func (r *AgentRunner) ContextUsage() string {
 	return formatContextUsage(used, compaction.DefaultConfig().MaxTokens)
 }
 
+func (r *AgentRunner) MessageHistory() ([]session.MessageRecord, error) {
+	r.mu.Lock()
+	sess := r.currentSession
+	r.mu.Unlock()
+	if sess == nil {
+		return nil, nil
+	}
+	return session.NewMessageLog(sess).LoadRecords()
+}
+
 func (r *AgentRunner) PlanMode() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()

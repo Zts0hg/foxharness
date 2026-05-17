@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -28,6 +30,7 @@ type Runner interface {
 	WorkDir() string
 	Model() string
 	ContextUsage() string
+	MessageHistory() ([]session.MessageRecord, error)
 	PlanMode() bool
 	SetPlanMode(enabled bool)
 }
@@ -109,6 +112,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 	if modelName == "" {
 		modelName = runner.Model()
 	}
+	entries, inputHistory, status := initialSessionState(runner)
 	return Model{
 		ctx:            ctx,
 		runner:         runner,
@@ -117,21 +121,17 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		width:          96,
 		height:         28,
 		input:          []rune(cfg.InitialPrompt),
+		inputHistory:   inputHistory,
 		historyIndex:   -1,
 		slashSelection: -1,
-		status:         "Ready",
+		status:         status,
 		sessionID:      runner.SessionID(),
 		modelName:      modelName,
 		project:        projectFolderName(runner.WorkDir()),
 		gitBranch:      gitBranchForWorkDir(runner.WorkDir()),
 		contextUsage:   normalizeContextUsage(runner.ContextUsage()),
 		planMode:       runner.PlanMode(),
-		entries: []entry{{
-			role:  "system",
-			title: "session",
-			body:  "Interactive session started. Type /help for commands.",
-			time:  time.Now(),
-		}},
+		entries:        entries,
 	}
 }
 
@@ -182,6 +182,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionID = msg.sessionID
 		m.refreshRuntimeInfo()
 		m.status = "New session ready"
+		m.entries = nil
+		m.inputHistory = nil
+		m.resetHistoryNavigation()
+		m.scrollOffset = 0
 		m.appendCommandEntry("New session", formatSessionRows(
 			msg.sessionID,
 			m.runner.SessionDir(),
@@ -556,6 +560,120 @@ func formatSessionRows(sessionID, sessionDir, workDir, model string) string {
 		lines = append(lines, fmt.Sprintf("%-*s  %s", labelWidth, row.label, row.value))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func initialSessionState(runner Runner) ([]entry, []string, string) {
+	records, err := runner.MessageHistory()
+	if err != nil {
+		return []entry{
+			sessionStartedEntry(),
+			{
+				role:  "error",
+				title: "history",
+				body:  fmt.Sprintf("Failed to load session history: %v", err),
+				err:   true,
+				time:  time.Now(),
+			},
+		}, nil, "History load failed"
+	}
+
+	entries := entriesFromMessageHistory(records)
+	if len(entries) == 0 {
+		return []entry{sessionStartedEntry()}, nil, "Ready"
+	}
+	return entries, inputHistoryFromMessageHistory(records), "Resumed session: " + runner.SessionID()
+}
+
+func sessionStartedEntry() entry {
+	return entry{
+		role:  "system",
+		title: "session",
+		body:  "Interactive session started. Type /help for commands.",
+		time:  time.Now(),
+	}
+}
+
+func entriesFromMessageHistory(records []session.MessageRecord) []entry {
+	entries := make([]entry, 0, len(records))
+	toolNames := make(map[string]string)
+	for _, record := range records {
+		msg := record.Message
+		when := historyEntryTime(record.Time)
+		switch {
+		case msg.Role == schema.RoleUser && msg.ToolCallID == "":
+			if !isRenderableHistoryContent(msg.Content) {
+				continue
+			}
+			entries = append(entries, entry{
+				role:  "user",
+				title: "you",
+				body:  msg.Content,
+				time:  when,
+			})
+		case msg.Role == schema.RoleAssistant:
+			if strings.TrimSpace(msg.Content) != "" {
+				entries = append(entries, entry{
+					role:  "assistant",
+					title: "foxharness",
+					body:  msg.Content,
+					time:  when,
+				})
+			}
+			for _, call := range msg.ToolCalls {
+				toolNames[call.ID] = call.Name
+				entries = append(entries, entry{
+					role:  "tool",
+					title: "call " + call.Name,
+					body:  formatToolInvocation(call.Name, string(call.Arguments)),
+					time:  when,
+				})
+			}
+		case msg.ToolCallID != "":
+			toolName := toolNames[msg.ToolCallID]
+			if toolName == "" {
+				toolName = "tool"
+			}
+			entries = append(entries, entry{
+				role:  "tool",
+				title: "result " + toolName,
+				body:  msg.Content,
+				time:  when,
+			})
+		}
+	}
+	return entries
+}
+
+func inputHistoryFromMessageHistory(records []session.MessageRecord) []string {
+	history := make([]string, 0, len(records))
+	for _, record := range records {
+		msg := record.Message
+		if msg.Role != schema.RoleUser || msg.ToolCallID != "" || !isRenderableHistoryContent(msg.Content) {
+			continue
+		}
+		text := strings.TrimSpace(msg.Content)
+		if len(history) > 0 && history[len(history)-1] == text {
+			continue
+		}
+		history = append(history, text)
+	}
+	return history
+}
+
+func isRenderableHistoryContent(content string) bool {
+	content = strings.TrimSpace(content)
+	return content != "" && !isCompactionSummaryMessage(content)
+}
+
+func isCompactionSummaryMessage(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), "## Compacted Context Summary")
+}
+
+func historyEntryTime(t time.Time) time.Time {
+	if t.IsZero() {
+		return time.Now()
+	}
+	return t
 }
 
 func (m Model) nowTime() time.Time {
