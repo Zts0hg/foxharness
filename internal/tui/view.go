@@ -149,7 +149,7 @@ func renderEntry(e entry, width int) string {
 	}
 	meta := mutedStyle.Render(fmt.Sprintf("%s  %s", title, e.time.Format("15:04:05")))
 	bodyWidth := max(width-2, 20)
-	body := indentLines(wrapText(e.body, bodyWidth), "  ")
+	body := indentLines(renderMarkdown(e.body, bodyWidth), "  ")
 	return fitLine(label+" "+meta, width) + "\n" + body
 }
 
@@ -165,7 +165,7 @@ func renderUserEntry(e entry, width int) string {
 
 func renderAssistantEntry(e entry, width int) string {
 	meta := assistantLabelStyle.Render("Foxharness") + " " + mutedStyle.Render(e.time.Format("15:04:05"))
-	body := indentLines(wrapText(e.body, max(width-2, 20)), "  ")
+	body := indentLines(renderMarkdown(e.body, max(width-2, 20)), "  ")
 	return fitLine(meta, width) + "\n" + body
 }
 

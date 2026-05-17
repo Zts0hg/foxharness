@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -133,6 +134,7 @@ func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 	m, _ = update(t, m, cmd())
 
 	view := m.View()
+	plainView := stripANSI(view)
 	for _, forbidden := range []string{
 		"USER you",
 		"SYSTEM run started",
@@ -143,7 +145,7 @@ func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 		"Session: sess-1",
 		"Run: run-1",
 	} {
-		if strings.Contains(view, forbidden) {
+		if strings.Contains(plainView, forbidden) {
 			t.Fatalf("view contains verbose fragment %q:\n%s", forbidden, view)
 		}
 	}
@@ -155,9 +157,33 @@ func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 		"Foxharness",
 		"answer: hello, what's the day today?",
 	} {
-		if !strings.Contains(view, want) {
+		if !strings.Contains(plainView, want) {
 			t.Fatalf("view missing compact fragment %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestAssistantMessagesRenderMarkdown(t *testing.T) {
+	rendered := renderAssistantEntry(entry{
+		role:  "assistant",
+		title: "foxharness",
+		body:  "Today is **Sunday, May 17, 2026**.\n\n- current day\n- terminal markdown",
+		time:  time.Date(2026, 5, 17, 15, 38, 44, 0, time.Local),
+	}, 100)
+	plainRendered := stripANSI(rendered)
+
+	for _, forbidden := range []string{"**Sunday", "**.", "- current day"} {
+		if strings.Contains(plainRendered, forbidden) {
+			t.Fatalf("rendered assistant markdown contains raw markdown %q:\n%s", forbidden, rendered)
+		}
+	}
+	for _, want := range []string{"Foxharness", "Sunday, May 17, 2026", "current day", "terminal markdown"} {
+		if !strings.Contains(plainRendered, want) {
+			t.Fatalf("rendered assistant markdown missing %q:\n%s", want, rendered)
+		}
+	}
+	if !strings.Contains(rendered, "\x1b[") {
+		t.Fatalf("rendered assistant markdown missing terminal styling escape codes:\n%s", rendered)
 	}
 }
 
@@ -583,4 +609,10 @@ func countEntriesContaining(entries []entry, role string, text string) int {
 		}
 	}
 	return count
+}
+
+var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+
+func stripANSI(s string) string {
+	return ansiEscapePattern.ReplaceAllString(s, "")
 }
