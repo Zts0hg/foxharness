@@ -183,6 +183,23 @@ func (r *AgentRunner) Model() string {
 	return r.model
 }
 
+func (r *AgentRunner) ContextUsage() string {
+	r.mu.Lock()
+	sess := r.currentSession
+	r.mu.Unlock()
+	if sess == nil {
+		return "unknown"
+	}
+
+	messages, err := session.NewMessageLog(sess).LoadMessages()
+	if err != nil {
+		log.Printf("[Runner] 读取 Session 上下文使用量失败: %v", err)
+		return "unknown"
+	}
+	used := compaction.RoughEstimator{}.Estimate(messages)
+	return formatContextUsage(used, compaction.DefaultConfig().MaxTokens)
+}
+
 func (r *AgentRunner) PlanMode() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -205,4 +222,18 @@ func (r *AgentRunner) buildRegistry(sess *session.Session) tools.Registry {
 	subManager := subagent.NewManager(r.llmProvider, r.workDir)
 	registry.Register(subagent.NewTool(subManager, sess.ID))
 	return registry
+}
+
+func formatContextUsage(used int, maxTokens int) string {
+	if maxTokens <= 0 {
+		return "unknown"
+	}
+	if used <= 0 {
+		return "0%"
+	}
+	if used*100 < maxTokens {
+		return "<1%"
+	}
+	percent := (used*100 + maxTokens - 1) / maxTokens
+	return fmt.Sprintf("%d%%", percent)
 }

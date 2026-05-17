@@ -101,3 +101,61 @@ func TestAgentRunnerSetPlanModeWhileRunIsActive(t *testing.T) {
 		t.Fatal("Run did not finish after provider release")
 	}
 }
+
+func TestAgentRunnerContextUsage(t *testing.T) {
+	workDir := t.TempDir()
+	store := memory.NewStore(workDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	manager := session.NewManager(workDir)
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	runner := &AgentRunner{
+		workDir:        workDir,
+		model:          "fake-model",
+		enableThinking: false,
+		enablePlanMode: false,
+		maxTurns:       3,
+		store:          store,
+		manager:        manager,
+		llmProvider:    &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})},
+		currentSession: sess,
+	}
+
+	if got := runner.ContextUsage(); got != "0%" {
+		t.Fatalf("empty ContextUsage() = %q, want 0%%", got)
+	}
+	if err := session.NewMessageLog(sess).Append("run-1", schema.Message{Role: schema.RoleUser, Content: "hello"}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if got := runner.ContextUsage(); got != "<1%" {
+		t.Fatalf("ContextUsage() = %q, want <1%%", got)
+	}
+}
+
+func TestFormatContextUsage(t *testing.T) {
+	cases := []struct {
+		used int
+		max  int
+		want string
+	}{
+		{used: 0, max: 128000, want: "0%"},
+		{used: 1, max: 128000, want: "<1%"},
+		{used: 1280, max: 128000, want: "1%"},
+		{used: 1281, max: 128000, want: "2%"},
+		{used: 128000, max: 128000, want: "100%"},
+		{used: 1, max: 0, want: "unknown"},
+	}
+	for _, tc := range cases {
+		if got := formatContextUsage(tc.used, tc.max); got != tc.want {
+			t.Fatalf("formatContextUsage(%d, %d) = %q, want %q", tc.used, tc.max, got, tc.want)
+		}
+	}
+}

@@ -27,6 +27,7 @@ type Runner interface {
 	SessionDir() string
 	WorkDir() string
 	Model() string
+	ContextUsage() string
 	PlanMode() bool
 	SetPlanMode(enabled bool)
 }
@@ -77,10 +78,11 @@ type Model struct {
 	width  int
 	height int
 
-	input        []rune
-	inputHistory []string
-	historyIndex int
-	historyDraft []rune
+	input          []rune
+	inputHistory   []string
+	historyIndex   int
+	historyDraft   []rune
+	slashSelection int
 
 	entries      []entry
 	status       string
@@ -91,9 +93,12 @@ type Model struct {
 	cancelRun    context.CancelFunc
 	lastCtrlC    time.Time
 
-	sessionID string
-	modelName string
-	planMode  bool
+	sessionID    string
+	modelName    string
+	project      string
+	gitBranch    string
+	contextUsage string
+	planMode     bool
 }
 
 func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
@@ -105,18 +110,22 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		modelName = runner.Model()
 	}
 	return Model{
-		ctx:          ctx,
-		runner:       runner,
-		events:       make(chan tea.Msg, 256),
-		now:          time.Now,
-		width:        96,
-		height:       28,
-		input:        []rune(cfg.InitialPrompt),
-		historyIndex: -1,
-		status:       "Ready",
-		sessionID:    runner.SessionID(),
-		modelName:    modelName,
-		planMode:     runner.PlanMode(),
+		ctx:            ctx,
+		runner:         runner,
+		events:         make(chan tea.Msg, 256),
+		now:            time.Now,
+		width:          96,
+		height:         28,
+		input:          []rune(cfg.InitialPrompt),
+		historyIndex:   -1,
+		slashSelection: -1,
+		status:         "Ready",
+		sessionID:      runner.SessionID(),
+		modelName:      modelName,
+		project:        projectFolderName(runner.WorkDir()),
+		gitBranch:      gitBranchForWorkDir(runner.WorkDir()),
+		contextUsage:   normalizeContextUsage(runner.ContextUsage()),
+		planMode:       runner.PlanMode(),
 		entries: []entry{{
 			role:  "system",
 			title: "session",
@@ -146,6 +155,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.running = false
 		m.runStartedAt = time.Time{}
 		m.cancelRun = nil
+		m.refreshRuntimeInfo()
 		if msg.err != nil {
 			m.status = "Run failed"
 			if !m.lastEntryContainsError(msg.err) {
@@ -170,6 +180,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sessionID = msg.sessionID
+		m.refreshRuntimeInfo()
 		m.status = "New session ready"
 		m.appendEntry("system", "new session", fmt.Sprintf("Switched to session %s", msg.sessionID), false)
 		return m, nil
@@ -214,6 +225,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.input = nil
 		m.resetHistoryNavigation()
+		m.resetSlashSelection()
 		return m, nil
 	case "enter":
 		return m.submitInput()
@@ -228,27 +240,38 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.running && len(m.input) > 0 {
 			m.resetHistoryNavigation()
 			m.input = m.input[:len(m.input)-1]
+			m.updateSlashSelection()
 		}
 		return m, nil
 	case " ":
 		if !m.running {
 			m.resetHistoryNavigation()
 			m.input = append(m.input, ' ')
+			m.updateSlashSelection()
 		}
 		return m, nil
 	case "ctrl+u":
 		if !m.running {
 			m.input = nil
 			m.resetHistoryNavigation()
+			m.resetSlashSelection()
 		}
 		return m, nil
 	case "up":
 		if !m.running {
+			if m.hasSlashMenu() {
+				m.moveSlashSelection(-1)
+				return m, nil
+			}
 			m.recallPreviousInput()
 		}
 		return m, nil
 	case "down":
 		if !m.running {
+			if m.hasSlashMenu() {
+				m.moveSlashSelection(1)
+				return m, nil
+			}
 			m.recallNextInput()
 		}
 		return m, nil
@@ -272,6 +295,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyRunes {
 		m.resetHistoryNavigation()
 		m.input = append(m.input, msg.Runes...)
+		m.updateSlashSelection()
 	}
 	return m, nil
 }
@@ -296,11 +320,12 @@ func (m Model) togglePlanMode() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) completeSlashCommand() {
-	matches := m.matchingSlashCommands()
-	if len(matches) == 0 {
+	command, ok := m.selectedSlashCommand()
+	if !ok {
 		return
 	}
-	m.input = []rune(matches[0].Name)
+	m.input = []rune(command.Name)
+	m.updateSlashSelection()
 }
 
 func (m Model) submitInput() (tea.Model, tea.Cmd) {
@@ -309,8 +334,12 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if strings.HasPrefix(text, "/") {
+		if command, ok := m.selectedSlashCommand(); ok {
+			text = command.Name
+		}
 		m.input = nil
 		m.resetHistoryNavigation()
+		m.resetSlashSelection()
 		return m.handleSlashCommand(text)
 	}
 	if m.running {
@@ -321,6 +350,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	m.addInputHistory(text)
 	m.input = nil
 	m.resetHistoryNavigation()
+	m.resetSlashSelection()
 	m.scrollOffset = 0
 	m.running = true
 	m.runStartedAt = m.nowTime()
@@ -376,6 +406,49 @@ func (m *Model) resetHistoryNavigation() {
 	m.historyDraft = nil
 }
 
+func (m *Model) updateSlashSelection() {
+	matches := m.matchingSlashCommands()
+	if len(matches) == 0 {
+		m.resetSlashSelection()
+		return
+	}
+	if m.slashSelection < 0 || m.slashSelection >= len(matches) {
+		m.slashSelection = 0
+	}
+}
+
+func (m *Model) resetSlashSelection() {
+	m.slashSelection = -1
+}
+
+func (m Model) hasSlashMenu() bool {
+	return len(m.matchingSlashCommands()) > 0
+}
+
+func (m *Model) moveSlashSelection(delta int) {
+	matches := m.matchingSlashCommands()
+	if len(matches) == 0 {
+		m.resetSlashSelection()
+		return
+	}
+	if m.slashSelection < 0 || m.slashSelection >= len(matches) {
+		m.slashSelection = 0
+	}
+	m.slashSelection = (m.slashSelection + delta + len(matches)) % len(matches)
+}
+
+func (m Model) selectedSlashCommand() (slashCommand, bool) {
+	matches := m.matchingSlashCommands()
+	if len(matches) == 0 {
+		return slashCommand{}, false
+	}
+	index := m.slashSelection
+	if index < 0 || index >= len(matches) {
+		index = 0
+	}
+	return matches[index], true
+}
+
 func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 	fields := strings.Fields(text)
 	cmd := strings.ToLower(fields[0])
@@ -385,8 +458,7 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.status = "Help"
 		return m, nil
 	case "/session":
-		m.appendEntry("system", "session", fmt.Sprintf(
-			"Session: %s\nSession Dir: %s\nWorkdir: %s\nModel: %s",
+		m.appendEntry("system", "session", formatSessionDetails(
 			m.runner.SessionID(),
 			m.runner.SessionDir(),
 			m.runner.WorkDir(),
@@ -450,6 +522,20 @@ func slashCommandHelp() string {
 		lines = append(lines, fmt.Sprintf("%-9s %s", command.Name, command.Description))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func formatSessionDetails(sessionID, sessionDir, workDir, model string) string {
+	return fmt.Sprintf(
+		"### Session\n\n- ID: `%s`\n- Dir: `%s`\n- Workdir: `%s`\n- Model: `%s`",
+		escapeInlineCode(sessionID),
+		escapeInlineCode(sessionDir),
+		escapeInlineCode(workDir),
+		escapeInlineCode(model),
+	)
+}
+
+func escapeInlineCode(value string) string {
+	return strings.ReplaceAll(value, "`", "\\`")
 }
 
 func (m Model) nowTime() time.Time {

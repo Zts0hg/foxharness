@@ -10,6 +10,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/engine"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type fakeRunner struct {
@@ -18,11 +19,12 @@ type fakeRunner struct {
 	workDir    string
 	model      string
 
-	runs      []string
-	runErr    error
-	newErr    error
-	nextRunID int
-	planMode  bool
+	runs         []string
+	runErr       error
+	newErr       error
+	nextRunID    int
+	planMode     bool
+	contextUsage string
 }
 
 func (r *fakeRunner) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
@@ -75,6 +77,13 @@ func (r *fakeRunner) WorkDir() string {
 
 func (r *fakeRunner) Model() string {
 	return r.model
+}
+
+func (r *fakeRunner) ContextUsage() string {
+	if r.contextUsage == "" {
+		return "7%"
+	}
+	return r.contextUsage
 }
 
 func (r *fakeRunner) PlanMode() bool {
@@ -215,7 +224,9 @@ func TestModelSlashCommands(t *testing.T) {
 
 	m, _ = update(t, m, keyRunes("/session"))
 	m, _ = update(t, m, keyEnter())
-	if !entriesContain(m.entries, "system", "Session: sess-1") {
+	if !entriesContain(m.entries, "system", "### Session") ||
+		!entriesContain(m.entries, "system", "- ID: `sess-1`") ||
+		!entriesContain(m.entries, "system", "- Dir: `/tmp/sess-1`") {
 		t.Fatalf("/session did not render session details: %#v", m.entries)
 	}
 
@@ -243,15 +254,81 @@ func TestModelSlashSuggestionsAndTabCompletion(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
 
-	m, _ = update(t, m, keyRunes("/s"))
+	m.inputHistory = []string{"previous task"}
+	m, _ = update(t, m, keyRunes("/"))
 	view := m.View()
-	if !strings.Contains(view, "/session") || !strings.Contains(view, "Tab complete") {
-		t.Fatalf("view missing slash suggestion:\n%s", view)
+	plainView := stripANSI(view)
+	for _, want := range []string{"❯", "/session", "/clear", "/new", "/cancel", "/help", "/exit"} {
+		if !strings.Contains(plainView, want) {
+			t.Fatalf("view missing slash dropdown item %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(plainView, "Tab complete  /") {
+		t.Fatalf("slash dropdown should not render old inline hint:\n%s", view)
+	}
+
+	m, _ = update(t, m, keyDown())
+	if got := string(m.input); got != "/" {
+		t.Fatalf("down in slash menu changed input = %q, want /", got)
+	}
+	if command, ok := m.selectedSlashCommand(); !ok || command.Name != "/clear" {
+		t.Fatalf("selected slash command after down = %#v, %v; want /clear", command, ok)
+	}
+	m, _ = update(t, m, keyUp())
+	if command, ok := m.selectedSlashCommand(); !ok || command.Name != "/session" {
+		t.Fatalf("selected slash command after up = %#v, %v; want /session", command, ok)
 	}
 
 	m, _ = update(t, m, keyTab())
 	if got := string(m.input); got != "/session" {
 		t.Fatalf("input after tab = %q, want /session", got)
+	}
+}
+
+func TestModelSlashDropdownEnterRunsSelectedCommand(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/"))
+	m, _ = update(t, m, keyEnter())
+
+	if string(m.input) != "" {
+		t.Fatalf("input after selected slash command = %q, want empty", string(m.input))
+	}
+	if !entriesContain(m.entries, "system", "### Session") {
+		t.Fatalf("enter did not execute selected /session command: %#v", m.entries)
+	}
+}
+
+func TestSlashDropdownSelectedRowsDoNotWrapDescriptions(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, keyRunes("/"))
+
+	assertSlashDropdownLineCount(t, m.renderSlashSuggestions(72))
+
+	m, _ = update(t, m, keyDown())
+	m, _ = update(t, m, keyDown())
+	assertSlashDropdownLineCount(t, m.renderSlashSuggestions(72))
+}
+
+func TestSlashDropdownUsesForegroundOnlySelection(t *testing.T) {
+	if suggestionCommandStyle.GetForeground() != lipgloss.Color("252") {
+		t.Fatalf("non-selected slash command foreground = %q, want white", suggestionCommandStyle.GetForeground())
+	}
+	if suggestionDescriptionStyle.GetForeground() != lipgloss.Color("252") {
+		t.Fatalf("non-selected slash description foreground = %q, want white", suggestionDescriptionStyle.GetForeground())
+	}
+	if suggestionSelectedStyle.GetForeground() != lipgloss.Color("81") {
+		t.Fatalf("selected slash command foreground = %q, want blue", suggestionSelectedStyle.GetForeground())
+	}
+
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, keyRunes("/"))
+	rendered := m.renderSlashSuggestions(72)
+	if strings.Contains(rendered, "\x1b[48;") {
+		t.Fatalf("slash dropdown rendered background color escapes, want foreground colors only:\n%s", rendered)
 	}
 }
 
@@ -274,6 +351,16 @@ func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "plan mode on") {
 		t.Fatalf("view missing plan on state:\n%s", m.View())
+	}
+	headerLines := strings.Split(stripANSI(m.renderHeader(100)), "\n")
+	if len(headerLines) < 2 {
+		t.Fatalf("plan mode should render on a new header line:\n%s", m.renderHeader(100))
+	}
+	if strings.Contains(headerLines[0], "plan mode on") {
+		t.Fatalf("plan mode rendered on the status line:\n%s", m.renderHeader(100))
+	}
+	if !strings.Contains(headerLines[1], "plan mode on") {
+		t.Fatalf("plan mode missing from second header line:\n%s", m.renderHeader(100))
 	}
 
 	m, _ = update(t, m, keyShiftTab())
@@ -454,13 +541,33 @@ func TestModelViewContainsSessionAndInput(t *testing.T) {
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	view := m.View()
-	for _, want := range []string{"FOXHARNESS", "fake-model", "sess-1", "Message foxharness"} {
-		if !strings.Contains(view, want) {
+	plainView := stripANSI(view)
+	for _, want := range []string{"FOXHARNESS", "[fake-model] work", "git:(-)", "Context:", "░░░░░░░░░░ 7%", "sid:sess-1", "Message foxharness"} {
+		if !strings.Contains(plainView, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
 	}
+	if strings.Index(plainView, "Message foxharness") > strings.Index(plainView, "FOXHARNESS") {
+		t.Fatalf("header should render below the input box:\n%s", view)
+	}
 	if strings.Contains(view, "plan mode on") || strings.Contains(view, "plan off") {
 		t.Fatalf("plan mode off should not render plan label:\n%s", view)
+	}
+}
+
+func TestContextUsageStyleThresholds(t *testing.T) {
+	if contextUsageStyle(49).GetForeground() != contextLowStyle.GetForeground() {
+		t.Fatalf("context usage under 50%% should use low style")
+	}
+	if contextUsageStyle(50).GetForeground() != contextMediumStyle.GetForeground() {
+		t.Fatalf("context usage at 50%% should use medium style")
+	}
+	if contextUsageStyle(75).GetForeground() != contextHighStyle.GetForeground() {
+		t.Fatalf("context usage at 75%% should use high style")
+	}
+	plain := stripANSI(renderContextUsage("76%"))
+	if !strings.Contains(plain, "▓▓▓▓▓▓▓░░░ 76%") {
+		t.Fatalf("context usage display = %q, want progress bar", plain)
 	}
 }
 
@@ -528,10 +635,11 @@ func TestModelRunningTickAdvancesSpinner(t *testing.T) {
 
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{
-		sessionID:  "sess-1",
-		sessionDir: "/tmp/sess-1",
-		workDir:    "/tmp/work",
-		model:      "fake-model",
+		sessionID:    "sess-1",
+		sessionDir:   "/tmp/sess-1",
+		workDir:      "/tmp/work",
+		model:        "fake-model",
+		contextUsage: "7%",
 	}
 }
 
@@ -615,4 +723,31 @@ var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
 func stripANSI(s string) string {
 	return ansiEscapePattern.ReplaceAllString(s, "")
+}
+
+func assertSlashDropdownLineCount(t *testing.T, rendered string) {
+	t.Helper()
+	plain := stripANSI(rendered)
+	lines := nonEmptyLines(plain)
+	if len(lines) != len(slashCommands) {
+		t.Fatalf("slash dropdown wrapped selected row: got %d lines, want %d\n%s", len(lines), len(slashCommands), rendered)
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "paths" || trimmed == "session" {
+			t.Fatalf("slash dropdown rendered a dangling wrapped word %q:\n%s", trimmed, rendered)
+		}
+	}
+}
+
+func nonEmptyLines(s string) []string {
+	rawLines := strings.Split(s, "\n")
+	lines := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }

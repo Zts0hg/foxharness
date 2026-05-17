@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -16,8 +17,6 @@ var (
 			Padding(0, 1)
 
 	headerMetaStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("253")).
-			Background(lipgloss.Color("236")).
 			Padding(0, 1)
 
 	bodyStyle = lipgloss.NewStyle().
@@ -38,12 +37,15 @@ var (
 
 	suggestionStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("252")).
-			Background(lipgloss.Color("235")).
 			Padding(0, 1)
 
 	suggestionCommandStyle = lipgloss.NewStyle().
 				Bold(true).
+				Foreground(lipgloss.Color("252"))
+	suggestionSelectedStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("81"))
+	suggestionDescriptionStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("252"))
 
 	footerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("245"))
@@ -62,6 +64,13 @@ var (
 	placeholderStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	cursorStyle         = lipgloss.NewStyle().Reverse(true)
 	planModeStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
+	statusModelStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	statusProjectStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	statusGitStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	statusDimStyle      = lipgloss.NewStyle().Faint(true)
+	contextLowStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	contextMediumStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	contextHighStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 )
 
 func (m Model) View() string {
@@ -73,28 +82,89 @@ func (m Model) View() string {
 	suggestions := m.renderSlashSuggestions(width)
 	input := m.renderInput(width)
 	footer := m.renderFooter(width)
-	bodyHeight := height - lipgloss.Height(header) - lipgloss.Height(notice) - lipgloss.Height(suggestions) - lipgloss.Height(input) - lipgloss.Height(footer)
+	bodyHeight := height - lipgloss.Height(notice) - lipgloss.Height(suggestions) - lipgloss.Height(input) - lipgloss.Height(header) - lipgloss.Height(footer)
 	if bodyHeight < 6 {
 		bodyHeight = 6
 	}
 	body := m.renderBody(width, bodyHeight)
 
-	parts := []string{header, body}
+	parts := []string{body}
 	if notice != "" {
 		parts = append(parts, notice)
 	}
+	parts = append(parts, input)
 	if suggestions != "" {
 		parts = append(parts, suggestions)
 	}
-	parts = append(parts, input, footer)
+	parts = append(parts, header, footer)
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 func (m Model) renderHeader(width int) string {
 	title := headerStyle.Render("FOXHARNESS")
-	meta := fmt.Sprintf(" model %s  %s session %s", shortValue(m.modelName, 18), planModeText(m.planMode), shortValue(m.sessionID, 24))
+	meta := m.renderHeaderMeta()
+	metaWidth := max(width-lipgloss.Width(title)-headerMetaStyle.GetHorizontalFrameSize(), 1)
+	meta = xansi.Truncate(meta, metaWidth, "...")
 	right := headerMetaStyle.Width(max(width-lipgloss.Width(title), 1)).Render(meta)
-	return lipgloss.JoinHorizontal(lipgloss.Top, title, right)
+	header := lipgloss.JoinHorizontal(lipgloss.Top, title, right)
+	if !m.planMode {
+		return header
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, header, headerMetaStyle.Width(width-headerMetaStyle.GetHorizontalFrameSize()).Render(planModeText(true)))
+}
+
+func (m Model) renderHeaderMeta() string {
+	sep := " " + statusDimStyle.Render("|") + " "
+	return statusModelStyle.Render("["+m.modelName+"]") +
+		" " + statusProjectStyle.Render(m.project) +
+		sep + statusGitStyle.Render("git:("+m.gitBranch+")") +
+		sep + "Context: " + renderContextUsage(m.contextUsage) +
+		sep + statusDimStyle.Render("sid:"+m.sessionID)
+}
+
+func renderContextUsage(usage string) string {
+	percent, ok, display := parseContextUsage(usage)
+	if !ok {
+		return statusDimStyle.Render(normalizeContextUsage(usage))
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	filled := percent / 10
+	bar := strings.Repeat("▓", filled) + strings.Repeat("░", 10-filled)
+	value := bar + " " + display
+	return contextUsageStyle(percent).Render(value)
+}
+
+func parseContextUsage(usage string) (int, bool, string) {
+	usage = strings.TrimSpace(usage)
+	if usage == "" || usage == "unknown" {
+		return 0, false, ""
+	}
+	if strings.HasPrefix(usage, "<") {
+		return 0, true, usage
+	}
+	if strings.HasSuffix(usage, "%") {
+		raw := strings.TrimSpace(strings.TrimSuffix(usage, "%"))
+		var percent int
+		if _, err := fmt.Sscanf(raw, "%d", &percent); err == nil {
+			return percent, true, fmt.Sprintf("%d%%", percent)
+		}
+	}
+	return 0, false, usage
+}
+
+func contextUsageStyle(percent int) lipgloss.Style {
+	if percent >= 75 {
+		return contextHighStyle
+	}
+	if percent >= 50 {
+		return contextMediumStyle
+	}
+	return contextLowStyle
 }
 
 func (m Model) renderBody(width int, height int) string {
@@ -224,12 +294,35 @@ func (m Model) renderSlashSuggestions(width int) string {
 		return ""
 	}
 
-	var parts []string
-	for _, command := range matches {
-		parts = append(parts, fmt.Sprintf("%s %s", suggestionCommandStyle.Render(command.Name), command.Description))
+	menuWidth := max(width-suggestionStyle.GetHorizontalFrameSize(), 20)
+	rowWidth := max(menuWidth-suggestionStyle.GetHorizontalFrameSize(), 20)
+	lines := make([]string, 0, len(matches))
+	selected := m.slashSelection
+	if selected < 0 || selected >= len(matches) {
+		selected = 0
 	}
-	text := "Tab complete  " + strings.Join(parts, "   ")
-	return suggestionStyle.Width(width - suggestionStyle.GetHorizontalFrameSize()).Render(fitLine(text, width-suggestionStyle.GetHorizontalFrameSize()))
+	for i, command := range matches {
+		if i == selected {
+			line := slashSuggestionPlainLine(command, "❯ ")
+			line = xansi.Truncate(line, rowWidth, "...")
+			lines = append(lines, suggestionSelectedStyle.Width(rowWidth).Render(line))
+			continue
+		}
+		line := "  " +
+			suggestionCommandStyle.Render(command.Name) +
+			strings.Repeat(" ", max(14-lipgloss.Width(command.Name), 2)) +
+			suggestionDescriptionStyle.Render(command.Description)
+		line = xansi.Truncate(line, rowWidth, "...")
+		lines = append(lines, line)
+	}
+	return suggestionStyle.Width(menuWidth).Render(strings.Join(lines, "\n"))
+}
+
+func slashSuggestionPlainLine(command slashCommand, pointer string) string {
+	return pointer +
+		command.Name +
+		strings.Repeat(" ", max(14-lipgloss.Width(command.Name), 2)) +
+		command.Description
 }
 
 func renderCursor() string {
@@ -240,6 +333,8 @@ func (m Model) renderFooter(width int) string {
 	help := "Enter send | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown scroll | Ctrl+C twice quit"
 	if m.running {
 		help = "Shift+Tab toggles plan for next run | Esc cancel current run | Ctrl+C twice quit"
+	} else if m.hasSlashMenu() {
+		help = "Up/Down select | Tab complete | Enter run | Esc close | Ctrl+C twice quit"
 	}
 	line := fmt.Sprintf("%s  %s", m.status, help)
 	return footerStyle.Width(width).Render(fitLine(line, width))
