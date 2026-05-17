@@ -44,7 +44,7 @@ type Config struct {
 // Run starts the interactive chat TUI.
 func Run(ctx context.Context, runner Runner, cfg Config) error {
 	m := NewModel(ctx, runner, cfg)
-	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx)).Run()
+	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx)).Run()
 	return err
 }
 
@@ -86,6 +86,8 @@ type Model struct {
 	historyIndex   int
 	historyDraft   []rune
 	slashSelection int
+	fileSelection  int
+	fileMentions   []fileMention
 
 	entries      []entry
 	status       string
@@ -124,6 +126,8 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		inputHistory:   inputHistory,
 		historyIndex:   -1,
 		slashSelection: -1,
+		fileSelection:  -1,
+		fileMentions:   loadFileMentions(runner.WorkDir()),
 		status:         status,
 		sessionID:      runner.SessionID(),
 		modelName:      modelName,
@@ -202,8 +206,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	}
 
+	return m, nil
+}
+
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.scrollOffset += scrollDelta("wheelup")
+	case tea.MouseButtonWheelDown:
+		m.scrollOffset -= scrollDelta("wheeldown")
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
+		}
+	}
 	return m, nil
 }
 
@@ -234,7 +254,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.input = nil
 		m.resetHistoryNavigation()
-		m.resetSlashSelection()
+		m.resetCompletions()
 		return m, nil
 	case "enter":
 		return m.submitInput()
@@ -242,34 +262,42 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.togglePlanMode()
 	case "tab":
 		if !m.running {
-			m.completeSlashCommand()
+			if m.hasSlashMenu() {
+				m.completeSlashCommand()
+			} else if m.hasFileMentionMenu() {
+				m.completeFileMention()
+			}
 		}
 		return m, nil
 	case "backspace", "ctrl+h":
 		if !m.running && len(m.input) > 0 {
 			m.resetHistoryNavigation()
 			m.input = m.input[:len(m.input)-1]
-			m.updateSlashSelection()
+			m.updateCompletions()
 		}
 		return m, nil
 	case " ":
 		if !m.running {
 			m.resetHistoryNavigation()
 			m.input = append(m.input, ' ')
-			m.updateSlashSelection()
+			m.updateCompletions()
 		}
 		return m, nil
 	case "ctrl+u":
 		if !m.running {
 			m.input = nil
 			m.resetHistoryNavigation()
-			m.resetSlashSelection()
+			m.resetCompletions()
 		}
 		return m, nil
 	case "up":
 		if !m.running {
 			if m.hasSlashMenu() {
 				m.moveSlashSelection(-1)
+				return m, nil
+			}
+			if m.hasFileMentionMenu() {
+				m.moveFileSelection(-1)
 				return m, nil
 			}
 			m.recallPreviousInput()
@@ -279,6 +307,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.running {
 			if m.hasSlashMenu() {
 				m.moveSlashSelection(1)
+				return m, nil
+			}
+			if m.hasFileMentionMenu() {
+				m.moveFileSelection(1)
 				return m, nil
 			}
 			m.recallNextInput()
@@ -304,7 +336,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyRunes {
 		m.resetHistoryNavigation()
 		m.input = append(m.input, msg.Runes...)
-		m.updateSlashSelection()
+		m.updateCompletions()
 	}
 	return m, nil
 }
@@ -334,7 +366,29 @@ func (m *Model) completeSlashCommand() {
 		return
 	}
 	m.input = []rune(command.Name)
-	m.updateSlashSelection()
+	m.updateCompletions()
+}
+
+func (m *Model) completeFileMention() {
+	mention, ok := m.selectedFileMention()
+	if !ok {
+		return
+	}
+	start, end, _, ok := m.activeFileMention()
+	if !ok {
+		return
+	}
+	replacement := []rune("@" + mention.Path)
+	next := make([]rune, 0, len(m.input)-end+start+len(replacement)+1)
+	next = append(next, m.input[:start]...)
+	next = append(next, replacement...)
+	if end == len(m.input) {
+		next = append(next, ' ')
+	} else {
+		next = append(next, m.input[end:]...)
+	}
+	m.input = next
+	m.updateCompletions()
 }
 
 func (m Model) submitInput() (tea.Model, tea.Cmd) {
@@ -348,7 +402,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		}
 		m.input = nil
 		m.resetHistoryNavigation()
-		m.resetSlashSelection()
+		m.resetCompletions()
 		return m.handleSlashCommand(text)
 	}
 	if m.running {
@@ -359,7 +413,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	m.addInputHistory(text)
 	m.input = nil
 	m.resetHistoryNavigation()
-	m.resetSlashSelection()
+	m.resetCompletions()
 	m.scrollOffset = 0
 	m.running = true
 	m.runStartedAt = m.nowTime()
@@ -430,8 +484,37 @@ func (m *Model) resetSlashSelection() {
 	m.slashSelection = -1
 }
 
+func (m *Model) updateFileSelection() {
+	matches := m.matchingFileMentions()
+	if len(matches) == 0 {
+		m.resetFileSelection()
+		return
+	}
+	if m.fileSelection < 0 || m.fileSelection >= len(matches) {
+		m.fileSelection = 0
+	}
+}
+
+func (m *Model) resetFileSelection() {
+	m.fileSelection = -1
+}
+
+func (m *Model) updateCompletions() {
+	m.updateSlashSelection()
+	m.updateFileSelection()
+}
+
+func (m *Model) resetCompletions() {
+	m.resetSlashSelection()
+	m.resetFileSelection()
+}
+
 func (m Model) hasSlashMenu() bool {
 	return len(m.matchingSlashCommands()) > 0
+}
+
+func (m Model) hasFileMentionMenu() bool {
+	return len(m.matchingFileMentions()) > 0
 }
 
 func (m *Model) moveSlashSelection(delta int) {
@@ -446,12 +529,36 @@ func (m *Model) moveSlashSelection(delta int) {
 	m.slashSelection = (m.slashSelection + delta + len(matches)) % len(matches)
 }
 
+func (m *Model) moveFileSelection(delta int) {
+	matches := m.matchingFileMentions()
+	if len(matches) == 0 {
+		m.resetFileSelection()
+		return
+	}
+	if m.fileSelection < 0 || m.fileSelection >= len(matches) {
+		m.fileSelection = 0
+	}
+	m.fileSelection = (m.fileSelection + delta + len(matches)) % len(matches)
+}
+
 func (m Model) selectedSlashCommand() (slashCommand, bool) {
 	matches := m.matchingSlashCommands()
 	if len(matches) == 0 {
 		return slashCommand{}, false
 	}
 	index := m.slashSelection
+	if index < 0 || index >= len(matches) {
+		index = 0
+	}
+	return matches[index], true
+}
+
+func (m Model) selectedFileMention() (fileMention, bool) {
+	matches := m.matchingFileMentions()
+	if len(matches) == 0 {
+		return fileMention{}, false
+	}
+	index := m.fileSelection
 	if index < 0 || index >= len(matches) {
 		index = 0
 	}
@@ -523,6 +630,17 @@ func (m Model) matchingSlashCommands() []slashCommand {
 		}
 	}
 	return matches
+}
+
+func (m Model) matchingFileMentions() []fileMention {
+	if m.running || m.hasSlashMenu() {
+		return nil
+	}
+	_, _, query, ok := m.activeFileMention()
+	if !ok {
+		return nil
+	}
+	return matchFileMentions(m.fileMentions, query)
 }
 
 func slashCommandHelp() string {

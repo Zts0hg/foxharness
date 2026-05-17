@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -433,6 +435,102 @@ func TestModelSlashDropdownEnterRunsSelectedCommand(t *testing.T) {
 	}
 	if !entriesContain(m.entries, "command", "ID       sess-1") {
 		t.Fatalf("enter did not execute selected /session command: %#v", m.entries)
+	}
+}
+
+func TestModelMouseWheelScrollsTranscript(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	if m.scrollOffset != 1 {
+		t.Fatalf("scrollOffset after wheel up = %d, want 1", m.scrollOffset)
+	}
+
+	m, _ = update(t, m, tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	if m.scrollOffset != 0 {
+		t.Fatalf("scrollOffset after wheel down = %d, want 0", m.scrollOffset)
+	}
+
+	m, _ = update(t, m, tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	if m.scrollOffset != 0 {
+		t.Fatalf("scrollOffset after extra wheel down = %d, want clamped 0", m.scrollOffset)
+	}
+}
+
+func TestModelFileMentionSuggestionsAndTabCompletion(t *testing.T) {
+	workDir := t.TempDir()
+	writeTestFile(t, workDir, "internal/tui/model.go", "package tui\n")
+	writeTestFile(t, workDir, "internal/session/session.go", "package session\n")
+	writeTestFile(t, workDir, "README.md", "# Test\n")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, keyRunes("inspect @internal/t"))
+
+	view := m.View()
+	plainView := stripANSI(view)
+	if !strings.Contains(plainView, "❯ @internal/tui/model.go") {
+		t.Fatalf("view missing file mention suggestion:\n%s", view)
+	}
+	if !m.hasFileMentionMenu() {
+		t.Fatalf("model should have file mention menu")
+	}
+
+	m, _ = update(t, m, keyTab())
+	if got := string(m.input); got != "inspect @internal/tui/model.go " {
+		t.Fatalf("input after file mention completion = %q", got)
+	}
+}
+
+func TestModelFileMentionSelectionWithArrowKeys(t *testing.T) {
+	workDir := t.TempDir()
+	writeTestFile(t, workDir, "a.go", "package main\n")
+	writeTestFile(t, workDir, "b.go", "package main\n")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, keyRunes("@"))
+
+	if mention, ok := m.selectedFileMention(); !ok || mention.Path != "a.go" {
+		t.Fatalf("initial selected file mention = %#v, %v; want a.go", mention, ok)
+	}
+
+	m, _ = update(t, m, keyDown())
+	if mention, ok := m.selectedFileMention(); !ok || mention.Path != "b.go" {
+		t.Fatalf("selected file mention after down = %#v, %v; want b.go", mention, ok)
+	}
+
+	m, _ = update(t, m, keyUp())
+	if mention, ok := m.selectedFileMention(); !ok || mention.Path != "a.go" {
+		t.Fatalf("selected file mention after up = %#v, %v; want a.go", mention, ok)
+	}
+}
+
+func TestFileMentionsRespectRootGitignoreAndGitDirectory(t *testing.T) {
+	workDir := t.TempDir()
+	writeTestFile(t, workDir, ".gitignore", "*.log\nbuild/\n")
+	writeTestFile(t, workDir, "src/main.go", "package main\n")
+	writeTestFile(t, workDir, "debug.log", "ignored\n")
+	writeTestFile(t, workDir, "build/out.txt", "ignored\n")
+	writeTestFile(t, workDir, ".git/config", "ignored\n")
+
+	mentions, err := discoverFileMentions(workDir)
+	if err != nil {
+		t.Fatalf("discoverFileMentions returned error: %v", err)
+	}
+	paths := fileMentionPaths(mentions)
+	for _, want := range []string{".gitignore", "src/main.go"} {
+		if !containsString(paths, want) {
+			t.Fatalf("paths missing %q: %#v", want, paths)
+		}
+	}
+	for _, forbidden := range []string{"debug.log", "build/out.txt", ".git/config"} {
+		if containsString(paths, forbidden) {
+			t.Fatalf("paths include ignored file %q: %#v", forbidden, paths)
+		}
 	}
 }
 
@@ -957,6 +1055,34 @@ func lineContainsAll(lines []string, fragments ...string) bool {
 			}
 		}
 		if matches {
+			return true
+		}
+	}
+	return false
+}
+
+func writeTestFile(t *testing.T, root string, rel string, content string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func fileMentionPaths(mentions []fileMention) []string {
+	paths := make([]string, 0, len(mentions))
+	for _, mention := range mentions {
+		paths = append(paths, mention.Path)
+	}
+	return paths
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
 			return true
 		}
 	}

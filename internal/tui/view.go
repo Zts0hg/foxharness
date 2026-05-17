@@ -80,7 +80,7 @@ func (m Model) View() string {
 
 	header := m.renderHeader(width)
 	notice := m.renderRunningNotice(width)
-	suggestions := m.renderSlashSuggestions(width)
+	suggestions := m.renderSuggestions(width)
 	input := m.renderInput(width)
 	footer := m.renderFooter(width)
 	bodyHeight := height - lipgloss.Height(notice) - lipgloss.Height(suggestions) - lipgloss.Height(input) - lipgloss.Height(header) - lipgloss.Height(footer)
@@ -341,16 +341,56 @@ func slashSuggestionPlainLine(command slashCommand, pointer string) string {
 		command.Description
 }
 
+func (m Model) renderSuggestions(width int) string {
+	if suggestions := m.renderSlashSuggestions(width); suggestions != "" {
+		return suggestions
+	}
+	return m.renderFileMentionSuggestions(width)
+}
+
+func (m Model) renderFileMentionSuggestions(width int) string {
+	matches := m.matchingFileMentions()
+	if len(matches) == 0 {
+		return ""
+	}
+
+	menuWidth := max(width-suggestionStyle.GetHorizontalFrameSize(), 20)
+	rowWidth := max(menuWidth-suggestionStyle.GetHorizontalFrameSize(), 20)
+	lines := make([]string, 0, len(matches))
+	selected := m.fileSelection
+	if selected < 0 || selected >= len(matches) {
+		selected = 0
+	}
+	for i, mention := range matches {
+		line := fileMentionSuggestionPlainLine(mention, "  ")
+		if i == selected {
+			line = fileMentionSuggestionPlainLine(mention, "❯ ")
+			line = xansi.Truncate(line, rowWidth, "...")
+			lines = append(lines, suggestionSelectedStyle.Width(rowWidth).Render(line))
+			continue
+		}
+		line = xansi.Truncate(line, rowWidth, "...")
+		lines = append(lines, suggestionCommandStyle.Render(line))
+	}
+	return suggestionStyle.Width(menuWidth).Render(strings.Join(lines, "\n"))
+}
+
+func fileMentionSuggestionPlainLine(mention fileMention, pointer string) string {
+	return pointer + "@" + mention.Path
+}
+
 func renderCursor() string {
 	return cursorStyle.Render(" ")
 }
 
 func (m Model) renderFooter(width int) string {
-	help := "Enter send | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown scroll | Ctrl+C twice quit"
+	help := "Enter send | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown/wheel scroll | Ctrl+C twice quit"
 	if m.running {
 		help = "Shift+Tab toggles plan for next run | Esc cancel current run | Ctrl+C twice quit"
 	} else if m.hasSlashMenu() {
 		help = "Up/Down select | Tab complete | Enter run | Esc close | Ctrl+C twice quit"
+	} else if m.hasFileMentionMenu() {
+		help = "Up/Down select | Tab complete file | Enter send | Esc close | Ctrl+C twice quit"
 	}
 	line := fmt.Sprintf("%s  %s", m.status, help)
 	return footerStyle.Width(width).Render(fitLine(line, width))

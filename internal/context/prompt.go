@@ -105,6 +105,7 @@ Core rules:
 - Use bash to inspect, build, test, and verify changes.
 - After changing code, verify with the smallest relevant test command.
 - If a tool fails, inspect the error and recover instead of blindly repeating the same call.
+- Treat @path tokens in user messages as project-relative file references; read referenced files before making claims or edits about them.
 - Keep changes small, explicit, and aligned with the user's request.
 `)
 }
