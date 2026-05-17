@@ -49,11 +49,14 @@ The project uses the **CodexSpec** methodology - a Spec-Driven Development (SDD)
 
 ### Build and Run
 ```bash
-# Run CLI agent
-go run cmd/fox/main.go -prompt "your task" -model "glm-4.5-air"
+# Start interactive TUI agent
+go run ./cmd/fox
 
-# Run with Plan Mode (generates PLAN.md/TODO.md first)
-go run cmd/fox/main.go -plan -prompt "your task"
+# Run one-shot CLI agent and print the result
+go run ./cmd/fox exec -model "glm-4.5-air" "your task"
+
+# Run one-shot with Plan Mode (generates PLAN.md/TODO.md first)
+go run ./cmd/fox exec -plan "your task"
 
 # Run AgentOps server (Feishu integration)
 go run cmd/agentops/main.go

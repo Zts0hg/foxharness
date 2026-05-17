@@ -14,7 +14,7 @@ export ZHIPU_API_KEY="你的智谱 API Key"
 建议先关闭 Plan Mode，让验证更聚焦在 engine 的会话历史拼装上：
 
 ```bash
-go run ./cmd/fox -plan=false -new -prompt "ping"
+go run ./cmd/fox exec -plan=false -new "ping"
 ```
 
 如果这一步能正常返回，并在结尾打印 `Session:`、`Run:`、`Metrics:`、`Trace:`，说明 CLI 基本链路可用。
@@ -24,10 +24,10 @@ go run ./cmd/fox -plan=false -new -prompt "ping"
 这个 Run 写入一个很容易识别的验证短语。注意这里不依赖 Working Memory，总结文件或外部文件，只依赖 Session 的原始消息历史。
 
 ```bash
-OUT1=$(go run ./cmd/fox \
+OUT1=$(go run ./cmd/fox exec \
   -plan=false \
   -new \
-  -prompt "这是单个 Session 连续 Run 验证的第 1 轮。请不要调用工具，只回复一句：我已记住验证短语 SESSION_CHAIN_042，下一轮可以直接问我。")
+  "这是单个 Session 连续 Run 验证的第 1 轮。请不要调用工具，只回复一句：我已记住验证短语 SESSION_CHAIN_042，下一轮可以直接问我。")
 
 echo "$OUT1"
 SESSION_ID=$(printf '%s\n' "$OUT1" | awk '/^Session:/ {print $2}' | tail -1)
@@ -46,10 +46,10 @@ echo "SESSION_ID=$SESSION_ID"
 这一步显式使用 `-session "$SESSION_ID"` 继续同一个 Session。验证点是：第 2 个 Run 应该能从当前 Session 的原始消息历史中看到第 1 个 Run 的内容。
 
 ```bash
-OUT2=$(go run ./cmd/fox \
+OUT2=$(go run ./cmd/fox exec \
   -plan=false \
   -session "$SESSION_ID" \
-  -prompt "这是同一个 Session 的第 2 轮。不要调用工具，不要读取文件，不要猜测。请根据当前会话历史回答：上一轮我让你记住的验证短语是什么？")
+  "这是同一个 Session 的第 2 轮。不要调用工具，不要读取文件，不要猜测。请根据当前会话历史回答：上一轮我让你记住的验证短语是什么？")
 
 echo "$OUT2"
 ```
@@ -67,10 +67,10 @@ echo "$OUT2"
 这一步继续使用同一个 Session，让模型总结前两轮任务。
 
 ```bash
-OUT3=$(go run ./cmd/fox \
+OUT3=$(go run ./cmd/fox exec \
   -plan=false \
   -session "$SESSION_ID" \
-  -prompt "这是同一个 Session 的第 3 轮。请根据当前会话历史，用两句话总结第 1 轮和第 2 轮分别做了什么。")
+  "这是同一个 Session 的第 3 轮。请根据当前会话历史，用两句话总结第 1 轮和第 2 轮分别做了什么。")
 
 echo "$OUT3"
 ```
@@ -86,10 +86,10 @@ echo "$OUT3"
 如果刚刚创建的 `$SESSION_ID` 是最新的 CLI Session，也可以不用显式传 session id：
 
 ```bash
-go run ./cmd/fox \
+go run ./cmd/fox exec \
   -plan=false \
   -continue \
-  -prompt "继续最近的 CLI Session。请只回答：当前验证短语是什么？"
+  "继续最近的 CLI Session。请只回答：当前验证短语是什么？"
 ```
 
 期望结果：
@@ -104,10 +104,10 @@ go run ./cmd/fox \
 这一步强制创建一个新 Session。新 Session 不应该天然拥有旧 Session 的上下文。
 
 ```bash
-go run ./cmd/fox \
+go run ./cmd/fox exec \
   -plan=false \
   -new \
-  -prompt "这是一个全新的 Session。不要调用工具。请回答：当前会话历史里是否出现过验证短语 SESSION_CHAIN_042？如果没有，请只回答：没有。"
+  "这是一个全新的 Session。不要调用工具。请回答：当前会话历史里是否出现过验证短语 SESSION_CHAIN_042？如果没有，请只回答：没有。"
 ```
 
 期望结果：

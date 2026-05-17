@@ -2,14 +2,17 @@
 //
 // Usage:
 //
-//	fox -prompt "your task" -model "glm-4.5-air"
-//	fox -plan -prompt "your task"
-//	echo "your task" | fox
+//	fox
+//	fox "start this task in the TUI"
+//	fox exec "run this task once"
+//	fox -p "run this task once"
+//	echo "your task" | fox exec -
 //
 // Flags:
 //
 //	-workdir    Working directory (default: current directory)
-//	-prompt     User task prompt; reads from stdin if empty
+//	-prompt     User task prompt
+//	-p, -print  Print response and exit without TUI
 //	-model      LLM model name (default: "glm-4.5-air")
 //	-thinking   Enable legacy per-turn Thinking mode
 //	-plan       Enable Plan Mode (default: true)
@@ -32,22 +35,23 @@ import (
 	"github.com/Zts0hg/foxharness/internal/app"
 )
 
-func main() {
-	var cfg app.CLIConfig
-	flag.StringVar(&cfg.WorkDir, "workdir", ".", "working directory")
-	flag.StringVar(&cfg.Prompt, "prompt", "", "user task prompt; reads from stdin if empty")
-	flag.StringVar(&cfg.Model, "model", "glm-4.5-air", "LLM model name")
-	flag.BoolVar(&cfg.EnableThinking, "thinking", false, "enable legacy per-turn Thinking mode; disabled when Plan Mode succeeds")
-	flag.BoolVar(&cfg.EnablePlanMode, "plan", true, "enable Plan Mode")
-	flag.IntVar(&cfg.MaxTurns, "max-turns", 20, "maximum number of agent turns")
-	flag.StringVar(&cfg.SessionID, "session", "", "resume a specific session ID")
-	flag.BoolVar(&cfg.ContinueSession, "continue", false, "resume the latest CLI session")
-	flag.BoolVar(&cfg.NewSession, "new", false, "force creation of a new session")
-	flag.BoolVar(&cfg.Interactive, "tui", false, "start an interactive terminal UI")
-	flag.BoolVar(&cfg.Interactive, "interactive", false, "start an interactive terminal UI")
-	flag.Parse()
+type launchMode int
 
-	if cfg.Interactive {
+const (
+	launchTUI launchMode = iota
+	launchPrint
+)
+
+func main() {
+	cfg, mode, err := parseArgs(os.Args[1:], os.Stderr)
+	if err != nil {
+		if err == flag.ErrHelp {
+			return
+		}
+		log.Fatal(err)
+	}
+
+	if mode == launchTUI {
 		cfg.Prompt = strings.TrimSpace(cfg.Prompt)
 		if err := app.RunTUI(context.Background(), cfg); err != nil {
 			log.Fatal(err)
@@ -64,79 +68,74 @@ func main() {
 	if err := app.RunCLI(context.Background(), cfg); err != nil {
 		log.Fatal(err)
 	}
-	// 	if os.Getenv("ZHIPU_API_KEY") == "" {
-	// 		panic("请先导出 ZHIPU_API_KEY 环境变量")
-	// 	}
+}
 
-	// 	fmt.Println("🚀 欢迎来到 fox-harness-go 引擎启动序列")
+func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, error) {
+	var cfg app.CLIConfig
+	mode := launchTUI
+	if len(args) > 0 && args[0] == "exec" {
+		mode = launchPrint
+		args = args[1:]
+	}
 
-	// 	workDir, _ := os.Getwd()
-	// 	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.7")
-	// 	registry := tools.NewRegistry()
+	fs := flag.NewFlagSet("fox", flag.ContinueOnError)
+	if output == nil {
+		output = io.Discard
+	}
+	fs.SetOutput(output)
 
-	// 	registry.Register(tools.NewReadFileTool(workDir))
-	// 	registry.Register(tools.NewWriteFileTool(workDir))
-	// 	registry.Register(tools.NewBashTool(workDir))
-	// 	registry.Register(tools.NewEditFileTool(workDir))
+	printMode := false
+	fs.StringVar(&cfg.WorkDir, "workdir", ".", "working directory")
+	fs.StringVar(&cfg.WorkDir, "C", ".", "working directory")
+	fs.StringVar(&cfg.Prompt, "prompt", "", "user task prompt")
+	fs.StringVar(&cfg.Model, "model", "glm-4.5-air", "LLM model name")
+	fs.BoolVar(&cfg.EnableThinking, "thinking", false, "enable legacy per-turn Thinking mode; disabled when Plan Mode succeeds")
+	fs.BoolVar(&cfg.EnablePlanMode, "plan", true, "enable Plan Mode")
+	fs.IntVar(&cfg.MaxTurns, "max-turns", 20, "maximum number of agent turns")
+	fs.StringVar(&cfg.SessionID, "session", "", "resume a specific session ID")
+	fs.StringVar(&cfg.SessionID, "r", "", "resume a specific session ID")
+	fs.BoolVar(&cfg.ContinueSession, "continue", false, "resume the latest CLI session")
+	fs.BoolVar(&cfg.ContinueSession, "c", false, "resume the latest CLI session")
+	fs.BoolVar(&cfg.NewSession, "new", false, "force creation of a new session")
+	fs.BoolVar(&cfg.Interactive, "tui", false, "start an interactive terminal UI (default)")
+	fs.BoolVar(&cfg.Interactive, "interactive", false, "start an interactive terminal UI (default)")
+	fs.BoolVar(&printMode, "p", false, "print response and exit without TUI")
+	fs.BoolVar(&printMode, "print", false, "print response and exit without TUI")
+	fs.Usage = func() {
+		fmt.Fprintln(output, "Usage:")
+		fmt.Fprintln(output, "  fox [options] [prompt]       start the interactive TUI")
+		fmt.Fprintln(output, "  fox exec [options] [prompt]  run once and print the result")
+		fmt.Fprintln(output, "  fox -p [options] [prompt]    run once and print the result")
+		fmt.Fprintln(output, "  echo \"prompt\" | fox exec -  read the one-shot prompt from stdin")
+		fmt.Fprintln(output)
+		fmt.Fprintln(output, "Options:")
+		fs.PrintDefaults()
+	}
 
-	// 	// TODO 3. 初始化上下文管理器 (内存管理器)
-	// 	// ctxManager := context.NewManager(...)
-	// 	manager := session.NewManager(workDir)
-	// 	sess, err := manager.Create(session.CreateOptions{
-	// 		Source:  session.SOURCECLI,
-	// 		WorkDir: workDir,
-	// 	})
-	// 	if err != nil {
-	// 		log.Fatal(err)
-	// 	}
-	// 	subManager := subagent.NewManager(llmProvider, workDir)
-	// 	registry.Register(subagent.NewTool(subManager, sess.ID))
+	if err := fs.Parse(args); err != nil {
+		return cfg, mode, err
+	}
 
-	// 	store := memory.NewStore(workDir)
-	// 	if err := store.EnsureFiles(); err != nil {
-	// 		log.Fatal(err)
-	// 	}
+	if printMode {
+		mode = launchPrint
+	}
+	if cfg.Interactive && mode == launchPrint {
+		return cfg, mode, fmt.Errorf("-tui/-interactive 不能和 exec 或 -p/-print 同时使用")
+	}
 
-	// 	userPrompt := `请严格按顺序执行这个验证任务：
-
-	// 1. 第一步必须调用 read_file，读取 ./DOES_NOT_EXIST_FOR_TRACE.md。
-	// 2. 这个文件不存在。读取失败后，等待 Harness 的 Error Recovery Notice。
-	// 3. 收到恢复提示后，使用 bash 查看当前目录。
-	// 4. 然后读取 go.mod，总结 module 名称和 Go 版本。`
-	// 	enablePlanMode := true
-	// 	enableThinking := false
-	// 	if enablePlanMode {
-	// 		planner := memory.NewPlanner(llmProvider, store)
-	// 		log.Printf("[PlanMode] 开始生成计划...")
-	// 		if err := planner.BuildPlan(context.Background(), userPrompt); err != nil {
-	// 			log.Printf("[PlanMode] 生成计划失败，将回退到旧版每轮 Thinking: %v", err)
-	// 			enableThinking = true
-	// 		} else {
-	// 			log.Printf("[PlanMode] 计划已生成，本次任务关闭每轮 Thinking")
-
-	// 		}
-
-	// 	}
-
-	// 	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
-	// 	eng := engine.NewAgentEngine(llmProvider, registry, workDir, enableThinking, composer)
-	// 	eng.WithCompactor(compaction.NewCompactor(
-	// 		llmProvider,
-	// 		compaction.RoughEstimator{},
-	// 		compaction.DefaultConfig(),
-	// 	))
-
-	// fmt.Println("开始执行任务...")
-	// _, err = eng.Run(context.Background(), sess, userPrompt)
-	//
-	//	if err != nil {
-	//		log.Fatalf("引擎运行崩溃: %v", err)
-	//	}
+	positionalPrompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if strings.TrimSpace(cfg.Prompt) != "" && positionalPrompt != "" {
+		return cfg, mode, fmt.Errorf("不能同时使用 -prompt 和位置参数 prompt")
+	}
+	if strings.TrimSpace(cfg.Prompt) == "" {
+		cfg.Prompt = positionalPrompt
+	}
+	return cfg, mode, nil
 }
 
 func readPrompt(input string) (string, error) {
 	input = strings.TrimSpace(input)
-	if input != "" {
+	if input != "" && input != "-" {
 		return input, nil
 	}
 
@@ -147,8 +146,7 @@ func readPrompt(input string) (string, error) {
 
 	prompt := strings.TrimSpace(string(data))
 	if prompt == "" {
-		return "", fmt.Errorf("prompt 不能为空，请使用 -prompt 或通过 stdin 输入")
-
+		return "", fmt.Errorf("prompt 不能为空，请使用位置参数、-prompt 或通过 stdin 输入")
 	}
 
 	return prompt, nil
