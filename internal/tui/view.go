@@ -47,7 +47,12 @@ var (
 	footerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("245"))
 
-	userLabelStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("45"))
+	userBubbleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("230")).
+			Background(lipgloss.Color("24")).
+			Padding(0, 1)
+
+	userMetaStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("195"))
 	assistantLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("114"))
 	toolLabelStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 	systemLabelStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("147"))
@@ -109,14 +114,32 @@ func (m Model) renderBody(width int, height int) string {
 }
 
 func (m Model) renderEntries(width int) string {
-	var parts []string
-	for _, e := range m.entries {
-		parts = append(parts, renderEntry(e, width))
+	var out strings.Builder
+	for i, e := range m.entries {
+		if i > 0 {
+			if isToolResultPair(m.entries[i-1], e) {
+				out.WriteString("\n")
+			} else {
+				out.WriteString("\n\n")
+			}
+		}
+		out.WriteString(renderEntry(e, width))
 	}
-	return strings.Join(parts, "\n\n")
+	return out.String()
 }
 
 func renderEntry(e entry, width int) string {
+	switch {
+	case e.role == "user":
+		return renderUserEntry(e, width)
+	case e.role == "tool" && strings.HasPrefix(e.title, "call "):
+		return renderToolCall(e, width)
+	case e.role == "tool" && strings.HasPrefix(e.title, "result "):
+		return renderToolResult(e, width)
+	case e.role == "assistant":
+		return renderAssistantEntry(e, width)
+	}
+
 	label := labelStyle(e).Render(strings.ToUpper(e.role))
 	title := strings.TrimSpace(e.title)
 	if title == "" {
@@ -126,6 +149,50 @@ func renderEntry(e entry, width int) string {
 	bodyWidth := max(width-2, 20)
 	body := indentLines(wrapText(e.body, bodyWidth), "  ")
 	return fitLine(label+" "+meta, width) + "\n" + body
+}
+
+func renderUserEntry(e entry, width int) string {
+	meta := userMetaStyle.Render("You " + e.time.Format("15:04:05"))
+	body := wrapText(e.body, max(width-userBubbleStyle.GetHorizontalFrameSize(), 20))
+	content := meta
+	if body != "" {
+		content += "\n" + body
+	}
+	return userBubbleStyle.Width(width - userBubbleStyle.GetHorizontalFrameSize()).Render(content)
+}
+
+func renderAssistantEntry(e entry, width int) string {
+	meta := assistantLabelStyle.Render("Foxharness") + " " + mutedStyle.Render(e.time.Format("15:04:05"))
+	body := indentLines(wrapText(e.body, max(width-2, 20)), "  ")
+	return fitLine(meta, width) + "\n" + body
+}
+
+func renderToolCall(e entry, width int) string {
+	line := toolLabelStyle.Render("• " + strings.TrimSpace(e.body))
+	return fitLine(line, width)
+}
+
+func renderToolResult(e entry, width int) string {
+	output := strings.TrimSpace(e.body)
+	if output == "" {
+		output = "(no output)"
+	}
+	lines := strings.Split(wrapText(output, max(width-4, 20)), "\n")
+	for i := range lines {
+		if i == 0 {
+			lines[i] = "  └ " + lines[i]
+		} else {
+			lines[i] = "    " + lines[i]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func isToolResultPair(prev entry, current entry) bool {
+	return prev.role == "tool" &&
+		current.role == "tool" &&
+		strings.HasPrefix(prev.title, "call ") &&
+		strings.HasPrefix(current.title, "result ")
 }
 
 func (m Model) renderInput(width int) string {
@@ -181,8 +248,6 @@ func labelStyle(e entry) lipgloss.Style {
 		return errorLabelStyle
 	}
 	switch e.role {
-	case "user":
-		return userLabelStyle
 	case "assistant":
 		return assistantLabelStyle
 	case "tool":

@@ -31,8 +31,8 @@ func (r *fakeRunner) Run(ctx context.Context, prompt string, reporter engine.Rep
 		runID = "run-2"
 	}
 	reporter.OnRunStart(ctx, r.sessionID, runID)
-	reporter.OnToolCall(ctx, "read_file", `{"path":"go.mod"}`)
-	reporter.OnToolResult(ctx, "read_file", "module github.com/Zts0hg/foxharness", false)
+	reporter.OnToolCall(ctx, "bash", `{"command":"date"}`)
+	reporter.OnToolResult(ctx, "bash", "2026年 5月17日 星期日 14时17分46秒 CST", false)
 	if r.runErr != nil {
 		reporter.OnRunError(ctx, r.sessionID, runID, r.runErr)
 		return nil, r.runErr
@@ -100,14 +100,52 @@ func TestModelSubmitsPromptAndRendersRunEvents(t *testing.T) {
 	if !entriesContain(m.entries, "assistant", "answer: inspect go.mod") {
 		t.Fatalf("entries missing assistant message: %#v", m.entries)
 	}
-	if !entriesContain(m.entries, "tool", "module github.com/Zts0hg/foxharness") {
+	if !entriesContain(m.entries, "tool", "2026年 5月17日") {
 		t.Fatalf("entries missing tool result: %#v", m.entries)
+	}
+	if entriesContain(m.entries, "system", "Session:") || entriesContain(m.entries, "system", "Run:") {
+		t.Fatalf("run start details should stay out of transcript entries: %#v", m.entries)
 	}
 	if entriesContain(m.entries, "system", "Metrics:") || entriesContain(m.entries, "system", "Trace:") {
 		t.Fatalf("run completion details should stay out of transcript entries: %#v", m.entries)
 	}
 	if !strings.Contains(m.status, "run-1") {
 		t.Fatalf("status = %q, want completed run id", m.status)
+	}
+}
+
+func TestModelViewUsesCompactMessageRendering(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("hello, what's the day today?"))
+	m, cmd := update(t, m, keyEnter())
+	m, _ = update(t, m, cmd())
+
+	view := m.View()
+	for _, forbidden := range []string{
+		"USER you",
+		"SYSTEM run started",
+		"TOOL call bash",
+		"TOOL result bash",
+		"Session: sess-1",
+		"Run: run-1",
+	} {
+		if strings.Contains(view, forbidden) {
+			t.Fatalf("view contains verbose fragment %q:\n%s", forbidden, view)
+		}
+	}
+	for _, want := range []string{
+		"You ",
+		"hello, what's the day today?",
+		"• Ran date",
+		"└ 2026年 5月17日",
+		"Foxharness",
+		"answer: hello, what's the day today?",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing compact fragment %q:\n%s", want, view)
+		}
 	}
 }
 

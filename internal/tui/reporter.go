@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -15,9 +16,6 @@ type channelReporter struct {
 
 func (r *channelReporter) OnRunStart(ctx context.Context, sessionID string, runID string) {
 	r.send(ctx, runEventMsg{
-		role:   "system",
-		title:  "run started",
-		body:   fmt.Sprintf("Session: %s\nRun: %s", sessionID, runID),
 		status: fmt.Sprintf("Run started: %s", runID),
 	})
 }
@@ -44,7 +42,7 @@ func (r *channelReporter) OnToolCall(ctx context.Context, toolName string, args 
 	r.send(ctx, runEventMsg{
 		role:   "tool",
 		title:  "call " + toolName,
-		body:   strings.TrimSpace(args),
+		body:   formatToolInvocation(toolName, args),
 		status: "Calling tool: " + toolName,
 	})
 }
@@ -103,3 +101,61 @@ func (r *channelReporter) send(ctx context.Context, msg tea.Msg) {
 }
 
 var _ engine.Reporter = (*channelReporter)(nil)
+
+func formatToolInvocation(toolName string, args string) string {
+	fields := parseToolArgs(args)
+	switch toolName {
+	case "bash":
+		if command := fields["command"]; command != "" {
+			return "Ran " + command
+		}
+	case "read_file":
+		if path := fields["path"]; path != "" {
+			return "Read " + path
+		}
+	case "write_file":
+		if path := fields["path"]; path != "" {
+			return "Wrote " + path
+		}
+	case "edit_file":
+		if path := fields["path"]; path != "" {
+			return "Edited " + path
+		}
+	case "delegate_task":
+		if task := fields["task"]; task != "" {
+			return "Delegated " + truncateInline(task, 80)
+		}
+	}
+
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return "Used " + toolName
+	}
+	return fmt.Sprintf("%s(%s)", toolName, truncateInline(args, 120))
+}
+
+func parseToolArgs(args string) map[string]string {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(args), &raw); err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for key, value := range raw {
+		if text, ok := value.(string); ok {
+			out[key] = text
+		}
+	}
+	return out
+}
+
+func truncateInline(s string, limit int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	if limit <= 3 {
+		return string(runes[:limit])
+	}
+	return string(runes[:limit-3]) + "..."
+}
