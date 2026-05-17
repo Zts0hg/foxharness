@@ -1,0 +1,323 @@
+# foxharness
+
+foxharness is a Go-based AI coding agent. It runs in your terminal, reads the current project, calls local tools, keeps session history across multiple runs, and provides a TUI experience similar to Claude Code and Codex.
+
+The default binary command is `fox`.
+
+## Features
+
+- Interactive TUI by default: run `fox` inside a project and chat continuously.
+- One-shot CLI mode: run a single task with `fox exec` or `fox -p`.
+- Session continuity: multiple runs can share one session and one raw message history.
+- Project instructions: automatically loads `AGENTS.md` from the current workspace.
+- Skills: loads `.foxharness/skills/<name>/SKILL.md` when the prompt mentions `$name`.
+- Plan mode: can generate and use `PLAN.md`, `TODO.md`, and `MEMORY.md`.
+- Tool execution: file reading, file writing, fuzzy edit, bash, and delegated subagent tasks.
+- Local trace data: stores transcripts, metrics, traces, and run metadata under `~/.foxharness`.
+
+## Install
+
+### Option 1: Download a release binary
+
+Download the binary for your platform from:
+
+```text
+https://github.com/Zts0hg/foxharness/releases
+```
+
+macOS Apple Silicon:
+
+```bash
+curl -L https://github.com/Zts0hg/foxharness/releases/download/v0.1.0/fox_v0.1.0_darwin_arm64.tar.gz -o fox.tar.gz
+tar -xzf fox.tar.gz
+chmod +x fox
+sudo mv fox /usr/local/bin/fox
+```
+
+macOS Intel:
+
+```bash
+curl -L https://github.com/Zts0hg/foxharness/releases/download/v0.1.0/fox_v0.1.0_darwin_amd64.tar.gz -o fox.tar.gz
+tar -xzf fox.tar.gz
+chmod +x fox
+sudo mv fox /usr/local/bin/fox
+```
+
+Linux amd64:
+
+```bash
+curl -L https://github.com/Zts0hg/foxharness/releases/download/v0.1.0/fox_v0.1.0_linux_amd64.tar.gz -o fox.tar.gz
+tar -xzf fox.tar.gz
+chmod +x fox
+sudo mv fox /usr/local/bin/fox
+```
+
+Linux arm64:
+
+```bash
+curl -L https://github.com/Zts0hg/foxharness/releases/download/v0.1.0/fox_v0.1.0_linux_arm64.tar.gz -o fox.tar.gz
+tar -xzf fox.tar.gz
+chmod +x fox
+sudo mv fox /usr/local/bin/fox
+```
+
+Windows users can download one of these archives from the release page:
+
+- `fox_v0.1.0_windows_amd64.zip`
+- `fox_v0.1.0_windows_arm64.zip`
+
+Unzip it and add the directory containing `fox.exe` to your `PATH`.
+
+On macOS, if Gatekeeper blocks the downloaded binary, remove the quarantine flag:
+
+```bash
+xattr -d com.apple.quarantine /usr/local/bin/fox
+```
+
+### Option 2: Install from source
+
+This requires Go 1.25 or newer.
+
+```bash
+go install github.com/Zts0hg/foxharness/cmd/fox@v0.1.0
+```
+
+Make sure `$GOPATH/bin` is in your `PATH`.
+
+## Configure
+
+foxharness currently uses Zhipu BigModel's OpenAI-compatible coding endpoint. Set your API key before running `fox`:
+
+```bash
+export ZHIPU_API_KEY="your-api-key"
+```
+
+Optional retry and timeout settings:
+
+```bash
+export FOXHARNESS_LLM_MAX_ATTEMPTS=4
+export FOXHARNESS_LLM_RETRY_INITIAL_DELAY=750ms
+export FOXHARNESS_LLM_RETRY_MAX_DELAY=8s
+export FOXHARNESS_LLM_REQUEST_TIMEOUT=60s
+```
+
+## Quick Start
+
+Open any project directory and start the TUI:
+
+```bash
+cd /path/to/your/project
+fox
+```
+
+Or specify the project directory explicitly:
+
+```bash
+fox -C /path/to/your/project
+```
+
+Run a one-shot task and print the answer:
+
+```bash
+fox exec "Inspect the current project for potential bugs"
+```
+
+Claude-style print mode is also supported:
+
+```bash
+fox -p "Summarize this project's architecture"
+```
+
+Read the task from stdin:
+
+```bash
+echo "Run the tests and explain any failures" | fox exec -
+```
+
+## TUI Usage
+
+Inside the TUI:
+
+- `Enter`: send the current message.
+- `Shift+Tab`: toggle Plan Mode for future runs.
+- `Up` / `Down`: reuse previous input history.
+- `/`: open slash command suggestions.
+- `Esc`: cancel the active run.
+- `Ctrl+C` twice within two seconds: quit.
+
+Slash commands:
+
+| Command | Description |
+| --- | --- |
+| `/session` | Show current session paths. |
+| `/clear` | Clear the visible transcript. |
+| `/new` | Start a fresh session. |
+| `/cancel` | Cancel the active run. |
+| `/help` | Show available commands. |
+| `/exit` | Quit the TUI. |
+
+## CLI Usage
+
+```bash
+fox [options] [prompt]       # start the interactive TUI
+fox exec [options] [prompt]  # run once and print the result
+fox -p [options] [prompt]    # run once and print the result
+```
+
+Common options:
+
+| Option | Description |
+| --- | --- |
+| `-C`, `-workdir` | Working directory. Defaults to `.`. |
+| `-model` | Model name. Defaults to `glm-4.5-air`. |
+| `-plan` | Enable Plan Mode. Defaults to `true`. |
+| `-thinking` | Enable legacy per-turn thinking mode when Plan Mode is not used. |
+| `-max-turns` | Maximum agent turns. Defaults to `20`. |
+| `-c`, `-continue` | Resume the latest CLI session. |
+| `-r`, `-session` | Resume a specific session ID. |
+| `-new` | Force creation of a new session. |
+| `-p`, `-print` | Run once and print the result without TUI. |
+
+Examples:
+
+```bash
+fox exec -plan=false "Inspect the code only; do not modify files"
+fox exec -continue "Fix the bugs found in the previous run"
+fox exec -session 20260517-192517-a504c5 "Continue this session and summarize the current progress"
+fox exec -model glm-4.5-air "Add tests for this project"
+```
+
+## Project Instructions
+
+foxharness loads project-level instructions from:
+
+```text
+AGENTS.md
+```
+
+Put coding rules, test commands, style constraints, and project-specific guidance there.
+
+Example:
+
+```markdown
+# AGENTS.md
+
+## Commands
+
+- Run all tests with `go test ./...`.
+- Format Go files with `gofmt -w`.
+
+## Rules
+
+- Do not edit files under `vendor/`.
+- Prefer focused edits over whole-file rewrites.
+```
+
+## Skills
+
+Skills live under the current project:
+
+```text
+.foxharness/skills/<skill-name>/SKILL.md
+```
+
+Reference a skill in your prompt with `$skill-name`:
+
+```bash
+fox exec "Use $go-refactor to refactor internal/session"
+```
+
+`SKILL.md` can include optional frontmatter:
+
+```markdown
+---
+name: go-refactor
+description: Go refactoring guidance for this project
+---
+
+Follow the existing package boundaries and preserve public APIs unless asked.
+```
+
+## Sessions and Data
+
+Session data is stored outside your project directory:
+
+```text
+~/.foxharness/projects/<encoded-workdir>/sessions/<session-id>/
+```
+
+Each session can contain multiple runs:
+
+```text
+messages.jsonl
+session.json
+transcript.jsonl
+working_memory.md
+runs/<run-id>/run.json
+runs/<run-id>/metrics.jsonl
+runs/<run-id>/trace.jsonl
+```
+
+This means a user can start a task, inspect the answer, and then continue with a follow-up message in the same session.
+
+Plan Mode may create or update these files in the project root:
+
+```text
+PLAN.md
+TODO.md
+MEMORY.md
+```
+
+If you want these files to stay local, add them to your project's `.gitignore`.
+
+## Development
+
+Clone the repository:
+
+```bash
+git clone https://github.com/Zts0hg/foxharness.git
+cd foxharness
+```
+
+Run tests:
+
+```bash
+go test ./...
+```
+
+Format Go files:
+
+```bash
+gofmt -w ./cmd ./internal
+```
+
+Run from source:
+
+```bash
+go run ./cmd/fox
+go run ./cmd/fox exec "Inspect the current project"
+```
+
+Build locally:
+
+```bash
+go build -trimpath -ldflags="-s -w" -o fox ./cmd/fox
+```
+
+## Release
+
+The GitHub Actions release workflow builds binaries for:
+
+- macOS amd64
+- macOS arm64
+- Linux amd64
+- Linux arm64
+- Windows amd64
+- Windows arm64
+
+Create and push a version tag to publish a release:
+
+```bash
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
