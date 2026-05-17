@@ -22,9 +22,6 @@ func (r *channelReporter) OnRunStart(ctx context.Context, sessionID string, runI
 
 func (r *channelReporter) OnThinking(ctx context.Context, turn int) {
 	r.send(ctx, runEventMsg{
-		role:   "system",
-		title:  "thinking",
-		body:   fmt.Sprintf("Planning turn %d.", turn),
 		status: fmt.Sprintf("Thinking turn %d", turn),
 	})
 }

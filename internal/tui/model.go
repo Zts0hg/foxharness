@@ -15,6 +15,7 @@ const (
 	minHeight = 20
 
 	quitConfirmWindow = 2 * time.Second
+	runningTickEvery  = time.Second
 )
 
 // Runner is the app-facing runtime required by the TUI. It is intentionally
@@ -63,6 +64,8 @@ var slashCommands = []slashCommand{
 	{Name: "/exit", Description: "quit"},
 }
 
+var workingFrames = []string{"•", "◦", "●", "◌"}
+
 type Model struct {
 	ctx    context.Context
 	runner Runner
@@ -77,6 +80,8 @@ type Model struct {
 	entries      []entry
 	status       string
 	running      bool
+	runStartedAt time.Time
+	spinnerFrame int
 	scrollOffset int
 	cancelRun    context.CancelFunc
 	lastCtrlC    time.Time
@@ -114,7 +119,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return waitForRunEvent(m.ctx, m.events)
+	return tea.Batch(waitForRunEvent(m.ctx, m.events), runningTickCmd())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -131,6 +136,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runFinishedMsg:
 		m.drainRunEvents()
 		m.running = false
+		m.runStartedAt = time.Time{}
 		m.cancelRun = nil
 		if msg.err != nil {
 			m.status = "Run failed"
@@ -146,6 +152,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case newSessionFinishedMsg:
 		m.running = false
+		m.runStartedAt = time.Time{}
 		m.cancelRun = nil
 		if msg.err != nil {
 			m.status = "New session failed"
@@ -156,6 +163,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "New session ready"
 		m.appendEntry("system", "new session", fmt.Sprintf("Switched to session %s", msg.sessionID), false)
 		return m, nil
+
+	case runningTickMsg:
+		if m.running {
+			m.spinnerFrame++
+		}
+		return m, runningTickCmd()
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -261,6 +274,8 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	m.input = nil
 	m.scrollOffset = 0
 	m.running = true
+	m.runStartedAt = m.nowTime()
+	m.spinnerFrame = 0
 	m.status = "Running"
 	m.appendEntry("user", "you", text, false)
 
@@ -298,6 +313,8 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.running = true
+		m.runStartedAt = m.nowTime()
+		m.spinnerFrame = 0
 		m.status = "Creating new session"
 		return m, newSessionCmd(m.ctx, m.runner)
 	case "/cancel":
@@ -380,6 +397,24 @@ func (m *Model) applyRunEvent(msg runEventMsg) {
 	}
 }
 
+func (m Model) workingFrame() string {
+	if len(workingFrames) == 0 {
+		return "•"
+	}
+	return workingFrames[m.spinnerFrame%len(workingFrames)]
+}
+
+func (m Model) runningElapsed() time.Duration {
+	if m.runStartedAt.IsZero() {
+		return 0
+	}
+	elapsed := m.nowTime().Sub(m.runStartedAt)
+	if elapsed < 0 {
+		return 0
+	}
+	return elapsed
+}
+
 func scrollDelta(key string) int {
 	if key == "pgup" || key == "pgdown" {
 		return 8
@@ -396,6 +431,14 @@ func waitForRunEvent(ctx context.Context, events <-chan tea.Msg) tea.Cmd {
 			return tea.Quit()
 		}
 	}
+}
+
+type runningTickMsg struct{}
+
+func runningTickCmd() tea.Cmd {
+	return tea.Tick(runningTickEvery, func(time.Time) tea.Msg {
+		return runningTickMsg{}
+	})
 }
 
 type runEventMsg struct {

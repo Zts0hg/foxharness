@@ -31,6 +31,7 @@ func (r *fakeRunner) Run(ctx context.Context, prompt string, reporter engine.Rep
 		runID = "run-2"
 	}
 	reporter.OnRunStart(ctx, r.sessionID, runID)
+	reporter.OnThinking(ctx, 1)
 	reporter.OnToolCall(ctx, "bash", `{"command":"date"}`)
 	reporter.OnToolResult(ctx, "bash", "2026年 5月17日 星期日 14时17分46秒 CST", false)
 	if r.runErr != nil {
@@ -128,6 +129,8 @@ func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 		"SYSTEM run started",
 		"TOOL call bash",
 		"TOOL result bash",
+		"SYSTEM thinking",
+		"Planning turn",
 		"Session: sess-1",
 		"Run: run-1",
 	} {
@@ -340,23 +343,45 @@ func TestModelViewDoesNotRenderPipeCursor(t *testing.T) {
 func TestModelViewShowsRunningNoticeAboveInput(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
+	current := time.Date(2026, 5, 17, 12, 0, 58, 0, time.UTC)
+	m.now = func() time.Time { return current }
 	m.running = true
+	m.runStartedAt = current.Add(-58 * time.Second)
 
 	view := m.View()
-	if !strings.Contains(view, "Agent is running. Press Esc to request cancellation.") {
+	if !strings.Contains(view, "• Working (58s • esc to interrupt)") {
 		t.Fatalf("view missing running notice:\n%s", view)
 	}
-	if strings.Contains(view, "> Agent is running. Press Esc to request cancellation.") {
+	if strings.Contains(view, "> • Working") {
 		t.Fatalf("running notice rendered inside input:\n%s", view)
 	}
 
-	noticeIndex := strings.Index(view, "Agent is running. Press Esc to request cancellation.")
+	noticeIndex := strings.Index(view, "Working (58s")
 	inputIndex := strings.Index(view, "> Input locked until the current run completes.")
 	if inputIndex < 0 {
 		t.Fatalf("view missing locked input text:\n%s", view)
 	}
 	if noticeIndex > inputIndex {
 		t.Fatalf("running notice should render above input:\n%s", view)
+	}
+}
+
+func TestModelRunningTickAdvancesSpinner(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	current := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return current }
+	m.running = true
+	m.runStartedAt = current
+
+	before := m.workingFrame()
+	m, cmd := update(t, m, runningTickMsg{})
+	if cmd == nil {
+		t.Fatalf("running tick did not schedule another tick")
+	}
+	after := m.workingFrame()
+	if before == after {
+		t.Fatalf("spinner frame did not advance: before=%q after=%q", before, after)
 	}
 }
 

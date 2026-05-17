@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -212,7 +213,7 @@ func (m Model) renderRunningNotice(width int) string {
 	if !m.running {
 		return ""
 	}
-	text := "Agent is running. Press Esc to request cancellation."
+	text := fmt.Sprintf("%s Working (%s • esc to interrupt)", m.workingFrame(), formatDuration(m.runningElapsed()))
 	return runningNoticeStyle.Width(width - runningNoticeStyle.GetHorizontalFrameSize()).Render(text)
 }
 
@@ -338,6 +339,19 @@ func fitLine(s string, width int) string {
 		runes = runes[:len(runes)-1]
 	}
 	return string(runes) + "..."
+}
+
+func formatDuration(d time.Duration) string {
+	total := int(d.Round(time.Second).Seconds())
+	if total < 0 {
+		total = 0
+	}
+	if total < 60 {
+		return fmt.Sprintf("%ds", total)
+	}
+	minutes := total / 60
+	seconds := total % 60
+	return fmt.Sprintf("%dm%02ds", minutes, seconds)
 }
 
 func shortValue(s string, limit int) string {
