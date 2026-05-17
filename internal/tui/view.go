@@ -61,6 +61,7 @@ var (
 	mutedStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	placeholderStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	cursorStyle         = lipgloss.NewStyle().Reverse(true)
+	planModeStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
 )
 
 func (m Model) View() string {
@@ -91,7 +92,7 @@ func (m Model) View() string {
 
 func (m Model) renderHeader(width int) string {
 	title := headerStyle.Render("FOXHARNESS")
-	meta := fmt.Sprintf(" model %s  plan %s  session %s", shortValue(m.modelName, 18), planModeLabel(m.planMode), shortValue(m.sessionID, 24))
+	meta := fmt.Sprintf(" model %s  %s session %s", shortValue(m.modelName, 18), planModeText(m.planMode), shortValue(m.sessionID, 24))
 	right := headerMetaStyle.Width(max(width-lipgloss.Width(title), 1)).Render(meta)
 	return lipgloss.JoinHorizontal(lipgloss.Top, title, right)
 }
@@ -236,19 +237,19 @@ func renderCursor() string {
 }
 
 func (m Model) renderFooter(width int) string {
-	help := "Enter send | Tab complete | Shift+Tab plan | Up/PgUp scroll | /session | /new | /clear | Ctrl+C twice quit"
+	help := "Enter send | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown scroll | Ctrl+C twice quit"
 	if m.running {
-		help = "Esc cancel current run | Ctrl+C twice quit"
+		help = "Shift+Tab toggles plan for next run | Esc cancel current run | Ctrl+C twice quit"
 	}
 	line := fmt.Sprintf("%s  %s", m.status, help)
 	return footerStyle.Width(width).Render(fitLine(line, width))
 }
 
-func planModeLabel(enabled bool) string {
-	if enabled {
-		return "on"
+func planModeText(enabled bool) string {
+	if !enabled {
+		return ""
 	}
-	return "off"
+	return planModeStyle.Render("plan mode on")
 }
 
 func labelStyle(e entry) lipgloss.Style {

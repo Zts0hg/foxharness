@@ -77,7 +77,10 @@ type Model struct {
 	width  int
 	height int
 
-	input []rune
+	input        []rune
+	inputHistory []string
+	historyIndex int
+	historyDraft []rune
 
 	entries      []entry
 	status       string
@@ -102,17 +105,18 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		modelName = runner.Model()
 	}
 	return Model{
-		ctx:       ctx,
-		runner:    runner,
-		events:    make(chan tea.Msg, 256),
-		now:       time.Now,
-		width:     96,
-		height:    28,
-		input:     []rune(cfg.InitialPrompt),
-		status:    "Ready",
-		sessionID: runner.SessionID(),
-		modelName: modelName,
-		planMode:  runner.PlanMode(),
+		ctx:          ctx,
+		runner:       runner,
+		events:       make(chan tea.Msg, 256),
+		now:          time.Now,
+		width:        96,
+		height:       28,
+		input:        []rune(cfg.InitialPrompt),
+		historyIndex: -1,
+		status:       "Ready",
+		sessionID:    runner.SessionID(),
+		modelName:    modelName,
+		planMode:     runner.PlanMode(),
 		entries: []entry{{
 			role:  "system",
 			title: "session",
@@ -144,7 +148,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cancelRun = nil
 		if msg.err != nil {
 			m.status = "Run failed"
-			m.appendEntry("error", "run failed", msg.err.Error(), true)
+			if !m.lastEntryContainsError(msg.err) {
+				m.appendEntry("error", "run failed", msg.err.Error(), true)
+			}
 			return m, nil
 		}
 		if msg.result != nil {
@@ -207,6 +213,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.input = nil
+		m.resetHistoryNavigation()
 		return m, nil
 	case "enter":
 		return m.submitInput()
@@ -219,23 +226,36 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "backspace", "ctrl+h":
 		if !m.running && len(m.input) > 0 {
+			m.resetHistoryNavigation()
 			m.input = m.input[:len(m.input)-1]
 		}
 		return m, nil
 	case " ":
 		if !m.running {
+			m.resetHistoryNavigation()
 			m.input = append(m.input, ' ')
 		}
 		return m, nil
 	case "ctrl+u":
 		if !m.running {
 			m.input = nil
+			m.resetHistoryNavigation()
 		}
 		return m, nil
-	case "up", "pgup":
+	case "up":
+		if !m.running {
+			m.recallPreviousInput()
+		}
+		return m, nil
+	case "down":
+		if !m.running {
+			m.recallNextInput()
+		}
+		return m, nil
+	case "pgup":
 		m.scrollOffset += scrollDelta(msg.String())
 		return m, nil
-	case "down", "pgdown":
+	case "pgdown":
 		m.scrollOffset -= scrollDelta(msg.String())
 		if m.scrollOffset < 0 {
 			m.scrollOffset = 0
@@ -250,22 +270,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if msg.Type == tea.KeyRunes {
+		m.resetHistoryNavigation()
 		m.input = append(m.input, msg.Runes...)
 	}
 	return m, nil
 }
 
 func (m Model) togglePlanMode() (tea.Model, tea.Cmd) {
-	if m.running {
-		m.status = "Cannot toggle plan mode while a run is active"
-		return m, nil
-	}
 	m.planMode = !m.planMode
 	m.runner.SetPlanMode(m.planMode)
 	if m.planMode {
-		m.status = "Plan mode enabled"
+		if m.running {
+			m.status = "Plan mode enabled for next run"
+		} else {
+			m.status = "Plan mode enabled"
+		}
 	} else {
-		m.status = "Plan mode disabled"
+		if m.running {
+			m.status = "Plan mode disabled for next run"
+		} else {
+			m.status = "Plan mode disabled"
+		}
 	}
 	return m, nil
 }
@@ -285,6 +310,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(text, "/") {
 		m.input = nil
+		m.resetHistoryNavigation()
 		return m.handleSlashCommand(text)
 	}
 	if m.running {
@@ -292,7 +318,9 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	m.addInputHistory(text)
 	m.input = nil
+	m.resetHistoryNavigation()
 	m.scrollOffset = 0
 	m.running = true
 	m.runStartedAt = m.nowTime()
@@ -303,6 +331,49 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
 	return m, runPromptCmd(runCtx, m.runner, text, m.events)
+}
+
+func (m *Model) addInputHistory(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if len(m.inputHistory) > 0 && m.inputHistory[len(m.inputHistory)-1] == text {
+		return
+	}
+	m.inputHistory = append(m.inputHistory, text)
+}
+
+func (m *Model) recallPreviousInput() {
+	if len(m.inputHistory) == 0 {
+		return
+	}
+	if m.historyIndex == -1 {
+		m.historyDraft = append([]rune(nil), m.input...)
+		m.historyIndex = len(m.inputHistory) - 1
+	} else if m.historyIndex > 0 {
+		m.historyIndex--
+	}
+	m.input = []rune(m.inputHistory[m.historyIndex])
+}
+
+func (m *Model) recallNextInput() {
+	if m.historyIndex == -1 {
+		return
+	}
+	if m.historyIndex < len(m.inputHistory)-1 {
+		m.historyIndex++
+		m.input = []rune(m.inputHistory[m.historyIndex])
+		return
+	}
+	m.historyIndex = -1
+	m.input = append([]rune(nil), m.historyDraft...)
+	m.historyDraft = nil
+}
+
+func (m *Model) resetHistoryNavigation() {
+	m.historyIndex = -1
+	m.historyDraft = nil
 }
 
 func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
@@ -396,6 +467,14 @@ func (m *Model) appendEntry(role, title, body string, isError bool) {
 		err:   isError,
 		time:  time.Now(),
 	})
+}
+
+func (m Model) lastEntryContainsError(err error) bool {
+	if err == nil || len(m.entries) == 0 {
+		return false
+	}
+	last := m.entries[len(m.entries)-1]
+	return last.err && strings.Contains(last.body, err.Error())
 }
 
 func (m *Model) drainRunEvents() {

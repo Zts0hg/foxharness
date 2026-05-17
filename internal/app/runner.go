@@ -33,7 +33,8 @@ type AgentRunnerConfig struct {
 // AgentRunner owns one long-lived session and can execute many user prompts
 // as separate runs inside that session.
 type AgentRunner struct {
-	mu sync.Mutex
+	mu    sync.Mutex
+	runMu sync.Mutex
 
 	workDir string
 	model   string
@@ -98,12 +99,16 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 
 // Run executes one prompt as a new run in the current session.
 func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engine.Reporter) (*engine.RunResult, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.runMu.Lock()
+	defer r.runMu.Unlock()
 
+	r.mu.Lock()
 	sess := r.currentSession
 	enableThinking := r.enableThinking
-	if r.enablePlanMode {
+	enablePlanMode := r.enablePlanMode
+	r.mu.Unlock()
+
+	if enablePlanMode {
 		planner := memory.NewPlanner(r.llmProvider, r.store)
 		if err := planner.BuildPlan(ctx, userPrompt); err != nil {
 			log.Printf("[PlanMode] 生成计划失败，将回退到旧版本每轮 Thinking: %v", err)

@@ -24,6 +24,8 @@ type OpenAIProvider struct {
 	client openai.Client
 	// model specifies the model identifier to use for generation.
 	model string
+	// retry controls transient request retries around the SDK request.
+	retry RetryConfig
 }
 
 // NewZhipuOpenAIProvider creates an OpenAIProvider configured for Zhipu AI's BigModel platform.
@@ -39,10 +41,20 @@ func NewZhipuOpenAIProvider(model string) *OpenAIProvider {
 		panic("ZHIPU_API_KEY environment variable must be set")
 	}
 	baseUrl := "https://open.bigmodel.cn/api/coding/paas/v4"
+	retry := retryConfigFromEnv()
+	clientOptions := []option.RequestOption{
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(baseUrl),
+		option.WithMaxRetries(0),
+	}
+	if retry.RequestTimeout > 0 {
+		clientOptions = append(clientOptions, option.WithRequestTimeout(retry.RequestTimeout))
+	}
 
 	return &OpenAIProvider{
-		client: openai.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseUrl)),
+		client: openai.NewClient(clientOptions...),
 		model:  model,
+		retry:  retry,
 	}
 }
 
@@ -130,9 +142,9 @@ func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message
 		params.Tools = openaiTools
 	}
 
-	resp, err := p.client.Chat.Completions.New(ctx, params)
+	resp, err := p.chatCompletionWithRetry(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("OpenAI/Zhipu API 请求失败: %w", err)
+		return nil, err
 	}
 
 	if len(resp.Choices) == 0 {
@@ -157,4 +169,8 @@ func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message
 	}
 
 	return resultMessage, nil
+}
+
+func (p *OpenAIProvider) chatCompletionWithRetry(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
+	return chatCompletionWithRetry(ctx, p.client, params, p.retry)
 }

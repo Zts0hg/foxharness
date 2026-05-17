@@ -235,6 +235,9 @@ func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	if m.planMode {
 		t.Fatalf("initial planMode = true, want false")
 	}
+	if strings.Contains(m.View(), "plan mode on") || strings.Contains(m.View(), "plan off") {
+		t.Fatalf("plan mode off should not render a plan label:\n%s", m.View())
+	}
 
 	m, _ = update(t, m, keyShiftTab())
 	if !m.planMode || !runner.planMode {
@@ -243,7 +246,7 @@ func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	if m.status != "Plan mode enabled" {
 		t.Fatalf("status = %q, want Plan mode enabled", m.status)
 	}
-	if !strings.Contains(m.View(), "plan on") {
+	if !strings.Contains(m.View(), "plan mode on") {
 		t.Fatalf("view missing plan on state:\n%s", m.View())
 	}
 
@@ -254,19 +257,75 @@ func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	if m.status != "Plan mode disabled" {
 		t.Fatalf("status = %q, want Plan mode disabled", m.status)
 	}
+	if strings.Contains(m.View(), "plan mode on") || strings.Contains(m.View(), "plan off") {
+		t.Fatalf("plan mode off should not render a plan label after disabling:\n%s", m.View())
+	}
 }
 
-func TestModelDoesNotTogglePlanModeWhileRunning(t *testing.T) {
+func TestModelTogglesPlanModeWhileRunningForNextRun(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
 	m.running = true
 
 	m, _ = update(t, m, keyShiftTab())
-	if m.planMode || runner.planMode {
-		t.Fatalf("plan mode changed while running: model=%v runner=%v", m.planMode, runner.planMode)
+	if !m.planMode || !runner.planMode {
+		t.Fatalf("plan mode was not enabled while running: model=%v runner=%v", m.planMode, runner.planMode)
 	}
-	if m.status != "Cannot toggle plan mode while a run is active" {
-		t.Fatalf("status = %q, want active run warning", m.status)
+	if m.status != "Plan mode enabled for next run" {
+		t.Fatalf("status = %q, want next-run plan mode status", m.status)
+	}
+}
+
+func TestModelInputHistoryWithArrowKeys(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("first task"))
+	m, cmd := update(t, m, keyEnter())
+	m, _ = update(t, m, cmd())
+
+	m, _ = update(t, m, keyRunes("second task"))
+	m, cmd = update(t, m, keyEnter())
+	m, _ = update(t, m, cmd())
+
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != "second task" {
+		t.Fatalf("first history recall = %q, want second task", got)
+	}
+
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != "first task" {
+		t.Fatalf("second history recall = %q, want first task", got)
+	}
+
+	m, _ = update(t, m, keyDown())
+	if got := string(m.input); got != "second task" {
+		t.Fatalf("history next = %q, want second task", got)
+	}
+
+	m, _ = update(t, m, keyDown())
+	if got := string(m.input); got != "" {
+		t.Fatalf("history next past newest = %q, want empty draft", got)
+	}
+}
+
+func TestModelInputHistoryRestoresDraft(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("saved task"))
+	m, cmd := update(t, m, keyEnter())
+	m, _ = update(t, m, cmd())
+
+	m, _ = update(t, m, keyRunes("draft"))
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != "saved task" {
+		t.Fatalf("history recall = %q, want saved task", got)
+	}
+
+	m, _ = update(t, m, keyDown())
+	if got := string(m.input); got != "draft" {
+		t.Fatalf("restored draft = %q, want draft", got)
 	}
 }
 
@@ -358,6 +417,9 @@ func TestModelRunError(t *testing.T) {
 	if !entriesContain(m.entries, "error", "model unavailable") {
 		t.Fatalf("entries missing error: %#v", m.entries)
 	}
+	if got := countEntriesContaining(m.entries, "error", "model unavailable"); got != 1 {
+		t.Fatalf("error entries = %d, want 1; entries = %#v", got, m.entries)
+	}
 }
 
 func TestModelViewContainsSessionAndInput(t *testing.T) {
@@ -366,10 +428,13 @@ func TestModelViewContainsSessionAndInput(t *testing.T) {
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	view := m.View()
-	for _, want := range []string{"FOXHARNESS", "fake-model", "plan off", "sess-1", "Message foxharness"} {
+	for _, want := range []string{"FOXHARNESS", "fake-model", "sess-1", "Message foxharness"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "plan mode on") || strings.Contains(view, "plan off") {
+		t.Fatalf("plan mode off should not render plan label:\n%s", view)
 	}
 }
 
@@ -478,6 +543,14 @@ func keyShiftTab() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyShiftTab}
 }
 
+func keyUp() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyUp}
+}
+
+func keyDown() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyDown}
+}
+
 func keySpace() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeySpace}
 }
@@ -500,4 +573,14 @@ func entriesContain(entries []entry, role string, text string) bool {
 		}
 	}
 	return false
+}
+
+func countEntriesContaining(entries []entry, role string, text string) int {
+	count := 0
+	for _, entry := range entries {
+		if entry.role == role && strings.Contains(entry.body, text) {
+			count++
+		}
+	}
+	return count
 }
