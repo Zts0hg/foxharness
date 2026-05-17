@@ -39,7 +39,7 @@ func TestAgentRunnerSetPlanModeWhileRunIsActive(t *testing.T) {
 	if err := store.EnsureFiles(); err != nil {
 		t.Fatalf("EnsureFiles() error = %v", err)
 	}
-	manager := session.NewManager(workDir)
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
 	sess, err := manager.Create(session.CreateOptions{
 		Source:  session.SOURCECLI,
 		WorkDir: workDir,
@@ -108,7 +108,7 @@ func TestAgentRunnerContextUsage(t *testing.T) {
 	if err := store.EnsureFiles(); err != nil {
 		t.Fatalf("EnsureFiles() error = %v", err)
 	}
-	manager := session.NewManager(workDir)
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
 	sess, err := manager.Create(session.CreateOptions{
 		Source:  session.SOURCECLI,
 		WorkDir: workDir,

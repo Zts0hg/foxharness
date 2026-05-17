@@ -21,7 +21,7 @@ func (p *summaryProvider) Generate(ctx context.Context, messages []schema.Messag
 
 func TestBuildInitialContextPersistsCompactState(t *testing.T) {
 	workDir := t.TempDir()
-	manager := session.NewManager(workDir)
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
 	sess, err := manager.Create(session.CreateOptions{
 		Source:  session.SOURCECLI,
 		WorkDir: workDir,

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 
 func TestSessionRunAndMessageLog(t *testing.T) {
 	workDir := t.TempDir()
-	manager := NewManager(workDir)
+	manager := NewManagerWithHome(workDir, t.TempDir())
 
 	sess, err := manager.Create(CreateOptions{
 		Source:  SOURCECLI,
@@ -59,9 +60,46 @@ func TestSessionRunAndMessageLog(t *testing.T) {
 	}
 }
 
+func TestManagerStoresSessionsUnderHomeProjectDirectory(t *testing.T) {
+	workDir := t.TempDir()
+	homeDir := t.TempDir()
+	manager := NewManagerWithHome(workDir, homeDir)
+
+	sess, err := manager.Create(CreateOptions{
+		Source:  SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	projectKey := encodeProjectPath(cleanAbsPath(workDir))
+	wantBase := filepath.Join(homeDir, ".foxharness", "projects", projectKey, "sessions")
+	if got := filepath.Dir(sess.RootDir); got != wantBase {
+		t.Fatalf("session parent dir = %q, want %q", got, wantBase)
+	}
+	if _, err := os.Stat(filepath.Join(sess.RootDir, "session.json")); err != nil {
+		t.Fatalf("session metadata was not created under home project dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".foxharness")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Create() wrote project-local .foxharness; stat err = %v", err)
+	}
+	if sess.WorkDir != cleanAbsPath(workDir) {
+		t.Fatalf("session WorkDir = %q, want absolute cleaned workDir %q", sess.WorkDir, cleanAbsPath(workDir))
+	}
+}
+
+func TestEncodeProjectPathMatchesClaudeStyleWithoutHash(t *testing.T) {
+	got := encodeProjectPath("/Users/xiaoming/code/foxharness-go")
+	want := "-Users-xiaoming-code-foxharness-go"
+	if got != want {
+		t.Fatalf("encodeProjectPath() = %q, want %q", got, want)
+	}
+}
+
 func TestManagerOpenAndLatest(t *testing.T) {
 	workDir := t.TempDir()
-	manager := NewManager(workDir)
+	manager := NewManagerWithHome(workDir, t.TempDir())
 
 	first, err := manager.Create(CreateOptions{
 		Source:  SOURCECLI,
@@ -107,9 +145,45 @@ func TestManagerOpenAndLatest(t *testing.T) {
 	}
 }
 
+func TestManagerDoesNotReadLegacyProjectLocalSessions(t *testing.T) {
+	workDir := t.TempDir()
+	homeDir := t.TempDir()
+	manager := NewManagerWithHome(workDir, homeDir)
+
+	legacyID := "legacy-session"
+	legacyRoot := filepath.Join(workDir, ".foxharness", "sessions", legacyID)
+	if err := os.MkdirAll(legacyRoot, 0755); err != nil {
+		t.Fatalf("MkdirAll(legacyRoot) error = %v", err)
+	}
+	legacy := &Session{
+		ID:        legacyID,
+		Source:    SOURCECLI,
+		WorkDir:   cleanAbsPath(workDir),
+		RootDir:   legacyRoot,
+		CreatedAt: time.Now(),
+	}
+	data, err := json.MarshalIndent(legacy, "", " ")
+	if err != nil {
+		t.Fatalf("MarshalIndent(legacy) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyRoot, "session.json"), append(data, '\n'), 0644); err != nil {
+		t.Fatalf("WriteFile(legacy session.json) error = %v", err)
+	}
+
+	if _, err := manager.Open(legacyID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Open(legacy) error = %v, want ErrNotFound", err)
+	}
+	if _, err := manager.Latest(LookupOptions{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Latest() with only legacy sessions error = %v, want ErrNotFound", err)
+	}
+	if _, err := os.Stat(filepath.Join(homeDir, ".foxharness", "projects")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy lookup should not create home project dirs; stat err = %v", err)
+	}
+}
+
 func TestCompactStateRoundTrip(t *testing.T) {
 	workDir := t.TempDir()
-	manager := NewManager(workDir)
+	manager := NewManagerWithHome(workDir, t.TempDir())
 	sess, err := manager.Create(CreateOptions{
 		Source:  SOURCECLI,
 		WorkDir: workDir,

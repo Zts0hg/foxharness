@@ -60,7 +60,7 @@ func (r *recordingReporter) OnRunError(ctx context.Context, sessionID string, ru
 
 func TestRunWithReporterEmitsLifecycleAndPersistsMessages(t *testing.T) {
 	workDir := t.TempDir()
-	manager := session.NewManager(workDir)
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
 	sess, err := manager.Create(session.CreateOptions{
 		Source:  session.SOURCECLI,
 		WorkDir: workDir,

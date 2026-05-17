@@ -122,23 +122,24 @@ go run ./cmd/fox \
 回到第一个 Session，检查它的物理目录：
 
 ```bash
-SESSION_DIR=".foxharness/sessions/$SESSION_ID"
+PROJECT_KEY="$(pwd | sed 's#/#-#g' | tr -d ':')"
+SESSION_DIR="$HOME/.foxharness/projects/$PROJECT_KEY/sessions/$SESSION_ID"
 find "$SESSION_DIR" -maxdepth 3 -type f | sort
 ```
 
 期望至少能看到类似结构：
 
 ```text
-.foxharness/sessions/<session-id>/messages.jsonl
-.foxharness/sessions/<session-id>/session.json
-.foxharness/sessions/<session-id>/transcript.jsonl
-.foxharness/sessions/<session-id>/working_memory.md
-.foxharness/sessions/<session-id>/runs/<run-id-1>/run.json
-.foxharness/sessions/<session-id>/runs/<run-id-1>/metrics.jsonl
-.foxharness/sessions/<session-id>/runs/<run-id-1>/trace.jsonl
-.foxharness/sessions/<session-id>/runs/<run-id-2>/run.json
-.foxharness/sessions/<session-id>/runs/<run-id-2>/metrics.jsonl
-.foxharness/sessions/<session-id>/runs/<run-id-2>/trace.jsonl
+~/.foxharness/projects/<encoded-workdir>/sessions/<session-id>/messages.jsonl
+~/.foxharness/projects/<encoded-workdir>/sessions/<session-id>/session.json
+~/.foxharness/projects/<encoded-workdir>/sessions/<session-id>/transcript.jsonl
+~/.foxharness/projects/<encoded-workdir>/sessions/<session-id>/working_memory.md
+~/.foxharness/projects/<encoded-workdir>/sessions/<session-id>/runs/<run-id-1>/run.json
+~/.foxharness/projects/<encoded-workdir>/sessions/<session-id>/runs/<run-id-1>/metrics.jsonl
+~/.foxharness/projects/<encoded-workdir>/sessions/<session-id>/runs/<run-id-1>/trace.jsonl
+~/.foxharness/projects/<encoded-workdir>/sessions/<session-id>/runs/<run-id-2>/run.json
+~/.foxharness/projects/<encoded-workdir>/sessions/<session-id>/runs/<run-id-2>/metrics.jsonl
+~/.foxharness/projects/<encoded-workdir>/sessions/<session-id>/runs/<run-id-2>/trace.jsonl
 ```
 
 检查这个 Session 下有多少个 Run：
@@ -235,4 +236,3 @@ go test ./...
 - `messages.jsonl` 是 Session 级文件，并连续追加多个 Run 的原始消息
 - `runs/<run-id>/` 是 Run 级目录，并分别保存 run metadata、metrics、trace
 - 新建 Session 后无法自然看到旧 Session 的消息历史
-

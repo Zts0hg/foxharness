@@ -14,7 +14,7 @@
 //
 // Session Structure:
 //
-//	.foxharness/sessions/{id}/
+//	~/.foxharness/projects/{encoded-workdir}/sessions/{id}/
 //	  ├── session.json      - Session metadata
 //	  ├── working_memory.md - Working memory for the agent
 //	  ├── messages.jsonl    - Raw model-visible message history
@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -113,18 +114,40 @@ func (s *Session) TracePath() string {
 }
 
 // Manager creates and manages agent sessions.
-// All sessions are stored under a base directory with unique IDs.
+// All sessions are stored under a user-level project directory with unique IDs.
 type Manager struct {
-	// baseDir is the root directory for all sessions.
+	// workDir is the absolute project working directory for this manager.
+	workDir string
+	// homeDir is the user home directory that owns .foxharness.
+	homeDir string
+	// projectKey is the Claude Code style encoded project path.
+	projectKey string
+	// baseDir is the root directory for all sessions in this project.
 	baseDir string
 }
 
-// NewManager creates a new Manager that stores sessions under the provided working directory.
-// Sessions are stored in {workDir}/.foxharness/sessions/{session-id}/.
+// NewManager creates a new Manager that stores sessions under the user's home directory.
+// Sessions are stored in ~/.foxharness/projects/{encoded-workdir}/sessions/{session-id}/.
 // Returns a configured Manager.
 func NewManager(workDir string) *Manager {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		homeDir = "."
+	}
+	return NewManagerWithHome(workDir, homeDir)
+}
+
+// NewManagerWithHome creates a Manager rooted at the provided home directory.
+// It is primarily useful for tests and embedded callers that need storage isolation.
+func NewManagerWithHome(workDir string, homeDir string) *Manager {
+	cleanWorkDir := cleanAbsPath(workDir)
+	cleanHomeDir := cleanAbsPath(homeDir)
+	projectKey := encodeProjectPath(cleanWorkDir)
 	return &Manager{
-		baseDir: filepath.Join(workDir, ".foxharness", "sessions"),
+		workDir:    cleanWorkDir,
+		homeDir:    cleanHomeDir,
+		projectKey: projectKey,
+		baseDir:    filepath.Join(cleanHomeDir, ".foxharness", "projects", projectKey, "sessions"),
 	}
 }
 
@@ -155,6 +178,10 @@ type LookupOptions struct {
 func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 	id := newSessionID()
 	root := filepath.Join(m.baseDir, id)
+	workDir := cleanAbsPath(opts.WorkDir)
+	if workDir == "" || workDir == "." {
+		workDir = m.workDir
+	}
 
 	if err := os.MkdirAll(filepath.Join(root, "artifacts"), 0755); err != nil {
 		return nil, fmt.Errorf("创建 Session 目录失败: %w", err)
@@ -166,7 +193,7 @@ func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 	s := &Session{
 		ID:        id,
 		Source:    opts.Source,
-		WorkDir:   opts.WorkDir,
+		WorkDir:   workDir,
 		RootDir:   root,
 		UserID:    opts.UserID,
 		ChatID:    opts.ChatID,
@@ -252,6 +279,28 @@ func matchesLookup(s *Session, opts LookupOptions) bool {
 		return false
 	}
 	return true
+}
+
+func cleanAbsPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(abs)
+}
+
+func encodeProjectPath(workDir string) string {
+	clean := filepath.Clean(workDir)
+	slash := filepath.ToSlash(clean)
+	encoded := strings.ReplaceAll(slash, ":", "")
+	encoded = strings.ReplaceAll(encoded, "/", "-")
+	if encoded == "" || encoded == "." {
+		return "-"
+	}
+	return encoded
 }
 
 func newSessionID() string {
