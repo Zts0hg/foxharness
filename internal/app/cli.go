@@ -8,16 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"path/filepath"
 
-	"github.com/Zts0hg/foxharness/internal/compaction"
-	prompt "github.com/Zts0hg/foxharness/internal/context"
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/memory"
-	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/session"
-	"github.com/Zts0hg/foxharness/internal/subagent"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 // CLIConfig holds the configuration for a CLI agent run, including the
@@ -33,6 +25,7 @@ type CLIConfig struct {
 	SessionID       string
 	ContinueSession bool
 	NewSession      bool
+	Interactive     bool
 }
 
 // RunCLI executes a single agent session from prompt to final output. It
@@ -41,66 +34,15 @@ type CLIConfig struct {
 // runs the engine. Session metadata (transcript, metrics, trace) is printed
 // on completion.
 func RunCLI(ctx context.Context, cfg CLIConfig) error {
-	workDir, err := filepath.Abs(cfg.WorkDir)
+	runner, err := NewAgentRunner(ctx, agentRunnerConfigFromCLI(cfg))
 	if err != nil {
 		return err
 	}
 
-	store := memory.NewStore(workDir)
-	if err := store.EnsureFiles(); err != nil {
-		return fmt.Errorf("初始化文件记忆失败: %w", err)
-	}
+	log.Printf("[CLI] Session: %s", runner.SessionID())
+	log.Printf("[CLI] Session dir: %s", runner.SessionDir())
 
-	manager := session.NewManager(workDir)
-	sess, err := resolveCLISession(manager, workDir, cfg)
-	if err != nil {
-		return err
-	}
-
-	log.Printf("[CLI] Session: %s", sess.ID)
-	log.Printf("[CLI] Session dir: %s", sess.RootDir)
-
-	llmProvider := provider.NewZhipuOpenAIProvider(cfg.Model)
-	enableThinking := cfg.EnableThinking
-	if cfg.EnablePlanMode {
-		planner := memory.NewPlanner(llmProvider, store)
-		if err := planner.BuildPlan(ctx, cfg.Prompt); err != nil {
-			log.Printf("[PlanMode] 生成计划失败，将回退到旧版本每轮 Thinking: %v", err)
-			enableThinking = true
-		} else {
-			log.Printf("[PlanMode] 计划已生成，本次任务关闭每轮 Thinking")
-			enableThinking = false
-		}
-	}
-
-	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
-	registry := tools.NewRegistry()
-	registry.Register(tools.NewReadFileTool(workDir))
-	registry.Register(tools.NewWriteFileTool(workDir))
-	registry.Register(tools.NewBashTool(workDir))
-	registry.Register(tools.NewEditFileTool(workDir))
-
-	subManager := subagent.NewManager(llmProvider, workDir)
-	registry.Register(subagent.NewTool(subManager, sess.ID))
-
-	eng := engine.NewAgentEngine(
-		llmProvider,
-		registry,
-		workDir,
-		composer,
-		engine.Config{
-			EnableThinking: enableThinking,
-			MaxTurns:       cfg.MaxTurns,
-		},
-	)
-
-	eng.WithCompactor(compaction.NewCompactor(
-		llmProvider,
-		compaction.RoughEstimator{},
-		compaction.DefaultConfig(),
-	))
-
-	result, err := eng.Run(ctx, sess, cfg.Prompt)
+	result, err := runner.Run(ctx, cfg.Prompt, nil)
 	if err != nil {
 		log.Printf("[CLI] 任务失败: %v", err)
 	}
@@ -110,8 +52,8 @@ func RunCLI(ctx context.Context, cfg CLIConfig) error {
 	}
 
 	fmt.Println()
-	fmt.Println("Session: ", sess.ID)
-	fmt.Println("Transcript: ", sess.TranscriptPath())
+	fmt.Println("Session: ", runner.SessionID())
+	fmt.Println("Transcript: ", runner.TranscriptPath())
 	if result != nil {
 		fmt.Println("Run: ", result.RunID)
 		fmt.Println("Metrics: ", result.MetricsPath)
@@ -121,6 +63,10 @@ func RunCLI(ctx context.Context, cfg CLIConfig) error {
 }
 
 func resolveCLISession(manager *session.Manager, workDir string, cfg CLIConfig) (*session.Session, error) {
+	return resolveRunnerSession(manager, workDir, agentRunnerConfigFromCLI(cfg))
+}
+
+func resolveRunnerSession(manager *session.Manager, workDir string, cfg AgentRunnerConfig) (*session.Session, error) {
 	if cfg.NewSession && (cfg.SessionID != "" || cfg.ContinueSession) {
 		return nil, fmt.Errorf("-new 不能和 -session 或 -continue 同时使用")
 	}

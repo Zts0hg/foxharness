@@ -17,6 +17,7 @@
 //	-session    Resume a specific session ID
 //	-continue   Resume the latest CLI session
 //	-new        Force creation of a new session (default behavior)
+//	-tui        Start an interactive terminal UI
 package main
 
 import (
@@ -42,7 +43,17 @@ func main() {
 	flag.StringVar(&cfg.SessionID, "session", "", "resume a specific session ID")
 	flag.BoolVar(&cfg.ContinueSession, "continue", false, "resume the latest CLI session")
 	flag.BoolVar(&cfg.NewSession, "new", false, "force creation of a new session")
+	flag.BoolVar(&cfg.Interactive, "tui", false, "start an interactive terminal UI")
+	flag.BoolVar(&cfg.Interactive, "interactive", false, "start an interactive terminal UI")
 	flag.Parse()
+
+	if cfg.Interactive {
+		cfg.Prompt = strings.TrimSpace(cfg.Prompt)
+		if err := app.RunTUI(context.Background(), cfg); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	prompt, err := readPrompt(cfg.Prompt)
 	if err != nil {
@@ -53,7 +64,6 @@ func main() {
 	if err := app.RunCLI(context.Background(), cfg); err != nil {
 		log.Fatal(err)
 	}
-
 	// 	if os.Getenv("ZHIPU_API_KEY") == "" {
 	// 		panic("请先导出 ZHIPU_API_KEY 环境变量")
 	// 	}

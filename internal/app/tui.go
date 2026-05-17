@@ -1,0 +1,52 @@
+package app
+
+import (
+	"context"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+
+	"github.com/Zts0hg/foxharness/internal/tui"
+)
+
+// RunTUI starts an interactive terminal UI that keeps one session open across
+// many user-submitted runs.
+func RunTUI(ctx context.Context, cfg CLIConfig) error {
+	runner, err := NewAgentRunner(ctx, agentRunnerConfigFromCLI(cfg))
+	if err != nil {
+		return err
+	}
+	restoreLogs := redirectTUILogs(runner.SessionDir())
+	defer restoreLogs()
+
+	return tui.Run(ctx, runner, tui.Config{
+		Model:         cfg.Model,
+		InitialPrompt: cfg.Prompt,
+	})
+}
+
+func redirectTUILogs(sessionDir string) func() {
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	previousPrefix := log.Prefix()
+
+	restore := func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+		log.SetPrefix(previousPrefix)
+	}
+
+	logPath := filepath.Join(sessionDir, "tui.log")
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.SetOutput(io.Discard)
+		return restore
+	}
+
+	log.SetOutput(file)
+	return func() {
+		restore()
+		_ = file.Close()
+	}
+}
