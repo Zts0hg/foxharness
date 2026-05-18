@@ -9,6 +9,8 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
+const maxQueuedNoticeItems = 3
+
 var (
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -281,10 +283,12 @@ func isToolResultPair(prev entry, current entry) bool {
 func (m Model) renderInput(width int) string {
 	prompt := "> "
 	value := string(m.input)
-	if m.running {
-		value = mutedStyle.Render("Input locked until the current run completes.")
-	} else if value == "" {
-		value = renderCursor() + " " + placeholderStyle.Render("Message foxharness, or type /help")
+	if value == "" {
+		placeholder := "Message foxharness, or type /help"
+		if m.running {
+			placeholder = "Message will be queued, or type /cancel"
+		}
+		value = renderCursor() + " " + placeholderStyle.Render(placeholder)
 	} else {
 		value += renderCursor()
 	}
@@ -295,8 +299,34 @@ func (m Model) renderRunningNotice(width int) string {
 	if !m.running {
 		return ""
 	}
-	text := fmt.Sprintf("%s Working (%s • esc to interrupt)", m.workingFrame(), formatDuration(m.runningElapsed()))
-	return runningNoticeStyle.Width(width - runningNoticeStyle.GetHorizontalFrameSize()).Render(text)
+	queue := ""
+	if len(m.queuedPrompts) > 0 {
+		queue = fmt.Sprintf(" • %d queued", len(m.queuedPrompts))
+	}
+	lines := []string{
+		fmt.Sprintf("%s Working (%s%s • esc to interrupt)", m.workingFrame(), formatDuration(m.runningElapsed()), queue),
+	}
+	lines = append(lines, queuedPromptNoticeLines(m.queuedPrompts, width)...)
+	return runningNoticeStyle.Width(width - runningNoticeStyle.GetHorizontalFrameSize()).Render(strings.Join(lines, "\n"))
+}
+
+func queuedPromptNoticeLines(prompts []string, width int) []string {
+	if len(prompts) == 0 {
+		return nil
+	}
+	lineWidth := max(width-runningNoticeStyle.GetHorizontalFrameSize()-2, 20)
+	count := min(len(prompts), maxQueuedNoticeItems)
+	lines := make([]string, 0, count+1)
+	for i := 0; i < count; i++ {
+		prefix := fmt.Sprintf("  %d. ", i+1)
+		messageWidth := max(lineWidth-lipgloss.Width(prefix), 1)
+		message := strings.Join(strings.Fields(prompts[i]), " ")
+		lines = append(lines, prefix+xansi.Truncate(message, messageWidth, "..."))
+	}
+	if remaining := len(prompts) - count; remaining > 0 {
+		lines = append(lines, fmt.Sprintf("  ... %d more", remaining))
+	}
+	return lines
 }
 
 func (m Model) renderSlashSuggestions(width int) string {
@@ -380,12 +410,12 @@ func renderCursor() string {
 
 func (m Model) renderFooter(width int) string {
 	help := "Enter send | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown/wheel scroll | Ctrl+C twice quit"
-	if m.running {
-		help = "Shift+Tab toggles plan for next run | Esc cancel current run | Ctrl+C twice quit"
-	} else if m.hasSlashMenu() {
+	if m.hasSlashMenu() {
 		help = "Up/Down select | Tab complete | Enter run | Esc close | Ctrl+C twice quit"
 	} else if m.hasFileMentionMenu() {
 		help = "Up/Down select | Tab complete file | Enter send | Esc close | Ctrl+C twice quit"
+	} else if m.running {
+		help = "Enter queue | Shift+Tab toggles next run | Esc cancel current run | Ctrl+C twice quit"
 	}
 	line := fmt.Sprintf("%s  %s", m.status, help)
 	return footerStyle.Width(width).Render(fitLine(line, width))

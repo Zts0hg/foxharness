@@ -26,6 +26,7 @@ type fakeRunner struct {
 
 	runs         []string
 	runErr       error
+	runErrs      []error
 	newErr       error
 	nextRunID    int
 	planMode     bool
@@ -45,9 +46,14 @@ func (r *fakeRunner) Run(ctx context.Context, prompt string, reporter engine.Rep
 	reporter.OnThinking(ctx, 1)
 	reporter.OnToolCall(ctx, "bash", `{"command":"date"}`)
 	reporter.OnToolResult(ctx, "bash", "2026年 5月17日 星期日 14时17分46秒 CST", false)
-	if r.runErr != nil {
-		reporter.OnRunError(ctx, r.sessionID, runID, r.runErr)
-		return nil, r.runErr
+	runErr := r.runErr
+	if len(r.runErrs) > 0 {
+		runErr = r.runErrs[0]
+		r.runErrs = r.runErrs[1:]
+	}
+	if runErr != nil {
+		reporter.OnRunError(ctx, r.sessionID, runID, runErr)
+		return nil, runErr
 	}
 	reporter.OnMessage(ctx, "answer: "+prompt)
 	result := &engine.RunResult{
@@ -793,7 +799,7 @@ func TestModelCtrlCConfirmationExpires(t *testing.T) {
 	}
 }
 
-func TestModelBlocksInputWhileRunIsActiveAndCancels(t *testing.T) {
+func TestModelQueuesInputWhileRunIsActiveAndCancelsCurrentRun(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
 
@@ -803,9 +809,22 @@ func TestModelBlocksInputWhileRunIsActiveAndCancels(t *testing.T) {
 		t.Fatalf("model running = false, want true")
 	}
 
-	m, _ = update(t, m, keyRunes("ignored"))
+	m, _ = update(t, m, keyRunes("queued follow-up"))
+	m, _ = update(t, m, keyEnter())
 	if got := string(m.input); got != "" {
-		t.Fatalf("input while running = %q, want empty", got)
+		t.Fatalf("input after queueing = %q, want empty", got)
+	}
+	if len(m.queuedPrompts) != 1 || m.queuedPrompts[0] != "queued follow-up" {
+		t.Fatalf("queuedPrompts = %#v, want queued follow-up", m.queuedPrompts)
+	}
+	if !strings.Contains(m.status, "Queued 1 message") {
+		t.Fatalf("status = %q, want queued message status", m.status)
+	}
+	if !strings.Contains(stripANSI(m.View()), "1 queued") {
+		t.Fatalf("view missing queued count:\n%s", m.View())
+	}
+	if !strings.Contains(stripANSI(m.View()), "1. queued follow-up") {
+		t.Fatalf("view missing queued prompt preview:\n%s", m.View())
 	}
 
 	m, _ = update(t, m, keyEsc())
@@ -814,6 +833,145 @@ func TestModelBlocksInputWhileRunIsActiveAndCancels(t *testing.T) {
 	}
 	if !entriesContain(m.entries, "system", "cancellation requested") {
 		t.Fatalf("entries missing cancel notice: %#v", m.entries)
+	}
+}
+
+func TestModelRunningNoticeShowsQueuedPromptPreviews(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	current := time.Date(2026, 5, 17, 12, 0, 5, 0, time.UTC)
+	m.now = func() time.Time { return current }
+	m.running = true
+	m.runStartedAt = current.Add(-5 * time.Second)
+	m.queuedPrompts = []string{
+		"second task",
+		"third task\nwith newline",
+		strings.Repeat("long ", 40),
+		"fourth task",
+	}
+
+	notice := stripANSI(m.renderRunningNotice(72))
+	for _, want := range []string{
+		"4 queued",
+		"1. second task",
+		"2. third task with newline",
+		"3. long long",
+		"... 1 more",
+	} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("notice missing queued preview %q:\n%s", want, notice)
+		}
+	}
+	if strings.Contains(notice, "4. fourth task") {
+		t.Fatalf("notice should cap visible queued prompts:\n%s", notice)
+	}
+}
+
+func TestModelRunsQueuedPromptsInFIFOOrder(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("first task"))
+	m, firstCmd := update(t, m, keyEnter())
+	if firstCmd == nil {
+		t.Fatalf("first task command is nil")
+	}
+
+	m, _ = update(t, m, keyRunes("second task"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("queueing second task returned command, want nil")
+	}
+	m, _ = update(t, m, keyRunes("third task"))
+	m, cmd = update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("queueing third task returned command, want nil")
+	}
+	if got := strings.Join(m.queuedPrompts, ","); got != "second task,third task" {
+		t.Fatalf("queuedPrompts = %#v, want FIFO second/third", m.queuedPrompts)
+	}
+
+	m, secondCmd := update(t, m, firstCmd())
+	if secondCmd == nil {
+		t.Fatalf("second queued task command is nil")
+	}
+	if !m.running {
+		t.Fatalf("model should be running the second queued task")
+	}
+	if got := strings.Join(runner.runs, ","); got != "first task" {
+		t.Fatalf("runs after first completion = %#v, want first task only", runner.runs)
+	}
+	if got := strings.Join(m.queuedPrompts, ","); got != "third task" {
+		t.Fatalf("queuedPrompts after starting second = %#v, want third task", m.queuedPrompts)
+	}
+	if !entriesContain(m.entries, "user", "second task") {
+		t.Fatalf("entries missing second task user message after it starts: %#v", m.entries)
+	}
+
+	m, thirdCmd := update(t, m, secondCmd())
+	if thirdCmd == nil {
+		t.Fatalf("third queued task command is nil")
+	}
+	if got := strings.Join(runner.runs, ","); got != "first task,second task" {
+		t.Fatalf("runs after second completion = %#v, want first,second", runner.runs)
+	}
+	if len(m.queuedPrompts) != 0 {
+		t.Fatalf("queuedPrompts after starting third = %#v, want empty", m.queuedPrompts)
+	}
+
+	m, finalCmd := update(t, m, thirdCmd())
+	if finalCmd != nil {
+		t.Fatalf("final queued task returned unexpected command")
+	}
+	if m.running {
+		t.Fatalf("model running = true after final queued run")
+	}
+	if got := strings.Join(runner.runs, ","); got != "first task,second task,third task" {
+		t.Fatalf("runs after final completion = %#v, want first,second,third", runner.runs)
+	}
+	for _, prompt := range []string{"first task", "second task", "third task"} {
+		if !entriesContain(m.entries, "user", prompt) {
+			t.Fatalf("entries missing user prompt %q: %#v", prompt, m.entries)
+		}
+		if !entriesContain(m.entries, "assistant", "answer: "+prompt) {
+			t.Fatalf("entries missing assistant response for %q: %#v", prompt, m.entries)
+		}
+	}
+}
+
+func TestModelRunsQueuedPromptAfterRunError(t *testing.T) {
+	runner := newFakeRunner()
+	runner.runErrs = []error{errors.New("first run failed")}
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("first task"))
+	m, firstCmd := update(t, m, keyEnter())
+	m, _ = update(t, m, keyRunes("second task"))
+	m, _ = update(t, m, keyEnter())
+
+	m, secondCmd := update(t, m, firstCmd())
+	if secondCmd == nil {
+		t.Fatalf("queued task should start after failed run")
+	}
+	if !m.running {
+		t.Fatalf("model should run queued prompt after first run fails")
+	}
+	if !entriesContain(m.entries, "error", "first run failed") {
+		t.Fatalf("entries missing first run error: %#v", m.entries)
+	}
+
+	m, cmd := update(t, m, secondCmd())
+	if cmd != nil {
+		t.Fatalf("second task returned unexpected follow-up command")
+	}
+	if m.running {
+		t.Fatalf("model running = true after queued prompt finishes")
+	}
+	if got := strings.Join(runner.runs, ","); got != "first task,second task" {
+		t.Fatalf("runs = %#v, want failed first task then queued second task", runner.runs)
+	}
+	if !entriesContain(m.entries, "assistant", "answer: second task") {
+		t.Fatalf("entries missing queued task assistant response: %#v", m.entries)
 	}
 }
 
@@ -910,9 +1068,9 @@ func TestModelViewShowsRunningNoticeAboveInput(t *testing.T) {
 	}
 
 	noticeIndex := strings.Index(view, "Working (58s")
-	inputIndex := strings.Index(view, "> Input locked until the current run completes.")
+	inputIndex := strings.Index(view, "Message will be queued, or type /cancel")
 	if inputIndex < 0 {
-		t.Fatalf("view missing locked input text:\n%s", view)
+		t.Fatalf("view missing queue placeholder text:\n%s", view)
 	}
 	if noticeIndex > inputIndex {
 		t.Fatalf("running notice should render above input:\n%s", view)

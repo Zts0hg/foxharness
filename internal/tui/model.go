@@ -88,6 +88,7 @@ type Model struct {
 	slashSelection int
 	fileSelection  int
 	fileMentions   []fileMention
+	queuedPrompts  []string
 
 	entries      []entry
 	status       string
@@ -162,8 +163,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshRuntimeInfo()
 		if msg.err != nil {
 			m.status = "Run failed"
+			if len(m.queuedPrompts) > 0 {
+				m.status = fmt.Sprintf("Run failed; %d queued", len(m.queuedPrompts))
+			}
 			if !m.lastEntryContainsError(msg.err) {
 				m.appendEntry("error", "run failed", msg.err.Error(), true)
+			}
+			if len(m.queuedPrompts) > 0 {
+				return m.startNextQueuedPrompt()
 			}
 			return m, nil
 		}
@@ -171,6 +178,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Run complete: %s", msg.result.RunID)
 		} else {
 			m.status = "Run complete"
+		}
+		if len(m.queuedPrompts) > 0 {
+			return m.startNextQueuedPrompt()
 		}
 		return m, nil
 
@@ -188,6 +198,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "New session ready"
 		m.entries = nil
 		m.inputHistory = nil
+		m.queuedPrompts = nil
 		m.resetHistoryNavigation()
 		m.scrollOffset = 0
 		m.appendCommandEntry("New session", formatSessionRows(
@@ -261,60 +272,50 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		return m.togglePlanMode()
 	case "tab":
-		if !m.running {
-			if m.hasSlashMenu() {
-				m.completeSlashCommand()
-			} else if m.hasFileMentionMenu() {
-				m.completeFileMention()
-			}
+		if m.hasSlashMenu() {
+			m.completeSlashCommand()
+		} else if m.hasFileMentionMenu() {
+			m.completeFileMention()
 		}
 		return m, nil
 	case "backspace", "ctrl+h":
-		if !m.running && len(m.input) > 0 {
+		if len(m.input) > 0 {
 			m.resetHistoryNavigation()
 			m.input = m.input[:len(m.input)-1]
 			m.updateCompletions()
 		}
 		return m, nil
 	case " ":
-		if !m.running {
-			m.resetHistoryNavigation()
-			m.input = append(m.input, ' ')
-			m.updateCompletions()
-		}
+		m.resetHistoryNavigation()
+		m.input = append(m.input, ' ')
+		m.updateCompletions()
 		return m, nil
 	case "ctrl+u":
-		if !m.running {
-			m.input = nil
-			m.resetHistoryNavigation()
-			m.resetCompletions()
-		}
+		m.input = nil
+		m.resetHistoryNavigation()
+		m.resetCompletions()
 		return m, nil
 	case "up":
-		if !m.running {
-			if m.hasSlashMenu() {
-				m.moveSlashSelection(-1)
-				return m, nil
-			}
-			if m.hasFileMentionMenu() {
-				m.moveFileSelection(-1)
-				return m, nil
-			}
-			m.recallPreviousInput()
+		if m.hasSlashMenu() {
+			m.moveSlashSelection(-1)
+			return m, nil
 		}
+		if m.hasFileMentionMenu() {
+			m.moveFileSelection(-1)
+			return m, nil
+		}
+		m.recallPreviousInput()
 		return m, nil
 	case "down":
-		if !m.running {
-			if m.hasSlashMenu() {
-				m.moveSlashSelection(1)
-				return m, nil
-			}
-			if m.hasFileMentionMenu() {
-				m.moveFileSelection(1)
-				return m, nil
-			}
-			m.recallNextInput()
+		if m.hasSlashMenu() {
+			m.moveSlashSelection(1)
+			return m, nil
 		}
+		if m.hasFileMentionMenu() {
+			m.moveFileSelection(1)
+			return m, nil
+		}
+		m.recallNextInput()
 		return m, nil
 	case "pgup":
 		m.scrollOffset += scrollDelta(msg.String())
@@ -330,9 +331,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.running {
-		return m, nil
-	}
 	if msg.Type == tea.KeyRunes {
 		m.resetHistoryNavigation()
 		m.input = append(m.input, msg.Runes...)
@@ -406,7 +404,12 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		return m.handleSlashCommand(text)
 	}
 	if m.running {
-		m.status = "A run is already active"
+		m.addInputHistory(text)
+		m.input = nil
+		m.resetHistoryNavigation()
+		m.resetCompletions()
+		m.queuedPrompts = append(m.queuedPrompts, text)
+		m.status = fmt.Sprintf("Queued %d message%s", len(m.queuedPrompts), pluralS(len(m.queuedPrompts)))
 		return m, nil
 	}
 
@@ -414,6 +417,10 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	m.input = nil
 	m.resetHistoryNavigation()
 	m.resetCompletions()
+	return m.startPrompt(text)
+}
+
+func (m Model) startPrompt(text string) (tea.Model, tea.Cmd) {
 	m.scrollOffset = 0
 	m.running = true
 	m.runStartedAt = m.nowTime()
@@ -424,6 +431,22 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
 	return m, runPromptCmd(runCtx, m.runner, text, m.events)
+}
+
+func (m Model) startNextQueuedPrompt() (tea.Model, tea.Cmd) {
+	if len(m.queuedPrompts) == 0 {
+		return m, nil
+	}
+	text := m.queuedPrompts[0]
+	m.queuedPrompts = append([]string(nil), m.queuedPrompts[1:]...)
+	next, cmd := m.startPrompt(text)
+	typed := next.(Model)
+	if len(typed.queuedPrompts) > 0 {
+		typed.status = fmt.Sprintf("Running queued message; %d queued", len(typed.queuedPrompts))
+	} else {
+		typed.status = "Running queued message"
+	}
+	return typed, cmd
 }
 
 func (m *Model) addInputHistory(text string) {
@@ -616,9 +639,6 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) matchingSlashCommands() []slashCommand {
-	if m.running {
-		return nil
-	}
 	text := strings.TrimSpace(string(m.input))
 	if !strings.HasPrefix(text, "/") || strings.ContainsAny(text, " \t\n") {
 		return nil
@@ -633,7 +653,7 @@ func (m Model) matchingSlashCommands() []slashCommand {
 }
 
 func (m Model) matchingFileMentions() []fileMention {
-	if m.running || m.hasSlashMenu() {
+	if m.hasSlashMenu() {
 		return nil
 	}
 	_, _, query, ok := m.activeFileMention()
@@ -866,6 +886,13 @@ func scrollDelta(key string) int {
 		return 8
 	}
 	return 1
+}
+
+func pluralS(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func waitForRunEvent(ctx context.Context, events <-chan tea.Msg) tea.Cmd {
