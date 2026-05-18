@@ -79,9 +79,16 @@ var (
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color("27")).
 			Padding(0, 1)
+	sidebarFocusedBoxStyle = lipgloss.NewStyle().
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("81")).
+				Padding(0, 1)
 	sidebarTitleStyle = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("33"))
+	sidebarFocusedTitleStyle = lipgloss.NewStyle().
+					Bold(true).
+					Foreground(lipgloss.Color("81"))
 )
 
 func (m Model) View() string {
@@ -243,9 +250,9 @@ func (m Model) renderSidebar(width int, height int) string {
 		if i < len(m.sidebarScrollOffsets) {
 			offset = m.sidebarScrollOffsets[i]
 		}
-		boxes = append(boxes, renderSidebarBox(doc, width, heights[i], offset))
+		boxes = append(boxes, renderSidebarBoxWithFocus(doc, width, heights[i], offset, m.sidebarFocused && i == m.sidebarFocusIndex))
 	}
-	boxes = append(boxes, renderSidebarHint(width))
+	boxes = append(boxes, renderSidebarHint(width, m.sidebarFocused))
 	return lipgloss.JoinVertical(lipgloss.Left, boxes...)
 }
 
@@ -253,8 +260,12 @@ func sidebarBoxesHeight(height int) int {
 	return max(height-sidebarHintHeight, 1)
 }
 
-func renderSidebarHint(width int) string {
-	return mutedStyle.Width(width).Render(fitLine(sidebarHintText, width))
+func renderSidebarHint(width int, focused bool) string {
+	text := sidebarHintText
+	if focused {
+		text = "Tab switch | Up/Down scroll | Esc"
+	}
+	return mutedStyle.Width(width).Render(fitLine(text, width))
 }
 
 func sidebarBoxHeights(height int, count int) []int {
@@ -274,11 +285,21 @@ func sidebarBoxHeights(height int, count int) []int {
 }
 
 func renderSidebarBox(doc sidebarDocument, width int, height int, offset int) string {
+	return renderSidebarBoxWithFocus(doc, width, height, offset, false)
+}
+
+func renderSidebarBoxWithFocus(doc sidebarDocument, width int, height int, offset int, focused bool) string {
 	contentWidth := max(width-sidebarBoxStyle.GetHorizontalFrameSize(), 10)
 	contentHeight := max(height-sidebarBoxStyle.GetVerticalFrameSize(), 1)
 	bodyWidth := contentWidth
 
-	title := sidebarTitleStyle.Render(doc.Title)
+	titleStyle := sidebarTitleStyle
+	boxStyle := sidebarBoxStyle
+	if focused {
+		titleStyle = sidebarFocusedTitleStyle
+		boxStyle = sidebarFocusedBoxStyle
+	}
+	title := titleStyle.Render(doc.Title)
 	text := doc.Content
 	if doc.Error != "" {
 		text = doc.Content + "\n" + doc.Error
@@ -301,7 +322,7 @@ func renderSidebarBox(doc sidebarDocument, width int, height int, offset int) st
 
 	contentLines := append([]string{fitLine(title, bodyWidth)}, lines...)
 	content := strings.Join(contentLines, "\n")
-	return sidebarBoxStyle.
+	return boxStyle.
 		Width(contentWidth).
 		Height(contentHeight).
 		Render(content)
@@ -577,13 +598,15 @@ func renderCursor() string {
 }
 
 func (m Model) renderFooter(width int) string {
-	help := "Enter send | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown/wheel scroll | Ctrl+C twice quit"
-	if m.hasSlashMenu() {
+	help := "Enter send | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown/wheel scroll | Ctrl+F sidebar | Ctrl+C twice quit"
+	if m.sidebarFocused {
+		help = "Tab switch box | Up/Down/PgUp/PgDown scroll | 1/2/3 select | Esc close | Ctrl+C twice quit"
+	} else if m.hasSlashMenu() {
 		help = "Up/Down select | Tab complete | Enter run | Esc close | Ctrl+C twice quit"
 	} else if m.hasFileMentionMenu() {
 		help = "Up/Down select | Tab complete file | Enter send | Esc close | Ctrl+C twice quit"
 	} else if m.running {
-		help = "Enter queue | Shift+Tab toggles next run | Esc cancel current run | Ctrl+C twice quit"
+		help = "Enter queue | Shift+Tab toggles next run | Esc cancel current run | Ctrl+F sidebar | Ctrl+C twice quit"
 	}
 	line := fmt.Sprintf("%s  %s", m.status, help)
 	return footerStyle.Width(width).Render(fitLine(line, width))

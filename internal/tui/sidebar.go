@@ -13,7 +13,7 @@ const (
 	sidebarGap           = 1
 	sidebarDocumentCount = 3
 	sidebarHintHeight    = 1
-	sidebarHintText      = "Use /sidebar off to hide"
+	sidebarHintText      = "Ctrl+F focus | /sidebar off"
 )
 
 var sidebarFiles = []struct {

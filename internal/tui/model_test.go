@@ -1276,6 +1276,130 @@ func TestModelMouseWheelScrollsSidebarPlan(t *testing.T) {
 	}
 }
 
+func TestModelKeyboardFocusScrollsSidebarPlan(t *testing.T) {
+	workDir := t.TempDir()
+	sessionDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", numberedLines("memory line", 12))
+	writeTestFile(t, sessionDir, "PLAN.md", numberedLines("plan line", 24))
+	writeTestFile(t, sessionDir, "TODO.md", numberedLines("todo line", 12))
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	runner.sessionDir = sessionDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+
+	m, _ = update(t, m, keyCtrlF())
+	if !m.sidebarFocused {
+		t.Fatalf("ctrl+f did not focus sidebar")
+	}
+	if m.sidebarFocusIndex != 1 {
+		t.Fatalf("initial sidebar focus index = %d, want Plan index 1", m.sidebarFocusIndex)
+	}
+
+	m, _ = update(t, m, keyDown())
+	if m.sidebarScrollOffsets[1] != 1 {
+		t.Fatalf("plan sidebar offset after down = %d, want 1", m.sidebarScrollOffsets[1])
+	}
+	if m.scrollOffset != 0 {
+		t.Fatalf("sidebar focus down changed transcript scrollOffset = %d, want 0", m.scrollOffset)
+	}
+	if m.sidebarScrollOffsets[0] != 0 || m.sidebarScrollOffsets[2] != 0 {
+		t.Fatalf("scrolling focused plan should not affect other sidebar offsets: %#v", m.sidebarScrollOffsets)
+	}
+
+	plainView := stripANSI(m.View())
+	if strings.Contains(plainView, "plan line 01") {
+		t.Fatalf("focused sidebar scroll should hide the first plan line:\n%s", plainView)
+	}
+	if !strings.Contains(plainView, "line 03") {
+		t.Fatalf("focused sidebar scroll should show later plan content:\n%s", plainView)
+	}
+}
+
+func TestModelKeyboardSidebarFocusSwitchAndBounds(t *testing.T) {
+	workDir := t.TempDir()
+	sessionDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", numberedLines("memory line", 20))
+	writeTestFile(t, sessionDir, "PLAN.md", numberedLines("plan line", 20))
+	writeTestFile(t, sessionDir, "TODO.md", numberedLines("todo line", 20))
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	runner.sessionDir = sessionDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+	m, _ = update(t, m, keyCtrlF())
+
+	m, _ = update(t, m, keyTab())
+	if m.sidebarFocusIndex != 2 {
+		t.Fatalf("tab sidebar focus index = %d, want Todo index 2", m.sidebarFocusIndex)
+	}
+	m, _ = update(t, m, keyShiftTab())
+	if m.sidebarFocusIndex != 1 {
+		t.Fatalf("shift+tab sidebar focus index = %d, want Plan index 1", m.sidebarFocusIndex)
+	}
+	m, _ = update(t, m, keyRunes("1"))
+	if m.sidebarFocusIndex != 0 {
+		t.Fatalf("numeric sidebar focus index = %d, want Memory index 0", m.sidebarFocusIndex)
+	}
+
+	m, _ = update(t, m, keyEnd())
+	maxOffset := m.maxFocusedSidebarOffset()
+	if m.sidebarScrollOffsets[0] != maxOffset {
+		t.Fatalf("end sidebar offset = %d, want %d", m.sidebarScrollOffsets[0], maxOffset)
+	}
+	m, _ = update(t, m, keyPgDown())
+	if m.sidebarScrollOffsets[0] != maxOffset {
+		t.Fatalf("pgdown should clamp at max offset = %d, want %d", m.sidebarScrollOffsets[0], maxOffset)
+	}
+	m, _ = update(t, m, keyHome())
+	if m.sidebarScrollOffsets[0] != 0 {
+		t.Fatalf("home sidebar offset = %d, want 0", m.sidebarScrollOffsets[0])
+	}
+	m, _ = update(t, m, keyPgUp())
+	if m.sidebarScrollOffsets[0] != 0 {
+		t.Fatalf("pgup should clamp at top offset = %d, want 0", m.sidebarScrollOffsets[0])
+	}
+}
+
+func TestModelSidebarFocusUnavailableAndEscape(t *testing.T) {
+	workDir := t.TempDir()
+	sessionDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", "memory")
+	writeTestFile(t, sessionDir, "PLAN.md", numberedLines("plan line", 24))
+	writeTestFile(t, sessionDir, "TODO.md", "todo")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	runner.sessionDir = sessionDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 34})
+	m, _ = update(t, m, keyCtrlF())
+	if m.sidebarFocused {
+		t.Fatalf("ctrl+f focused sidebar when width is too narrow")
+	}
+
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+	m, _ = update(t, m, keyRunes("/sidebar off"))
+	m, _ = update(t, m, keyEnter())
+	m, _ = update(t, m, keyCtrlF())
+	if m.sidebarFocused {
+		t.Fatalf("ctrl+f focused hidden sidebar")
+	}
+
+	m, _ = update(t, m, keyRunes("/sidebar on"))
+	m, _ = update(t, m, keyEnter())
+	m, _ = update(t, m, keyCtrlF())
+	if !m.sidebarFocused {
+		t.Fatalf("ctrl+f should focus visible sidebar")
+	}
+	m, _ = update(t, m, keyEsc())
+	if m.sidebarFocused {
+		t.Fatalf("esc did not exit sidebar focus")
+	}
+}
+
 func TestModelSidebarScrollDoesNotMoveInput(t *testing.T) {
 	workDir := t.TempDir()
 	sessionDir := t.TempDir()
@@ -1536,6 +1660,10 @@ func keyCtrlC() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyCtrlC}
 }
 
+func keyCtrlF() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyCtrlF}
+}
+
 func keyTab() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyTab}
 }
@@ -1550,6 +1678,22 @@ func keyUp() tea.KeyMsg {
 
 func keyDown() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyDown}
+}
+
+func keyPgUp() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyPgUp}
+}
+
+func keyPgDown() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyPgDown}
+}
+
+func keyHome() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyHome}
+}
+
+func keyEnd() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyEnd}
 }
 
 func keySpace() tea.KeyMsg {

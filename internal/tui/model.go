@@ -45,7 +45,7 @@ type Config struct {
 // Run starts the interactive chat TUI.
 func Run(ctx context.Context, runner Runner, cfg Config) error {
 	m := NewModel(ctx, runner, cfg)
-	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx)).Run()
+	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx)).Run()
 	return err
 }
 
@@ -110,6 +110,8 @@ type Model struct {
 	planMode     bool
 
 	sidebarVisible       bool
+	sidebarFocused       bool
+	sidebarFocusIndex    int
 	sidebarDocuments     []sidebarDocument
 	sidebarScrollOffsets [sidebarDocumentCount]int
 }
@@ -124,28 +126,29 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 	}
 	entries, inputHistory, status := initialSessionState(runner)
 	return Model{
-		ctx:              ctx,
-		runner:           runner,
-		events:           make(chan tea.Msg, 256),
-		now:              time.Now,
-		width:            96,
-		height:           28,
-		input:            []rune(cfg.InitialPrompt),
-		inputHistory:     inputHistory,
-		historyIndex:     -1,
-		slashSelection:   -1,
-		fileSelection:    -1,
-		fileMentions:     loadFileMentions(runner.WorkDir()),
-		status:           status,
-		sessionID:        runner.SessionID(),
-		modelName:        modelName,
-		project:          projectFolderName(runner.WorkDir()),
-		gitBranch:        gitBranchForWorkDir(runner.WorkDir()),
-		contextUsage:     normalizeContextUsage(runner.ContextUsage()),
-		planMode:         runner.PlanMode(),
-		entries:          entries,
-		sidebarVisible:   true,
-		sidebarDocuments: loadSidebarDocuments(runner.WorkDir(), runner.SessionDir()),
+		ctx:               ctx,
+		runner:            runner,
+		events:            make(chan tea.Msg, 256),
+		now:               time.Now,
+		width:             96,
+		height:            28,
+		input:             []rune(cfg.InitialPrompt),
+		inputHistory:      inputHistory,
+		historyIndex:      -1,
+		slashSelection:    -1,
+		fileSelection:     -1,
+		fileMentions:      loadFileMentions(runner.WorkDir()),
+		status:            status,
+		sessionID:         runner.SessionID(),
+		modelName:         modelName,
+		project:           projectFolderName(runner.WorkDir()),
+		gitBranch:         gitBranchForWorkDir(runner.WorkDir()),
+		contextUsage:      normalizeContextUsage(runner.ContextUsage()),
+		planMode:          runner.PlanMode(),
+		entries:           entries,
+		sidebarVisible:    true,
+		sidebarFocusIndex: -1,
+		sidebarDocuments:  loadSidebarDocuments(runner.WorkDir(), runner.SessionDir()),
 	}
 }
 
@@ -159,6 +162,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = max(msg.Width, minWidth)
 		m.height = max(msg.Height, minHeight)
 		m.clampSidebarScrollOffsets()
+		if !m.shouldRenderSidebar() {
+			m.sidebarFocused = false
+		}
 		return m, nil
 
 	case runEventMsg:
@@ -299,6 +305,7 @@ func (m *Model) clampSidebarScrollOffsets() {
 		for i := range m.sidebarScrollOffsets {
 			m.sidebarScrollOffsets[i] = 0
 		}
+		m.sidebarFocused = false
 		return
 	}
 
@@ -316,6 +323,9 @@ func (m *Model) clampSidebarScrollOffsets() {
 		if m.sidebarScrollOffsets[i] > maxOffset {
 			m.sidebarScrollOffsets[i] = maxOffset
 		}
+	}
+	if !m.validSidebarIndex(m.sidebarFocusIndex) {
+		m.sidebarFocusIndex = defaultSidebarFocusIndex(docs)
 	}
 }
 
@@ -341,6 +351,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.lastCtrlC = now
 		m.status = "Press Ctrl+C again within 2s to quit"
 		return m, nil
+	case "ctrl+f":
+		return m.toggleSidebarFocus(), nil
+	}
+
+	if m.sidebarFocused {
+		return m.handleSidebarKey(msg)
+	}
+
+	switch key {
 	case "esc":
 		if m.running && m.cancelRun != nil {
 			m.cancelRun()
@@ -422,6 +441,118 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.updateCompletions()
 	}
 	return m, nil
+}
+
+func (m Model) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.sidebarFocused = false
+		m.status = "Sidebar focus off"
+	case "tab":
+		m.moveSidebarFocus(1)
+	case "shift+tab":
+		m.moveSidebarFocus(-1)
+	case "1", "2", "3":
+		m.selectSidebarIndex(int(msg.String()[0] - '1'))
+	case "up":
+		m.scrollFocusedSidebar(-1)
+	case "down":
+		m.scrollFocusedSidebar(1)
+	case "pgup":
+		m.scrollFocusedSidebar(-scrollDelta(msg.String()))
+	case "pgdown":
+		m.scrollFocusedSidebar(scrollDelta(msg.String()))
+	case "home":
+		m.setFocusedSidebarOffset(0)
+	case "end":
+		m.setFocusedSidebarOffset(m.maxFocusedSidebarOffset())
+	}
+	return m, nil
+}
+
+func (m Model) toggleSidebarFocus() Model {
+	if m.sidebarFocused {
+		m.sidebarFocused = false
+		m.status = "Sidebar focus off"
+		return m
+	}
+	if !m.shouldRenderSidebar() || len(m.sidebarDocuments) == 0 {
+		m.status = "Sidebar unavailable"
+		return m
+	}
+	m.sidebarFocused = true
+	if !m.validSidebarIndex(m.sidebarFocusIndex) {
+		m.sidebarFocusIndex = defaultSidebarFocusIndex(m.sidebarDocuments)
+	}
+	m.status = fmt.Sprintf("Sidebar focus: %s", m.sidebarDocuments[m.sidebarFocusIndex].Title)
+	return m
+}
+
+func (m *Model) moveSidebarFocus(delta int) {
+	if len(m.sidebarDocuments) == 0 {
+		m.sidebarFocused = false
+		return
+	}
+	next := m.sidebarFocusIndex + delta
+	for next < 0 {
+		next += len(m.sidebarDocuments)
+	}
+	next %= len(m.sidebarDocuments)
+	m.selectSidebarIndex(next)
+}
+
+func (m *Model) selectSidebarIndex(index int) {
+	if !m.validSidebarIndex(index) {
+		return
+	}
+	m.sidebarFocusIndex = index
+	m.status = fmt.Sprintf("Sidebar focus: %s", m.sidebarDocuments[index].Title)
+}
+
+func (m Model) validSidebarIndex(index int) bool {
+	return index >= 0 && index < len(m.sidebarDocuments) && index < len(m.sidebarScrollOffsets)
+}
+
+func defaultSidebarFocusIndex(docs []sidebarDocument) int {
+	for i, doc := range docs {
+		if doc.Title == "Plan" {
+			return i
+		}
+	}
+	return 0
+}
+
+func (m *Model) scrollFocusedSidebar(delta int) {
+	if !m.validSidebarIndex(m.sidebarFocusIndex) {
+		return
+	}
+	m.setFocusedSidebarOffset(m.sidebarScrollOffsets[m.sidebarFocusIndex] + delta)
+}
+
+func (m *Model) setFocusedSidebarOffset(offset int) {
+	if !m.validSidebarIndex(m.sidebarFocusIndex) {
+		return
+	}
+	maxOffset := m.maxFocusedSidebarOffset()
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	m.sidebarScrollOffsets[m.sidebarFocusIndex] = offset
+}
+
+func (m Model) maxFocusedSidebarOffset() int {
+	if !m.validSidebarIndex(m.sidebarFocusIndex) {
+		return 0
+	}
+	_, contentHeight := m.contentDimensions()
+	heights := sidebarBoxHeights(sidebarBoxesHeight(contentHeight), len(m.sidebarDocuments))
+	if m.sidebarFocusIndex >= len(heights) {
+		return 0
+	}
+	return maxSidebarScrollOffset(m.sidebarDocuments[m.sidebarFocusIndex], sidebarWidth, heights[m.sidebarFocusIndex])
 }
 
 func (m Model) togglePlanMode() (tea.Model, tea.Cmd) {
@@ -742,12 +873,14 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 			m.status = "Sidebar shown"
 		case "off", "hide", "false", "0":
 			m.sidebarVisible = false
+			m.sidebarFocused = false
 			m.status = "Sidebar hidden"
 		case "toggle":
 			m.sidebarVisible = !m.sidebarVisible
 			if m.sidebarVisible {
 				m.status = "Sidebar shown"
 			} else {
+				m.sidebarFocused = false
 				m.status = "Sidebar hidden"
 			}
 		default:

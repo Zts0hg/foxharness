@@ -164,6 +164,8 @@ Inside the TUI:
 - `Enter`: send the current message.
 - `Shift+Tab`: toggle Plan Mode for future runs.
 - `Up` / `Down`: reuse previous input history.
+- `PgUp` / `PgDown` or mouse wheel: scroll the conversation.
+- `Ctrl+F`: focus the right sidebar, then use `Tab`, `Up` / `Down`, `PgUp` / `PgDown`, `Home`, and `End` to browse its boxes.
 - `/`: open slash command suggestions.
 - `Esc`: cancel the active run.
 - `Ctrl+C` twice within two seconds: quit.
