@@ -53,7 +53,7 @@ var (
 	userBubbleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("230")).
 			Background(lipgloss.Color("24")).
-			Padding(0, 1)
+			Padding(1, 2)
 
 	userMetaStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("195"))
 	assistantLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("114"))
@@ -220,24 +220,19 @@ func renderEntry(e entry, width int) string {
 	if title == "" {
 		title = e.role
 	}
-	meta := mutedStyle.Render(fmt.Sprintf("%s  %s", title, e.time.Format("15:04:05")))
+	meta := mutedStyle.Render(title)
 	bodyWidth := max(width-2, 20)
 	body := indentLines(renderMarkdown(e.body, bodyWidth), "  ")
 	return fitLine(label+" "+meta, width) + "\n" + body
 }
 
 func renderUserEntry(e entry, width int) string {
-	meta := userMetaStyle.Render("You " + e.time.Format("15:04:05"))
 	body := wrapText(e.body, max(width-userBubbleStyle.GetHorizontalFrameSize(), 20))
-	content := meta
-	if body != "" {
-		content += "\n" + body
-	}
-	return userBubbleStyle.Width(width - userBubbleStyle.GetHorizontalFrameSize()).Render(content)
+	return userBubbleStyle.Width(width - userBubbleStyle.GetHorizontalFrameSize()).Render(body)
 }
 
 func renderAssistantEntry(e entry, width int) string {
-	meta := assistantLabelStyle.Render("Foxharness") + " " + mutedStyle.Render(e.time.Format("15:04:05"))
+	meta := assistantLabelStyle.Render("Foxharness")
 	body := indentLines(renderMarkdown(e.body, max(width-2, 20)), "  ")
 	return fitLine(meta, width) + "\n" + body
 }

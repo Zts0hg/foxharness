@@ -159,6 +159,7 @@ func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 	view := m.View()
 	plainView := stripANSI(view)
 	for _, forbidden := range []string{
+		"You ",
 		"USER you",
 		"SYSTEM run started",
 		"TOOL call bash",
@@ -167,13 +168,13 @@ func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 		"Planning turn",
 		"Session: sess-1",
 		"Run: run-1",
+		"14:17",
 	} {
 		if strings.Contains(plainView, forbidden) {
 			t.Fatalf("view contains verbose fragment %q:\n%s", forbidden, view)
 		}
 	}
 	for _, want := range []string{
-		"You ",
 		"hello, what's the day today?",
 		"• Ran date",
 		"└ 2026年 5月17日",
@@ -205,8 +206,29 @@ func TestAssistantMessagesRenderMarkdown(t *testing.T) {
 			t.Fatalf("rendered assistant markdown missing %q:\n%s", want, rendered)
 		}
 	}
+	if strings.Contains(plainRendered, "15:38:44") {
+		t.Fatalf("rendered assistant markdown contains timestamp:\n%s", rendered)
+	}
 	if !strings.Contains(rendered, "\x1b[") {
 		t.Fatalf("rendered assistant markdown missing terminal styling escape codes:\n%s", rendered)
+	}
+}
+
+func TestUserEntryRendersOnlyHighlightedBody(t *testing.T) {
+	rendered := renderUserEntry(entry{
+		role: "user",
+		body: "inspect go.mod",
+		time: time.Date(2026, 5, 17, 15, 38, 44, 0, time.Local),
+	}, 80)
+	plainRendered := stripANSI(rendered)
+
+	for _, forbidden := range []string{"You", "15:38:44"} {
+		if strings.Contains(plainRendered, forbidden) {
+			t.Fatalf("rendered user entry contains redundant fragment %q:\n%s", forbidden, rendered)
+		}
+	}
+	if !strings.Contains(plainRendered, "inspect go.mod") {
+		t.Fatalf("rendered user entry missing body:\n%s", rendered)
 	}
 }
 
@@ -576,7 +598,7 @@ func TestHelpCommandRendersCommandsOnSeparateLines(t *testing.T) {
 	plainRendered := stripANSI(rendered)
 	lines := strings.Split(plainRendered, "\n")
 
-	for _, forbidden := range []string{"SYSTEM commands", "###", "•"} {
+	for _, forbidden := range []string{"SYSTEM commands", "###", "•", "19:18:28"} {
 		if strings.Contains(plainRendered, forbidden) {
 			t.Fatalf("rendered help contains noisy fragment %q:\n%s", forbidden, rendered)
 		}
@@ -603,7 +625,7 @@ func TestSessionCommandRendersPlainAlignedRows(t *testing.T) {
 	}, 100)
 	plainRendered := stripANSI(rendered)
 
-	for _, forbidden := range []string{"SYSTEM session", "###", "• ID:", "`"} {
+	for _, forbidden := range []string{"SYSTEM session", "###", "• ID:", "`", "19:25:30"} {
 		if strings.Contains(plainRendered, forbidden) {
 			t.Fatalf("rendered session contains noisy fragment %q:\n%s", forbidden, rendered)
 		}
