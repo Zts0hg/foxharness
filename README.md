@@ -28,7 +28,7 @@ https://github.com/Zts0hg/foxharness/releases
 macOS Apple Silicon:
 
 ```bash
-curl -L https://github.com/Zts0hg/foxharness/releases/download/v0.1.0/fox_v0.1.0_darwin_arm64.tar.gz -o fox.tar.gz
+curl -L https://github.com/Zts0hg/foxharness/releases/latest/download/fox_darwin_arm64.tar.gz -o fox.tar.gz
 tar -xzf fox.tar.gz
 chmod +x fox
 sudo mv fox /usr/local/bin/fox
@@ -37,7 +37,7 @@ sudo mv fox /usr/local/bin/fox
 macOS Intel:
 
 ```bash
-curl -L https://github.com/Zts0hg/foxharness/releases/download/v0.1.0/fox_v0.1.0_darwin_amd64.tar.gz -o fox.tar.gz
+curl -L https://github.com/Zts0hg/foxharness/releases/latest/download/fox_darwin_amd64.tar.gz -o fox.tar.gz
 tar -xzf fox.tar.gz
 chmod +x fox
 sudo mv fox /usr/local/bin/fox
@@ -46,7 +46,7 @@ sudo mv fox /usr/local/bin/fox
 Linux amd64:
 
 ```bash
-curl -L https://github.com/Zts0hg/foxharness/releases/download/v0.1.0/fox_v0.1.0_linux_amd64.tar.gz -o fox.tar.gz
+curl -L https://github.com/Zts0hg/foxharness/releases/latest/download/fox_linux_amd64.tar.gz -o fox.tar.gz
 tar -xzf fox.tar.gz
 chmod +x fox
 sudo mv fox /usr/local/bin/fox
@@ -55,7 +55,7 @@ sudo mv fox /usr/local/bin/fox
 Linux arm64:
 
 ```bash
-curl -L https://github.com/Zts0hg/foxharness/releases/download/v0.1.0/fox_v0.1.0_linux_arm64.tar.gz -o fox.tar.gz
+curl -L https://github.com/Zts0hg/foxharness/releases/latest/download/fox_linux_arm64.tar.gz -o fox.tar.gz
 tar -xzf fox.tar.gz
 chmod +x fox
 sudo mv fox /usr/local/bin/fox
@@ -63,8 +63,8 @@ sudo mv fox /usr/local/bin/fox
 
 Windows users can download one of these archives from the release page:
 
-- `fox_v0.1.0_windows_amd64.zip`
-- `fox_v0.1.0_windows_arm64.zip`
+- `fox_windows_amd64.zip`
+- `fox_windows_arm64.zip`
 
 Unzip it and add the directory containing `fox.exe` to your `PATH`.
 
@@ -79,7 +79,7 @@ xattr -d com.apple.quarantine /usr/local/bin/fox
 This requires Go 1.25 or newer.
 
 ```bash
-go install github.com/Zts0hg/foxharness/cmd/fox@v0.1.0
+go install github.com/Zts0hg/foxharness/cmd/fox@latest
 ```
 
 Make sure `$GOPATH/bin` is in your `PATH`.
@@ -315,9 +315,11 @@ The GitHub Actions release workflow builds binaries for:
 - Windows amd64
 - Windows arm64
 
+Each release uploads both versioned archives, such as `fox_vX.Y.Z_linux_amd64.tar.gz`, and stable latest-download archives, such as `fox_linux_amd64.tar.gz`.
+
 Create and push a version tag to publish a release:
 
 ```bash
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin v0.1.0
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
 ```

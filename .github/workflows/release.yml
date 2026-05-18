@@ -65,12 +65,17 @@ jobs:
         run: |
           set -euo pipefail
           artifact="fox_${GITHUB_REF_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          latest_artifact="fox_${{ matrix.goos }}_${{ matrix.goarch }}"
           if [ "${{ matrix.archive_ext }}" = "zip" ]; then
             (cd dist && zip -9 "../${artifact}.zip" "${{ matrix.binary }}")
+            cp "${artifact}.zip" "${latest_artifact}.zip"
             shasum -a 256 "${artifact}.zip" > "${artifact}.zip.sha256"
+            shasum -a 256 "${latest_artifact}.zip" > "${latest_artifact}.zip.sha256"
           else
             tar -C dist -czf "${artifact}.tar.gz" "${{ matrix.binary }}"
+            cp "${artifact}.tar.gz" "${latest_artifact}.tar.gz"
             shasum -a 256 "${artifact}.tar.gz" > "${artifact}.tar.gz.sha256"
+            shasum -a 256 "${latest_artifact}.tar.gz" > "${latest_artifact}.tar.gz.sha256"
           fi
 
       - name: Upload artifact
@@ -80,6 +85,8 @@ jobs:
           path: |
             fox_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive_ext }}
             fox_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive_ext }}.sha256
+            fox_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive_ext }}
+            fox_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive_ext }}.sha256
           if-no-files-found: error
 
   release:
