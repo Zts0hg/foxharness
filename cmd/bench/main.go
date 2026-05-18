@@ -74,11 +74,6 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engi
 		return nil, nil, err
 	}
 
-	store := memory.NewStore(workDir)
-	if err := store.EnsureFiles(); err != nil {
-		return nil, nil, err
-	}
-
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
 	registry.Register(tools.NewWriteFileTool(workDir))
@@ -86,6 +81,10 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engi
 	registry.Register(tools.NewEditFileTool(workDir))
 
 	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
+	store := memory.NewSessionStore(workDir, sess.RootDir)
+	if err := store.EnsureFiles(); err != nil {
+		return nil, nil, err
+	}
 	llmProvider, err := provider.NewZhipuOpenAIProvider("glm-4.5-air")
 	if err != nil {
 		return nil, nil, err

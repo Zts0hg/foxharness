@@ -6,32 +6,37 @@ import (
 	"path/filepath"
 )
 
-// Store manages the memory files for Plan Mode (PLAN.md, TODO.md, MEMORY.md).
-// These files provide persistent storage for planning-related state.
+// Store manages project memory plus session-local Plan Mode files.
 type Store struct {
-	// workDir is the directory where memory files are stored.
-	workDir string
+	projectDir string
+	sessionDir string
 }
 
-// NewStore creates a new Store for the given working directory.
-// Returns a Store that manages memory files in the specified directory.
+// NewStore creates a project-level Store. PLAN.md and TODO.md are stored in the
+// project directory unless a session directory is configured with NewSessionStore.
 func NewStore(workDir string) *Store {
-	return &Store{workDir: workDir}
+	return &Store{projectDir: workDir}
+}
+
+// NewSessionStore creates a Store that keeps PLAN.md and TODO.md in the
+// session directory while keeping MEMORY.md at the project level.
+func NewSessionStore(workDir string, sessionDir string) *Store {
+	return &Store{projectDir: workDir, sessionDir: sessionDir}
 }
 
 // PlanPath returns the path to the PLAN.md file.
 func (s *Store) PlanPath() string {
-	return filepath.Join(s.workDir, "PLAN.md")
+	return filepath.Join(s.planDir(), "PLAN.md")
 }
 
 // TodoPath returns the path to the TODO.md file.
 func (s *Store) TodoPath() string {
-	return filepath.Join(s.workDir, "TODO.md")
+	return filepath.Join(s.planDir(), "TODO.md")
 }
 
 // MemoryPath returns the path to the MEMORY.md file.
 func (s *Store) MemoryPath() string {
-	return filepath.Join(s.workDir, "MEMORY.md")
+	return filepath.Join(s.projectDir, "MEMORY.md")
 }
 
 // EnsureFiles creates memory files with default content if they don't exist.
@@ -54,6 +59,13 @@ func (s *Store) EnsureFiles() error {
 	}
 
 	return nil
+}
+
+func (s *Store) planDir() string {
+	if s.sessionDir != "" {
+		return s.sessionDir
+	}
+	return s.projectDir
 }
 
 // planTemplate returns the default content for PLAN.md.

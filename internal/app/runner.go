@@ -77,15 +77,15 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		return nil, err
 	}
 
-	store := memory.NewStore(workDir)
-	if err := store.EnsureFiles(); err != nil {
-		return nil, fmt.Errorf("初始化文件记忆失败: %w", err)
-	}
-
 	manager := session.NewManager(workDir)
 	sess, err := resolveRunnerSession(manager, workDir, cfg)
 	if err != nil {
 		return nil, err
+	}
+
+	store := memory.NewSessionStore(workDir, sess.RootDir)
+	if err := store.EnsureFiles(); err != nil {
+		return nil, fmt.Errorf("初始化文件记忆失败: %w", err)
 	}
 
 	llmProvider, err := provider.NewZhipuProvider(cfg.Provider, cfg.Model)
@@ -121,6 +121,7 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 
 	r.mu.Lock()
 	sess := r.currentSession
+	store := r.store
 	enableThinking := r.enableThinking
 	enablePlanMode := r.enablePlanMode
 	llmProvider := r.llmProvider
@@ -130,7 +131,7 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 	r.mu.Unlock()
 
 	if enablePlanMode {
-		planner := memory.NewPlanner(llmProvider, r.store)
+		planner := memory.NewPlanner(llmProvider, store)
 		if err := planner.BuildPlan(ctx, userPrompt); err != nil {
 			log.Printf("[PlanMode] 生成计划失败，将回退到旧版本每轮 Thinking: %v", err)
 			enableThinking = true
@@ -176,7 +177,12 @@ func (r *AgentRunner) NewSession(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	store := memory.NewSessionStore(r.workDir, sess.RootDir)
+	if err := store.EnsureFiles(); err != nil {
+		return "", err
+	}
 	r.currentSession = sess
+	r.store = store
 	return sess.ID, nil
 }
 

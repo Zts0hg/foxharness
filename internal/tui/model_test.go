@@ -463,12 +463,14 @@ func TestModelSlashSuggestionsAndTabCompletion(t *testing.T) {
 
 func TestModelSidebarCommandTogglesSidebar(t *testing.T) {
 	workDir := t.TempDir()
+	sessionDir := t.TempDir()
 	writeTestFile(t, workDir, "MEMORY.md", "memory")
-	writeTestFile(t, workDir, "PLAN.md", "plan")
-	writeTestFile(t, workDir, "TODO.md", "todo")
+	writeTestFile(t, sessionDir, "PLAN.md", "plan")
+	writeTestFile(t, sessionDir, "TODO.md", "todo")
 
 	runner := newFakeRunner()
 	runner.workDir = workDir
+	runner.sessionDir = sessionDir
 	m := NewModel(context.Background(), runner, Config{})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 
@@ -1189,12 +1191,16 @@ func TestModelViewContainsSessionAndInput(t *testing.T) {
 
 func TestModelWideViewRendersSidebarDocuments(t *testing.T) {
 	workDir := t.TempDir()
+	sessionDir := t.TempDir()
 	writeTestFile(t, workDir, "MEMORY.md", "# Memory\n\nRemember the repo conventions.")
-	writeTestFile(t, workDir, "PLAN.md", "- Build right sidebar")
-	writeTestFile(t, workDir, "TODO.md", "- [ ] Add tests")
+	writeTestFile(t, workDir, "PLAN.md", "stale project plan")
+	writeTestFile(t, workDir, "TODO.md", "stale project todo")
+	writeTestFile(t, sessionDir, "PLAN.md", "- Build right sidebar")
+	writeTestFile(t, sessionDir, "TODO.md", "- [ ] Add tests")
 
 	runner := newFakeRunner()
 	runner.workDir = workDir
+	runner.sessionDir = sessionDir
 	m := NewModel(context.Background(), runner, Config{})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 
@@ -1212,16 +1218,21 @@ func TestModelWideViewRendersSidebarDocuments(t *testing.T) {
 			t.Fatalf("wide view missing sidebar content %q:\n%s", want, plainView)
 		}
 	}
+	if strings.Contains(plainView, "stale project plan") || strings.Contains(plainView, "stale project todo") {
+		t.Fatalf("sidebar should use session plan/todo instead of project files:\n%s", plainView)
+	}
 }
 
 func TestModelWideViewSidebarLongPlanStartsAtTop(t *testing.T) {
 	workDir := t.TempDir()
+	sessionDir := t.TempDir()
 	writeTestFile(t, workDir, "MEMORY.md", "memory")
-	writeTestFile(t, workDir, "PLAN.md", numberedLines("plan line", 24))
-	writeTestFile(t, workDir, "TODO.md", "todo")
+	writeTestFile(t, sessionDir, "PLAN.md", numberedLines("plan line", 24))
+	writeTestFile(t, sessionDir, "TODO.md", "todo")
 
 	runner := newFakeRunner()
 	runner.workDir = workDir
+	runner.sessionDir = sessionDir
 	m := NewModel(context.Background(), runner, Config{})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 
@@ -1236,12 +1247,14 @@ func TestModelWideViewSidebarLongPlanStartsAtTop(t *testing.T) {
 
 func TestModelMouseWheelScrollsSidebarPlan(t *testing.T) {
 	workDir := t.TempDir()
+	sessionDir := t.TempDir()
 	writeTestFile(t, workDir, "MEMORY.md", "memory")
-	writeTestFile(t, workDir, "PLAN.md", numberedLines("plan line", 24))
-	writeTestFile(t, workDir, "TODO.md", "todo")
+	writeTestFile(t, sessionDir, "PLAN.md", numberedLines("plan line", 24))
+	writeTestFile(t, sessionDir, "TODO.md", "todo")
 
 	runner := newFakeRunner()
 	runner.workDir = workDir
+	runner.sessionDir = sessionDir
 	m := NewModel(context.Background(), runner, Config{})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 
@@ -1265,12 +1278,14 @@ func TestModelMouseWheelScrollsSidebarPlan(t *testing.T) {
 
 func TestModelSidebarScrollDoesNotMoveInput(t *testing.T) {
 	workDir := t.TempDir()
+	sessionDir := t.TempDir()
 	writeTestFile(t, workDir, "MEMORY.md", "memory")
-	writeTestFile(t, workDir, "PLAN.md", numberedLines("plan line", 40))
-	writeTestFile(t, workDir, "TODO.md", "todo")
+	writeTestFile(t, sessionDir, "PLAN.md", numberedLines("plan line", 40))
+	writeTestFile(t, sessionDir, "TODO.md", "todo")
 
 	runner := newFakeRunner()
 	runner.workDir = workDir
+	runner.sessionDir = sessionDir
 	m := NewModel(context.Background(), runner, Config{})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 
@@ -1292,12 +1307,14 @@ func TestModelSidebarScrollDoesNotMoveInput(t *testing.T) {
 
 func TestModelMouseWheelLeftSideStillScrollsTranscript(t *testing.T) {
 	workDir := t.TempDir()
+	sessionDir := t.TempDir()
 	writeTestFile(t, workDir, "MEMORY.md", "memory")
-	writeTestFile(t, workDir, "PLAN.md", numberedLines("plan line", 24))
-	writeTestFile(t, workDir, "TODO.md", "todo")
+	writeTestFile(t, sessionDir, "PLAN.md", numberedLines("plan line", 24))
+	writeTestFile(t, sessionDir, "TODO.md", "todo")
 
 	runner := newFakeRunner()
 	runner.workDir = workDir
+	runner.sessionDir = sessionDir
 	m := NewModel(context.Background(), runner, Config{})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 
@@ -1342,18 +1359,20 @@ func TestSidebarBottomDoesNotReplaceContentWithEllipsis(t *testing.T) {
 
 func TestModelRunningTickRefreshesSidebarDocuments(t *testing.T) {
 	workDir := t.TempDir()
+	sessionDir := t.TempDir()
 	writeTestFile(t, workDir, "MEMORY.md", "old memory")
-	writeTestFile(t, workDir, "PLAN.md", "old plan")
-	writeTestFile(t, workDir, "TODO.md", "old todo")
+	writeTestFile(t, sessionDir, "PLAN.md", "old plan")
+	writeTestFile(t, sessionDir, "TODO.md", "old todo")
 
 	runner := newFakeRunner()
 	runner.workDir = workDir
+	runner.sessionDir = sessionDir
 	m := NewModel(context.Background(), runner, Config{})
 	if got := sidebarContent(m.sidebarDocuments, "Plan"); got != "old plan" {
 		t.Fatalf("initial plan = %q, want old plan", got)
 	}
 
-	writeTestFile(t, workDir, "PLAN.md", "new plan from disk")
+	writeTestFile(t, sessionDir, "PLAN.md", "new plan from disk")
 	m, cmd := update(t, m, runningTickMsg{})
 	if cmd == nil {
 		t.Fatalf("running tick did not schedule another tick")
@@ -1365,12 +1384,14 @@ func TestModelRunningTickRefreshesSidebarDocuments(t *testing.T) {
 
 func TestModelRunningTickClampsShortenedSidebarDocument(t *testing.T) {
 	workDir := t.TempDir()
+	sessionDir := t.TempDir()
 	writeTestFile(t, workDir, "MEMORY.md", "memory")
-	writeTestFile(t, workDir, "PLAN.md", numberedLines("plan line", 24))
-	writeTestFile(t, workDir, "TODO.md", "todo")
+	writeTestFile(t, sessionDir, "PLAN.md", numberedLines("plan line", 24))
+	writeTestFile(t, sessionDir, "TODO.md", "todo")
 
 	runner := newFakeRunner()
 	runner.workDir = workDir
+	runner.sessionDir = sessionDir
 	m := NewModel(context.Background(), runner, Config{})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 
@@ -1380,7 +1401,7 @@ func TestModelRunningTickClampsShortenedSidebarDocument(t *testing.T) {
 		t.Fatalf("long plan should allow a positive sidebar offset")
 	}
 
-	writeTestFile(t, workDir, "PLAN.md", "short plan")
+	writeTestFile(t, sessionDir, "PLAN.md", "short plan")
 	m, _ = update(t, m, runningTickMsg{})
 	if m.sidebarScrollOffsets[1] != 0 {
 		t.Fatalf("shortened plan offset = %d, want clamped 0", m.sidebarScrollOffsets[1])

@@ -47,6 +47,43 @@ func TestBuildPlanWritesPlanAndTodoFromJSON(t *testing.T) {
 	}
 }
 
+func TestSessionStoreKeepsPlanTodoInSessionAndMemoryInProject(t *testing.T) {
+	projectDir := t.TempDir()
+	sessionDir := t.TempDir()
+	store := NewSessionStore(projectDir, sessionDir)
+
+	if got, want := store.PlanPath(), filepath.Join(sessionDir, "PLAN.md"); got != want {
+		t.Fatalf("PlanPath() = %q, want %q", got, want)
+	}
+	if got, want := store.TodoPath(), filepath.Join(sessionDir, "TODO.md"); got != want {
+		t.Fatalf("TodoPath() = %q, want %q", got, want)
+	}
+	if got, want := store.MemoryPath(), filepath.Join(projectDir, "MEMORY.md"); got != want {
+		t.Fatalf("MemoryPath() = %q, want %q", got, want)
+	}
+
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	for _, path := range []string{
+		filepath.Join(sessionDir, "PLAN.md"),
+		filepath.Join(sessionDir, "TODO.md"),
+		filepath.Join(projectDir, "MEMORY.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected file %s: %v", path, err)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(projectDir, "PLAN.md"),
+		filepath.Join(projectDir, "TODO.md"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("project-local plan/todo should not exist at %s, stat err = %v", path, err)
+		}
+	}
+}
+
 func TestBuildPlanWritesPlanAndTodoFromFencedJSON(t *testing.T) {
 	content := "```json\n" + marshalPlanDraft(t, planDraft{
 		Plan: "# PLAN\n\n## Goal\n\nFix counter.\n",

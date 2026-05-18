@@ -17,6 +17,8 @@
 //	~/.foxharness/projects/{encoded-workdir}/sessions/{id}/
 //	  ├── session.json      - Session metadata
 //	  ├── working_memory.md - Working memory for the agent
+//	  ├── PLAN.md           - Session-local generated plan
+//	  ├── TODO.md           - Session-local generated task checklist
 //	  ├── messages.jsonl    - Raw model-visible message history
 //	  ├── transcript.jsonl  - Session event log
 //	  ├── artifacts/        - Files created during the session
@@ -76,6 +78,16 @@ type Session struct {
 // MemoryPath returns the path to the working memory file for this session.
 func (s *Session) MemoryPath() string {
 	return filepath.Join(s.RootDir, "working_memory.md")
+}
+
+// PlanPath returns the path to the session-local plan file.
+func (s *Session) PlanPath() string {
+	return filepath.Join(s.RootDir, "PLAN.md")
+}
+
+// TodoPath returns the path to the session-local todo file.
+func (s *Session) TodoPath() string {
+	return filepath.Join(s.RootDir, "TODO.md")
 }
 
 // TranscriptPath returns the path to the transcript file for this session.

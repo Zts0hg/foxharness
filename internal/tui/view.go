@@ -229,7 +229,7 @@ func (m Model) renderBody(width int, height int) string {
 func (m Model) renderSidebar(width int, height int) string {
 	docs := m.sidebarDocuments
 	if len(docs) == 0 {
-		docs = loadSidebarDocuments(m.runner.WorkDir())
+		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
 	}
 	if len(docs) == 0 {
 		return ""

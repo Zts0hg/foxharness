@@ -90,7 +90,7 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 		fmt.Sprintf("已创建 AgentOps Session: %s\n开始分析。", sess.ID),
 	)
 
-	store := memory.NewStore(r.workDir)
+	store := memory.NewSessionStore(r.workDir, sess.RootDir)
 	if err := store.EnsureFiles(); err != nil {
 		return err
 	}

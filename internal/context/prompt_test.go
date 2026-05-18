@@ -95,3 +95,30 @@ func TestComposeDoesNotLoadUnmentionedSkill(t *testing.T) {
 		t.Fatalf("unmentioned skill was loaded:\n%s", prompt)
 	}
 }
+
+func TestComposeLoadsProjectMemorySeparatelyFromWorkingMemory(t *testing.T) {
+	workDir := t.TempDir()
+	sessionDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "MEMORY.md"), []byte("project convention"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workingMemoryPath := filepath.Join(sessionDir, "working_memory.md")
+	if err := os.WriteFile(workingMemoryPath, []byte("session note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, err := NewComposer(workDir).WithMemory(workingMemoryPath).Compose("普通任务")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## Project Memory from MEMORY.md",
+		"project convention",
+		"## Session Working Memory",
+		"session note",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

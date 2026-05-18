@@ -145,7 +145,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		planMode:         runner.PlanMode(),
 		entries:          entries,
 		sidebarVisible:   true,
-		sidebarDocuments: loadSidebarDocuments(runner.WorkDir()),
+		sidebarDocuments: loadSidebarDocuments(runner.WorkDir(), runner.SessionDir()),
 	}
 }
 
@@ -205,6 +205,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sessionID = msg.sessionID
 		m.refreshRuntimeInfo()
+		m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
+		m.clampSidebarScrollOffsets()
 		m.status = "New session ready"
 		m.entries = nil
 		m.inputHistory = nil
@@ -223,7 +225,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.running {
 			m.spinnerFrame++
 		}
-		m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir())
+		m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
 		m.clampSidebarScrollOffsets()
 		return m, runningTickCmd()
 
@@ -274,7 +276,7 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 
 	docs := m.sidebarDocuments
 	if len(docs) == 0 {
-		docs = loadSidebarDocuments(m.runner.WorkDir())
+		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
 	}
 	heights := sidebarBoxHeights(boxesHeight, len(docs))
 	top := 0
@@ -291,7 +293,7 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 func (m *Model) clampSidebarScrollOffsets() {
 	docs := m.sidebarDocuments
 	if len(docs) == 0 {
-		docs = loadSidebarDocuments(m.runner.WorkDir())
+		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
 	}
 	if !m.shouldRenderSidebar() || len(docs) == 0 {
 		for i := range m.sidebarScrollOffsets {

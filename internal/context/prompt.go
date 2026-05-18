@@ -50,6 +50,14 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 		parts = append(parts, section("Project Instructions from AGENTS.md", agents))
 	}
 
+	projectMemory, err := c.loadProjectMemory()
+	if err != nil {
+		return "", err
+	}
+	if projectMemory != "" {
+		parts = append(parts, section("Project Memory from MEMORY.md", projectMemory))
+	}
+
 	skills, err := c.loadMentionedSkills(userPrompt)
 	if err != nil {
 		return "", err
@@ -79,17 +87,16 @@ type loadedSkill struct {
 
 func memoryInstructions() string {
 	return strings.TrimSpace(`
-Project memory files:
-- PLAN.md stores the high-level plan for complex tasks.
-- TODO.md stores concrete checlist items. Keep it updated when progress changes.
-- MEMORY.md stores durable project facts that are useful across sessions.
+Persistent files:
+- Session PLAN.md stores the high-level plan for the current session.
+- Session TODO.md stores concrete checklist items for the current session.
+- Project MEMORY.md stores durable project facts that are useful across sessions.
 
 Rules:
-- For complex multi-step tasks, inspect or update PLAN.md before making broad changes.
-- Use TODO.md to track progress instead of relying only on hidden reasoning.
+- Use the current session plan and todo to track complex multi-step tasks.
 - Add only durable, high-value facts to MEMORY.md.
 - DO not dump raw logs or large file contents into memory files.
-- Prefer edit_file for focused updates to these markdown files.
+- Prefer edit_file for focused updates to project MEMORY.md.
 `)
 }
 
@@ -127,6 +134,19 @@ func (c *Composer) loadAgentsFile() (string, error) {
 	}
 	if err != nil {
 		return "", fmt.Errorf("读取 AGENTS.md 失败: %w", err)
+	}
+
+	return string(content), nil
+}
+
+func (c *Composer) loadProjectMemory() (string, error) {
+	path := filepath.Join(c.workDir, "MEMORY.md")
+	content, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("读取 MEMORY.md 失败: %w", err)
 	}
 
 	return string(content), nil
