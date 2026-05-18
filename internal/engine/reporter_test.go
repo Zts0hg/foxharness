@@ -8,12 +8,60 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/tracing"
 )
 
 type finalProvider struct{}
 
 func (p *finalProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
 	return &schema.Message{Role: schema.RoleAssistant, Content: "done"}, nil
+}
+
+func TestModelCallTraceRecordsProviderAndModel(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	eng := NewAgentEngine(
+		&finalProvider{},
+		tools.NewRegistry(),
+		workDir,
+		staticComposer{},
+		Config{
+			MaxTurns:         3,
+			ProviderProtocol: "openai",
+			Model:            "trace-model",
+		},
+	)
+
+	result, err := eng.RunWithReporter(context.Background(), sess, "hello", nil)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+
+	events, err := tracing.Load(result.TracePath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	for _, event := range events {
+		if event.Type != tracing.EventSpanStart || event.Name != "model_call" {
+			continue
+		}
+		if event.Attrs["provider_protocol"] != "openai" {
+			t.Fatalf("provider_protocol attr = %#v, want openai; attrs = %#v", event.Attrs["provider_protocol"], event.Attrs)
+		}
+		if event.Attrs["model"] != "trace-model" {
+			t.Fatalf("model attr = %#v, want trace-model; attrs = %#v", event.Attrs["model"], event.Attrs)
+		}
+		return
+	}
+	t.Fatalf("trace did not contain model_call span_start: %#v", events)
 }
 
 type staticComposer struct{}

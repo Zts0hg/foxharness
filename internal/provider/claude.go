@@ -46,6 +46,14 @@ func NewZhipuClaudeProvider(model string) (*ClaudeProvider, error) {
 	}, nil
 }
 
+func (p *ClaudeProvider) ProviderProtocol() string {
+	return ProviderProtocolClaude
+}
+
+func (p *ClaudeProvider) ModelName() string {
+	return p.model
+}
+
 // Generate translates foxharness messages/tools into Anthropic Messages API
 // requests and normalizes text/tool_use response blocks back to schema.Message.
 func (p *ClaudeProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {

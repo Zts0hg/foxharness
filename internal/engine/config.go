@@ -13,6 +13,13 @@ type Config struct {
 	// If <= 0, defaults to 20. Each turn consists of optional thinking
 	// followed by action execution.
 	MaxTurns int
+
+	// ProviderProtocol identifies the provider wire protocol used for model
+	// calls, for trace/debug metadata.
+	ProviderProtocol string
+
+	// Model identifies the model used for model calls, for trace/debug metadata.
+	Model string
 }
 
 // DefaultConfig returns a Config with sensible defaults.

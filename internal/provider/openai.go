@@ -57,6 +57,14 @@ func NewZhipuOpenAIProvider(model string) (*OpenAIProvider, error) {
 	}, nil
 }
 
+func (p *OpenAIProvider) ProviderProtocol() string {
+	return ProviderProtocolOpenAI
+}
+
+func (p *OpenAIProvider) ModelName() string {
+	return p.model
+}
+
 // Generate produces a response from the OpenAI-compatible API.
 //
 // The ctx parameter enables cancellation of long-running requests.

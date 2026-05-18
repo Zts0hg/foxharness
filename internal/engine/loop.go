@@ -91,6 +91,11 @@ type AgentEngine struct {
 	reminder *reminder.Manager
 }
 
+type providerMetadata interface {
+	ProviderProtocol() string
+	ModelName() string
+}
+
 type indexedToolResult struct {
 	Index      int
 	Call       schema.ToolCall
@@ -116,6 +121,14 @@ func NewAgentEngine(
 ) *AgentEngine {
 	if config.MaxTurns <= 0 {
 		config.MaxTurns = 20
+	}
+	if metadata, ok := p.(providerMetadata); ok {
+		if config.ProviderProtocol == "" {
+			config.ProviderProtocol = metadata.ProviderProtocol()
+		}
+		if config.Model == "" {
+			config.Model = metadata.ModelName()
+		}
 	}
 
 	return &AgentEngine{
@@ -609,12 +622,19 @@ func (e *AgentEngine) callModel(
 	messages []schema.Message,
 	tools []schema.ToolDefinition,
 ) (*schema.Message, error) {
-	span := tracer.StartSpan(parentSpanID, "model_call", map[string]any{
+	attrs := map[string]any{
 		"phase":       phase,
 		"turn":        turn,
 		"message_len": len(messages),
 		"tools":       len(tools),
-	})
+	}
+	if e.config.ProviderProtocol != "" {
+		attrs["provider_protocol"] = e.config.ProviderProtocol
+	}
+	if e.config.Model != "" {
+		attrs["model"] = e.config.Model
+	}
+	span := tracer.StartSpan(parentSpanID, "model_call", attrs)
 
 	inputTokens := estimator.EstimateMessages(messages) +
 		metrics.EstimateToolDefinitions(estimator, tools)

@@ -96,6 +96,8 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 	providerProtocol := cfg.Provider
 	if providerProtocol == "" {
 		providerProtocol = provider.ProviderProtocolOpenAI
+	} else {
+		providerProtocol = strings.ToLower(strings.TrimSpace(providerProtocol))
 	}
 
 	return &AgentRunner{
@@ -122,6 +124,9 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 	enableThinking := r.enableThinking
 	enablePlanMode := r.enablePlanMode
 	llmProvider := r.llmProvider
+	providerProtocol := r.providerProtocol
+	model := r.model
+	maxTurns := r.maxTurns
 	r.mu.Unlock()
 
 	if enablePlanMode {
@@ -142,8 +147,10 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 		r.workDir,
 		composer,
 		engine.Config{
-			EnableThinking: enableThinking,
-			MaxTurns:       r.maxTurns,
+			EnableThinking:   enableThinking,
+			MaxTurns:         maxTurns,
+			ProviderProtocol: providerProtocol,
+			Model:            model,
 		},
 	)
 	eng.WithCompactor(compaction.NewCompactor(
