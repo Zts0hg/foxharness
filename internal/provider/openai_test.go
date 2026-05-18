@@ -131,6 +131,35 @@ func TestOpenAIProviderStopsRetryingWhenParentContextIsCanceled(t *testing.T) {
 	}
 }
 
+func TestOpenAIProviderNormalizesEmptyToolCallArguments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatCompletionToolCall(t, w, "call-1", "read_file", "")
+	}))
+	defer server.Close()
+
+	provider := newTestOpenAIProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	msg, err := provider.Generate(context.Background(), []schema.Message{
+		{Role: schema.RoleUser, Content: "read README"},
+	}, []schema.ToolDefinition{{
+		Name: "read_file",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string"},
+			},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1", len(msg.ToolCalls))
+	}
+	if got := string(msg.ToolCalls[0].Arguments); got != "{}" {
+		t.Fatalf("tool call arguments = %q, want {}", got)
+	}
+}
+
 func newTestOpenAIProvider(baseURL string, retry RetryConfig) *OpenAIProvider {
 	return newTestOpenAIProviderWithOptions(baseURL, retry)
 }
@@ -163,6 +192,36 @@ func writeChatCompletion(t *testing.T, w http.ResponseWriter, content string) {
 			"finish_reason": "stop"
 		}]
 	}`, strings.ReplaceAll(content, "\n", " "))
+	if err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+}
+
+func writeChatCompletionToolCall(t *testing.T, w http.ResponseWriter, id string, name string, arguments string) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	_, err := fmt.Fprintf(w, `{
+		"id": "chatcmpl-test",
+		"object": "chat.completion",
+		"created": 0,
+		"model": "test-model",
+		"choices": [{
+			"index": 0,
+			"message": {
+				"role": "assistant",
+				"content": "",
+				"tool_calls": [{
+					"id": %q,
+					"type": "function",
+					"function": {
+						"name": %q,
+						"arguments": %q
+					}
+				}]
+			},
+			"finish_reason": "tool_calls"
+		}]
+	}`, id, name, arguments)
 	if err != nil {
 		t.Fatalf("write response: %v", err)
 	}

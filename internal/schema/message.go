@@ -4,7 +4,10 @@
 // engine, providers, and tool implementations.
 package schema
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // Role enumerates the participant roles in a conversation message.
 type Role string
@@ -49,4 +52,31 @@ type ToolDefinition struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
 	InputSchema interface{} `json:"input_schema"`
+}
+
+// NormalizeMessage returns a copy with tool-call arguments guaranteed to be
+// JSON-marshalable. Model providers can occasionally return an empty argument
+// string for a tool call; encoding/json rejects an empty json.RawMessage.
+func NormalizeMessage(msg Message) Message {
+	for i := range msg.ToolCalls {
+		msg.ToolCalls[i] = NormalizeToolCall(msg.ToolCalls[i])
+	}
+	return msg
+}
+
+// NormalizeToolCall returns a copy with valid JSON arguments. Invalid or empty
+// arguments become an empty object so the engine can surface a normal tool
+// validation error instead of crashing while persisting session history.
+func NormalizeToolCall(call ToolCall) ToolCall {
+	call.Arguments = NormalizeToolArguments(call.Arguments)
+	return call
+}
+
+// NormalizeToolArguments makes a tool-call argument payload safe to marshal.
+func NormalizeToolArguments(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || !json.Valid(trimmed) {
+		return json.RawMessage(`{}`)
+	}
+	return append(json.RawMessage(nil), trimmed...)
 }

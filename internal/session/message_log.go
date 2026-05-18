@@ -50,6 +50,7 @@ func (l *MessageLog) AppendKind(runID, kind string, msg schema.Message) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	msg = schema.NormalizeMessage(msg)
 	if err := l.ensureSeqLoaded(); err != nil {
 		return err
 	}

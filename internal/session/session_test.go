@@ -60,6 +60,44 @@ func TestSessionRunAndMessageLog(t *testing.T) {
 	}
 }
 
+func TestMessageLogNormalizesEmptyToolCallArguments(t *testing.T) {
+	workDir := t.TempDir()
+	manager := NewManagerWithHome(workDir, t.TempDir())
+
+	sess, err := manager.Create(CreateOptions{
+		Source:  SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	run, err := sess.StartRun("inspect")
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+
+	log := NewMessageLog(sess)
+	err = log.Append(run.ID, schema.Message{
+		Role: schema.RoleAssistant,
+		ToolCalls: []schema.ToolCall{{
+			ID:        "call-1",
+			Name:      "read_file",
+			Arguments: json.RawMessage{},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	messages, err := log.LoadMessages()
+	if err != nil {
+		t.Fatalf("LoadMessages() error = %v", err)
+	}
+	if got := string(messages[0].ToolCalls[0].Arguments); got != "{}" {
+		t.Fatalf("stored arguments = %q, want {}", got)
+	}
+}
+
 func TestManagerStoresSessionsUnderHomeProjectDirectory(t *testing.T) {
 	workDir := t.TempDir()
 	homeDir := t.TempDir()

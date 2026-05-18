@@ -162,13 +162,14 @@ func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message
 			resultMessage.ToolCalls = append(resultMessage.ToolCalls, schema.ToolCall{
 				ID:        toolCall.ID,
 				Name:      toolCall.Function.Name,
-				Arguments: []byte(toolCall.Function.Arguments),
+				Arguments: schema.NormalizeToolArguments([]byte(toolCall.Function.Arguments)),
 			})
 		}
 
 	}
 
-	return resultMessage, nil
+	normalized := schema.NormalizeMessage(*resultMessage)
+	return &normalized, nil
 }
 
 func (p *OpenAIProvider) chatCompletionWithRetry(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {

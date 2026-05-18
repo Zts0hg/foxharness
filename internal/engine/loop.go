@@ -622,6 +622,10 @@ func (e *AgentEngine) callModel(
 	started := time.Now()
 	resp, err := e.provider.Generate(ctx, messages, tools)
 	duration := time.Since(started)
+	if resp != nil {
+		normalized := schema.NormalizeMessage(*resp)
+		resp = &normalized
+	}
 
 	outputTokens := 0
 	if resp != nil {
