@@ -55,20 +55,25 @@ func main() {
 	if mode == launchTUI {
 		cfg.Prompt = strings.TrimSpace(cfg.Prompt)
 		if err := app.RunTUI(context.Background(), cfg); err != nil {
-			log.Fatal(err)
+			exitWithError(err)
 		}
 		return
 	}
 
 	prompt, err := readPrompt(cfg.Prompt)
 	if err != nil {
-		log.Fatal(err)
+		exitWithError(err)
 	}
 
 	cfg.Prompt = prompt
 	if err := app.RunCLI(context.Background(), cfg); err != nil {
-		log.Fatal(err)
+		exitWithError(err)
 	}
+}
+
+func exitWithError(err error) {
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
 }
 
 func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, error) {

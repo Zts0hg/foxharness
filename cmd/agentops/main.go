@@ -38,7 +38,10 @@ func main() {
 	workDir := mustEnv("AGENTOPS_WORKDIR")
 	logDir := mustEnv("AGENTOPS_LOGDIR")
 
-	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	llmProvider, err := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	if err != nil {
+		log.Fatal(err)
+	}
 	messenger := feishu.NewMessenger(appID, appSecret)
 	approvalStore := approval.NewStore()
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/Zts0hg/foxharness/internal/compaction"
@@ -37,8 +38,9 @@ type AgentRunner struct {
 	mu    sync.Mutex
 	runMu sync.Mutex
 
-	workDir string
-	model   string
+	workDir          string
+	model            string
+	providerProtocol string
 
 	enableThinking bool
 	enablePlanMode bool
@@ -91,16 +93,22 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		return nil, err
 	}
 
+	providerProtocol := cfg.Provider
+	if providerProtocol == "" {
+		providerProtocol = provider.ProviderProtocolOpenAI
+	}
+
 	return &AgentRunner{
-		workDir:        workDir,
-		model:          cfg.Model,
-		enableThinking: cfg.EnableThinking,
-		enablePlanMode: cfg.EnablePlanMode,
-		maxTurns:       cfg.MaxTurns,
-		store:          store,
-		manager:        manager,
-		llmProvider:    llmProvider,
-		currentSession: sess,
+		workDir:          workDir,
+		model:            cfg.Model,
+		providerProtocol: providerProtocol,
+		enableThinking:   cfg.EnableThinking,
+		enablePlanMode:   cfg.EnablePlanMode,
+		maxTurns:         cfg.MaxTurns,
+		store:            store,
+		manager:          manager,
+		llmProvider:      llmProvider,
+		currentSession:   sess,
 	}, nil
 }
 
@@ -113,10 +121,11 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 	sess := r.currentSession
 	enableThinking := r.enableThinking
 	enablePlanMode := r.enablePlanMode
+	llmProvider := r.llmProvider
 	r.mu.Unlock()
 
 	if enablePlanMode {
-		planner := memory.NewPlanner(r.llmProvider, r.store)
+		planner := memory.NewPlanner(llmProvider, r.store)
 		if err := planner.BuildPlan(ctx, userPrompt); err != nil {
 			log.Printf("[PlanMode] 生成计划失败，将回退到旧版本每轮 Thinking: %v", err)
 			enableThinking = true
@@ -128,8 +137,8 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 
 	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
 	eng := engine.NewAgentEngine(
-		r.llmProvider,
-		r.buildRegistry(sess),
+		llmProvider,
+		r.buildRegistry(sess, llmProvider),
 		r.workDir,
 		composer,
 		engine.Config{
@@ -138,7 +147,7 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 		},
 	)
 	eng.WithCompactor(compaction.NewCompactor(
-		r.llmProvider,
+		llmProvider,
 		compaction.RoughEstimator{},
 		compaction.DefaultConfig(),
 	))
@@ -187,7 +196,36 @@ func (r *AgentRunner) WorkDir() string {
 }
 
 func (r *AgentRunner) Model() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.model
+}
+
+// SetModel switches the model used by future runs while preserving the current
+// provider protocol. If a run is active, the switch waits until that run ends.
+func (r *AgentRunner) SetModel(model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return fmt.Errorf("model name cannot be empty")
+	}
+
+	r.runMu.Lock()
+	defer r.runMu.Unlock()
+
+	r.mu.Lock()
+	protocol := r.providerProtocol
+	r.mu.Unlock()
+
+	llmProvider, err := provider.NewZhipuProvider(protocol, model)
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	r.model = model
+	r.llmProvider = llmProvider
+	r.mu.Unlock()
+	return nil
 }
 
 func (r *AgentRunner) ContextUsage() string {
@@ -229,14 +267,14 @@ func (r *AgentRunner) SetPlanMode(enabled bool) {
 	r.enablePlanMode = enabled
 }
 
-func (r *AgentRunner) buildRegistry(sess *session.Session) tools.Registry {
+func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.LLMProvider) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(r.workDir))
 	registry.Register(tools.NewWriteFileTool(r.workDir))
 	registry.Register(tools.NewBashTool(r.workDir))
 	registry.Register(tools.NewEditFileTool(r.workDir))
 
-	subManager := subagent.NewManager(r.llmProvider, r.workDir)
+	subManager := subagent.NewManager(llmProvider, r.workDir)
 	registry.Register(subagent.NewTool(subManager, sess.ID))
 	return registry
 }

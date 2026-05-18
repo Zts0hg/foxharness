@@ -12,6 +12,7 @@ const gitBranchTimeout = 500 * time.Millisecond
 
 func (m *Model) refreshRuntimeInfo() {
 	m.sessionID = m.runner.SessionID()
+	m.modelName = m.runner.Model()
 	m.project = projectFolderName(m.runner.WorkDir())
 	m.gitBranch = gitBranchForWorkDir(m.runner.WorkDir())
 	m.contextUsage = normalizeContextUsage(m.runner.ContextUsage())

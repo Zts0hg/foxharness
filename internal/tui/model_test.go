@@ -28,6 +28,7 @@ type fakeRunner struct {
 	runs         []string
 	runErr       error
 	runErrs      []error
+	setModelErr  error
 	newErr       error
 	nextRunID    int
 	planMode     bool
@@ -91,6 +92,14 @@ func (r *fakeRunner) WorkDir() string {
 
 func (r *fakeRunner) Model() string {
 	return r.model
+}
+
+func (r *fakeRunner) SetModel(model string) error {
+	if r.setModelErr != nil {
+		return r.setModelErr
+	}
+	r.model = model
+	return nil
 }
 
 func (r *fakeRunner) ContextUsage() string {
@@ -425,7 +434,7 @@ func TestModelSlashSuggestionsAndTabCompletion(t *testing.T) {
 	m, _ = update(t, m, keyRunes("/"))
 	view := m.View()
 	plainView := stripANSI(view)
-	for _, want := range []string{"❯", "/session", "/clear", "/new", "/cancel", "/sidebar", "/help", "/exit"} {
+	for _, want := range []string{"❯", "/session", "/clear", "/new", "/model", "/cancel", "/sidebar", "/help", "/exit"} {
 		if !strings.Contains(plainView, want) {
 			t.Fatalf("view missing slash dropdown item %q:\n%s", want, view)
 		}
@@ -973,6 +982,129 @@ func TestModelRunsQueuedPromptsInFIFOOrder(t *testing.T) {
 		if !entriesContain(m.entries, "assistant", "answer: "+prompt) {
 			t.Fatalf("entries missing assistant response for %q: %#v", prompt, m.entries)
 		}
+	}
+}
+
+func TestModelCommandSwitchesModelWhenIdle(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, cmd := update(t, m, keyRunes("/model test-model"))
+	if cmd != nil {
+		t.Fatalf("typing model command returned command")
+	}
+	m, cmd = update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/model returned command, want nil")
+	}
+
+	if runner.Model() != "test-model" {
+		t.Fatalf("runner model = %q, want test-model", runner.Model())
+	}
+	if m.modelName != "test-model" {
+		t.Fatalf("modelName = %q, want test-model", m.modelName)
+	}
+	if !entriesContain(m.entries, "command", "Switched model to test-model") {
+		t.Fatalf("entries missing model switch notice: %#v", m.entries)
+	}
+	if !strings.Contains(stripANSI(m.renderHeader(100)), "[test-model]") {
+		t.Fatalf("header missing switched model:\n%s", m.renderHeader(100))
+	}
+}
+
+func TestModelCommandWithoutArgumentShowsUsage(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/model"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/model returned command, want nil")
+	}
+
+	if runner.Model() != "fake-model" {
+		t.Fatalf("runner model changed to %q", runner.Model())
+	}
+	if !entriesContain(m.entries, "command", "Usage: /model <model_name>") {
+		t.Fatalf("entries missing model usage: %#v", m.entries)
+	}
+}
+
+func TestModelCommandQueuedBetweenPromptsRunsInFIFOOrder(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("first task"))
+	m, firstCmd := update(t, m, keyEnter())
+	if firstCmd == nil {
+		t.Fatalf("first task command is nil")
+	}
+	m, _ = update(t, m, keyRunes("second task"))
+	m, _ = update(t, m, keyEnter())
+	m, _ = update(t, m, keyRunes("/model next-model"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("queued model command returned command")
+	}
+	m, _ = update(t, m, keyRunes("third task"))
+	m, _ = update(t, m, keyEnter())
+
+	if runner.Model() != "fake-model" {
+		t.Fatalf("model switched while run active: %q", runner.Model())
+	}
+	if got := strings.Join(m.queuedPrompts, ","); got != "second task,/model next-model,third task" {
+		t.Fatalf("queuedPrompts = %#v, want prompt/model/prompt", m.queuedPrompts)
+	}
+
+	m, secondCmd := update(t, m, firstCmd())
+	if secondCmd == nil {
+		t.Fatalf("second task command is nil")
+	}
+	if runner.Model() != "fake-model" {
+		t.Fatalf("model switched before second prompt: %q", runner.Model())
+	}
+
+	m, thirdCmd := update(t, m, secondCmd())
+	if thirdCmd == nil {
+		t.Fatalf("third task command is nil")
+	}
+	if runner.Model() != "next-model" {
+		t.Fatalf("model after queued command = %q, want next-model", runner.Model())
+	}
+	if !entriesContain(m.entries, "command", "Switched model to next-model") {
+		t.Fatalf("entries missing queued model switch: %#v", m.entries)
+	}
+
+	m, finalCmd := update(t, m, thirdCmd())
+	if finalCmd != nil {
+		t.Fatalf("final queued task returned unexpected command")
+	}
+	if got := strings.Join(runner.runs, ","); got != "first task,second task,third task" {
+		t.Fatalf("runs = %#v, want all prompts in order", runner.runs)
+	}
+}
+
+func TestInvalidQueuedModelCommandContinuesQueue(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("first task"))
+	m, firstCmd := update(t, m, keyEnter())
+	m, _ = update(t, m, keyRunes("/model too many args"))
+	m, _ = update(t, m, keyEnter())
+	m, _ = update(t, m, keyRunes("second task"))
+	m, _ = update(t, m, keyEnter())
+
+	m, secondCmd := update(t, m, firstCmd())
+	if secondCmd == nil {
+		t.Fatalf("second task command is nil")
+	}
+	if !entriesContain(m.entries, "error", "Usage: /model <model_name>") {
+		t.Fatalf("entries missing invalid queued model error: %#v", m.entries)
+	}
+	m, _ = update(t, m, secondCmd())
+	if got := strings.Join(runner.runs, ","); got != "first task,second task" {
+		t.Fatalf("runs = %#v, want queue to continue after invalid model command", runner.runs)
 	}
 }
 

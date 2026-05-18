@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,62 @@ import (
 type blockingLLMProvider struct {
 	entered chan struct{}
 	release chan struct{}
+}
+
+func TestNewAgentRunnerMissingAPIKeyReturnsHelpfulError(t *testing.T) {
+	t.Setenv("ZHIPU_API_KEY", "")
+
+	_, err := NewAgentRunner(context.Background(), AgentRunnerConfig{
+		WorkDir:  t.TempDir(),
+		Model:    "test-model",
+		Provider: "openai",
+		MaxTurns: 1,
+	})
+	if err == nil {
+		t.Fatal("NewAgentRunner returned nil error, want missing key error")
+	}
+	if !strings.Contains(err.Error(), "ZHIPU_API_KEY is not set") {
+		t.Fatalf("error = %q, want missing key message", err.Error())
+	}
+	if !strings.Contains(err.Error(), `export ZHIPU_API_KEY="your-api-key"`) {
+		t.Fatalf("error = %q, want export hint", err.Error())
+	}
+}
+
+func TestAgentRunnerSetModelUpdatesModel(t *testing.T) {
+	t.Setenv("ZHIPU_API_KEY", "test-key")
+
+	workDir := t.TempDir()
+	store := memory.NewStore(workDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	runner := &AgentRunner{
+		workDir:          workDir,
+		model:            "old-model",
+		providerProtocol: "claude",
+		maxTurns:         3,
+		store:            store,
+		manager:          manager,
+		llmProvider:      &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})},
+		currentSession:   sess,
+	}
+
+	if err := runner.SetModel("new-model"); err != nil {
+		t.Fatalf("SetModel() error = %v", err)
+	}
+	if got := runner.Model(); got != "new-model" {
+		t.Fatalf("Model() = %q, want new-model", got)
+	}
 }
 
 func (p *blockingLLMProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {

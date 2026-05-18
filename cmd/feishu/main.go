@@ -37,7 +37,10 @@ func main() {
 
 	workDir, _ := os.Getwd()
 
-	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	llmProvider, err := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	if err != nil {
+		log.Fatal(err)
+	}
 	sessionManager := session.NewManager(workDir)
 	messenger := feishu.NewMessenger(appID, appSecret)
 	approvalStore := approval.NewStore()

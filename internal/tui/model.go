@@ -29,6 +29,7 @@ type Runner interface {
 	SessionDir() string
 	WorkDir() string
 	Model() string
+	SetModel(model string) error
 	ContextUsage() string
 	MessageHistory() ([]session.MessageRecord, error)
 	PlanMode() bool
@@ -65,6 +66,7 @@ var slashCommands = []slashCommand{
 	{Name: "/session", Description: "show current session paths"},
 	{Name: "/clear", Description: "clear the visible transcript"},
 	{Name: "/new", Description: "start a fresh session"},
+	{Name: "/model", Description: "show or switch the active model"},
 	{Name: "/cancel", Description: "cancel the active run"},
 	{Name: "/sidebar", Description: "show or hide right sidebar"},
 	{Name: "/help", Description: "show available commands"},
@@ -482,6 +484,12 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		m.input = nil
 		m.resetHistoryNavigation()
 		m.resetCompletions()
+		if m.running && isQueuedModelCommand(text) {
+			m.addInputHistory(text)
+			m.queuedPrompts = append(m.queuedPrompts, text)
+			m.status = fmt.Sprintf("Queued %d message%s", len(m.queuedPrompts), pluralS(len(m.queuedPrompts)))
+			return m, nil
+		}
 		return m.handleSlashCommand(text)
 	}
 	if m.running {
@@ -515,19 +523,27 @@ func (m Model) startPrompt(text string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startNextQueuedPrompt() (tea.Model, tea.Cmd) {
-	if len(m.queuedPrompts) == 0 {
-		return m, nil
+	for len(m.queuedPrompts) > 0 {
+		text := m.queuedPrompts[0]
+		m.queuedPrompts = append([]string(nil), m.queuedPrompts[1:]...)
+		if isModelCommand(text) {
+			next, cmd := m.handleSlashCommand(text)
+			m = next.(Model)
+			if cmd != nil {
+				return m, cmd
+			}
+			continue
+		}
+		next, cmd := m.startPrompt(text)
+		typed := next.(Model)
+		if len(typed.queuedPrompts) > 0 {
+			typed.status = fmt.Sprintf("Running queued message; %d queued", len(typed.queuedPrompts))
+		} else {
+			typed.status = "Running queued message"
+		}
+		return typed, cmd
 	}
-	text := m.queuedPrompts[0]
-	m.queuedPrompts = append([]string(nil), m.queuedPrompts[1:]...)
-	next, cmd := m.startPrompt(text)
-	typed := next.(Model)
-	if len(typed.queuedPrompts) > 0 {
-		typed.status = fmt.Sprintf("Running queued message; %d queued", len(typed.queuedPrompts))
-	} else {
-		typed.status = "Running queued message"
-	}
-	return typed, cmd
+	return m, nil
 }
 
 func (m *Model) addInputHistory(text string) {
@@ -691,6 +707,28 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.status = "Transcript cleared"
 		m.scrollOffset = 0
 		return m, nil
+	case "/model":
+		if len(fields) == 1 {
+			m.appendCommandEntry("Model", fmt.Sprintf("Current model: %s\nUsage: /model <model_name>", m.runner.Model()))
+			m.status = "Model"
+			return m, nil
+		}
+		if len(fields) > 2 {
+			m.appendEntry("error", "invalid command", "Usage: /model <model_name>", true)
+			m.status = "Invalid model command"
+			return m, nil
+		}
+		modelName := strings.TrimSpace(fields[1])
+		if err := m.runner.SetModel(modelName); err != nil {
+			m.appendEntry("error", "model switch failed", err.Error(), true)
+			m.status = "Model switch failed"
+			return m, nil
+		}
+		m.modelName = m.runner.Model()
+		m.refreshRuntimeInfo()
+		m.appendCommandEntry("Model", fmt.Sprintf("Switched model to %s", m.modelName))
+		m.status = fmt.Sprintf("Model switched to %s", m.modelName)
+		return m, nil
 	case "/sidebar":
 		mode := "toggle"
 		if len(fields) > 1 {
@@ -743,6 +781,16 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.status = "Unknown command"
 		return m, nil
 	}
+}
+
+func isModelCommand(text string) bool {
+	fields := strings.Fields(text)
+	return len(fields) > 0 && strings.ToLower(fields[0]) == "/model"
+}
+
+func isQueuedModelCommand(text string) bool {
+	fields := strings.Fields(text)
+	return len(fields) > 1 && strings.ToLower(fields[0]) == "/model"
 }
 
 func (m Model) matchingSlashCommands() []slashCommand {

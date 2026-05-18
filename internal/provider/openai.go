@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/openai/openai-go/v3"
@@ -32,13 +31,13 @@ type OpenAIProvider struct {
 //
 // The model parameter specifies which model to use (e.g., "glm-4.5-air").
 // Reads the ZHIPU_API_KEY environment variable for authentication.
-// Panics if ZHIPU_API_KEY is not set.
+// Returns an error if ZHIPU_API_KEY is not set.
 //
 // Returns a configured OpenAIProvider ready for use with the Zhipu API.
-func NewZhipuOpenAIProvider(model string) *OpenAIProvider {
-	apiKey := os.Getenv("ZHIPU_API_KEY")
-	if apiKey == "" {
-		panic("ZHIPU_API_KEY environment variable must be set")
+func NewZhipuOpenAIProvider(model string) (*OpenAIProvider, error) {
+	apiKey, err := zhipuAPIKeyFromEnv()
+	if err != nil {
+		return nil, err
 	}
 	baseUrl := "https://open.bigmodel.cn/api/coding/paas/v4"
 	retry := retryConfigFromEnv()
@@ -55,7 +54,7 @@ func NewZhipuOpenAIProvider(model string) *OpenAIProvider {
 		client: openai.NewClient(clientOptions...),
 		model:  model,
 		retry:  retry,
-	}
+	}, nil
 }
 
 // Generate produces a response from the OpenAI-compatible API.

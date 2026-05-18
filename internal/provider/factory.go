@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -16,9 +17,9 @@ const (
 func NewZhipuProvider(protocol string, model string) (LLMProvider, error) {
 	switch normalizeProviderProtocol(protocol) {
 	case ProviderProtocolOpenAI:
-		return NewZhipuOpenAIProvider(model), nil
+		return NewZhipuOpenAIProvider(model)
 	case ProviderProtocolClaude:
-		return NewZhipuClaudeProvider(model), nil
+		return NewZhipuClaudeProvider(model)
 	default:
 		return nil, fmt.Errorf("unsupported provider protocol %q; expected %q or %q", protocol, ProviderProtocolOpenAI, ProviderProtocolClaude)
 	}
@@ -30,4 +31,12 @@ func normalizeProviderProtocol(protocol string) string {
 		return ProviderProtocolOpenAI
 	}
 	return protocol
+}
+
+func zhipuAPIKeyFromEnv() (string, error) {
+	apiKey := strings.TrimSpace(os.Getenv("ZHIPU_API_KEY"))
+	if apiKey == "" {
+		return "", fmt.Errorf("ZHIPU_API_KEY is not set\nexport ZHIPU_API_KEY=\"your-api-key\"")
+	}
+	return apiKey, nil
 }

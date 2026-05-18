@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/anthropics/anthropic-sdk-go"
@@ -25,10 +24,10 @@ type ClaudeProvider struct {
 
 // NewZhipuClaudeProvider creates a ClaudeProvider configured for Zhipu's
 // Anthropic-compatible endpoint.
-func NewZhipuClaudeProvider(model string) *ClaudeProvider {
-	apiKey := os.Getenv("ZHIPU_API_KEY")
-	if apiKey == "" {
-		panic("ZHIPU_API_KEY environment variable must be set")
+func NewZhipuClaudeProvider(model string) (*ClaudeProvider, error) {
+	apiKey, err := zhipuAPIKeyFromEnv()
+	if err != nil {
+		return nil, err
 	}
 	retry := retryConfigFromEnv()
 	clientOptions := []option.RequestOption{
@@ -44,7 +43,7 @@ func NewZhipuClaudeProvider(model string) *ClaudeProvider {
 		client: anthropic.NewClient(clientOptions...),
 		model:  model,
 		retry:  retry,
-	}
+	}, nil
 }
 
 // Generate translates foxharness messages/tools into Anthropic Messages API

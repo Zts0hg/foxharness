@@ -86,7 +86,10 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engi
 	registry.Register(tools.NewEditFileTool(workDir))
 
 	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
-	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	llmProvider, err := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	if err != nil {
+		return nil, nil, err
+	}
 
 	enableThinking := false
 	planner := memory.NewPlanner(llmProvider, store)
