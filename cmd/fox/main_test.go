@@ -22,6 +22,9 @@ func TestParseArgsDefaultsToTUI(t *testing.T) {
 	if cfg.Model != "glm-4.5-air" {
 		t.Fatalf("Model = %q, want %q", cfg.Model, "glm-4.5-air")
 	}
+	if cfg.Provider != "openai" {
+		t.Fatalf("Provider = %q, want openai", cfg.Provider)
+	}
 	if !cfg.EnablePlanMode {
 		t.Fatal("EnablePlanMode = false, want true")
 	}
@@ -99,7 +102,7 @@ func TestParseArgsPromptFlagKeepsDefaultTUIMode(t *testing.T) {
 }
 
 func TestParseArgsAliases(t *testing.T) {
-	cfg, mode, err := parseArgs([]string{"-C", "/tmp/project", "-c", "-r", "session-1", "-model", "test-model", "-max-turns", "3"}, io.Discard)
+	cfg, mode, err := parseArgs([]string{"-C", "/tmp/project", "-c", "-r", "session-1", "-model", "test-model", "-provider", "claude", "-max-turns", "3"}, io.Discard)
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
@@ -118,6 +121,9 @@ func TestParseArgsAliases(t *testing.T) {
 	}
 	if cfg.Model != "test-model" {
 		t.Fatalf("Model = %q, want %q", cfg.Model, "test-model")
+	}
+	if cfg.Provider != "claude" {
+		t.Fatalf("Provider = %q, want claude", cfg.Provider)
 	}
 	if cfg.MaxTurns != 3 {
 		t.Fatalf("MaxTurns = %d, want 3", cfg.MaxTurns)

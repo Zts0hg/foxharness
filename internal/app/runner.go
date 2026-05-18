@@ -22,6 +22,7 @@ import (
 type AgentRunnerConfig struct {
 	WorkDir         string
 	Model           string
+	Provider        string
 	EnableThinking  bool
 	EnablePlanMode  bool
 	MaxTurns        int
@@ -53,6 +54,7 @@ func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
 	return AgentRunnerConfig{
 		WorkDir:         cfg.WorkDir,
 		Model:           cfg.Model,
+		Provider:        cfg.Provider,
 		EnableThinking:  cfg.EnableThinking,
 		EnablePlanMode:  cfg.EnablePlanMode,
 		MaxTurns:        cfg.MaxTurns,
@@ -84,6 +86,11 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		return nil, err
 	}
 
+	llmProvider, err := provider.NewZhipuProvider(cfg.Provider, cfg.Model)
+	if err != nil {
+		return nil, err
+	}
+
 	return &AgentRunner{
 		workDir:        workDir,
 		model:          cfg.Model,
@@ -92,7 +99,7 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		maxTurns:       cfg.MaxTurns,
 		store:          store,
 		manager:        manager,
-		llmProvider:    provider.NewZhipuOpenAIProvider(cfg.Model),
+		llmProvider:    llmProvider,
 		currentSession: sess,
 	}, nil
 }

@@ -86,7 +86,7 @@ Make sure `$GOPATH/bin` is in your `PATH`.
 
 ## Configure
 
-foxharness currently uses Zhipu BigModel's OpenAI-compatible coding endpoint. Set your API key before running `fox`:
+foxharness uses Zhipu BigModel's coding endpoint by default. The default provider protocol is OpenAI-compatible, and a Claude-compatible Anthropic Messages protocol adapter is also available. Set your API key before running `fox`:
 
 ```bash
 export ZHIPU_API_KEY="your-api-key"
@@ -100,6 +100,29 @@ export FOXHARNESS_LLM_RETRY_INITIAL_DELAY=750ms
 export FOXHARNESS_LLM_RETRY_MAX_DELAY=8s
 export FOXHARNESS_LLM_REQUEST_TIMEOUT=60s
 ```
+
+### Provider Protocols
+
+Use `-provider openai` for the default OpenAI-compatible Chat Completions protocol:
+
+```bash
+fox exec -provider openai "Inspect this project for potential bugs"
+```
+
+Use `-provider claude` for the Claude-compatible Anthropic Messages protocol:
+
+```bash
+fox exec -provider claude "Inspect this project for potential bugs"
+```
+
+Both modes use the same internal agent messages and tools. The provider adapter translates them into the target protocol:
+
+| Area | OpenAI-compatible protocol | Claude-compatible protocol |
+| --- | --- | --- |
+| System prompt | Sent as a `system` role message. | Sent through the top-level `system` field. |
+| Tool calls | Assistant message includes `tool_calls`; tool results use `tool` role messages. | Assistant content includes `tool_use` blocks; tool results are user messages with `tool_result` blocks. |
+| Tool schema | Function parameters are nested under `tools[].function.parameters`. | Input schema is sent as `tools[].input_schema`. |
+| Response content | Text and tool calls are separate fields on the assistant message. | Text and tool calls are mixed content blocks and normalized back into foxharness messages. |
 
 ## Quick Start
 
@@ -170,6 +193,7 @@ Common options:
 | --- | --- |
 | `-C`, `-workdir` | Working directory. Defaults to `.`. |
 | `-model` | Model name. Defaults to `glm-4.5-air`. |
+| `-provider` | Provider protocol: `openai` or `claude`. Defaults to `openai`. |
 | `-plan` | Enable Plan Mode. Defaults to `true`. |
 | `-thinking` | Enable legacy per-turn thinking mode when Plan Mode is not used. |
 | `-max-turns` | Maximum agent turns. Defaults to `20`. |
@@ -185,6 +209,7 @@ fox exec -plan=false "Inspect the code only; do not modify files"
 fox exec -continue "Fix the bugs found in the previous run"
 fox exec -session 20260517-192517-a504c5 "Continue this session and summarize the current progress"
 fox exec -model glm-4.5-air "Add tests for this project"
+fox exec -provider claude "Summarize the architecture of this project"
 ```
 
 ## Project Instructions

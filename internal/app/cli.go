@@ -19,6 +19,7 @@ type CLIConfig struct {
 	WorkDir         string
 	Prompt          string
 	Model           string
+	Provider        string
 	EnableThinking  bool
 	EnablePlanMode  bool
 	MaxTurns        int

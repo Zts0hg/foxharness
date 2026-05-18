@@ -14,6 +14,7 @@
 //	-prompt     User task prompt
 //	-p, -print  Print response and exit without TUI
 //	-model      LLM model name (default: "glm-4.5-air")
+//	-provider   Provider protocol: openai or claude (default: "openai")
 //	-thinking   Enable legacy per-turn Thinking mode
 //	-plan       Enable Plan Mode (default: true)
 //	-max-turns  Maximum number of agent turns (default: 20)
@@ -89,6 +90,7 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 	fs.StringVar(&cfg.WorkDir, "C", ".", "working directory")
 	fs.StringVar(&cfg.Prompt, "prompt", "", "user task prompt")
 	fs.StringVar(&cfg.Model, "model", "glm-4.5-air", "LLM model name")
+	fs.StringVar(&cfg.Provider, "provider", "openai", "provider protocol: openai or claude")
 	fs.BoolVar(&cfg.EnableThinking, "thinking", false, "enable legacy per-turn Thinking mode; disabled when Plan Mode succeeds")
 	fs.BoolVar(&cfg.EnablePlanMode, "plan", true, "enable Plan Mode")
 	fs.IntVar(&cfg.MaxTurns, "max-turns", 20, "maximum number of agent turns")
