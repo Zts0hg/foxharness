@@ -11,6 +11,9 @@ const (
 	sidebarMinTotalWidth = 120
 	sidebarWidth         = 34
 	sidebarGap           = 1
+	sidebarDocumentCount = 3
+	sidebarHintHeight    = 1
+	sidebarHintText      = "Use /sidebar off to hide"
 )
 
 var sidebarFiles = []struct {

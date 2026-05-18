@@ -66,6 +66,7 @@ var slashCommands = []slashCommand{
 	{Name: "/clear", Description: "clear the visible transcript"},
 	{Name: "/new", Description: "start a fresh session"},
 	{Name: "/cancel", Description: "cancel the active run"},
+	{Name: "/sidebar", Description: "show or hide right sidebar"},
 	{Name: "/help", Description: "show available commands"},
 	{Name: "/exit", Description: "quit"},
 }
@@ -106,7 +107,9 @@ type Model struct {
 	contextUsage string
 	planMode     bool
 
-	sidebarDocuments []sidebarDocument
+	sidebarVisible       bool
+	sidebarDocuments     []sidebarDocument
+	sidebarScrollOffsets [sidebarDocumentCount]int
 }
 
 func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
@@ -139,6 +142,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		contextUsage:     normalizeContextUsage(runner.ContextUsage()),
 		planMode:         runner.PlanMode(),
 		entries:          entries,
+		sidebarVisible:   true,
 		sidebarDocuments: loadSidebarDocuments(runner.WorkDir()),
 	}
 }
@@ -152,6 +156,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = max(msg.Width, minWidth)
 		m.height = max(msg.Height, minHeight)
+		m.clampSidebarScrollOffsets()
 		return m, nil
 
 	case runEventMsg:
@@ -217,6 +222,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spinnerFrame++
 		}
 		m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir())
+		m.clampSidebarScrollOffsets()
 		return m, runningTickCmd()
 
 	case tea.KeyMsg:
@@ -230,6 +236,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if sidebarIndex, ok := m.sidebarIndexAt(msg.X, msg.Y); ok {
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.sidebarScrollOffsets[sidebarIndex] -= scrollDelta("wheelup")
+		case tea.MouseButtonWheelDown:
+			m.sidebarScrollOffsets[sidebarIndex] += scrollDelta("wheeldown")
+		}
+		m.clampSidebarScrollOffsets()
+		return m, nil
+	}
+
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
 		m.scrollOffset += scrollDelta("wheelup")
@@ -240,6 +257,66 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
+	if !m.shouldRenderSidebar() {
+		return 0, false
+	}
+	contentWidth, contentHeight := m.contentDimensions()
+	sidebarX := contentWidth + sidebarGap
+	boxesHeight := sidebarBoxesHeight(contentHeight)
+	if x < sidebarX || x >= sidebarX+sidebarWidth || y < 0 || y >= boxesHeight {
+		return 0, false
+	}
+
+	docs := m.sidebarDocuments
+	if len(docs) == 0 {
+		docs = loadSidebarDocuments(m.runner.WorkDir())
+	}
+	heights := sidebarBoxHeights(boxesHeight, len(docs))
+	top := 0
+	for i, height := range heights {
+		bottom := top + height
+		if y >= top && y < bottom {
+			return i, true
+		}
+		top = bottom
+	}
+	return 0, false
+}
+
+func (m *Model) clampSidebarScrollOffsets() {
+	docs := m.sidebarDocuments
+	if len(docs) == 0 {
+		docs = loadSidebarDocuments(m.runner.WorkDir())
+	}
+	if !m.shouldRenderSidebar() || len(docs) == 0 {
+		for i := range m.sidebarScrollOffsets {
+			m.sidebarScrollOffsets[i] = 0
+		}
+		return
+	}
+
+	_, contentHeight := m.contentDimensions()
+	heights := sidebarBoxHeights(sidebarBoxesHeight(contentHeight), len(docs))
+	for i := range m.sidebarScrollOffsets {
+		if i >= len(docs) || i >= len(heights) {
+			m.sidebarScrollOffsets[i] = 0
+			continue
+		}
+		maxOffset := maxSidebarScrollOffset(docs[i], sidebarWidth, heights[i])
+		if m.sidebarScrollOffsets[i] < 0 {
+			m.sidebarScrollOffsets[i] = 0
+		}
+		if m.sidebarScrollOffsets[i] > maxOffset {
+			m.sidebarScrollOffsets[i] = maxOffset
+		}
+	}
+}
+
+func (m Model) shouldRenderSidebar() bool {
+	return m.sidebarVisible && shouldRenderSidebar(m.width)
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -613,6 +690,32 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.entries = nil
 		m.status = "Transcript cleared"
 		m.scrollOffset = 0
+		return m, nil
+	case "/sidebar":
+		mode := "toggle"
+		if len(fields) > 1 {
+			mode = strings.ToLower(fields[1])
+		}
+		switch mode {
+		case "on", "show", "true", "1":
+			m.sidebarVisible = true
+			m.status = "Sidebar shown"
+		case "off", "hide", "false", "0":
+			m.sidebarVisible = false
+			m.status = "Sidebar hidden"
+		case "toggle":
+			m.sidebarVisible = !m.sidebarVisible
+			if m.sidebarVisible {
+				m.status = "Sidebar shown"
+			} else {
+				m.status = "Sidebar hidden"
+			}
+		default:
+			m.appendEntry("error", "invalid command", "Usage: /sidebar [on|off|toggle]", true)
+			m.status = "Invalid sidebar command"
+			return m, nil
+		}
+		m.clampSidebarScrollOffsets()
 		return m, nil
 	case "/new":
 		if m.running {

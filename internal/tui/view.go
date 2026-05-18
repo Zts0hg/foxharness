@@ -86,15 +86,51 @@ var (
 
 func (m Model) View() string {
 	width := max(m.width, minWidth)
-	height := max(m.height, minHeight)
 
 	header := m.renderHeader(width)
 	footer := m.renderFooter(width)
+	contentWidth, _ := m.contentDimensions()
+
+	notice := m.renderRunningNotice(contentWidth)
+	suggestions := m.renderSuggestions(contentWidth)
+	input := m.renderInput(contentWidth)
+	bodyHeight := max(m.height, minHeight) - lipgloss.Height(notice) - lipgloss.Height(suggestions) - lipgloss.Height(input) - lipgloss.Height(header) - lipgloss.Height(footer)
+	if bodyHeight < 6 {
+		bodyHeight = 6
+	}
+	body := m.renderBody(contentWidth, bodyHeight)
+	content := body
+	if m.shouldRenderSidebar() {
+		content = lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			content,
+			strings.Repeat(" ", sidebarGap),
+			m.renderSidebar(sidebarWidth, bodyHeight),
+		)
+	}
+
+	parts := []string{content}
+	if notice != "" {
+		parts = append(parts, notice)
+	}
+	parts = append(parts, input)
+	if suggestions != "" {
+		parts = append(parts, suggestions)
+	}
+	parts = append(parts, header, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+func (m Model) contentDimensions() (int, int) {
+	width := max(m.width, minWidth)
+	height := max(m.height, minHeight)
 	contentWidth := width
-	if shouldRenderSidebar(width) {
+	if m.shouldRenderSidebar() {
 		contentWidth = width - sidebarWidth - sidebarGap
 	}
 
+	header := m.renderHeader(width)
+	footer := m.renderFooter(width)
 	notice := m.renderRunningNotice(contentWidth)
 	suggestions := m.renderSuggestions(contentWidth)
 	input := m.renderInput(contentWidth)
@@ -102,29 +138,7 @@ func (m Model) View() string {
 	if bodyHeight < 6 {
 		bodyHeight = 6
 	}
-	body := m.renderBody(contentWidth, bodyHeight)
-
-	mainParts := []string{body}
-	if notice != "" {
-		mainParts = append(mainParts, notice)
-	}
-	mainParts = append(mainParts, input)
-	if suggestions != "" {
-		mainParts = append(mainParts, suggestions)
-	}
-	content := lipgloss.JoinVertical(lipgloss.Left, mainParts...)
-	if shouldRenderSidebar(width) {
-		content = lipgloss.JoinHorizontal(
-			lipgloss.Top,
-			content,
-			strings.Repeat(" ", sidebarGap),
-			m.renderSidebar(sidebarWidth, lipgloss.Height(content)),
-		)
-	}
-
-	parts := []string{content}
-	parts = append(parts, header, footer)
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return contentWidth, bodyHeight
 }
 
 func (m Model) renderHeader(width int) string {
@@ -221,20 +235,45 @@ func (m Model) renderSidebar(width int, height int) string {
 		return ""
 	}
 
-	boxHeight := max(height/len(docs), 3)
-	remainder := max(height-(boxHeight*len(docs)), 0)
+	boxesHeight := sidebarBoxesHeight(height)
+	heights := sidebarBoxHeights(boxesHeight, len(docs))
 	boxes := make([]string, 0, len(docs))
 	for i, doc := range docs {
-		currentHeight := boxHeight
-		if i < remainder {
-			currentHeight++
+		offset := 0
+		if i < len(m.sidebarScrollOffsets) {
+			offset = m.sidebarScrollOffsets[i]
 		}
-		boxes = append(boxes, renderSidebarBox(doc, width, currentHeight))
+		boxes = append(boxes, renderSidebarBox(doc, width, heights[i], offset))
 	}
+	boxes = append(boxes, renderSidebarHint(width))
 	return lipgloss.JoinVertical(lipgloss.Left, boxes...)
 }
 
-func renderSidebarBox(doc sidebarDocument, width int, height int) string {
+func sidebarBoxesHeight(height int) int {
+	return max(height-sidebarHintHeight, 1)
+}
+
+func renderSidebarHint(width int) string {
+	return mutedStyle.Width(width).Render(fitLine(sidebarHintText, width))
+}
+
+func sidebarBoxHeights(height int, count int) []int {
+	if count <= 0 {
+		return nil
+	}
+	boxHeight := max(height/count, 3)
+	remainder := max(height-(boxHeight*count), 0)
+	heights := make([]int, count)
+	for i := range heights {
+		heights[i] = boxHeight
+		if i < remainder {
+			heights[i]++
+		}
+	}
+	return heights
+}
+
+func renderSidebarBox(doc sidebarDocument, width int, height int, offset int) string {
 	contentWidth := max(width-sidebarBoxStyle.GetHorizontalFrameSize(), 10)
 	contentHeight := max(height-sidebarBoxStyle.GetVerticalFrameSize(), 1)
 	bodyWidth := contentWidth
@@ -247,15 +286,17 @@ func renderSidebarBox(doc sidebarDocument, width int, height int) string {
 	rendered := renderMarkdown(text, bodyWidth)
 	lines := strings.Split(rendered, "\n")
 	availableBodyLines := max(contentHeight-1, 0)
+	offset = clampSidebarOffset(offset, len(lines), availableBodyLines)
 	if len(lines) > availableBodyLines {
-		if availableBodyLines <= 0 {
-			lines = nil
-		} else {
-			lines = append(lines[:availableBodyLines-1], mutedStyle.Render("..."))
-		}
+		lines = sidebarVisibleLines(lines, offset, availableBodyLines)
+	} else if availableBodyLines < len(lines) {
+		lines = lines[:availableBodyLines]
 	}
 	for len(lines) < availableBodyLines {
 		lines = append(lines, "")
+	}
+	for i := range lines {
+		lines[i] = fitLine(lines[i], bodyWidth)
 	}
 
 	contentLines := append([]string{fitLine(title, bodyWidth)}, lines...)
@@ -264,6 +305,55 @@ func renderSidebarBox(doc sidebarDocument, width int, height int) string {
 		Width(contentWidth).
 		Height(contentHeight).
 		Render(content)
+}
+
+func maxSidebarScrollOffset(doc sidebarDocument, width int, height int) int {
+	contentWidth := max(width-sidebarBoxStyle.GetHorizontalFrameSize(), 10)
+	contentHeight := max(height-sidebarBoxStyle.GetVerticalFrameSize(), 1)
+	bodyWidth := contentWidth
+
+	text := doc.Content
+	if doc.Error != "" {
+		text = doc.Content + "\n" + doc.Error
+	}
+	lines := strings.Split(renderMarkdown(text, bodyWidth), "\n")
+	availableBodyLines := max(contentHeight-1, 0)
+	return clampSidebarOffset(len(lines), len(lines), availableBodyLines)
+}
+
+func clampSidebarOffset(offset int, lineCount int, availableBodyLines int) int {
+	if offset < 0 || availableBodyLines <= 0 || lineCount <= availableBodyLines {
+		return 0
+	}
+	maxOffset := lineCount - availableBodyLines
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset > maxOffset {
+		return maxOffset
+	}
+	return offset
+}
+
+func sidebarVisibleLines(lines []string, offset int, availableBodyLines int) []string {
+	if availableBodyLines <= 0 {
+		return nil
+	}
+	if len(lines) <= availableBodyLines {
+		return lines
+	}
+	visibleContentLines := availableBodyLines
+	showHint := offset+availableBodyLines < len(lines)
+	if showHint && availableBodyLines > 1 {
+		visibleContentLines = availableBodyLines - 1
+	}
+	offset = clampSidebarOffset(offset, len(lines), availableBodyLines)
+	end := min(offset+visibleContentLines, len(lines))
+	visible := append([]string(nil), lines[offset:end]...)
+	if showHint {
+		visible = append(visible, mutedStyle.Render("..."))
+	}
+	return visible
 }
 
 func (m Model) renderEntries(width int) string {

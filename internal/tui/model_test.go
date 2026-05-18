@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -424,7 +425,7 @@ func TestModelSlashSuggestionsAndTabCompletion(t *testing.T) {
 	m, _ = update(t, m, keyRunes("/"))
 	view := m.View()
 	plainView := stripANSI(view)
-	for _, want := range []string{"❯", "/session", "/clear", "/new", "/cancel", "/help", "/exit"} {
+	for _, want := range []string{"❯", "/session", "/clear", "/new", "/cancel", "/sidebar", "/help", "/exit"} {
 		if !strings.Contains(plainView, want) {
 			t.Fatalf("view missing slash dropdown item %q:\n%s", want, view)
 		}
@@ -448,6 +449,42 @@ func TestModelSlashSuggestionsAndTabCompletion(t *testing.T) {
 	m, _ = update(t, m, keyTab())
 	if got := string(m.input); got != "/session" {
 		t.Fatalf("input after tab = %q, want /session", got)
+	}
+}
+
+func TestModelSidebarCommandTogglesSidebar(t *testing.T) {
+	workDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", "memory")
+	writeTestFile(t, workDir, "PLAN.md", "plan")
+	writeTestFile(t, workDir, "TODO.md", "todo")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+
+	if !strings.Contains(stripANSI(m.View()), sidebarHintText) {
+		t.Fatalf("visible sidebar should render hide hint:\n%s", m.View())
+	}
+
+	m, _ = update(t, m, keyRunes("/sidebar off"))
+	m, _ = update(t, m, keyEnter())
+	if m.sidebarVisible {
+		t.Fatalf("/sidebar off left sidebarVisible=true")
+	}
+	plainView := stripANSI(m.View())
+	if strings.Contains(plainView, "Memory") || strings.Contains(plainView, sidebarHintText) {
+		t.Fatalf("/sidebar off should hide sidebar and hint:\n%s", plainView)
+	}
+
+	m, _ = update(t, m, keyRunes("/sidebar on"))
+	m, _ = update(t, m, keyEnter())
+	if !m.sidebarVisible {
+		t.Fatalf("/sidebar on left sidebarVisible=false")
+	}
+	plainView = stripANSI(m.View())
+	if !strings.Contains(plainView, "Memory") || !strings.Contains(plainView, sidebarHintText) {
+		t.Fatalf("/sidebar on should show sidebar and hint:\n%s", plainView)
 	}
 }
 
@@ -1045,6 +1082,132 @@ func TestModelWideViewRendersSidebarDocuments(t *testing.T) {
 	}
 }
 
+func TestModelWideViewSidebarLongPlanStartsAtTop(t *testing.T) {
+	workDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", "memory")
+	writeTestFile(t, workDir, "PLAN.md", numberedLines("plan line", 24))
+	writeTestFile(t, workDir, "TODO.md", "todo")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+
+	plainView := stripANSI(m.View())
+	if !strings.Contains(plainView, "plan line 01") {
+		t.Fatalf("default sidebar plan view should show top content:\n%s", plainView)
+	}
+	if strings.Contains(plainView, "plan line 24") {
+		t.Fatalf("default sidebar plan view should hide later content:\n%s", plainView)
+	}
+}
+
+func TestModelMouseWheelScrollsSidebarPlan(t *testing.T) {
+	workDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", "memory")
+	writeTestFile(t, workDir, "PLAN.md", numberedLines("plan line", 24))
+	writeTestFile(t, workDir, "TODO.md", "todo")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+
+	x, y := sidebarPoint(t, m, 1)
+	m, _ = update(t, m, tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonWheelDown})
+	if m.sidebarScrollOffsets[1] != 1 {
+		t.Fatalf("plan sidebar offset after wheel down = %d, want 1", m.sidebarScrollOffsets[1])
+	}
+	if m.sidebarScrollOffsets[0] != 0 || m.sidebarScrollOffsets[2] != 0 {
+		t.Fatalf("scrolling plan should not affect other sidebar offsets: %#v", m.sidebarScrollOffsets)
+	}
+
+	plainView := stripANSI(m.View())
+	if strings.Contains(plainView, "plan line 01") {
+		t.Fatalf("scrolled sidebar plan should hide the first line:\n%s", plainView)
+	}
+	if !strings.Contains(plainView, "line 03") {
+		t.Fatalf("scrolled sidebar plan should show later content:\n%s", plainView)
+	}
+}
+
+func TestModelSidebarScrollDoesNotMoveInput(t *testing.T) {
+	workDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", "memory")
+	writeTestFile(t, workDir, "PLAN.md", numberedLines("plan line", 40))
+	writeTestFile(t, workDir, "TODO.md", "todo")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+
+	before := lineContaining(stripANSI(m.View()), "Message foxharness")
+	if before < 0 {
+		t.Fatalf("input line missing before sidebar scroll:\n%s", m.View())
+	}
+
+	x, y := sidebarPoint(t, m, 1)
+	for i := 0; i < 6; i++ {
+		m, _ = update(t, m, tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonWheelDown})
+	}
+
+	after := lineContaining(stripANSI(m.View()), "Message foxharness")
+	if after != before {
+		t.Fatalf("input line moved after sidebar scroll: before=%d after=%d\n%s", before, after, m.View())
+	}
+}
+
+func TestModelMouseWheelLeftSideStillScrollsTranscript(t *testing.T) {
+	workDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", "memory")
+	writeTestFile(t, workDir, "PLAN.md", numberedLines("plan line", 24))
+	writeTestFile(t, workDir, "TODO.md", "todo")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+
+	m, _ = update(t, m, tea.MouseMsg{X: 0, Y: 0, Button: tea.MouseButtonWheelUp})
+	if m.scrollOffset != 1 {
+		t.Fatalf("left-side wheel should scroll transcript offset = %d, want 1", m.scrollOffset)
+	}
+	if m.sidebarScrollOffsets != [sidebarDocumentCount]int{} {
+		t.Fatalf("left-side wheel should not scroll sidebar offsets: %#v", m.sidebarScrollOffsets)
+	}
+}
+
+func TestSidebarBottomDoesNotReplaceContentWithEllipsis(t *testing.T) {
+	doc := sidebarDocument{
+		Title: "Plan",
+		Content: strings.Join([]string{
+			"# PLAN",
+			"",
+			"## Goal",
+			"",
+			"Collect project positioning details.",
+			"",
+			"## Strategy",
+			"",
+			numberedLines("strategy line", 12),
+			"",
+			"## Milestone",
+			"",
+			"final milestone line",
+		}, "\n"),
+	}
+	offset := maxSidebarScrollOffset(doc, sidebarWidth, 12)
+	box := stripANSI(renderSidebarBox(doc, sidebarWidth, 12, offset))
+
+	if !strings.Contains(box, "final milestone line") {
+		t.Fatalf("bottom sidebar view missing final content:\n%s", box)
+	}
+	if strings.Contains(box, "...") {
+		t.Fatalf("bottom sidebar view should not show trailing ellipsis:\n%s", box)
+	}
+}
+
 func TestModelRunningTickRefreshesSidebarDocuments(t *testing.T) {
 	workDir := t.TempDir()
 	writeTestFile(t, workDir, "MEMORY.md", "old memory")
@@ -1065,6 +1228,34 @@ func TestModelRunningTickRefreshesSidebarDocuments(t *testing.T) {
 	}
 	if got := sidebarContent(m.sidebarDocuments, "Plan"); got != "new plan from disk" {
 		t.Fatalf("refreshed plan = %q, want new plan from disk", got)
+	}
+}
+
+func TestModelRunningTickClampsShortenedSidebarDocument(t *testing.T) {
+	workDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", "memory")
+	writeTestFile(t, workDir, "PLAN.md", numberedLines("plan line", 24))
+	writeTestFile(t, workDir, "TODO.md", "todo")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+
+	m.sidebarScrollOffsets[1] = 99
+	m.clampSidebarScrollOffsets()
+	if m.sidebarScrollOffsets[1] == 0 {
+		t.Fatalf("long plan should allow a positive sidebar offset")
+	}
+
+	writeTestFile(t, workDir, "PLAN.md", "short plan")
+	m, _ = update(t, m, runningTickMsg{})
+	if m.sidebarScrollOffsets[1] != 0 {
+		t.Fatalf("shortened plan offset = %d, want clamped 0", m.sidebarScrollOffsets[1])
+	}
+	plainView := stripANSI(m.View())
+	if !strings.Contains(plainView, "short plan") {
+		t.Fatalf("shortened plan should render after clamping:\n%s", plainView)
 	}
 }
 
@@ -1300,6 +1491,45 @@ func writeTestFile(t *testing.T, root string, rel string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+func numberedLines(prefix string, count int) string {
+	var b strings.Builder
+	for i := 1; i <= count; i++ {
+		if i > 1 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(prefix)
+		b.WriteByte(' ')
+		if i < 10 {
+			b.WriteByte('0')
+		}
+		b.WriteString(strconv.Itoa(i))
+	}
+	return b.String()
+}
+
+func sidebarPoint(t *testing.T, m Model, index int) (int, int) {
+	t.Helper()
+	contentWidth, contentHeight := m.contentDimensions()
+	heights := sidebarBoxHeights(sidebarBoxesHeight(contentHeight), len(m.sidebarDocuments))
+	if index < 0 || index >= len(heights) {
+		t.Fatalf("sidebar index %d out of range for heights %#v", index, heights)
+	}
+	y := 0
+	for i := 0; i < index; i++ {
+		y += heights[i]
+	}
+	return contentWidth + sidebarGap, y
+}
+
+func lineContaining(text string, fragment string) int {
+	for i, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, fragment) {
+			return i
+		}
+	}
+	return -1
 }
 
 func fileMentionPaths(mentions []fileMention) []string {
