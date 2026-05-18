@@ -1018,6 +1018,56 @@ func TestModelViewContainsSessionAndInput(t *testing.T) {
 	}
 }
 
+func TestModelWideViewRendersSidebarDocuments(t *testing.T) {
+	workDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", "# Memory\n\nRemember the repo conventions.")
+	writeTestFile(t, workDir, "PLAN.md", "- Build right sidebar")
+	writeTestFile(t, workDir, "TODO.md", "- [ ] Add tests")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+
+	plainView := stripANSI(m.View())
+	for _, want := range []string{
+		"Memory",
+		"Remember the repo",
+		"conventions.",
+		"Plan",
+		"Build right sidebar",
+		"Todo",
+		"Add tests",
+	} {
+		if !strings.Contains(plainView, want) {
+			t.Fatalf("wide view missing sidebar content %q:\n%s", want, plainView)
+		}
+	}
+}
+
+func TestModelRunningTickRefreshesSidebarDocuments(t *testing.T) {
+	workDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", "old memory")
+	writeTestFile(t, workDir, "PLAN.md", "old plan")
+	writeTestFile(t, workDir, "TODO.md", "old todo")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+	if got := sidebarContent(m.sidebarDocuments, "Plan"); got != "old plan" {
+		t.Fatalf("initial plan = %q, want old plan", got)
+	}
+
+	writeTestFile(t, workDir, "PLAN.md", "new plan from disk")
+	m, cmd := update(t, m, runningTickMsg{})
+	if cmd == nil {
+		t.Fatalf("running tick did not schedule another tick")
+	}
+	if got := sidebarContent(m.sidebarDocuments, "Plan"); got != "new plan from disk" {
+		t.Fatalf("refreshed plan = %q, want new plan from disk", got)
+	}
+}
+
 func TestContextUsageStyleThresholds(t *testing.T) {
 	if contextUsageStyle(49).GetForeground() != contextLowStyle.GetForeground() {
 		t.Fatalf("context usage under 50%% should use low style")
@@ -1267,4 +1317,13 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func sidebarContent(docs []sidebarDocument, title string) string {
+	for _, doc := range docs {
+		if doc.Title == title {
+			return doc.Content
+		}
+	}
+	return ""
 }

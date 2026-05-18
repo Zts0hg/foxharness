@@ -74,6 +74,14 @@ var (
 	contextLowStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	contextMediumStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	contextHighStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+
+	sidebarBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("27")).
+			Padding(0, 1)
+	sidebarTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("33"))
 )
 
 func (m Model) View() string {
@@ -81,24 +89,40 @@ func (m Model) View() string {
 	height := max(m.height, minHeight)
 
 	header := m.renderHeader(width)
-	notice := m.renderRunningNotice(width)
-	suggestions := m.renderSuggestions(width)
-	input := m.renderInput(width)
 	footer := m.renderFooter(width)
+	contentWidth := width
+	if shouldRenderSidebar(width) {
+		contentWidth = width - sidebarWidth - sidebarGap
+	}
+
+	notice := m.renderRunningNotice(contentWidth)
+	suggestions := m.renderSuggestions(contentWidth)
+	input := m.renderInput(contentWidth)
 	bodyHeight := height - lipgloss.Height(notice) - lipgloss.Height(suggestions) - lipgloss.Height(input) - lipgloss.Height(header) - lipgloss.Height(footer)
 	if bodyHeight < 6 {
 		bodyHeight = 6
 	}
-	body := m.renderBody(width, bodyHeight)
+	body := m.renderBody(contentWidth, bodyHeight)
 
-	parts := []string{body}
+	mainParts := []string{body}
 	if notice != "" {
-		parts = append(parts, notice)
+		mainParts = append(mainParts, notice)
 	}
-	parts = append(parts, input)
+	mainParts = append(mainParts, input)
 	if suggestions != "" {
-		parts = append(parts, suggestions)
+		mainParts = append(mainParts, suggestions)
 	}
+	content := lipgloss.JoinVertical(lipgloss.Left, mainParts...)
+	if shouldRenderSidebar(width) {
+		content = lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			content,
+			strings.Repeat(" ", sidebarGap),
+			m.renderSidebar(sidebarWidth, lipgloss.Height(content)),
+		)
+	}
+
+	parts := []string{content}
 	parts = append(parts, header, footer)
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
@@ -186,6 +210,60 @@ func (m Model) renderBody(width int, height int) string {
 	end := min(start+visible, len(lines))
 	view := strings.Join(lines[start:end], "\n")
 	return bodyStyle.Width(width - bodyStyle.GetHorizontalFrameSize()).Height(height - bodyStyle.GetVerticalFrameSize()).Render(view)
+}
+
+func (m Model) renderSidebar(width int, height int) string {
+	docs := m.sidebarDocuments
+	if len(docs) == 0 {
+		docs = loadSidebarDocuments(m.runner.WorkDir())
+	}
+	if len(docs) == 0 {
+		return ""
+	}
+
+	boxHeight := max(height/len(docs), 3)
+	remainder := max(height-(boxHeight*len(docs)), 0)
+	boxes := make([]string, 0, len(docs))
+	for i, doc := range docs {
+		currentHeight := boxHeight
+		if i < remainder {
+			currentHeight++
+		}
+		boxes = append(boxes, renderSidebarBox(doc, width, currentHeight))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, boxes...)
+}
+
+func renderSidebarBox(doc sidebarDocument, width int, height int) string {
+	contentWidth := max(width-sidebarBoxStyle.GetHorizontalFrameSize(), 10)
+	contentHeight := max(height-sidebarBoxStyle.GetVerticalFrameSize(), 1)
+	bodyWidth := contentWidth
+
+	title := sidebarTitleStyle.Render(doc.Title)
+	text := doc.Content
+	if doc.Error != "" {
+		text = doc.Content + "\n" + doc.Error
+	}
+	rendered := renderMarkdown(text, bodyWidth)
+	lines := strings.Split(rendered, "\n")
+	availableBodyLines := max(contentHeight-1, 0)
+	if len(lines) > availableBodyLines {
+		if availableBodyLines <= 0 {
+			lines = nil
+		} else {
+			lines = append(lines[:availableBodyLines-1], mutedStyle.Render("..."))
+		}
+	}
+	for len(lines) < availableBodyLines {
+		lines = append(lines, "")
+	}
+
+	contentLines := append([]string{fitLine(title, bodyWidth)}, lines...)
+	content := strings.Join(contentLines, "\n")
+	return sidebarBoxStyle.
+		Width(contentWidth).
+		Height(contentHeight).
+		Render(content)
 }
 
 func (m Model) renderEntries(width int) string {

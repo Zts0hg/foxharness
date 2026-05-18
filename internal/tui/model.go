@@ -105,6 +105,8 @@ type Model struct {
 	gitBranch    string
 	contextUsage string
 	planMode     bool
+
+	sidebarDocuments []sidebarDocument
 }
 
 func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
@@ -117,26 +119,27 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 	}
 	entries, inputHistory, status := initialSessionState(runner)
 	return Model{
-		ctx:            ctx,
-		runner:         runner,
-		events:         make(chan tea.Msg, 256),
-		now:            time.Now,
-		width:          96,
-		height:         28,
-		input:          []rune(cfg.InitialPrompt),
-		inputHistory:   inputHistory,
-		historyIndex:   -1,
-		slashSelection: -1,
-		fileSelection:  -1,
-		fileMentions:   loadFileMentions(runner.WorkDir()),
-		status:         status,
-		sessionID:      runner.SessionID(),
-		modelName:      modelName,
-		project:        projectFolderName(runner.WorkDir()),
-		gitBranch:      gitBranchForWorkDir(runner.WorkDir()),
-		contextUsage:   normalizeContextUsage(runner.ContextUsage()),
-		planMode:       runner.PlanMode(),
-		entries:        entries,
+		ctx:              ctx,
+		runner:           runner,
+		events:           make(chan tea.Msg, 256),
+		now:              time.Now,
+		width:            96,
+		height:           28,
+		input:            []rune(cfg.InitialPrompt),
+		inputHistory:     inputHistory,
+		historyIndex:     -1,
+		slashSelection:   -1,
+		fileSelection:    -1,
+		fileMentions:     loadFileMentions(runner.WorkDir()),
+		status:           status,
+		sessionID:        runner.SessionID(),
+		modelName:        modelName,
+		project:          projectFolderName(runner.WorkDir()),
+		gitBranch:        gitBranchForWorkDir(runner.WorkDir()),
+		contextUsage:     normalizeContextUsage(runner.ContextUsage()),
+		planMode:         runner.PlanMode(),
+		entries:          entries,
+		sidebarDocuments: loadSidebarDocuments(runner.WorkDir()),
 	}
 }
 
@@ -213,6 +216,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.running {
 			m.spinnerFrame++
 		}
+		m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir())
 		return m, runningTickCmd()
 
 	case tea.KeyMsg:
