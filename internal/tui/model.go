@@ -45,7 +45,7 @@ type Config struct {
 // Run starts the interactive chat TUI.
 func Run(ctx context.Context, runner Runner, cfg Config) error {
 	m := NewModel(ctx, runner, cfg)
-	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx)).Run()
+	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx)).Run()
 	return err
 }
 
