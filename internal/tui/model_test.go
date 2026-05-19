@@ -192,9 +192,8 @@ func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 	}
 	for _, want := range []string{
 		"hello, what's the day today?",
-		"• Ran date",
-		"└ 2026年 5月17日",
-		"Foxharness",
+		"↳ EXEC · date",
+		"│ 2026年 5月17日",
 		"answer: hello, what's the day today?",
 	} {
 		if !strings.Contains(plainView, want) {
@@ -217,7 +216,7 @@ func TestAssistantMessagesRenderMarkdown(t *testing.T) {
 			t.Fatalf("rendered assistant markdown contains raw markdown %q:\n%s", forbidden, rendered)
 		}
 	}
-	for _, want := range []string{"Foxharness", "Sunday, May 17, 2026", "current day", "terminal markdown"} {
+	for _, want := range []string{"Sunday, May 17, 2026", "current day", "terminal markdown"} {
 		if !strings.Contains(plainRendered, want) {
 			t.Fatalf("rendered assistant markdown missing %q:\n%s", want, rendered)
 		}
@@ -258,6 +257,34 @@ func TestModelAcceptsSpaces(t *testing.T) {
 
 	if got := string(m.input); got != "hello world" {
 		t.Fatalf("input = %q, want hello world", got)
+	}
+}
+
+func TestModelShiftEnterInsertsNewlineAndEnterSubmits(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("first line"))
+	m, cmd := update(t, m, keyShiftEnter())
+	if cmd != nil {
+		t.Fatalf("shift+enter returned command")
+	}
+	m, _ = update(t, m, keyRunes("second line"))
+	if got := string(m.input); got != "first line\nsecond line" {
+		t.Fatalf("input = %q, want multiline text", got)
+	}
+	plainView := stripANSI(m.View())
+	if !strings.Contains(plainView, "first line") || !strings.Contains(plainView, "second line") {
+		t.Fatalf("view missing multiline input:\n%s", m.View())
+	}
+
+	m, cmd = update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatalf("enter did not submit multiline prompt")
+	}
+	m, _ = update(t, m, cmd())
+	if len(runner.runs) != 1 || runner.runs[0] != "first line\nsecond line" {
+		t.Fatalf("runs = %#v, want multiline prompt", runner.runs)
 	}
 }
 
@@ -484,7 +511,7 @@ func TestModelSidebarCommandTogglesSidebar(t *testing.T) {
 		t.Fatalf("/sidebar off left sidebarVisible=true")
 	}
 	plainView := stripANSI(m.View())
-	if strings.Contains(plainView, "Memory") || strings.Contains(plainView, sidebarHintText) {
+	if strings.Contains(plainView, "MEMORY") || strings.Contains(plainView, sidebarHintText) {
 		t.Fatalf("/sidebar off should hide sidebar and hint:\n%s", plainView)
 	}
 
@@ -494,7 +521,7 @@ func TestModelSidebarCommandTogglesSidebar(t *testing.T) {
 		t.Fatalf("/sidebar on left sidebarVisible=false")
 	}
 	plainView = stripANSI(m.View())
-	if !strings.Contains(plainView, "Memory") || !strings.Contains(plainView, sidebarHintText) {
+	if !strings.Contains(plainView, "MEMORY") || !strings.Contains(plainView, sidebarHintText) {
 		t.Fatalf("/sidebar on should show sidebar and hint:\n%s", plainView)
 	}
 }
@@ -697,8 +724,8 @@ func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	if m.planMode {
 		t.Fatalf("initial planMode = true, want false")
 	}
-	if strings.Contains(m.View(), "plan mode on") || strings.Contains(m.View(), "plan off") {
-		t.Fatalf("plan mode off should not render a plan label:\n%s", m.View())
+	if !strings.Contains(m.View(), "plan mode off") || !strings.Contains(m.View(), "shift + tab to cycle") {
+		t.Fatalf("plan mode off hint missing:\n%s", m.View())
 	}
 
 	m, _ = update(t, m, keyShiftTab())
@@ -711,15 +738,8 @@ func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	if !strings.Contains(m.View(), "plan mode on") {
 		t.Fatalf("view missing plan on state:\n%s", m.View())
 	}
-	headerLines := strings.Split(stripANSI(m.renderHeader(100)), "\n")
-	if len(headerLines) < 2 {
-		t.Fatalf("plan mode should render on a new header line:\n%s", m.renderHeader(100))
-	}
-	if strings.Contains(headerLines[0], "plan mode on") {
-		t.Fatalf("plan mode rendered on the status line:\n%s", m.renderHeader(100))
-	}
-	if !strings.Contains(headerLines[1], "plan mode on") {
-		t.Fatalf("plan mode missing from second header line:\n%s", m.renderHeader(100))
+	if strings.Contains(stripANSI(m.renderHeader(100)), "plan mode on") {
+		t.Fatalf("plan mode should render in keybinds, not header:\n%s", m.renderHeader(100))
 	}
 
 	m, _ = update(t, m, keyShiftTab())
@@ -729,8 +749,8 @@ func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	if m.status != "Plan mode disabled" {
 		t.Fatalf("status = %q, want Plan mode disabled", m.status)
 	}
-	if strings.Contains(m.View(), "plan mode on") || strings.Contains(m.View(), "plan off") {
-		t.Fatalf("plan mode off should not render a plan label after disabling:\n%s", m.View())
+	if !strings.Contains(m.View(), "plan mode off") || !strings.Contains(m.View(), "shift + tab to cycle") {
+		t.Fatalf("plan mode off hint missing after disabling:\n%s", m.View())
 	}
 }
 
@@ -868,9 +888,6 @@ func TestModelQueuesInputWhileRunIsActiveAndCancelsCurrentRun(t *testing.T) {
 	if !strings.Contains(m.status, "Queued 1 message") {
 		t.Fatalf("status = %q, want queued message status", m.status)
 	}
-	if !strings.Contains(stripANSI(m.View()), "1 queued") {
-		t.Fatalf("view missing queued count:\n%s", m.View())
-	}
 	if !strings.Contains(stripANSI(m.View()), "1. queued follow-up") {
 		t.Fatalf("view missing queued prompt preview:\n%s", m.View())
 	}
@@ -900,7 +917,8 @@ func TestModelRunningNoticeShowsQueuedPromptPreviews(t *testing.T) {
 
 	notice := stripANSI(m.renderRunningNotice(72))
 	for _, want := range []string{
-		"4 queued",
+		"[ WORKING ]",
+		"elapsed 05s",
 		"1. second task",
 		"2. third task with newline",
 		"3. long long",
@@ -1009,8 +1027,8 @@ func TestModelCommandSwitchesModelWhenIdle(t *testing.T) {
 	if !entriesContain(m.entries, "command", "Switched model to test-model") {
 		t.Fatalf("entries missing model switch notice: %#v", m.entries)
 	}
-	if !strings.Contains(stripANSI(m.renderHeader(100)), "[test-model]") {
-		t.Fatalf("header missing switched model:\n%s", m.renderHeader(100))
+	if !strings.Contains(stripANSI(m.renderStatusBar(100)), "test-model") {
+		t.Fatalf("status bar missing switched model:\n%s", m.renderStatusBar(100))
 	}
 }
 
@@ -1176,16 +1194,16 @@ func TestModelViewContainsSessionAndInput(t *testing.T) {
 
 	view := m.View()
 	plainView := stripANSI(view)
-	for _, want := range []string{"FOXHARNESS", "[fake-model] work", "git:(-)", "Context:", "░░░░░░░░░░ 7%", "sid:sess-1", "Message foxharness"} {
+	for _, want := range []string{"FOX-HARNESS", "[ ESTABLISHED ]", "SESS#sess-1", "FOXHARNESS", "fake-model", "git -", "Context 7%", "sid sess-1", "ask anything, or /help for commands"} {
 		if !strings.Contains(plainView, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
 	}
-	if strings.Index(plainView, "Message foxharness") > strings.Index(plainView, "FOXHARNESS") {
-		t.Fatalf("header should render below the input box:\n%s", view)
+	if strings.Index(plainView, "FOX-HARNESS") > strings.Index(plainView, "ask anything, or /help for commands") {
+		t.Fatalf("header should render above the input box:\n%s", view)
 	}
-	if strings.Contains(view, "plan mode on") || strings.Contains(view, "plan off") {
-		t.Fatalf("plan mode off should not render plan label:\n%s", view)
+	if !strings.Contains(plainView, "plan mode off") || !strings.Contains(plainView, "shift + tab to cycle") {
+		t.Fatalf("view missing plan mode hint:\n%s", view)
 	}
 }
 
@@ -1206,12 +1224,12 @@ func TestModelWideViewRendersSidebarDocuments(t *testing.T) {
 
 	plainView := stripANSI(m.View())
 	for _, want := range []string{
-		"Memory",
+		"MEMORY",
 		"Remember the repo",
 		"conventions.",
-		"Plan",
+		"PLAN",
 		"Build right sidebar",
-		"Todo",
+		"TODO",
 		"Add tests",
 	} {
 		if !strings.Contains(plainView, want) {
@@ -1271,7 +1289,7 @@ func TestModelMouseWheelScrollsSidebarPlan(t *testing.T) {
 	if strings.Contains(plainView, "plan line 01") {
 		t.Fatalf("scrolled sidebar plan should hide the first line:\n%s", plainView)
 	}
-	if !strings.Contains(plainView, "line 03") {
+	if !strings.Contains(plainView, "03 plan") {
 		t.Fatalf("scrolled sidebar plan should show later content:\n%s", plainView)
 	}
 }
@@ -1312,7 +1330,7 @@ func TestModelKeyboardFocusScrollsSidebarPlan(t *testing.T) {
 	if strings.Contains(plainView, "plan line 01") {
 		t.Fatalf("focused sidebar scroll should hide the first plan line:\n%s", plainView)
 	}
-	if !strings.Contains(plainView, "line 03") {
+	if !strings.Contains(plainView, "03 plan") {
 		t.Fatalf("focused sidebar scroll should show later plan content:\n%s", plainView)
 	}
 }
@@ -1374,7 +1392,7 @@ func TestModelSidebarFocusUnavailableAndEscape(t *testing.T) {
 	runner.workDir = workDir
 	runner.sessionDir = sessionDir
 	m := NewModel(context.Background(), runner, Config{})
-	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 34})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 34})
 	m, _ = update(t, m, keyCtrlF())
 	if m.sidebarFocused {
 		t.Fatalf("ctrl+f focused sidebar when width is too narrow")
@@ -1413,7 +1431,7 @@ func TestModelSidebarScrollDoesNotMoveInput(t *testing.T) {
 	m := NewModel(context.Background(), runner, Config{})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 
-	before := lineContaining(stripANSI(m.View()), "Message foxharness")
+	before := lineContaining(stripANSI(m.View()), "ask anything, or /help for commands")
 	if before < 0 {
 		t.Fatalf("input line missing before sidebar scroll:\n%s", m.View())
 	}
@@ -1423,7 +1441,7 @@ func TestModelSidebarScrollDoesNotMoveInput(t *testing.T) {
 		m, _ = update(t, m, tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonWheelDown})
 	}
 
-	after := lineContaining(stripANSI(m.View()), "Message foxharness")
+	after := lineContaining(stripANSI(m.View()), "ask anything, or /help for commands")
 	if after != before {
 		t.Fatalf("input line moved after sidebar scroll: before=%d after=%d\n%s", before, after, m.View())
 	}
@@ -1578,15 +1596,15 @@ func TestModelViewShowsRunningNoticeAboveInput(t *testing.T) {
 	m.runStartedAt = current.Add(-58 * time.Second)
 
 	view := m.View()
-	if !strings.Contains(view, "• Working (58s • esc to interrupt)") {
+	if !strings.Contains(view, "[ WORKING ]") || !strings.Contains(view, "elapsed 58s") || !strings.Contains(view, "esc to interrupt") {
 		t.Fatalf("view missing running notice:\n%s", view)
 	}
-	if strings.Contains(view, "> • Working") {
+	if strings.Contains(view, "› [ WORKING ]") {
 		t.Fatalf("running notice rendered inside input:\n%s", view)
 	}
 
-	noticeIndex := strings.Index(view, "Working (58s")
-	inputIndex := strings.Index(view, "Message will be queued, or type /cancel")
+	noticeIndex := strings.Index(view, "[ WORKING ]")
+	inputIndex := strings.Index(view, "message will be queued, or /cancel")
 	if inputIndex < 0 {
 		t.Fatalf("view missing queue placeholder text:\n%s", view)
 	}
@@ -1650,6 +1668,10 @@ func keyRunes(s string) tea.KeyMsg {
 
 func keyEnter() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyEnter}
+}
+
+func keyShiftEnter() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyCtrlJ}
 }
 
 func keyEsc() tea.KeyMsg {
@@ -1817,7 +1839,7 @@ func sidebarPoint(t *testing.T, m Model, index int) (int, int) {
 	for i := 0; i < index; i++ {
 		y += heights[i]
 	}
-	return contentWidth + sidebarGap, y
+	return 1 + 2 + contentWidth + sidebarGap, 1 + 3 + y
 }
 
 func lineContaining(text string, fragment string) int {

@@ -12,33 +12,47 @@ import (
 const maxQueuedNoticeItems = 3
 
 var (
+	cAccent      = lipgloss.Color("#5fb3ff")
+	cAccentHi    = lipgloss.Color("#eef3ff")
+	cWarn        = lipgloss.Color("#f0a050")
+	cTextPri     = lipgloss.Color("#d8e1f0")
+	cTextSec     = lipgloss.Color("#b8c4dc")
+	cTextMuted   = lipgloss.Color("#6c7993")
+	cTextDim     = lipgloss.Color("#3a4258")
+	cTextVeryDim = lipgloss.Color("#2a3142")
+	cMsgBg       = lipgloss.Color("#131826")
+
+	outerStyle = lipgloss.NewStyle().
+			BorderStyle(lipgloss.Border{Left: "▎"}).
+			BorderLeft(true).
+			BorderForeground(cAccent).
+			Padding(1, 2)
+
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("230")).
-			Background(lipgloss.Color("30")).
-			Padding(0, 1)
+			Foreground(cAccent)
 
 	headerMetaStyle = lipgloss.NewStyle().
-			Padding(0, 1)
+			Foreground(cTextDim)
 
 	bodyStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("238")).
-			Padding(0, 1)
+			Foreground(cTextSec)
 
 	inputStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("36")).
+			Background(cMsgBg).
+			Border(lipgloss.Border{Left: "│"}, false, false, false, true).
+			BorderForeground(cTextVeryDim).
+			BorderBackground(cMsgBg).
 			Padding(0, 1)
 
 	runningNoticeStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("230")).
-				Background(lipgloss.Color("94")).
-				Padding(0, 1)
+				Foreground(cWarn)
 
 	suggestionStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252")).
+			Foreground(cTextSec).
+			Border(lipgloss.Border{Left: "┊"}, false, false, false, true).
+			BorderForeground(cTextVeryDim).
 			Padding(0, 1)
 
 	suggestionCommandStyle = lipgloss.NewStyle().
@@ -50,124 +64,144 @@ var (
 					Foreground(lipgloss.Color("252"))
 
 	footerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245"))
+			Foreground(cTextMuted)
 
 	userBubbleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("230")).
-			Background(lipgloss.Color("24")).
-			Padding(1, 2)
+			Foreground(cAccentHi).
+			Background(cMsgBg).
+			Border(lipgloss.Border{Left: "│"}, false, false, false, true).
+			BorderForeground(cAccent).
+			BorderBackground(cMsgBg).
+			Padding(0, 1)
 
-	userMetaStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("195"))
-	assistantLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("114"))
-	toolLabelStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
-	systemLabelStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("147"))
-	errorLabelStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
-	commandLabelStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("147"))
-	mutedStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	placeholderStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	cursorStyle         = lipgloss.NewStyle().Reverse(true)
-	planModeStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
-	statusModelStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	statusProjectStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	statusGitStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	statusDimStyle      = lipgloss.NewStyle().Faint(true)
-	contextLowStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	contextMediumStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	contextHighStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	userMetaStyle       = lipgloss.NewStyle().Bold(true).Foreground(cAccentHi)
+	assistantLabelStyle = lipgloss.NewStyle().Foreground(cTextSec)
+	toolLabelStyle      = lipgloss.NewStyle().Foreground(cWarn)
+	systemLabelStyle    = lipgloss.NewStyle().Bold(true).Foreground(cTextSec)
+	errorLabelStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7a90"))
+	commandLabelStyle   = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
+	mutedStyle          = lipgloss.NewStyle().Foreground(cTextMuted)
+	placeholderStyle    = lipgloss.NewStyle().Foreground(cTextDim).Italic(true).Background(cMsgBg)
+	cursorStyle         = lipgloss.NewStyle().Foreground(cAccent).Background(cMsgBg)
+	planModeStyle       = lipgloss.NewStyle().Foreground(cWarn)
+	statusModelStyle    = lipgloss.NewStyle().Foreground(cAccent)
+	statusProjectStyle  = lipgloss.NewStyle().Foreground(cTextSec)
+	statusGitStyle      = lipgloss.NewStyle().Foreground(cWarn)
+	statusDimStyle      = lipgloss.NewStyle().Foreground(cTextVeryDim)
+	contextLowStyle     = lipgloss.NewStyle().Foreground(cAccent)
+	contextMediumStyle  = lipgloss.NewStyle().Foreground(cWarn)
+	contextHighStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7a90"))
 
 	sidebarBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("27")).
-			Padding(0, 1)
+			Foreground(cTextMuted)
 	sidebarFocusedBoxStyle = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder()).
-				BorderForeground(lipgloss.Color("81")).
-				Padding(0, 1)
+				Foreground(cTextSec)
 	sidebarTitleStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("33"))
+				Foreground(cAccent)
 	sidebarFocusedTitleStyle = lipgloss.NewStyle().
 					Bold(true).
-					Foreground(lipgloss.Color("81"))
+					Foreground(cWarn)
 )
 
 func (m Model) View() string {
-	width := max(m.width, minWidth)
-
-	header := m.renderHeader(width)
-	footer := m.renderFooter(width)
-	contentWidth, _ := m.contentDimensions()
-
-	notice := m.renderRunningNotice(contentWidth)
-	suggestions := m.renderSuggestions(contentWidth)
-	input := m.renderInput(contentWidth)
-	bodyHeight := max(m.height, minHeight) - lipgloss.Height(notice) - lipgloss.Height(suggestions) - lipgloss.Height(input) - lipgloss.Height(header) - lipgloss.Height(footer)
-	if bodyHeight < 6 {
-		bodyHeight = 6
-	}
-	body := m.renderBody(contentWidth, bodyHeight)
-	content := body
-	if m.shouldRenderSidebar() {
-		content = lipgloss.JoinHorizontal(
-			lipgloss.Top,
-			content,
-			strings.Repeat(" ", sidebarGap),
-			m.renderSidebar(sidebarWidth, bodyHeight),
-		)
+	width := m.innerWidth()
+	if m.width < minWidth {
+		return lipgloss.NewStyle().Foreground(cWarn).Padding(2).Render(
+			fmt.Sprintf("terminal too narrow (%d cols) - please widen to at least %d cols", m.width, minWidth))
 	}
 
-	parts := []string{content}
+	_, bodyHeight := m.contentDimensions()
+	parts := []string{
+		m.renderHeader(width),
+		m.renderSessionLine(width),
+		"",
+		m.renderMainArea(bodyHeight),
+		"",
+	}
+	notice := m.renderRunningNotice(width)
 	if notice != "" {
 		parts = append(parts, notice)
 	}
-	parts = append(parts, input)
-	if suggestions != "" {
+	parts = append(parts, m.renderInput(width))
+	if suggestions := m.renderSuggestions(width); suggestions != "" {
 		parts = append(parts, suggestions)
 	}
-	parts = append(parts, header, footer)
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	parts = append(parts,
+		"",
+		m.renderStatusBar(width),
+		m.renderKeybinds(width),
+	)
+	return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 }
 
 func (m Model) contentDimensions() (int, int) {
-	width := max(m.width, minWidth)
 	height := max(m.height, minHeight)
-	contentWidth := width
+	contentWidth := m.chatWidth()
 	if m.shouldRenderSidebar() {
-		contentWidth = width - sidebarWidth - sidebarGap
+		contentWidth = m.chatWidth()
 	}
 
-	header := m.renderHeader(width)
-	footer := m.renderFooter(width)
-	notice := m.renderRunningNotice(contentWidth)
-	suggestions := m.renderSuggestions(contentWidth)
-	input := m.renderInput(contentWidth)
-	bodyHeight := height - lipgloss.Height(notice) - lipgloss.Height(suggestions) - lipgloss.Height(input) - lipgloss.Height(header) - lipgloss.Height(footer)
+	chrome := 2 /* header+session */ + 1 /* blank */ + 1 /* blank */ +
+		1 /* input */ + 1 /* blank */ + 2 /* status+keybinds */ +
+		2 /* outer top+bottom padding */
+	if m.running {
+		chrome += lipgloss.Height(m.renderRunningNotice(m.innerWidth()))
+	}
+	if suggestions := m.renderSuggestions(m.innerWidth()); suggestions != "" {
+		chrome += lipgloss.Height(suggestions)
+	}
+	bodyHeight := height - chrome
 	if bodyHeight < 6 {
 		bodyHeight = 6
 	}
 	return contentWidth, bodyHeight
 }
 
-func (m Model) renderHeader(width int) string {
-	title := headerStyle.Render("FOXHARNESS")
-	meta := m.renderHeaderMeta()
-	metaWidth := max(width-lipgloss.Width(title)-headerMetaStyle.GetHorizontalFrameSize(), 1)
-	meta = xansi.Truncate(meta, metaWidth, "...")
-	right := headerMetaStyle.Width(max(width-lipgloss.Width(title), 1)).Render(meta)
-	header := lipgloss.JoinHorizontal(lipgloss.Top, title, right)
-	if !m.planMode {
-		return header
+func (m Model) innerWidth() int {
+	width := max(m.width, minWidth)
+	inner := width - outerStyle.GetHorizontalFrameSize()
+	if inner < 10 {
+		return 10
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header, headerMetaStyle.Width(width-headerMetaStyle.GetHorizontalFrameSize()).Render(planModeText(true)))
+	return inner
 }
 
-func (m Model) renderHeaderMeta() string {
-	sep := " " + statusDimStyle.Render("|") + " "
-	return statusModelStyle.Render("["+m.modelName+"]") +
-		" " + statusProjectStyle.Render(m.project) +
-		sep + statusGitStyle.Render("git:("+m.gitBranch+")") +
-		sep + "Context: " + renderContextUsage(m.contextUsage) +
-		sep + statusDimStyle.Render("sid:"+m.sessionID)
+func (m Model) chatWidth() int {
+	width := m.innerWidth()
+	if m.shouldRenderSidebar() {
+		width -= sidebarWidth + sidebarGap
+	}
+	if width < 20 {
+		return 20
+	}
+	return width
+}
+
+func (m Model) renderHeader(width int) string {
+	name := headerStyle.Render("FOX-HARNESS")
+	badge := statusModelStyle.Render("[ ESTABLISHED ]")
+	subText := "// expert coding assistant // agent harness"
+	nameW := lipgloss.Width(name)
+	badgeW := lipgloss.Width(badge)
+	if width >= nameW+badgeW+len(subText)+6 {
+		sub := headerMetaStyle.Render(" " + subText + " ")
+		dotsW := width - nameW - lipgloss.Width(sub) - badgeW - 2
+		if dotsW < 1 {
+			dotsW = 1
+		}
+		return name + sub + statusDimStyle.Render(" "+strings.Repeat("·", dotsW)+" ") + badge
+	}
+	dotsW := width - nameW - badgeW - 2
+	if dotsW < 1 {
+		dotsW = 1
+	}
+	return name + statusDimStyle.Render(" "+strings.Repeat("·", dotsW)+" ") + badge
+}
+
+func (m Model) renderSessionLine(width int) string {
+	line := fmt.Sprintf("SESS#%s · STARTED %s · TZ %s", m.sessionID, m.nowTime().Format("15:04:05"), m.nowTime().Format("MST"))
+	return headerMetaStyle.Width(width).Render(fitLine(line, width))
 }
 
 func renderContextUsage(usage string) string {
@@ -216,7 +250,7 @@ func contextUsageStyle(percent int) lipgloss.Style {
 }
 
 func (m Model) renderBody(width int, height int) string {
-	contentWidth := max(width-bodyStyle.GetHorizontalFrameSize()-2, 20)
+	contentWidth := max(width, 20)
 	content := m.renderEntries(contentWidth)
 	lines := strings.Split(content, "\n")
 	if len(lines) == 1 && lines[0] == "" {
@@ -230,7 +264,20 @@ func (m Model) renderBody(width int, height int) string {
 	}
 	end := min(start+visible, len(lines))
 	view := strings.Join(lines[start:end], "\n")
-	return bodyStyle.Width(width - bodyStyle.GetHorizontalFrameSize()).Height(height - bodyStyle.GetVerticalFrameSize()).Render(view)
+	return bodyStyle.Width(width).Height(height).Render(view)
+}
+
+func (m Model) renderMainArea(height int) string {
+	chat := m.renderBody(m.chatWidth(), height)
+	if !m.shouldRenderSidebar() {
+		return chat
+	}
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		chat,
+		strings.Repeat(" ", sidebarGap),
+		m.renderSidebar(sidebarWidth, height),
+	)
 }
 
 func (m Model) renderSidebar(width int, height int) string {
@@ -242,18 +289,61 @@ func (m Model) renderSidebar(width int, height int) string {
 		return ""
 	}
 
-	boxesHeight := sidebarBoxesHeight(height)
-	heights := sidebarBoxHeights(boxesHeight, len(docs))
-	boxes := make([]string, 0, len(docs))
+	header := statusDimStyle.Render("— CONTEXT —")
+	sections := []string{header, ""}
+	sectionHeight := max((height-6)/len(docs), 2)
 	for i, doc := range docs {
 		offset := 0
 		if i < len(m.sidebarScrollOffsets) {
 			offset = m.sidebarScrollOffsets[i]
 		}
-		boxes = append(boxes, renderSidebarBoxWithFocus(doc, width, heights[i], offset, m.sidebarFocused && i == m.sidebarFocusIndex))
+		focused := m.sidebarFocused && i == m.sidebarFocusIndex
+		tag := "∅"
+		warn := false
+		if strings.EqualFold(doc.Title, "Plan") {
+			tag = "DRAFT"
+			warn = true
+		} else if strings.EqualFold(doc.Title, "Todo") {
+			tag = "0/0"
+		}
+		sections = append(sections, renderSidebarSection(doc, width, sectionHeight, offset, tag, warn, focused), "")
 	}
-	boxes = append(boxes, renderSidebarHint(width, m.sidebarFocused))
-	return lipgloss.JoinVertical(lipgloss.Left, boxes...)
+	sections = append(sections, "", renderSidebarHint(width, m.sidebarFocused))
+	return lipgloss.NewStyle().Width(width).Height(height).Render(lipgloss.JoinVertical(lipgloss.Left, sections...))
+}
+
+func renderSidebarSection(doc sidebarDocument, width int, height int, offset int, tag string, warn bool, focused bool) string {
+	titleStyle := sidebarTitleStyle
+	if focused {
+		titleStyle = sidebarFocusedTitleStyle
+	}
+	tagStyle := statusDimStyle
+	if warn || focused {
+		tagStyle = planModeStyle
+	}
+	title := strings.ToUpper(doc.Title)
+	pad := width - lipgloss.Width(title) - lipgloss.Width(tag)
+	if pad < 1 {
+		pad = 1
+	}
+	head := titleStyle.Render(title) + strings.Repeat(" ", pad) + tagStyle.Render(tag)
+
+	text := doc.Content
+	if doc.Error != "" {
+		text = doc.Content + "\n" + doc.Error
+	}
+	rendered := xansi.Wrap(renderMarkdown(text, max(width, 20)), width, " ")
+	lines := strings.Split(rendered, "\n")
+	bodyLines := max(height-1, 1)
+	offset = clampSidebarOffset(offset, len(lines), bodyLines)
+	lines = sidebarVisibleLines(lines, offset, bodyLines)
+	for len(lines) < bodyLines {
+		lines = append(lines, "")
+	}
+	for i := range lines {
+		lines[i] = mutedStyle.Render(lines[i])
+	}
+	return head + "\n" + strings.Join(lines, "\n")
 }
 
 func sidebarBoxesHeight(height int) int {
@@ -261,7 +351,7 @@ func sidebarBoxesHeight(height int) int {
 }
 
 func renderSidebarHint(width int, focused bool) string {
-	text := sidebarHintText
+	text := "/sidebar off to hide"
 	if focused {
 		text = "Tab switch | Up/Down scroll | Esc"
 	}
@@ -364,17 +454,9 @@ func sidebarVisibleLines(lines []string, offset int, availableBodyLines int) []s
 		return lines
 	}
 	visibleContentLines := availableBodyLines
-	showHint := offset+availableBodyLines < len(lines)
-	if showHint && availableBodyLines > 1 {
-		visibleContentLines = availableBodyLines - 1
-	}
 	offset = clampSidebarOffset(offset, len(lines), availableBodyLines)
 	end := min(offset+visibleContentLines, len(lines))
-	visible := append([]string(nil), lines[offset:end]...)
-	if showHint {
-		visible = append(visible, mutedStyle.Render("..."))
-	}
-	return visible
+	return append([]string(nil), lines[offset:end]...)
 }
 
 func (m Model) renderEntries(width int) string {
@@ -423,9 +505,7 @@ func renderUserEntry(e entry, width int) string {
 }
 
 func renderAssistantEntry(e entry, width int) string {
-	meta := assistantLabelStyle.Render("Foxharness")
-	body := indentLines(renderMarkdown(e.body, max(width-2, 20)), "  ")
-	return fitLine(meta, width) + "\n" + body
+	return assistantLabelStyle.Width(width).Render(renderMarkdown(e.body, max(width, 20)))
 }
 
 func renderCommandEntry(e entry, width int) string {
@@ -442,7 +522,11 @@ func renderCommandEntry(e entry, width int) string {
 }
 
 func renderToolCall(e entry, width int) string {
-	line := toolLabelStyle.Render("• " + strings.TrimSpace(e.body))
+	name := strings.TrimPrefix(strings.TrimSpace(e.body), "Ran ")
+	if name == "" {
+		name = strings.TrimPrefix(strings.TrimSpace(e.title), "call ")
+	}
+	line := toolLabelStyle.Render("↳ EXEC · " + name)
 	return fitLine(line, width)
 }
 
@@ -451,15 +535,14 @@ func renderToolResult(e entry, width int) string {
 	if output == "" {
 		output = "(no output)"
 	}
-	lines := strings.Split(wrapText(output, max(width-4, 20)), "\n")
-	for i := range lines {
-		if i == 0 {
-			lines[i] = "  └ " + lines[i]
-		} else {
-			lines[i] = "    " + lines[i]
-		}
-	}
-	return strings.Join(lines, "\n")
+	return lipgloss.NewStyle().
+		Foreground(cTextMuted).
+		Border(lipgloss.Border{Left: "│"}, false, false, false, true).
+		BorderForeground(cTextVeryDim).
+		Padding(0, 1).
+		MarginLeft(2).
+		Width(max(width-2, 20)).
+		Render(wrapText(output, max(width-4, 20)))
 }
 
 func isToolResultPair(prev entry, current entry) bool {
@@ -470,16 +553,17 @@ func isToolResultPair(prev entry, current entry) bool {
 }
 
 func (m Model) renderInput(width int) string {
-	prompt := "> "
+	prompt := lipgloss.NewStyle().Foreground(cAccent).Background(cMsgBg).Render("› ")
 	value := string(m.input)
 	if value == "" {
-		placeholder := "Message foxharness, or type /help"
+		placeholder := "ask anything, or /help for commands"
 		if m.running {
-			placeholder = "Message will be queued, or type /cancel"
+			placeholder = "message will be queued, or /cancel"
 		}
-		value = renderCursor() + " " + placeholderStyle.Render(placeholder)
+		value = m.renderCursor() + " " + placeholderStyle.Render(placeholder)
 	} else {
-		value += renderCursor()
+		value = strings.ReplaceAll(value, "\n", "\n  ")
+		value = lipgloss.NewStyle().Foreground(cTextPri).Background(cMsgBg).Render(value) + m.renderCursor()
 	}
 	return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(prompt + value)
 }
@@ -488,15 +572,35 @@ func (m Model) renderRunningNotice(width int) string {
 	if !m.running {
 		return ""
 	}
-	queue := ""
-	if len(m.queuedPrompts) > 0 {
-		queue = fmt.Sprintf(" • %d queued", len(m.queuedPrompts))
+	tag := planModeStyle.Bold(true).Render("[ WORKING ]")
+	elapsed := mutedStyle.Render(fmt.Sprintf("elapsed %02ds", int(m.runningElapsed().Seconds())))
+	sep := statusDimStyle.Render("│")
+	bar := renderWorkingBar(m.spinnerFrame, 24)
+	hint := mutedStyle.Render("esc to interrupt")
+	left := lipgloss.JoinHorizontal(lipgloss.Top, tag, " ", elapsed, " ", sep, " ", bar)
+	pad := width - lipgloss.Width(left) - lipgloss.Width(hint)
+	if pad < 1 {
+		pad = 1
 	}
-	lines := []string{
-		fmt.Sprintf("%s Working (%s%s • esc to interrupt)", m.workingFrame(), formatDuration(m.runningElapsed()), queue),
-	}
+	lines := []string{left + strings.Repeat(" ", pad) + hint}
 	lines = append(lines, queuedPromptNoticeLines(m.queuedPrompts, width)...)
 	return runningNoticeStyle.Width(width - runningNoticeStyle.GetHorizontalFrameSize()).Render(strings.Join(lines, "\n"))
+}
+
+func renderWorkingBar(frame int, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	pos := frame % width
+	var b strings.Builder
+	for i := 0; i < width; i++ {
+		if i >= pos && i < pos+4 {
+			b.WriteString(lipgloss.NewStyle().Foreground(cWarn).Render("─"))
+		} else {
+			b.WriteString(statusDimStyle.Render("─"))
+		}
+	}
+	return b.String()
 }
 
 func queuedPromptNoticeLines(prompts []string, width int) []string {
@@ -594,7 +698,14 @@ func fileMentionSuggestionPlainLine(mention fileMention, pointer string) string 
 }
 
 func renderCursor() string {
-	return cursorStyle.Render(" ")
+	return cursorStyle.Render("▌")
+}
+
+func (m Model) renderCursor() string {
+	if m.spinnerFrame%2 == 1 {
+		return lipgloss.NewStyle().Background(cMsgBg).Render(" ")
+	}
+	return renderCursor()
 }
 
 func (m Model) renderFooter(width int) string {
@@ -608,8 +719,34 @@ func (m Model) renderFooter(width int) string {
 	} else if m.running {
 		help = "Enter queue | Shift+Tab toggles next run | Esc cancel current run | Ctrl+F sidebar | Ctrl+C twice quit"
 	}
-	line := fmt.Sprintf("%s  %s", m.status, help)
+	line := fmt.Sprintf("%s  %s  %s", statusModelStyle.Render("fox"), statusDimStyle.Render("│"), m.status+"  "+help)
 	return footerStyle.Width(width).Render(fitLine(line, width))
+}
+
+func (m Model) renderStatusBar(width int) string {
+	sep := statusDimStyle.Render(" │ ")
+	parts := []string{
+		statusModelStyle.Bold(true).Render("FOXHARNESS"),
+		statusProjectStyle.Render(m.modelName),
+		statusProjectStyle.Render(m.project),
+		mutedStyle.Render("git ") + statusProjectStyle.Render(m.gitBranch),
+		mutedStyle.Render("Context ") + statusProjectStyle.Render(normalizeContextUsage(m.contextUsage)),
+		mutedStyle.Render("sid ") + statusProjectStyle.Render(m.sessionID),
+	}
+	return footerStyle.Width(width).Render(fitLine(strings.Join(parts, sep), width))
+}
+
+func (m Model) renderKeybinds(width int) string {
+	plan := mutedStyle.Render("plan mode off")
+	if m.planMode {
+		plan = planModeStyle.Render("plan mode on")
+	}
+	hint := mutedStyle.Render("shift + tab to cycle")
+	pad := width - lipgloss.Width(plan) - lipgloss.Width(hint)
+	if pad < 1 {
+		pad = 1
+	}
+	return footerStyle.Width(width).Render(fitLine(plan+strings.Repeat(" ", pad)+hint, width))
 }
 
 func planModeText(enabled bool) string {

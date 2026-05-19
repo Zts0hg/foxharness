@@ -8,12 +8,12 @@ import (
 )
 
 const (
-	sidebarMinTotalWidth = 120
-	sidebarWidth         = 34
-	sidebarGap           = 1
+	sidebarMinTotalWidth = 110
+	sidebarWidth         = 36
+	sidebarGap           = 2
 	sidebarDocumentCount = 3
 	sidebarHintHeight    = 1
-	sidebarHintText      = "Ctrl+F focus | /sidebar off"
+	sidebarHintText      = "/sidebar off to hide"
 )
 
 var sidebarFiles = []struct {

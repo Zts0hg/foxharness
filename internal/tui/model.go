@@ -13,11 +13,11 @@ import (
 )
 
 const (
-	minWidth  = 72
+	minWidth  = 60
 	minHeight = 20
 
 	quitConfirmWindow = 2 * time.Second
-	runningTickEvery  = time.Second
+	runningTickEvery  = 500 * time.Millisecond
 )
 
 // Runner is the app-facing runtime required by the TUI. It is intentionally
@@ -228,9 +228,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case runningTickMsg:
-		if m.running {
-			m.spinnerFrame++
-		}
+		m.spinnerFrame++
 		m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
 		m.clampSidebarScrollOffsets()
 		return m, runningTickCmd()
@@ -274,9 +272,11 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 		return 0, false
 	}
 	contentWidth, contentHeight := m.contentDimensions()
-	sidebarX := contentWidth + sidebarGap
+	sidebarX := 1 + 2 + contentWidth + sidebarGap
 	boxesHeight := sidebarBoxesHeight(contentHeight)
-	if x < sidebarX || x >= sidebarX+sidebarWidth || y < 0 || y >= boxesHeight {
+	sidebarY := 1 + 3
+	localY := y - sidebarY
+	if x < sidebarX || x >= sidebarX+sidebarWidth || localY < 0 || localY >= boxesHeight {
 		return 0, false
 	}
 
@@ -288,7 +288,7 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 	top := 0
 	for i, height := range heights {
 		bottom := top + height
-		if y >= top && y < bottom {
+		if localY >= top && localY < bottom {
 			return i, true
 		}
 		top = bottom
@@ -373,6 +373,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		return m.submitInput()
+	case "shift+enter", "ctrl+j":
+		m.insertInputNewline()
+		return m, nil
 	case "shift+tab":
 		return m.togglePlanMode()
 	case "tab":
@@ -441,6 +444,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.updateCompletions()
 	}
 	return m, nil
+}
+
+func (m *Model) insertInputNewline() {
+	m.resetHistoryNavigation()
+	m.input = append(m.input, '\n')
+	m.resetCompletions()
 }
 
 func (m Model) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
