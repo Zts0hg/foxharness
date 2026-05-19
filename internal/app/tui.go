@@ -11,9 +11,12 @@ import (
 )
 
 // RunTUI starts an interactive terminal UI that keeps one session open across
-// many user-submitted runs.
-func RunTUI(ctx context.Context, cfg CLIConfig) error {
-	runner, err := NewAgentRunner(ctx, agentRunnerConfigFromCLI(cfg))
+// many user-submitted runs. The onModelChange callback is invoked whenever the
+// user switches models via the /model command; it may be nil.
+func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error) error {
+	runnerCfg := agentRunnerConfigFromCLI(cfg)
+	runnerCfg.OnModelChange = onModelChange
+	runner, err := NewAgentRunner(ctx, runnerCfg)
 	if err != nil {
 		return err
 	}

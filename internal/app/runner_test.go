@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +70,125 @@ func TestAgentRunnerSetModelUpdatesModel(t *testing.T) {
 	}
 	if got := runner.Model(); got != "new-model" {
 		t.Fatalf("Model() = %q, want new-model", got)
+	}
+}
+
+func TestAgentRunnerSetModelNilCallback(t *testing.T) {
+	t.Setenv("ZHIPU_API_KEY", "test-key")
+	workDir := t.TempDir()
+	store := memory.NewStore(workDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	runner := &AgentRunner{
+		workDir:          workDir,
+		model:            "old-model",
+		providerProtocol: "openai",
+		maxTurns:         3,
+		store:            store,
+		manager:          manager,
+		llmProvider:      &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})},
+		currentSession:   sess,
+		onModelChange:    nil,
+	}
+
+	if err := runner.SetModel("new-model"); err != nil {
+		t.Fatalf("SetModel() with nil callback error = %v", err)
+	}
+	if got := runner.Model(); got != "new-model" {
+		t.Fatalf("Model() = %q, want new-model", got)
+	}
+}
+
+func TestAgentRunnerSetModelCallbackError(t *testing.T) {
+	t.Setenv("ZHIPU_API_KEY", "test-key")
+	workDir := t.TempDir()
+	store := memory.NewStore(workDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var callbackCalled bool
+	runner := &AgentRunner{
+		workDir:          workDir,
+		model:            "old-model",
+		providerProtocol: "openai",
+		maxTurns:         3,
+		store:            store,
+		manager:          manager,
+		llmProvider:      &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})},
+		currentSession:   sess,
+		onModelChange: func(model string) error {
+			callbackCalled = true
+			return fmt.Errorf("write failed")
+		},
+	}
+
+	if err := runner.SetModel("new-model"); err != nil {
+		t.Fatalf("SetModel() should not fail when callback errors, got: %v", err)
+	}
+	if got := runner.Model(); got != "new-model" {
+		t.Fatalf("Model() = %q, want new-model (switch should succeed)", got)
+	}
+	if !callbackCalled {
+		t.Fatal("callback was not called")
+	}
+}
+
+func TestAgentRunnerSetModelCallbackSuccess(t *testing.T) {
+	t.Setenv("ZHIPU_API_KEY", "test-key")
+	workDir := t.TempDir()
+	store := memory.NewStore(workDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var receivedModel string
+	runner := &AgentRunner{
+		workDir:          workDir,
+		model:            "old-model",
+		providerProtocol: "openai",
+		maxTurns:         3,
+		store:            store,
+		manager:          manager,
+		llmProvider:      &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})},
+		currentSession:   sess,
+		onModelChange: func(model string) error {
+			receivedModel = model
+			return nil
+		},
+	}
+
+	if err := runner.SetModel("new-model"); err != nil {
+		t.Fatalf("SetModel() error = %v", err)
+	}
+	if receivedModel != "new-model" {
+		t.Fatalf("callback received %q, want new-model", receivedModel)
 	}
 }
 
