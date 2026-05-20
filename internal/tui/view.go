@@ -323,7 +323,7 @@ func (m Model) renderSidebar(width int, height int) string {
 	}
 
 	contentWidth := sidebarContentWidth(width)
-	boxesHeight := sidebarBoxesHeight(height)
+	boxesHeight := sidebarDocumentAreaHeight(height, len(docs))
 	boxHeights := sidebarDocumentHeights(contentWidth, boxesHeight, docs)
 	sections := make([]string, 0, len(docs)+1)
 	for i, doc := range docs {
@@ -333,6 +333,9 @@ func (m Model) renderSidebar(width int, height int) string {
 		}
 		focused := m.sidebarFocused && i == m.sidebarFocusIndex
 		sections = append(sections, renderSidebarBoxWithFocus(doc, contentWidth, boxHeights[i], offset, focused))
+		if i < len(docs)-1 {
+			sections = append(sections, renderSidebarSeparator(contentWidth))
+		}
 	}
 	hint := renderSidebarHint(contentWidth, m.sidebarFocused)
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
@@ -391,6 +394,21 @@ func renderSidebarSection(doc sidebarDocument, width int, height int, offset int
 
 func sidebarBoxesHeight(height int) int {
 	return max(height-sidebarHintHeight, 1)
+}
+
+func sidebarDocumentAreaHeight(height int, count int) int {
+	return max(sidebarBoxesHeight(height)-sidebarSeparatorsHeight(count), 1)
+}
+
+func sidebarSeparatorsHeight(count int) int {
+	if count <= 1 {
+		return 0
+	}
+	return (count - 1) * sidebarSeparatorHeight
+}
+
+func renderSidebarSeparator(width int) string {
+	return sidebarDividerStyle.Render(strings.Repeat("┄", max(width, 1)))
 }
 
 func sidebarDocumentHeights(width int, height int, docs []sidebarDocument) []int {
@@ -852,9 +870,9 @@ func (m Model) renderStatusBar(width int) string {
 }
 
 func (m Model) renderKeybinds(width int) string {
-	plan := mutedStyle.Render("plan mode off")
+	plan := mutedStyle.Render("[plan mode off]")
 	if m.planMode {
-		plan = planModeStyle.Render("plan mode on")
+		plan = planModeStyle.Render("[plan mode on]")
 	}
 	hint := statusFaintStyle.Render("shift + tab to cycle")
 	pad := width - lipgloss.Width(plan) - lipgloss.Width(hint)

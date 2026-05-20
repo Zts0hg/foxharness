@@ -273,11 +273,11 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 	}
 	contentWidth, contentHeight := m.contentDimensions()
 	sidebarX := viewPaddingLeft + contentWidth + sidebarGap
-	boxesHeight := sidebarBoxesHeight(contentHeight)
+	sidebarHeight := sidebarBoxesHeight(contentHeight)
 	width := m.sidebarWidth()
 	sidebarY := viewPaddingTop
 	localY := y - sidebarY
-	if x < sidebarX || x >= sidebarX+width || localY < 0 || localY >= boxesHeight {
+	if x < sidebarX || x >= sidebarX+width || localY < 0 || localY >= sidebarHeight {
 		return 0, false
 	}
 
@@ -285,7 +285,7 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 	if len(docs) == 0 {
 		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
 	}
-	heights := sidebarDocumentHeights(sidebarContentWidth(width), boxesHeight, docs)
+	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarDocumentAreaHeight(contentHeight, len(docs)), docs)
 	top := 0
 	for i, height := range heights {
 		bottom := top + height
@@ -293,6 +293,13 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 			return i, true
 		}
 		top = bottom
+		if i < len(heights)-1 {
+			separatorBottom := top + sidebarSeparatorHeight
+			if localY >= top && localY < separatorBottom {
+				return 0, false
+			}
+			top = separatorBottom
+		}
 	}
 	return 0, false
 }
@@ -312,7 +319,7 @@ func (m *Model) clampSidebarScrollOffsets() {
 
 	_, contentHeight := m.contentDimensions()
 	width := m.sidebarWidth()
-	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarBoxesHeight(contentHeight), docs)
+	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarDocumentAreaHeight(contentHeight, len(docs)), docs)
 	for i := range m.sidebarScrollOffsets {
 		if i >= len(docs) || i >= len(heights) {
 			m.sidebarScrollOffsets[i] = 0
@@ -560,7 +567,7 @@ func (m Model) maxFocusedSidebarOffset() int {
 	}
 	_, contentHeight := m.contentDimensions()
 	width := m.sidebarWidth()
-	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarBoxesHeight(contentHeight), m.sidebarDocuments)
+	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarDocumentAreaHeight(contentHeight, len(m.sidebarDocuments)), m.sidebarDocuments)
 	if m.sidebarFocusIndex >= len(heights) {
 		return 0
 	}

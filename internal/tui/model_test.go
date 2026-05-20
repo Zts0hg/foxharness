@@ -1838,13 +1838,14 @@ func sidebarPoint(t *testing.T, m Model, index int) (int, int) {
 	t.Helper()
 	contentWidth, contentHeight := m.contentDimensions()
 	width := m.sidebarWidth()
-	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarBoxesHeight(contentHeight), m.sidebarDocuments)
+	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarDocumentAreaHeight(contentHeight, len(m.sidebarDocuments)), m.sidebarDocuments)
 	if index < 0 || index >= len(heights) {
 		t.Fatalf("sidebar index %d out of range for heights %#v", index, heights)
 	}
 	y := 0
 	for i := 0; i < index; i++ {
 		y += heights[i]
+		y += sidebarSeparatorHeight
 	}
 	return viewPaddingLeft + contentWidth + sidebarGap, viewPaddingTop + y
 }
