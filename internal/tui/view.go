@@ -19,7 +19,6 @@ const (
 
 	amberBgHex            = "#0a0703"
 	amberPanelHex         = "#171006"
-	amberDarkHex          = "#1a0e03"
 	amberHex              = "#ffc56b"
 	amberHiHex            = "#ffe3a8"
 	amberWarnHex          = "#ff8855"
@@ -40,7 +39,6 @@ var (
 	cTextDim       = lipgloss.Color(amberDimHex)
 	cTextVeryDim   = lipgloss.Color(amberDividerHex)
 	cMsgBg         = lipgloss.Color(amberPanelHex)
-	cBadgeText     = lipgloss.Color(amberDarkHex)
 	cProgressEmpty = lipgloss.Color(amberProgressEmptyHex)
 
 	outerStyle = lipgloss.NewStyle().
@@ -116,14 +114,10 @@ var (
 				Foreground(cTextSec)
 	sidebarTitleStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(cBadgeText).
-				Background(cAccent).
-				Padding(0, 1)
+				Foreground(cAccent)
 	sidebarFocusedTitleStyle = lipgloss.NewStyle().
 					Bold(true).
-					Foreground(cBadgeText).
-					Background(cWarn).
-					Padding(0, 1)
+					Foreground(cWarn)
 	sidebarDividerStyle = lipgloss.NewStyle().Foreground(cTextVeryDim)
 )
 
@@ -500,10 +494,8 @@ func renderSidebarBoxWithFocus(doc sidebarDocument, width int, height int, offse
 	contentHeight := max(height-sidebarBoxStyle.GetVerticalFrameSize(), 1)
 	bodyWidth := contentWidth
 
-	titleStyle := sidebarTitleStyle
 	boxStyle := sidebarBoxStyle
 	if focused {
-		titleStyle = sidebarFocusedTitleStyle
 		boxStyle = sidebarFocusedBoxStyle
 	}
 	title := strings.ToUpper(doc.Title)
@@ -527,8 +519,7 @@ func renderSidebarBoxWithFocus(doc sidebarDocument, width int, height int, offse
 		lines[i] = fitLine(lines[i], bodyWidth)
 	}
 
-	titleWidth := max(bodyWidth-titleStyle.GetHorizontalFrameSize(), 1)
-	header := titleStyle.Render(fitLine(title, titleWidth))
+	header := renderSidebarTitle(title, bodyWidth, focused)
 	contentLines := []string{header, ""}
 	contentLines = append(contentLines, lines...)
 	for len(contentLines) < contentHeight {
@@ -539,6 +530,20 @@ func renderSidebarBoxWithFocus(doc sidebarDocument, width int, height int, offse
 		Width(contentWidth).
 		Height(contentHeight).
 		Render(content)
+}
+
+func renderSidebarTitle(title string, width int, focused bool) string {
+	titleStyle := sidebarTitleStyle
+	if focused {
+		titleStyle = sidebarFocusedTitleStyle
+	}
+	label := " " + strings.ToUpper(strings.TrimSpace(title)) + " "
+	line := "─" + label
+	fill := width - lipgloss.Width(line)
+	if fill > 0 {
+		line += strings.Repeat("─", fill)
+	}
+	return titleStyle.Render(fitLine(line, width))
 }
 
 func maxSidebarScrollOffset(doc sidebarDocument, width int, height int) int {
@@ -726,12 +731,13 @@ func renderWorkingBar(frame int, width int) string {
 		return ""
 	}
 	pos := frame % width
+	activeWidth := min(14, width)
 	var b strings.Builder
 	for i := 0; i < width; i++ {
-		if i >= pos && i < pos+4 {
-			b.WriteString(lipgloss.NewStyle().Foreground(cWarn).Render("─"))
+		if i >= pos && i < pos+activeWidth {
+			b.WriteString(lipgloss.NewStyle().Foreground(cWarn).Render("▰"))
 		} else {
-			b.WriteString(lipgloss.NewStyle().Foreground(cProgressEmpty).Render("─"))
+			b.WriteString(lipgloss.NewStyle().Foreground(cProgressEmpty).Render("▱"))
 		}
 	}
 	return b.String()
@@ -866,13 +872,14 @@ func (m Model) renderStatusBar(width int) string {
 		mutedStyle.Render("Context ") + statusModelStyle.Render(normalizeContextUsage(m.contextUsage)),
 		mutedStyle.Render("sid ") + statusFaintStyle.Render(m.sessionID),
 	}
-	return footerStyle.Width(width).Render(fitLine(strings.Join(parts, "  "), width))
+	separator := " " + statusFaintStyle.Render("│") + " "
+	return footerStyle.Width(width).Render(fitLine(strings.Join(parts, separator), width))
 }
 
 func (m Model) renderKeybinds(width int) string {
-	plan := mutedStyle.Render("[plan mode off]")
+	plan := mutedStyle.Render("[ plan mode off ]")
 	if m.planMode {
-		plan = planModeStyle.Render("[plan mode on]")
+		plan = planModeStyle.Render("[ plan mode on ]")
 	}
 	hint := statusFaintStyle.Render("shift + tab to cycle")
 	pad := width - lipgloss.Width(plan) - lipgloss.Width(hint)
