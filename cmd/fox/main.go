@@ -13,7 +13,7 @@
 //	-workdir    Working directory (default: current directory)
 //	-prompt     User task prompt
 //	-p, -print  Print response and exit without TUI
-//	-model      LLM model name (default: "glm-4.5-air")
+//	-model      LLM model name (resolved from settings, FOX_MODEL env, or glm-4.5-air)
 //	-provider   Provider protocol: openai or claude (default: "openai")
 //	-thinking   Enable legacy per-turn Thinking mode
 //	-plan       Enable Plan Mode (default: true)
@@ -34,6 +34,7 @@ import (
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/app"
+	"github.com/Zts0hg/foxharness/internal/settings"
 )
 
 type launchMode int
@@ -52,9 +53,23 @@ func main() {
 		log.Fatal(err)
 	}
 
+	homeDir, _ := os.UserHomeDir()
+	loaded, _ := settings.Load(homeDir)
+	foxModelEnv := os.Getenv("FOX_MODEL")
+	cfg.Model = settings.ResolveModel(cfg.Model, foxModelEnv, "glm-4.5-air", loaded)
+
 	if mode == launchTUI {
 		cfg.Prompt = strings.TrimSpace(cfg.Prompt)
-		if err := app.RunTUI(context.Background(), cfg); err != nil {
+		onSave := func(model string) error {
+			current, _ := settings.Load(homeDir)
+			current.Model = model
+			if err := settings.Save(homeDir, current); err != nil {
+				log.Printf("[Settings] failed to save model: %v", err)
+				return err
+			}
+			return nil
+		}
+		if err := app.RunTUI(context.Background(), cfg, onSave); err != nil {
 			exitWithError(err)
 		}
 		return
@@ -94,7 +109,7 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 	fs.StringVar(&cfg.WorkDir, "workdir", ".", "working directory")
 	fs.StringVar(&cfg.WorkDir, "C", ".", "working directory")
 	fs.StringVar(&cfg.Prompt, "prompt", "", "user task prompt")
-	fs.StringVar(&cfg.Model, "model", "glm-4.5-air", "LLM model name")
+	fs.StringVar(&cfg.Model, "model", "", "LLM model name (default: glm-4.5-air)")
 	fs.StringVar(&cfg.Provider, "provider", "openai", "provider protocol: openai or claude")
 	fs.BoolVar(&cfg.EnableThinking, "thinking", false, "enable legacy per-turn Thinking mode; disabled when Plan Mode succeeds")
 	fs.BoolVar(&cfg.EnablePlanMode, "plan", true, "enable Plan Mode")

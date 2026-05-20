@@ -30,6 +30,7 @@ type AgentRunnerConfig struct {
 	SessionID       string
 	ContinueSession bool
 	NewSession      bool
+	OnModelChange  func(model string) error
 }
 
 // AgentRunner owns one long-lived session and can execute many user prompts
@@ -45,6 +46,8 @@ type AgentRunner struct {
 	enableThinking bool
 	enablePlanMode bool
 	maxTurns       int
+
+	onModelChange func(model string) error
 
 	store          *memory.Store
 	manager        *session.Manager
@@ -107,6 +110,7 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		enableThinking:   cfg.EnableThinking,
 		enablePlanMode:   cfg.EnablePlanMode,
 		maxTurns:         cfg.MaxTurns,
+		onModelChange:    cfg.OnModelChange,
 		store:            store,
 		manager:          manager,
 		llmProvider:      llmProvider,
@@ -238,6 +242,12 @@ func (r *AgentRunner) SetModel(model string) error {
 	r.model = model
 	r.llmProvider = llmProvider
 	r.mu.Unlock()
+
+	if r.onModelChange != nil {
+		if err := r.onModelChange(model); err != nil {
+			log.Printf("[Runner] onModelChange callback failed: %v", err)
+		}
+	}
 	return nil
 }
 

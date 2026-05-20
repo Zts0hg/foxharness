@@ -19,8 +19,8 @@ func TestParseArgsDefaultsToTUI(t *testing.T) {
 	if cfg.WorkDir != "." {
 		t.Fatalf("WorkDir = %q, want %q", cfg.WorkDir, ".")
 	}
-	if cfg.Model != "glm-4.5-air" {
-		t.Fatalf("Model = %q, want %q", cfg.Model, "glm-4.5-air")
+	if cfg.Model != "" {
+		t.Fatalf("Model = %q, want empty (resolved later by settings)", cfg.Model)
 	}
 	if cfg.Provider != "openai" {
 		t.Fatalf("Provider = %q, want openai", cfg.Provider)
