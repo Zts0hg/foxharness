@@ -21,7 +21,7 @@ var tuiMarkdownStyle = ansi.StyleConfig{
 	Heading: ansi.StyleBlock{
 		StylePrimitive: ansi.StylePrimitive{
 			Bold:        boolPtr(true),
-			Color:       stringPtr("114"),
+			Color:       stringPtr(amberHiHex),
 			BlockSuffix: "\n",
 		},
 	},
@@ -41,7 +41,7 @@ var tuiMarkdownStyle = ansi.StyleConfig{
 		CrossedOut: boolPtr(true),
 	},
 	HorizontalRule: ansi.StylePrimitive{
-		Color:  stringPtr("240"),
+		Color:  stringPtr(amberDividerHex),
 		Format: "\n--------\n",
 	},
 	Item: ansi.StylePrimitive{
@@ -55,25 +55,25 @@ var tuiMarkdownStyle = ansi.StyleConfig{
 		Unticked: "[ ] ",
 	},
 	Link: ansi.StylePrimitive{
-		Color:     stringPtr("81"),
+		Color:     stringPtr(amberHiHex),
 		Underline: boolPtr(true),
 	},
 	LinkText: ansi.StylePrimitive{
-		Color: stringPtr("81"),
+		Color: stringPtr(amberHiHex),
 		Bold:  boolPtr(true),
 	},
 	Code: ansi.StyleBlock{
 		StylePrimitive: ansi.StylePrimitive{
 			Prefix:          " ",
 			Suffix:          " ",
-			Color:           stringPtr("203"),
-			BackgroundColor: stringPtr("236"),
+			Color:           stringPtr(amberWarnHex),
+			BackgroundColor: stringPtr(amberPanelHex),
 		},
 	},
 	CodeBlock: ansi.StyleCodeBlock{
 		StyleBlock: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				Color: stringPtr("252"),
+				Color: stringPtr(amberHiHex),
 			},
 			Indent:      uintPtr(1),
 			IndentToken: stringPtr("  "),

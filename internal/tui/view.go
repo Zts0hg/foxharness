@@ -9,24 +9,43 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
-const maxQueuedNoticeItems = 3
+const (
+	maxQueuedNoticeItems = 3
+
+	viewPaddingTop    = 1
+	viewPaddingRight  = 2
+	viewPaddingBottom = 0
+	viewPaddingLeft   = 2
+
+	amberBgHex            = "#0a0703"
+	amberPanelHex         = "#171006"
+	amberDarkHex          = "#1a0e03"
+	amberHex              = "#ffc56b"
+	amberHiHex            = "#ffe3a8"
+	amberWarnHex          = "#ff8855"
+	amberMutedHex         = "#D69D60"
+	amberDimHex           = "#B07E48"
+	amberDividerHex       = "#6b4520"
+	amberProgressEmptyHex = "#5a3020"
+)
 
 var (
-	cAccent      = lipgloss.Color("#5fb3ff")
-	cAccentHi    = lipgloss.Color("#eef3ff")
-	cWarn        = lipgloss.Color("#f0a050")
-	cTextPri     = lipgloss.Color("#d8e1f0")
-	cTextSec     = lipgloss.Color("#b8c4dc")
-	cTextMuted   = lipgloss.Color("#6c7993")
-	cTextDim     = lipgloss.Color("#3a4258")
-	cTextVeryDim = lipgloss.Color("#2a3142")
-	cMsgBg       = lipgloss.Color("#131826")
+	cBg            = lipgloss.Color(amberBgHex)
+	cAccent        = lipgloss.Color(amberHex)
+	cAccentHi      = lipgloss.Color(amberHiHex)
+	cWarn          = lipgloss.Color(amberWarnHex)
+	cTextPri       = lipgloss.Color(amberHiHex)
+	cTextSec       = lipgloss.Color(amberHex)
+	cTextMuted     = lipgloss.Color(amberMutedHex)
+	cTextDim       = lipgloss.Color(amberDimHex)
+	cTextVeryDim   = lipgloss.Color(amberDividerHex)
+	cMsgBg         = lipgloss.Color(amberPanelHex)
+	cBadgeText     = lipgloss.Color(amberDarkHex)
+	cProgressEmpty = lipgloss.Color(amberProgressEmptyHex)
 
 	outerStyle = lipgloss.NewStyle().
-			BorderStyle(lipgloss.Border{Left: "▎"}).
-			BorderLeft(true).
-			BorderForeground(cAccent).
-			Padding(1, 2)
+			Foreground(cAccent).
+			Padding(viewPaddingTop, viewPaddingRight, viewPaddingBottom, viewPaddingLeft)
 
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -39,14 +58,11 @@ var (
 			Foreground(cTextSec)
 
 	inputStyle = lipgloss.NewStyle().
-			Background(cMsgBg).
-			Border(lipgloss.Border{Left: "│"}, false, false, false, true).
-			BorderForeground(cTextVeryDim).
-			BorderBackground(cMsgBg).
-			Padding(0, 1)
+			Foreground(cTextSec).
+			Border(lipgloss.Border{Top: "─", Bottom: "─"}, true, false, true, false).
+			BorderForeground(cTextVeryDim)
 
 	runningNoticeStyle = lipgloss.NewStyle().
-				Bold(true).
 				Foreground(cWarn)
 
 	suggestionStyle = lipgloss.NewStyle().
@@ -57,40 +73,42 @@ var (
 
 	suggestionCommandStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("252"))
+				Foreground(cAccentHi)
 	suggestionSelectedStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("81"))
+				Foreground(cWarn)
 	suggestionDescriptionStyle = lipgloss.NewStyle().
-					Foreground(lipgloss.Color("252"))
+					Foreground(cTextMuted)
 
 	footerStyle = lipgloss.NewStyle().
 			Foreground(cTextMuted)
 
 	userBubbleStyle = lipgloss.NewStyle().
-			Foreground(cAccentHi).
+			Foreground(cAccent).
 			Background(cMsgBg).
-			Border(lipgloss.Border{Left: "│"}, false, false, false, true).
+			Border(lipgloss.Border{Left: "▌"}, false, false, false, true).
 			BorderForeground(cAccent).
 			BorderBackground(cMsgBg).
 			Padding(0, 1)
 
 	userMetaStyle       = lipgloss.NewStyle().Bold(true).Foreground(cAccentHi)
-	assistantLabelStyle = lipgloss.NewStyle().Foreground(cTextSec)
+	assistantLabelStyle = lipgloss.NewStyle().Foreground(cAccentHi)
 	toolLabelStyle      = lipgloss.NewStyle().Foreground(cWarn)
 	systemLabelStyle    = lipgloss.NewStyle().Bold(true).Foreground(cTextSec)
-	errorLabelStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7a90"))
+	errorLabelStyle     = lipgloss.NewStyle().Bold(true).Foreground(cWarn)
 	commandLabelStyle   = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	mutedStyle          = lipgloss.NewStyle().Foreground(cTextMuted)
-	placeholderStyle    = lipgloss.NewStyle().Foreground(cTextDim).Italic(true).Background(cMsgBg)
-	cursorStyle         = lipgloss.NewStyle().Foreground(cAccent).Background(cMsgBg)
+	placeholderStyle    = lipgloss.NewStyle().Foreground(cTextDim).Italic(true)
+	cursorStyle         = lipgloss.NewStyle().Foreground(cAccentHi)
+	hintStyle           = lipgloss.NewStyle().Foreground(cTextMuted)
 	planModeStyle       = lipgloss.NewStyle().Foreground(cWarn)
-	statusModelStyle    = lipgloss.NewStyle().Foreground(cAccent)
-	statusProjectStyle  = lipgloss.NewStyle().Foreground(cTextSec)
+	statusModelStyle    = lipgloss.NewStyle().Foreground(cAccentHi)
+	statusProjectStyle  = lipgloss.NewStyle().Foreground(cTextMuted)
 	statusGitStyle      = lipgloss.NewStyle().Foreground(cWarn)
 	statusDimStyle      = lipgloss.NewStyle().Foreground(cTextVeryDim)
-	contextLowStyle     = lipgloss.NewStyle().Foreground(cAccent)
+	statusFaintStyle    = lipgloss.NewStyle().Foreground(cTextDim)
+	contextLowStyle     = lipgloss.NewStyle().Foreground(cAccentHi)
 	contextMediumStyle  = lipgloss.NewStyle().Foreground(cWarn)
-	contextHighStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7a90"))
+	contextHighStyle    = lipgloss.NewStyle().Foreground(cWarn)
 
 	sidebarBoxStyle = lipgloss.NewStyle().
 			Foreground(cTextMuted)
@@ -98,10 +116,15 @@ var (
 				Foreground(cTextSec)
 	sidebarTitleStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(cAccent)
+				Foreground(cBadgeText).
+				Background(cAccent).
+				Padding(0, 1)
 	sidebarFocusedTitleStyle = lipgloss.NewStyle().
 					Bold(true).
-					Foreground(cWarn)
+					Foreground(cBadgeText).
+					Background(cWarn).
+					Padding(0, 1)
+	sidebarDividerStyle = lipgloss.NewStyle().Foreground(cTextVeryDim)
 )
 
 func (m Model) View() string {
@@ -113,11 +136,7 @@ func (m Model) View() string {
 
 	_, bodyHeight := m.contentDimensions()
 	parts := []string{
-		m.renderHeader(width),
-		m.renderSessionLine(width),
-		"",
 		m.renderMainArea(bodyHeight),
-		"",
 	}
 	notice := m.renderRunningNotice(width)
 	if notice != "" {
@@ -142,13 +161,16 @@ func (m Model) contentDimensions() (int, int) {
 		contentWidth = m.chatWidth()
 	}
 
-	chrome := 2 /* header+session */ + 1 /* blank */ + 1 /* blank */ +
-		1 /* input */ + 1 /* blank */ + 2 /* status+keybinds */ +
-		2 /* outer top+bottom padding */
-	if m.running {
-		chrome += lipgloss.Height(m.renderRunningNotice(m.innerWidth()))
+	innerWidth := m.innerWidth()
+	chrome := outerStyle.GetVerticalFrameSize() +
+		lipgloss.Height(m.renderInput(innerWidth)) +
+		1 /* footer gap */ +
+		lipgloss.Height(m.renderStatusBar(innerWidth)) +
+		lipgloss.Height(m.renderKeybinds(innerWidth))
+	if notice := m.renderRunningNotice(innerWidth); notice != "" {
+		chrome += lipgloss.Height(notice)
 	}
-	if suggestions := m.renderSuggestions(m.innerWidth()); suggestions != "" {
+	if suggestions := m.renderSuggestions(innerWidth); suggestions != "" {
 		chrome += lipgloss.Height(suggestions)
 	}
 	bodyHeight := height - chrome
@@ -170,10 +192,21 @@ func (m Model) innerWidth() int {
 func (m Model) chatWidth() int {
 	width := m.innerWidth()
 	if m.shouldRenderSidebar() {
-		width -= sidebarWidth + sidebarGap
+		width -= m.sidebarWidth() + sidebarGap
 	}
 	if width < 20 {
 		return 20
+	}
+	return width
+}
+
+func (m Model) sidebarWidth() int {
+	width := m.innerWidth() * 26 / 100
+	if width < sidebarWidth {
+		return sidebarWidth
+	}
+	if width > sidebarMaxWidth {
+		return sidebarMaxWidth
 	}
 	return width
 }
@@ -276,7 +309,7 @@ func (m Model) renderMainArea(height int) string {
 		lipgloss.Top,
 		chat,
 		strings.Repeat(" ", sidebarGap),
-		m.renderSidebar(sidebarWidth, height),
+		m.renderSidebar(m.sidebarWidth(), height),
 	)
 }
 
@@ -289,27 +322,37 @@ func (m Model) renderSidebar(width int, height int) string {
 		return ""
 	}
 
-	header := statusDimStyle.Render("— CONTEXT —")
-	sections := []string{header, ""}
-	sectionHeight := max((height-6)/len(docs), 2)
+	contentWidth := sidebarContentWidth(width)
+	boxesHeight := sidebarBoxesHeight(height)
+	boxHeights := sidebarDocumentHeights(contentWidth, boxesHeight, docs)
+	sections := make([]string, 0, len(docs)+1)
 	for i, doc := range docs {
 		offset := 0
 		if i < len(m.sidebarScrollOffsets) {
 			offset = m.sidebarScrollOffsets[i]
 		}
 		focused := m.sidebarFocused && i == m.sidebarFocusIndex
-		tag := "∅"
-		warn := false
-		if strings.EqualFold(doc.Title, "Plan") {
-			tag = "DRAFT"
-			warn = true
-		} else if strings.EqualFold(doc.Title, "Todo") {
-			tag = "0/0"
-		}
-		sections = append(sections, renderSidebarSection(doc, width, sectionHeight, offset, tag, warn, focused), "")
+		sections = append(sections, renderSidebarBoxWithFocus(doc, contentWidth, boxHeights[i], offset, focused))
 	}
-	sections = append(sections, "", renderSidebarHint(width, m.sidebarFocused))
-	return lipgloss.NewStyle().Width(width).Height(height).Render(lipgloss.JoinVertical(lipgloss.Left, sections...))
+	hint := renderSidebarHint(contentWidth, m.sidebarFocused)
+	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
+	lines := strings.Split(content, "\n")
+	hintLines := strings.Split(hint, "\n")
+	for len(lines)+len(hintLines) < height {
+		lines = append(lines, "")
+	}
+	lines = append(lines, hintLines...)
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i := range lines {
+		lines[i] = sidebarDividerStyle.Render("│") + "  " + fitLine(lines[i], contentWidth)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func sidebarContentWidth(width int) int {
+	return max(width-3, 10)
 }
 
 func renderSidebarSection(doc sidebarDocument, width int, height int, offset int, tag string, warn bool, focused bool) string {
@@ -350,12 +393,68 @@ func sidebarBoxesHeight(height int) int {
 	return max(height-sidebarHintHeight, 1)
 }
 
+func sidebarDocumentHeights(width int, height int, docs []sidebarDocument) []int {
+	if len(docs) == 0 {
+		return nil
+	}
+	heights := make([]int, len(docs))
+	total := 0
+	for i, doc := range docs {
+		lines := sidebarRenderedLineCount(doc, width)
+		heights[i] = min(max(lines+2, 5), 6)
+		total += heights[i]
+	}
+	for total > height {
+		changed := false
+		for i := range heights {
+			if total <= height {
+				break
+			}
+			if heights[i] > 5 {
+				heights[i]--
+				total--
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	if total > height {
+		base := max(height/len(docs), 1)
+		remainder := max(height-base*len(docs), 0)
+		for i := range heights {
+			heights[i] = base
+			if i < remainder {
+				heights[i]++
+			}
+		}
+	}
+	return heights
+}
+
+func sidebarRenderedLineCount(doc sidebarDocument, width int) int {
+	text := doc.Content
+	if doc.Error != "" {
+		text = doc.Content + "\n" + doc.Error
+	}
+	rendered := xansi.Wrap(renderMarkdown(text, max(width, 20)), width, " ")
+	if strings.TrimSpace(rendered) == "" {
+		return 0
+	}
+	return len(strings.Split(rendered, "\n"))
+}
+
 func renderSidebarHint(width int, focused bool) string {
 	text := "/sidebar off to hide"
 	if focused {
 		text = "Tab switch | Up/Down scroll | Esc"
+		return hintStyle.Width(width).Render(fitLine(text, width))
 	}
-	return mutedStyle.Width(width).Render(fitLine(text, width))
+	return hintStyle.
+		Width(width).
+		Align(lipgloss.Right).
+		Render(fitLine(text, width))
 }
 
 func sidebarBoxHeights(height int, count int) []int {
@@ -389,14 +488,14 @@ func renderSidebarBoxWithFocus(doc sidebarDocument, width int, height int, offse
 		titleStyle = sidebarFocusedTitleStyle
 		boxStyle = sidebarFocusedBoxStyle
 	}
-	title := titleStyle.Render(doc.Title)
+	title := strings.ToUpper(doc.Title)
 	text := doc.Content
 	if doc.Error != "" {
 		text = doc.Content + "\n" + doc.Error
 	}
-	rendered := renderMarkdown(text, bodyWidth)
+	rendered := xansi.Wrap(renderMarkdown(text, max(bodyWidth, 20)), bodyWidth, " ")
 	lines := strings.Split(rendered, "\n")
-	availableBodyLines := max(contentHeight-1, 0)
+	availableBodyLines := max(contentHeight-2, 0)
 	offset = clampSidebarOffset(offset, len(lines), availableBodyLines)
 	if len(lines) > availableBodyLines {
 		lines = sidebarVisibleLines(lines, offset, availableBodyLines)
@@ -410,7 +509,13 @@ func renderSidebarBoxWithFocus(doc sidebarDocument, width int, height int, offse
 		lines[i] = fitLine(lines[i], bodyWidth)
 	}
 
-	contentLines := append([]string{fitLine(title, bodyWidth)}, lines...)
+	titleWidth := max(bodyWidth-titleStyle.GetHorizontalFrameSize(), 1)
+	header := titleStyle.Render(fitLine(title, titleWidth))
+	contentLines := []string{header, ""}
+	contentLines = append(contentLines, lines...)
+	for len(contentLines) < contentHeight {
+		contentLines = append(contentLines, "")
+	}
 	content := strings.Join(contentLines, "\n")
 	return boxStyle.
 		Width(contentWidth).
@@ -427,8 +532,8 @@ func maxSidebarScrollOffset(doc sidebarDocument, width int, height int) int {
 	if doc.Error != "" {
 		text = doc.Content + "\n" + doc.Error
 	}
-	lines := strings.Split(renderMarkdown(text, bodyWidth), "\n")
-	availableBodyLines := max(contentHeight-1, 0)
+	lines := strings.Split(xansi.Wrap(renderMarkdown(text, max(bodyWidth, 20)), bodyWidth, " "), "\n")
+	availableBodyLines := max(contentHeight-2, 0)
 	return clampSidebarOffset(len(lines), len(lines), availableBodyLines)
 }
 
@@ -496,12 +601,19 @@ func renderEntry(e entry, width int) string {
 	meta := mutedStyle.Render(title)
 	bodyWidth := max(width-2, 20)
 	body := indentLines(renderMarkdown(e.body, bodyWidth), "  ")
+	if e.role == "system" {
+		body = mutedStyle.Render(body)
+	}
 	return fitLine(label+" "+meta, width) + "\n" + body
 }
 
 func renderUserEntry(e entry, width int) string {
-	body := wrapText(e.body, max(width-userBubbleStyle.GetHorizontalFrameSize(), 20))
-	return userBubbleStyle.Width(width - userBubbleStyle.GetHorizontalFrameSize()).Render(body)
+	bodyWidth := max(width-1, 20)
+	body := wrapText(e.body, max(bodyWidth-2, 20))
+	if body == "" {
+		body = " "
+	}
+	return userBubbleStyle.Width(bodyWidth).Render(body)
 }
 
 func renderAssistantEntry(e entry, width int) string {
@@ -553,7 +665,7 @@ func isToolResultPair(prev entry, current entry) bool {
 }
 
 func (m Model) renderInput(width int) string {
-	prompt := lipgloss.NewStyle().Foreground(cAccent).Background(cMsgBg).Render("› ")
+	prompt := lipgloss.NewStyle().Foreground(cAccentHi).Render("> ")
 	value := string(m.input)
 	if value == "" {
 		placeholder := "ask anything, or /help for commands"
@@ -563,7 +675,7 @@ func (m Model) renderInput(width int) string {
 		value = m.renderCursor() + " " + placeholderStyle.Render(placeholder)
 	} else {
 		value = strings.ReplaceAll(value, "\n", "\n  ")
-		value = lipgloss.NewStyle().Foreground(cTextPri).Background(cMsgBg).Render(value) + m.renderCursor()
+		value = lipgloss.NewStyle().Foreground(cTextPri).Render(value) + m.renderCursor()
 	}
 	return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(prompt + value)
 }
@@ -574,10 +686,14 @@ func (m Model) renderRunningNotice(width int) string {
 	}
 	tag := planModeStyle.Bold(true).Render("[ WORKING ]")
 	elapsed := mutedStyle.Render(fmt.Sprintf("elapsed %02ds", int(m.runningElapsed().Seconds())))
-	sep := statusDimStyle.Render("│")
-	bar := renderWorkingBar(m.spinnerFrame, 24)
 	hint := mutedStyle.Render("esc to interrupt")
-	left := lipgloss.JoinHorizontal(lipgloss.Top, tag, " ", elapsed, " ", sep, " ", bar)
+	prefix := lipgloss.JoinHorizontal(lipgloss.Top, tag, " ", elapsed, " ")
+	barWidth := width - lipgloss.Width(prefix) - lipgloss.Width(hint) - 1
+	if barWidth < 1 {
+		barWidth = 1
+	}
+	bar := renderWorkingBar(m.spinnerFrame, barWidth)
+	left := prefix + bar
 	pad := width - lipgloss.Width(left) - lipgloss.Width(hint)
 	if pad < 1 {
 		pad = 1
@@ -597,7 +713,7 @@ func renderWorkingBar(frame int, width int) string {
 		if i >= pos && i < pos+4 {
 			b.WriteString(lipgloss.NewStyle().Foreground(cWarn).Render("─"))
 		} else {
-			b.WriteString(statusDimStyle.Render("─"))
+			b.WriteString(lipgloss.NewStyle().Foreground(cProgressEmpty).Render("─"))
 		}
 	}
 	return b.String()
@@ -703,7 +819,7 @@ func renderCursor() string {
 
 func (m Model) renderCursor() string {
 	if m.spinnerFrame%2 == 1 {
-		return lipgloss.NewStyle().Background(cMsgBg).Render(" ")
+		return " "
 	}
 	return renderCursor()
 }
@@ -724,16 +840,15 @@ func (m Model) renderFooter(width int) string {
 }
 
 func (m Model) renderStatusBar(width int) string {
-	sep := statusDimStyle.Render(" │ ")
 	parts := []string{
 		statusModelStyle.Bold(true).Render("FOXHARNESS"),
 		statusProjectStyle.Render(m.modelName),
 		statusProjectStyle.Render(m.project),
 		mutedStyle.Render("git ") + statusProjectStyle.Render(m.gitBranch),
-		mutedStyle.Render("Context ") + statusProjectStyle.Render(normalizeContextUsage(m.contextUsage)),
-		mutedStyle.Render("sid ") + statusProjectStyle.Render(m.sessionID),
+		mutedStyle.Render("Context ") + statusModelStyle.Render(normalizeContextUsage(m.contextUsage)),
+		mutedStyle.Render("sid ") + statusFaintStyle.Render(m.sessionID),
 	}
-	return footerStyle.Width(width).Render(fitLine(strings.Join(parts, sep), width))
+	return footerStyle.Width(width).Render(fitLine(strings.Join(parts, "  "), width))
 }
 
 func (m Model) renderKeybinds(width int) string {
@@ -741,7 +856,7 @@ func (m Model) renderKeybinds(width int) string {
 	if m.planMode {
 		plan = planModeStyle.Render("plan mode on")
 	}
-	hint := mutedStyle.Render("shift + tab to cycle")
+	hint := statusFaintStyle.Render("shift + tab to cycle")
 	pad := width - lipgloss.Width(plan) - lipgloss.Width(hint)
 	if pad < 1 {
 		pad = 1

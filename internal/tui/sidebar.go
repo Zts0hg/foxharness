@@ -10,7 +10,8 @@ import (
 const (
 	sidebarMinTotalWidth = 110
 	sidebarWidth         = 36
-	sidebarGap           = 2
+	sidebarMaxWidth      = 58
+	sidebarGap           = 3
 	sidebarDocumentCount = 3
 	sidebarHintHeight    = 1
 	sidebarHintText      = "/sidebar off to hide"
