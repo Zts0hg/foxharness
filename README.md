@@ -331,6 +331,12 @@ Build locally:
 go build -trimpath -ldflags="-s -w" -o fox ./cmd/fox
 ```
 
+## License
+
+foxharness is licensed under the GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`).
+
+Commercial use is allowed, but modified versions distributed or offered as a network service must remain open source under the same license.
+
 ## Release
 
 The GitHub Actions release workflow builds binaries for:
