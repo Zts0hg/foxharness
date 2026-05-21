@@ -245,6 +245,12 @@ func TestUserEntryRendersOnlyHighlightedBody(t *testing.T) {
 	if !strings.Contains(plainRendered, "inspect go.mod") {
 		t.Fatalf("rendered user entry missing body:\n%s", rendered)
 	}
+	if !strings.HasPrefix(plainRendered, "▌ ") {
+		t.Fatalf("rendered user entry missing v5 left bar:\n%s", rendered)
+	}
+	if got := lipgloss.Width(strings.Split(plainRendered, "\n")[0]); got != 80 {
+		t.Fatalf("rendered user entry width = %d, want 80:\n%s", got, rendered)
+	}
 }
 
 func TestModelAcceptsSpaces(t *testing.T) {
@@ -650,14 +656,14 @@ func TestSlashDropdownSelectedRowsDoNotWrapDescriptions(t *testing.T) {
 }
 
 func TestSlashDropdownUsesForegroundOnlySelection(t *testing.T) {
-	if suggestionCommandStyle.GetForeground() != lipgloss.Color("252") {
-		t.Fatalf("non-selected slash command foreground = %q, want white", suggestionCommandStyle.GetForeground())
+	if suggestionCommandStyle.GetForeground() != cAccentHi {
+		t.Fatalf("non-selected slash command foreground = %q, want amber highlight", suggestionCommandStyle.GetForeground())
 	}
-	if suggestionDescriptionStyle.GetForeground() != lipgloss.Color("252") {
-		t.Fatalf("non-selected slash description foreground = %q, want white", suggestionDescriptionStyle.GetForeground())
+	if suggestionDescriptionStyle.GetForeground() != cTextMuted {
+		t.Fatalf("non-selected slash description foreground = %q, want muted amber", suggestionDescriptionStyle.GetForeground())
 	}
-	if suggestionSelectedStyle.GetForeground() != lipgloss.Color("81") {
-		t.Fatalf("selected slash command foreground = %q, want blue", suggestionSelectedStyle.GetForeground())
+	if suggestionSelectedStyle.GetForeground() != cWarn {
+		t.Fatalf("selected slash command foreground = %q, want warning amber", suggestionSelectedStyle.GetForeground())
 	}
 
 	runner := newFakeRunner()
@@ -1194,13 +1200,13 @@ func TestModelViewContainsSessionAndInput(t *testing.T) {
 
 	view := m.View()
 	plainView := stripANSI(view)
-	for _, want := range []string{"FOX-HARNESS", "[ ESTABLISHED ]", "SESS#sess-1", "FOXHARNESS", "fake-model", "git -", "Context 7%", "sid sess-1", "ask anything, or /help for commands"} {
+	for _, want := range []string{"SYSTEM session", "Interactive session started. Type /help for commands.", "FOXHARNESS", "fake-model", "git -", "Context 7%", "sid sess-1", "> ▌ ask anything, or /help for commands"} {
 		if !strings.Contains(plainView, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
 	}
-	if strings.Index(plainView, "FOX-HARNESS") > strings.Index(plainView, "ask anything, or /help for commands") {
-		t.Fatalf("header should render above the input box:\n%s", view)
+	if strings.Index(plainView, "SYSTEM session") > strings.Index(plainView, "ask anything, or /help for commands") {
+		t.Fatalf("session notice should render above the input box:\n%s", view)
 	}
 	if !strings.Contains(plainView, "plan mode off") || !strings.Contains(plainView, "shift + tab to cycle") {
 		t.Fatalf("view missing plan mode hint:\n%s", view)
@@ -1831,15 +1837,17 @@ func numberedLines(prefix string, count int) string {
 func sidebarPoint(t *testing.T, m Model, index int) (int, int) {
 	t.Helper()
 	contentWidth, contentHeight := m.contentDimensions()
-	heights := sidebarBoxHeights(sidebarBoxesHeight(contentHeight), len(m.sidebarDocuments))
+	width := m.sidebarWidth()
+	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarDocumentAreaHeight(contentHeight, len(m.sidebarDocuments)), m.sidebarDocuments)
 	if index < 0 || index >= len(heights) {
 		t.Fatalf("sidebar index %d out of range for heights %#v", index, heights)
 	}
 	y := 0
 	for i := 0; i < index; i++ {
 		y += heights[i]
+		y += sidebarSeparatorHeight
 	}
-	return 1 + 2 + contentWidth + sidebarGap, 1 + 3 + y
+	return viewPaddingLeft + contentWidth + sidebarGap, viewPaddingTop + y
 }
 
 func lineContaining(text string, fragment string) int {

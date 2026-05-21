@@ -272,11 +272,12 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 		return 0, false
 	}
 	contentWidth, contentHeight := m.contentDimensions()
-	sidebarX := 1 + 2 + contentWidth + sidebarGap
-	boxesHeight := sidebarBoxesHeight(contentHeight)
-	sidebarY := 1 + 3
+	sidebarX := viewPaddingLeft + contentWidth + sidebarGap
+	sidebarHeight := sidebarBoxesHeight(contentHeight)
+	width := m.sidebarWidth()
+	sidebarY := viewPaddingTop
 	localY := y - sidebarY
-	if x < sidebarX || x >= sidebarX+sidebarWidth || localY < 0 || localY >= boxesHeight {
+	if x < sidebarX || x >= sidebarX+width || localY < 0 || localY >= sidebarHeight {
 		return 0, false
 	}
 
@@ -284,7 +285,7 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 	if len(docs) == 0 {
 		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
 	}
-	heights := sidebarBoxHeights(boxesHeight, len(docs))
+	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarDocumentAreaHeight(contentHeight, len(docs)), docs)
 	top := 0
 	for i, height := range heights {
 		bottom := top + height
@@ -292,6 +293,13 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 			return i, true
 		}
 		top = bottom
+		if i < len(heights)-1 {
+			separatorBottom := top + sidebarSeparatorHeight
+			if localY >= top && localY < separatorBottom {
+				return 0, false
+			}
+			top = separatorBottom
+		}
 	}
 	return 0, false
 }
@@ -310,13 +318,14 @@ func (m *Model) clampSidebarScrollOffsets() {
 	}
 
 	_, contentHeight := m.contentDimensions()
-	heights := sidebarBoxHeights(sidebarBoxesHeight(contentHeight), len(docs))
+	width := m.sidebarWidth()
+	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarDocumentAreaHeight(contentHeight, len(docs)), docs)
 	for i := range m.sidebarScrollOffsets {
 		if i >= len(docs) || i >= len(heights) {
 			m.sidebarScrollOffsets[i] = 0
 			continue
 		}
-		maxOffset := maxSidebarScrollOffset(docs[i], sidebarWidth, heights[i])
+		maxOffset := maxSidebarScrollOffset(docs[i], sidebarContentWidth(width), heights[i])
 		if m.sidebarScrollOffsets[i] < 0 {
 			m.sidebarScrollOffsets[i] = 0
 		}
@@ -557,11 +566,12 @@ func (m Model) maxFocusedSidebarOffset() int {
 		return 0
 	}
 	_, contentHeight := m.contentDimensions()
-	heights := sidebarBoxHeights(sidebarBoxesHeight(contentHeight), len(m.sidebarDocuments))
+	width := m.sidebarWidth()
+	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarDocumentAreaHeight(contentHeight, len(m.sidebarDocuments)), m.sidebarDocuments)
 	if m.sidebarFocusIndex >= len(heights) {
 		return 0
 	}
-	return maxSidebarScrollOffset(m.sidebarDocuments[m.sidebarFocusIndex], sidebarWidth, heights[m.sidebarFocusIndex])
+	return maxSidebarScrollOffset(m.sidebarDocuments[m.sidebarFocusIndex], sidebarContentWidth(width), heights[m.sidebarFocusIndex])
 }
 
 func (m Model) togglePlanMode() (tea.Model, tea.Cmd) {

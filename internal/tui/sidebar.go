@@ -8,12 +8,14 @@ import (
 )
 
 const (
-	sidebarMinTotalWidth = 110
-	sidebarWidth         = 36
-	sidebarGap           = 2
-	sidebarDocumentCount = 3
-	sidebarHintHeight    = 1
-	sidebarHintText      = "/sidebar off to hide"
+	sidebarMinTotalWidth   = 110
+	sidebarWidth           = 36
+	sidebarMaxWidth        = 58
+	sidebarGap             = 3
+	sidebarDocumentCount   = 3
+	sidebarHintHeight      = 1
+	sidebarSeparatorHeight = 1
+	sidebarHintText        = "/sidebar off to hide"
 )
 
 var sidebarFiles = []struct {
