@@ -4,14 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/memory"
+	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/subagent"
@@ -30,7 +33,7 @@ type AgentRunnerConfig struct {
 	SessionID       string
 	ContinueSession bool
 	NewSession      bool
-	OnModelChange  func(model string) error
+	OnModelChange   func(model string) error
 }
 
 // AgentRunner owns one long-lived session and can execute many user prompts
@@ -53,6 +56,7 @@ type AgentRunner struct {
 	manager        *session.Manager
 	llmProvider    provider.LLMProvider
 	currentSession *session.Session
+	checkpointer   checkpoint.Checkpointer
 }
 
 func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
@@ -90,6 +94,15 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 	if err := store.EnsureFiles(); err != nil {
 		return nil, fmt.Errorf("初始化文件记忆失败: %w", err)
 	}
+	cp := checkpoint.New(checkpoint.Config{SessionDir: sess.RootDir})
+	if checkpointDisabledFromEnv() {
+		cp.SetDisabled(true)
+	}
+	if cfg.SessionID != "" || cfg.ContinueSession {
+		if err := cp.RestoreStateFromLog(); err != nil {
+			return nil, fmt.Errorf("恢复 checkpoint 状态失败: %w", err)
+		}
+	}
 
 	llmProvider, err := provider.NewZhipuProvider(cfg.Provider, cfg.Model)
 	if err != nil {
@@ -115,6 +128,7 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		manager:          manager,
 		llmProvider:      llmProvider,
 		currentSession:   sess,
+		checkpointer:     cp,
 	}, nil
 }
 
@@ -129,6 +143,7 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 	enableThinking := r.enableThinking
 	enablePlanMode := r.enablePlanMode
 	llmProvider := r.llmProvider
+	cp := r.checkpointer
 	providerProtocol := r.providerProtocol
 	model := r.model
 	maxTurns := r.maxTurns
@@ -146,9 +161,21 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 	}
 
 	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
+	var messageIDMu sync.Mutex
+	currentMessageID := ""
+	setCurrentMessageID := func(messageID string) {
+		messageIDMu.Lock()
+		currentMessageID = messageID
+		messageIDMu.Unlock()
+	}
+	getCurrentMessageID := func() string {
+		messageIDMu.Lock()
+		defer messageIDMu.Unlock()
+		return currentMessageID
+	}
 	eng := engine.NewAgentEngine(
 		llmProvider,
-		r.buildRegistry(sess, llmProvider),
+		r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID),
 		r.workDir,
 		composer,
 		engine.Config{
@@ -156,6 +183,8 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 			MaxTurns:         maxTurns,
 			ProviderProtocol: providerProtocol,
 			Model:            model,
+			Checkpointer:     cp,
+			OnUserMessageID:  setCurrentMessageID,
 		},
 	)
 	eng.WithCompactor(compaction.NewCompactor(
@@ -187,6 +216,10 @@ func (r *AgentRunner) NewSession(ctx context.Context) (string, error) {
 	}
 	r.currentSession = sess
 	r.store = store
+	r.checkpointer = checkpoint.New(checkpoint.Config{SessionDir: sess.RootDir})
+	if checkpointDisabledFromEnv() {
+		r.checkpointer.SetDisabled(true)
+	}
 	return sess.ID, nil
 }
 
@@ -278,6 +311,22 @@ func (r *AgentRunner) MessageHistory() ([]session.MessageRecord, error) {
 	return session.NewMessageLog(sess).LoadRecords()
 }
 
+func (r *AgentRunner) TruncateMessageHistory(seq int64) error {
+	r.mu.Lock()
+	sess := r.currentSession
+	r.mu.Unlock()
+	if sess == nil {
+		return nil
+	}
+	return session.NewMessageLog(sess).TruncateBeforeSeq(seq)
+}
+
+func (r *AgentRunner) Checkpointer() checkpoint.Checkpointer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.checkpointer
+}
+
 func (r *AgentRunner) PlanMode() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -290,8 +339,9 @@ func (r *AgentRunner) SetPlanMode(enabled bool) {
 	r.enablePlanMode = enabled
 }
 
-func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.LLMProvider) tools.Registry {
+func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.LLMProvider, cp checkpoint.Checkpointer, getMessageID func() string) tools.Registry {
 	registry := tools.NewRegistry()
+	registry.Use(middleware.NewCheckpointMiddleware(cp, getMessageID, r.workDir))
 	registry.Register(tools.NewReadFileTool(r.workDir))
 	registry.Register(tools.NewWriteFileTool(r.workDir))
 	registry.Register(tools.NewBashTool(r.workDir))
@@ -300,6 +350,15 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 	subManager := subagent.NewManager(llmProvider, r.workDir)
 	registry.Register(subagent.NewTool(subManager, sess.ID))
 	return registry
+}
+
+func checkpointDisabledFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("FOXHARNESS_DISABLE_FILE_CHECKPOINTING"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func formatContextUsage(used int, maxTokens int) string {

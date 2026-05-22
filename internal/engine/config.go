@@ -1,5 +1,7 @@
 package engine
 
+import "github.com/Zts0hg/foxharness/internal/checkpoint"
+
 // Config controls the behavior of the AgentEngine.
 // It provides options for enabling the Thinking phase and setting
 // turn limits for agent execution.
@@ -20,6 +22,14 @@ type Config struct {
 
 	// Model identifies the model used for model calls, for trace/debug metadata.
 	Model string
+
+	// Checkpointer receives user-message snapshot hooks when configured.
+	Checkpointer checkpoint.Checkpointer
+
+	// OnUserMessageID is called with the persisted user message sequence. It is
+	// used by middleware wiring to associate later file edits with the same
+	// snapshot.
+	OnUserMessageID func(messageID string)
 }
 
 // DefaultConfig returns a Config with sensible defaults.

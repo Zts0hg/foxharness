@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -35,6 +37,8 @@ type fakeRunner struct {
 	contextUsage string
 	history      []session.MessageRecord
 	historyErr   error
+	truncatedSeq int64
+	checkpointer checkpoint.Checkpointer
 }
 
 func (r *fakeRunner) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
@@ -116,6 +120,22 @@ func (r *fakeRunner) MessageHistory() ([]session.MessageRecord, error) {
 	return append([]session.MessageRecord(nil), r.history...), nil
 }
 
+func (r *fakeRunner) TruncateMessageHistory(seq int64) error {
+	r.truncatedSeq = seq
+	var next []session.MessageRecord
+	for _, record := range r.history {
+		if record.Seq < seq {
+			next = append(next, record)
+		}
+	}
+	r.history = next
+	return nil
+}
+
+func (r *fakeRunner) Checkpointer() checkpoint.Checkpointer {
+	return r.checkpointer
+}
+
 func (r *fakeRunner) PlanMode() bool {
 	return r.planMode
 }
@@ -123,6 +143,28 @@ func (r *fakeRunner) PlanMode() bool {
 func (r *fakeRunner) SetPlanMode(enabled bool) {
 	r.planMode = enabled
 }
+
+type tuiCheckpointer struct {
+	stats  *checkpoint.DiffStats
+	rewind string
+}
+
+func (c *tuiCheckpointer) TrackEdit(filePath, messageID string) error { return nil }
+func (c *tuiCheckpointer) MakeSnapshot(messageID string) error        { return nil }
+func (c *tuiCheckpointer) Rewind(messageID string) ([]string, error) {
+	c.rewind = messageID
+	return []string{"main.go"}, nil
+}
+func (c *tuiCheckpointer) GetDiffStats(messageID string) (*checkpoint.DiffStats, error) {
+	if c.stats == nil {
+		return &checkpoint.DiffStats{}, nil
+	}
+	return c.stats, nil
+}
+func (c *tuiCheckpointer) HasAnyChanges(messageID string) (bool, error) { return false, nil }
+func (c *tuiCheckpointer) SetDisabled(disabled bool)                    {}
+func (c *tuiCheckpointer) IsDisabled() bool                             { return false }
+func (c *tuiCheckpointer) RestoreStateFromLog() error                   { return nil }
 
 func TestModelSubmitsPromptAndRendersRunEvents(t *testing.T) {
 	runner := newFakeRunner()
@@ -456,6 +498,125 @@ func TestModelSlashCommands(t *testing.T) {
 	}
 	if !entriesContain(m.entries, "command", "ID       sess-new") {
 		t.Fatalf("/new did not render switch message: %#v", m.entries)
+	}
+}
+
+func TestSlashCommandsOpenRewindSelector(t *testing.T) {
+	cp := &tuiCheckpointer{stats: &checkpoint.DiffStats{FilesChanged: 1}}
+	runner := newFakeRunner()
+	runner.checkpointer = cp
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "restore this"}),
+		historyRecord(1, "run-1", schema.Message{Role: schema.RoleAssistant, Content: "done"}),
+	}
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/rewind"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/rewind returned unexpected command")
+	}
+	if m.rewindSelector == nil {
+		t.Fatalf("/rewind did not open selector")
+	}
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "restore this") {
+		t.Fatalf("selector view missing user message:\n%s", plain)
+	}
+
+	m, _ = update(t, m, selector.ResultMsg{Action: selector.ActionRestoreBoth, MessageID: "0"})
+	if cp.rewind != "0" {
+		t.Fatalf("Rewind called with %q, want 0", cp.rewind)
+	}
+	if runner.truncatedSeq != 0 {
+		t.Fatalf("truncated seq = %d, want 0", runner.truncatedSeq)
+	}
+	if got := string(m.input); got != "restore this" {
+		t.Fatalf("input after rewind = %q, want restore this", got)
+	}
+
+	m.running = true
+	m.input = nil
+	m, _ = update(t, m, keyRunes("/checkpoint"))
+	m, _ = update(t, m, keyEnter())
+	if !strings.Contains(m.status, "unavailable") {
+		t.Fatalf("status = %q, want rewind unavailable while running", m.status)
+	}
+}
+
+func TestDoubleEscOpensRewindSelector(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "restore this"}),
+	}
+	m := NewModel(context.Background(), runner, Config{})
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.Local)
+	m.now = func() time.Time { return now }
+	m.input = []rune("draft")
+
+	m, _ = update(t, m, keyEsc())
+	if m.rewindSelector != nil {
+		t.Fatalf("first esc opened rewind selector")
+	}
+	if got := string(m.input); got != "" {
+		t.Fatalf("first esc input = %q, want cleared", got)
+	}
+	if !strings.Contains(m.status, "Press Esc again") {
+		t.Fatalf("first esc status = %q, want second-esc prompt", m.status)
+	}
+
+	now = now.Add(time.Second)
+	m, cmd := update(t, m, keyEsc())
+	if cmd != nil {
+		t.Fatalf("second esc returned unexpected command")
+	}
+	if m.rewindSelector == nil {
+		t.Fatalf("second esc did not open rewind selector")
+	}
+	if !strings.Contains(stripANSI(m.View()), "restore this") {
+		t.Fatalf("selector view missing rewind target:\n%s", m.View())
+	}
+}
+
+func TestAutoRestoreOnCancel(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "cancel me"}),
+		{Seq: 1, RunID: "run-1", Kind: "progress", Message: schema.Message{Role: schema.RoleAssistant}},
+	}
+	m := NewModel(context.Background(), runner, Config{})
+	m.running = true
+	cancelled := false
+	m.cancelRun = func() { cancelled = true }
+
+	m, _ = update(t, m, keyCtrlC())
+	if !cancelled {
+		t.Fatalf("ctrl+c did not call cancelRun")
+	}
+	if runner.truncatedSeq != 0 {
+		t.Fatalf("truncated seq = %d, want 0", runner.truncatedSeq)
+	}
+	if got := string(m.input); got != "cancel me" {
+		t.Fatalf("input after auto restore = %q, want cancel me", got)
+	}
+}
+
+func TestNoAutoRestoreWithMeaningfulContent(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "do work"}),
+		historyRecord(1, "run-1", schema.Message{Role: schema.RoleAssistant, Content: "started"}),
+	}
+	m := NewModel(context.Background(), runner, Config{})
+	m.running = true
+	m.cancelRun = func() {}
+
+	m, _ = update(t, m, keyCtrlC())
+	if runner.truncatedSeq != -1 {
+		t.Fatalf("truncated seq = %d, want no truncate", runner.truncatedSeq)
+	}
+	if got := string(m.input); got != "" {
+		t.Fatalf("input after no auto restore = %q, want empty", got)
 	}
 }
 
@@ -1645,6 +1806,7 @@ func newFakeRunner() *fakeRunner {
 		workDir:      "/tmp/work",
 		model:        "fake-model",
 		contextUsage: "7%",
+		truncatedSeq: -1,
 	}
 }
 

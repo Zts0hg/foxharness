@@ -3,12 +3,15 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -32,6 +35,8 @@ type Runner interface {
 	SetModel(model string) error
 	ContextUsage() string
 	MessageHistory() ([]session.MessageRecord, error)
+	TruncateMessageHistory(seq int64) error
+	Checkpointer() checkpoint.Checkpointer
 	PlanMode() bool
 	SetPlanMode(enabled bool)
 }
@@ -65,6 +70,8 @@ type slashCommand struct {
 var slashCommands = []slashCommand{
 	{Name: "/session", Description: "show current session paths"},
 	{Name: "/clear", Description: "clear the visible transcript"},
+	{Name: "/rewind", Description: "restore a previous checkpoint"},
+	{Name: "/checkpoint", Description: "alias for /rewind"},
 	{Name: "/new", Description: "start a fresh session"},
 	{Name: "/model", Description: "show or switch the active model"},
 	{Name: "/cancel", Description: "cancel the active run"},
@@ -101,6 +108,7 @@ type Model struct {
 	scrollOffset int
 	cancelRun    context.CancelFunc
 	lastCtrlC    time.Time
+	lastEsc      time.Time
 
 	sessionID    string
 	modelName    string
@@ -108,6 +116,9 @@ type Model struct {
 	gitBranch    string
 	contextUsage string
 	planMode     bool
+
+	checkpointer   checkpoint.Checkpointer
+	rewindSelector *selector.Model
 
 	sidebarVisible       bool
 	sidebarFocused       bool
@@ -145,6 +156,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		gitBranch:         gitBranchForWorkDir(runner.WorkDir()),
 		contextUsage:      normalizeContextUsage(runner.ContextUsage()),
 		planMode:          runner.PlanMode(),
+		checkpointer:      runner.Checkpointer(),
 		entries:           entries,
 		sidebarVisible:    true,
 		sidebarFocusIndex: -1,
@@ -199,6 +211,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.startNextQueuedPrompt()
 		}
 		return m, nil
+
+	case selector.ResultMsg:
+		return m.handleSelectorResult(msg)
 
 	case newSessionFinishedMsg:
 		m.running = false
@@ -343,13 +358,31 @@ func (m Model) shouldRenderSidebar() bool {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.rewindSelector != nil {
+		next, cmd := m.rewindSelector.Update(msg)
+		if typed, ok := next.(selector.Model); ok {
+			m.rewindSelector = &typed
+		}
+		return m, cmd
+	}
+
 	key := msg.String()
 	if key != "ctrl+c" {
 		m.lastCtrlC = time.Time{}
 	}
+	if key != "esc" {
+		m.lastEsc = time.Time{}
+	}
 
 	switch key {
 	case "ctrl+c":
+		if m.running && m.cancelRun != nil {
+			m.cancelRun()
+			m.status = "Cancel requested"
+			m.appendEntry("system", "cancel", "Current run cancellation requested.", false)
+			m.tryAutoRestoreAfterCancel()
+			return m, nil
+		}
 		now := m.nowTime()
 		if !m.lastCtrlC.IsZero() && now.Sub(m.lastCtrlC) <= quitConfirmWindow {
 			if m.cancelRun != nil {
@@ -376,6 +409,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.appendEntry("system", "cancel", "Current run cancellation requested.", false)
 			return m, nil
 		}
+		now := m.nowTime()
+		if !m.lastEsc.IsZero() && now.Sub(m.lastEsc) <= quitConfirmWindow {
+			m.lastEsc = time.Time{}
+			return m.openRewindSelector()
+		}
+		m.lastEsc = now
+		m.status = "Press Esc again within 2s to rewind"
 		m.input = nil
 		m.resetHistoryNavigation()
 		m.resetCompletions()
@@ -859,6 +899,8 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.status = "Transcript cleared"
 		m.scrollOffset = 0
 		return m, nil
+	case "/rewind", "/checkpoint":
+		return m.openRewindSelector()
 	case "/model":
 		if len(fields) == 1 {
 			m.appendCommandEntry("Model", fmt.Sprintf("Current model: %s\nUsage: /model <model_name>", m.runner.Model()))
@@ -935,6 +977,132 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.status = "Unknown command"
 		return m, nil
 	}
+}
+
+func (m Model) openRewindSelector() (tea.Model, tea.Cmd) {
+	if m.running {
+		m.status = "Rewind unavailable while a run is active"
+		return m, nil
+	}
+	records, err := m.runner.MessageHistory()
+	if err != nil {
+		m.appendEntry("error", "rewind", err.Error(), true)
+		m.status = "Rewind unavailable"
+		return m, nil
+	}
+	messages := checkpoint.SelectableMessages(records)
+	if len(messages) == 0 {
+		m.status = "No rewind targets"
+		return m, nil
+	}
+	model := selector.New(messages, m.checkpointer)
+	m.rewindSelector = &model
+	m.status = "Rewind"
+	return m, nil
+}
+
+func (m Model) handleSelectorResult(msg selector.ResultMsg) (tea.Model, tea.Cmd) {
+	m.rewindSelector = nil
+	if msg.Action == selector.ActionCancelled || msg.Action == selector.ActionNone {
+		m.status = "Rewind cancelled"
+		return m, nil
+	}
+
+	seq, err := strconv.ParseInt(msg.MessageID, 10, 64)
+	if err != nil {
+		m.appendEntry("error", "rewind", err.Error(), true)
+		m.status = "Rewind failed"
+		return m, nil
+	}
+
+	records, err := m.runner.MessageHistory()
+	if err != nil {
+		m.appendEntry("error", "rewind", err.Error(), true)
+		m.status = "Rewind failed"
+		return m, nil
+	}
+	content := messageContentBySeq(records, seq)
+
+	if msg.Action == selector.ActionRestoreBoth || msg.Action == selector.ActionRestoreCode {
+		if m.checkpointer != nil {
+			files, err := m.checkpointer.Rewind(msg.MessageID)
+			if err != nil {
+				m.appendEntry("error", "rewind files", err.Error(), true)
+				m.status = "Code restore failed"
+				if msg.Action == selector.ActionRestoreCode {
+					return m, nil
+				}
+			} else {
+				m.appendCommandEntry("Rewind files", fmt.Sprintf("Restored %d file%s.", len(files), pluralS(len(files))))
+			}
+		}
+	}
+
+	if msg.Action == selector.ActionRestoreBoth || msg.Action == selector.ActionRestoreConversation {
+		if err := m.restoreConversation(seq, content); err != nil {
+			m.appendEntry("error", "rewind conversation", err.Error(), true)
+			m.status = "Conversation restore failed"
+			return m, nil
+		}
+	}
+
+	m.status = "Rewind complete"
+	return m, nil
+}
+
+func (m *Model) restoreConversation(seq int64, content string) error {
+	if err := m.runner.TruncateMessageHistory(seq); err != nil {
+		return err
+	}
+	records, err := m.runner.MessageHistory()
+	if err != nil {
+		return err
+	}
+	m.entries = entriesFromMessageHistory(records)
+	if len(m.entries) == 0 {
+		m.entries = []entry{sessionStartedEntry()}
+	}
+	m.inputHistory = inputHistoryFromMessageHistory(records)
+	m.input = []rune(content)
+	m.resetHistoryNavigation()
+	m.resetCompletions()
+	m.scrollOffset = 0
+	return nil
+}
+
+func messageContentBySeq(records []session.MessageRecord, seq int64) string {
+	for _, record := range records {
+		if record.Seq == seq {
+			return strings.TrimSpace(record.Message.Content)
+		}
+	}
+	return ""
+}
+
+func (m *Model) tryAutoRestoreAfterCancel() {
+	records, err := m.runner.MessageHistory()
+	if err != nil {
+		return
+	}
+	index := -1
+	var target checkpoint.SelectableMessage
+	for i := len(records) - 1; i >= 0; i-- {
+		messages := checkpoint.SelectableMessages(records[i : i+1])
+		if len(messages) == 0 {
+			continue
+		}
+		index = i
+		target = messages[0]
+		break
+	}
+	if index < 0 || !checkpoint.MessagesAfterAreOnlySynthetic(records, index) {
+		return
+	}
+	if err := m.restoreConversation(target.Seq, target.Content); err != nil {
+		m.appendEntry("error", "auto restore", err.Error(), true)
+		return
+	}
+	m.status = "Cancelled; restored input"
 }
 
 func isModelCommand(text string) bool {

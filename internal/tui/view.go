@@ -127,6 +127,17 @@ func (m Model) View() string {
 		return lipgloss.NewStyle().Foreground(cWarn).Padding(2).Render(
 			fmt.Sprintf("terminal too narrow (%d cols) - please widen to at least %d cols", m.width, minWidth))
 	}
+	if m.rewindSelector != nil {
+		parts := []string{
+			m.renderHeader(width),
+			"",
+			m.rewindSelector.View(),
+			"",
+			m.renderStatusBar(width),
+			m.renderKeybinds(width),
+		}
+		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	}
 
 	_, bodyHeight := m.contentDimensions()
 	parts := []string{
