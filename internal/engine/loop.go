@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"sync"
@@ -337,10 +338,20 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		Role:    schema.RoleUser,
 		Content: userPrompt,
 	}
-	if err := messageLog.Append(run.ID, userMessage); err != nil {
+	userSeq, err := messageLog.Append(run.ID, userMessage)
+	if err != nil {
 		wrapped := fmt.Errorf("写入 Session 用户消息失败: %w", err)
 		markRunError(wrapped)
 		return nil, wrapped
+	}
+	userMessageID := strconv.FormatInt(userSeq, 10)
+	if e.config.OnUserMessageID != nil {
+		e.config.OnUserMessageID(userMessageID)
+	}
+	if e.config.Checkpointer != nil {
+		if err := e.config.Checkpointer.MakeSnapshot(userMessageID); err != nil {
+			log.Printf("[Checkpoint] 创建快照失败，将继续执行: %v", err)
+		}
 	}
 
 	contextHistory, compactedInitial, err := e.buildInitialContext(ctx, sess, systemPrompt, history, userMessage)
@@ -498,7 +509,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			return nil, wrapped
 		}
 		contextHistory = append(contextHistory, *actionResponse)
-		if err := messageLog.Append(run.ID, *actionResponse); err != nil {
+		if _, err := messageLog.Append(run.ID, *actionResponse); err != nil {
 			wrapped := fmt.Errorf("写入 Session 助手消息失败: %w", err)
 			finishTurn("error", map[string]any{"error": wrapped.Error()})
 			markRunError(wrapped)
@@ -580,7 +591,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				ToolCallID: item.Call.ID,
 			}
 			contextHistory = append(contextHistory, observationMessage)
-			if err := messageLog.Append(run.ID, observationMessage); err != nil {
+			if _, err := messageLog.Append(run.ID, observationMessage); err != nil {
 				wrapped := fmt.Errorf("写入 Session 工具结果失败: %w", err)
 				finishTurn("error", map[string]any{"error": wrapped.Error()})
 				markRunError(wrapped)

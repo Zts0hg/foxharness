@@ -25,6 +25,10 @@ type MessageRecord struct {
 	Time    time.Time      `json:"time"`
 	Kind    string         `json:"kind,omitempty"`
 	Message schema.Message `json:"message"`
+
+	IsMeta                    bool `json:"is_meta,omitempty"`
+	IsCompactSummary          bool `json:"is_compact_summary,omitempty"`
+	IsVisibleInTranscriptOnly bool `json:"is_visible_in_transcript_only,omitempty"`
 }
 
 // MessageLog manages a session's raw model-visible message history.
@@ -40,26 +44,28 @@ func NewMessageLog(s *Session) *MessageLog {
 	return &MessageLog{path: s.MessagesPath()}
 }
 
-// Append records a normal model-visible message for a run.
-func (l *MessageLog) Append(runID string, msg schema.Message) error {
+// Append records a normal model-visible message for a run and returns its
+// assigned sequence number.
+func (l *MessageLog) Append(runID string, msg schema.Message) (int64, error) {
 	return l.AppendKind(runID, MessageKindNormal, msg)
 }
 
-// AppendKind records a model-visible message with a specific kind.
-func (l *MessageLog) AppendKind(runID, kind string, msg schema.Message) error {
+// AppendKind records a model-visible message with a specific kind and returns
+// its assigned sequence number.
+func (l *MessageLog) AppendKind(runID, kind string, msg schema.Message) (int64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	msg = schema.NormalizeMessage(msg)
 	if err := l.ensureSeqLoaded(); err != nil {
-		return err
+		return 0, err
 	}
 	seq := l.nextSeq
 	l.nextSeq++
 
 	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("打开消息日志失败: %w", err)
+		return 0, fmt.Errorf("打开消息日志失败: %w", err)
 	}
 	defer f.Close()
 
@@ -71,11 +77,54 @@ func (l *MessageLog) AppendKind(runID, kind string, msg schema.Message) error {
 		Message: msg,
 	})
 	if err != nil {
-		return fmt.Errorf("序列化消息日志失败: %w", err)
+		return 0, fmt.Errorf("序列化消息日志失败: %w", err)
 	}
 	if _, err := f.Write(append(line, '\n')); err != nil {
-		return fmt.Errorf("写入消息日志失败: %w", err)
+		return 0, fmt.Errorf("写入消息日志失败: %w", err)
 	}
+	return seq, nil
+}
+
+// TruncateBeforeSeq removes the selected message and all records after it.
+// The next append reuses seq so a restored prompt can be submitted again.
+func (l *MessageLog) TruncateBeforeSeq(seq int64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	records, err := l.LoadRecords()
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(l.path+".tmp", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("打开临时消息日志失败: %w", err)
+	}
+	writeErr := func() error {
+		defer f.Close()
+		for _, record := range records {
+			if record.Seq >= seq {
+				continue
+			}
+			line, err := json.Marshal(record)
+			if err != nil {
+				return fmt.Errorf("序列化消息日志失败: %w", err)
+			}
+			if _, err := f.Write(append(line, '\n')); err != nil {
+				return fmt.Errorf("写入消息日志失败: %w", err)
+			}
+		}
+		return nil
+	}()
+	if writeErr != nil {
+		_ = os.Remove(l.path + ".tmp")
+		return writeErr
+	}
+	if err := os.Rename(l.path+".tmp", l.path); err != nil {
+		_ = os.Remove(l.path + ".tmp")
+		return fmt.Errorf("替换消息日志失败: %w", err)
+	}
+	l.nextSeq = seq
+	l.seqLoaded = true
 	return nil
 }
 

@@ -41,10 +41,10 @@ func TestSessionRunAndMessageLog(t *testing.T) {
 	}
 
 	log := NewMessageLog(sess)
-	if err := log.Append(run.ID, schema.Message{Role: schema.RoleUser, Content: "first"}); err != nil {
+	if _, err := log.Append(run.ID, schema.Message{Role: schema.RoleUser, Content: "first"}); err != nil {
 		t.Fatalf("Append(user) error = %v", err)
 	}
-	if err := log.Append(run.ID, schema.Message{Role: schema.RoleAssistant, Content: "second"}); err != nil {
+	if _, err := log.Append(run.ID, schema.Message{Role: schema.RoleAssistant, Content: "second"}); err != nil {
 		t.Fatalf("Append(assistant) error = %v", err)
 	}
 
@@ -77,7 +77,7 @@ func TestMessageLogNormalizesEmptyToolCallArguments(t *testing.T) {
 	}
 
 	log := NewMessageLog(sess)
-	err = log.Append(run.ID, schema.Message{
+	_, err = log.Append(run.ID, schema.Message{
 		Role: schema.RoleAssistant,
 		ToolCalls: []schema.ToolCall{{
 			ID:        "call-1",
@@ -95,6 +95,71 @@ func TestMessageLogNormalizesEmptyToolCallArguments(t *testing.T) {
 	}
 	if got := string(messages[0].ToolCalls[0].Arguments); got != "{}" {
 		t.Fatalf("stored arguments = %q, want {}", got)
+	}
+}
+
+func TestMessageLogAppendReturnsSeq(t *testing.T) {
+	workDir := t.TempDir()
+	manager := NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(CreateOptions{
+		Source:  SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	log := NewMessageLog(sess)
+	first, err := log.Append("run-1", schema.Message{Role: schema.RoleUser, Content: "first"})
+	if err != nil {
+		t.Fatalf("Append(first) error = %v", err)
+	}
+	second, err := log.Append("run-1", schema.Message{Role: schema.RoleAssistant, Content: "second"})
+	if err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	if first != 0 || second != 1 {
+		t.Fatalf("seqs = %d, %d; want 0, 1", first, second)
+	}
+}
+
+func TestMessageLogTruncateBeforeSeq(t *testing.T) {
+	workDir := t.TempDir()
+	manager := NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(CreateOptions{
+		Source:  SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	log := NewMessageLog(sess)
+	if _, err := log.Append("run-1", schema.Message{Role: schema.RoleUser, Content: "first"}); err != nil {
+		t.Fatalf("Append(first) error = %v", err)
+	}
+	if _, err := log.Append("run-1", schema.Message{Role: schema.RoleAssistant, Content: "answer"}); err != nil {
+		t.Fatalf("Append(answer) error = %v", err)
+	}
+	if _, err := log.Append("run-2", schema.Message{Role: schema.RoleUser, Content: "retry me"}); err != nil {
+		t.Fatalf("Append(retry) error = %v", err)
+	}
+	if err := log.TruncateBeforeSeq(2); err != nil {
+		t.Fatalf("TruncateBeforeSeq() error = %v", err)
+	}
+	records, err := log.LoadRecords()
+	if err != nil {
+		t.Fatalf("LoadRecords() error = %v", err)
+	}
+	if len(records) != 2 || records[1].Message.Content != "answer" {
+		t.Fatalf("records after truncate = %#v", records)
+	}
+	next, err := log.Append("run-3", schema.Message{Role: schema.RoleUser, Content: "new"})
+	if err != nil {
+		t.Fatalf("Append(new) error = %v", err)
+	}
+	if next != 2 {
+		t.Fatalf("next seq = %d, want reused 2", next)
 	}
 }
 

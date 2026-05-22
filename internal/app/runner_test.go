@@ -309,7 +309,7 @@ func TestAgentRunnerContextUsage(t *testing.T) {
 	if got := runner.ContextUsage(); got != "0%" {
 		t.Fatalf("empty ContextUsage() = %q, want 0%%", got)
 	}
-	if err := session.NewMessageLog(sess).Append("run-1", schema.Message{Role: schema.RoleUser, Content: "hello"}); err != nil {
+	if _, err := session.NewMessageLog(sess).Append("run-1", schema.Message{Role: schema.RoleUser, Content: "hello"}); err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
 	if got := runner.ContextUsage(); got != "<1%" {
@@ -331,7 +331,7 @@ func TestAgentRunnerMessageHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if err := session.NewMessageLog(sess).Append("run-1", schema.Message{Role: schema.RoleUser, Content: "restore me"}); err != nil {
+	if _, err := session.NewMessageLog(sess).Append("run-1", schema.Message{Role: schema.RoleUser, Content: "restore me"}); err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
 

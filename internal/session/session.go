@@ -100,6 +100,16 @@ func (s *Session) MessagesPath() string {
 	return filepath.Join(s.RootDir, "messages.jsonl")
 }
 
+// CheckpointsDir returns the directory that stores file checkpoint backups.
+func (s *Session) CheckpointsDir() string {
+	return filepath.Join(s.RootDir, "checkpoints")
+}
+
+// CheckpointsLogPath returns the JSONL file that stores checkpoint snapshots.
+func (s *Session) CheckpointsLogPath() string {
+	return filepath.Join(s.RootDir, "checkpoints.jsonl")
+}
+
 // CompactStatePath returns the path to the persisted context compaction state.
 func (s *Session) CompactStatePath() string {
 	return filepath.Join(s.RootDir, "compact_state.json")

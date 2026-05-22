@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -108,6 +109,59 @@ func TestRunWithPositiveMaxTurnsStillLimits(t *testing.T) {
 	}
 	if provider.calls != 2 {
 		t.Fatalf("provider calls = %d, want 2", provider.calls)
+	}
+}
+
+type snapshotRecorder struct {
+	messageIDs []string
+}
+
+func (r *snapshotRecorder) TrackEdit(filePath, messageID string) error { return nil }
+func (r *snapshotRecorder) MakeSnapshot(messageID string) error {
+	r.messageIDs = append(r.messageIDs, messageID)
+	return nil
+}
+func (r *snapshotRecorder) Rewind(messageID string) ([]string, error) { return nil, nil }
+func (r *snapshotRecorder) GetDiffStats(messageID string) (*checkpoint.DiffStats, error) {
+	return nil, nil
+}
+func (r *snapshotRecorder) HasAnyChanges(messageID string) (bool, error) { return false, nil }
+func (r *snapshotRecorder) SetDisabled(disabled bool)                    {}
+func (r *snapshotRecorder) IsDisabled() bool                             { return false }
+func (r *snapshotRecorder) RestoreStateFromLog() error                   { return nil }
+
+func TestEngineMakeSnapshotOnUserMessage(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	cp := &snapshotRecorder{}
+	var currentMessageID string
+	eng := NewAgentEngine(
+		&finalProvider{},
+		tools.NewRegistry(),
+		workDir,
+		staticComposer{},
+		Config{
+			MaxTurns:        3,
+			Checkpointer:    cp,
+			OnUserMessageID: func(id string) { currentMessageID = id },
+		},
+	)
+	if _, err := eng.RunWithReporter(context.Background(), sess, "hello", nil); err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if len(cp.messageIDs) != 1 || cp.messageIDs[0] != "0" {
+		t.Fatalf("MakeSnapshot calls = %#v, want [0]", cp.messageIDs)
+	}
+	if currentMessageID != "0" {
+		t.Fatalf("currentMessageID = %q, want 0", currentMessageID)
 	}
 }
 
