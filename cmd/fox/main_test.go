@@ -28,8 +28,8 @@ func TestParseArgsDefaultsToTUI(t *testing.T) {
 	if !cfg.EnablePlanMode {
 		t.Fatal("EnablePlanMode = false, want true")
 	}
-	if cfg.MaxTurns != 20 {
-		t.Fatalf("MaxTurns = %d, want 20", cfg.MaxTurns)
+	if cfg.MaxTurns != 0 {
+		t.Fatalf("MaxTurns = %d, want 0 for unlimited", cfg.MaxTurns)
 	}
 }
 

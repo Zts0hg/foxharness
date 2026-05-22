@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -15,6 +16,99 @@ type finalProvider struct{}
 
 func (p *finalProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
 	return &schema.Message{Role: schema.RoleAssistant, Content: "done"}, nil
+}
+
+type loopingProvider struct {
+	calls      int
+	finalAfter int
+}
+
+func (p *loopingProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+	p.calls++
+	if p.calls >= p.finalAfter {
+		return &schema.Message{Role: schema.RoleAssistant, Content: "done"}, nil
+	}
+	return &schema.Message{
+		Role:    schema.RoleAssistant,
+		Content: fmt.Sprintf("turn %d", p.calls),
+		ToolCalls: []schema.ToolCall{
+			{ID: fmt.Sprintf("call-%d", p.calls), Name: "missing_tool"},
+		},
+	}, nil
+}
+
+func TestDefaultConfigLeavesMaxTurnsUnlimited(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.MaxTurns != 0 {
+		t.Fatalf("DefaultConfig().MaxTurns = %d, want 0 for unlimited", cfg.MaxTurns)
+	}
+}
+
+func TestRunWithZeroMaxTurnsIsUnlimited(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	provider := &loopingProvider{finalAfter: 22}
+	eng := NewAgentEngine(
+		provider,
+		tools.NewRegistry(),
+		workDir,
+		staticComposer{},
+		Config{},
+	)
+
+	result, err := eng.RunWithReporter(context.Background(), sess, "hello", nil)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if result.FinalMessage != "done" {
+		t.Fatalf("FinalMessage = %q, want done", result.FinalMessage)
+	}
+	if provider.calls != 22 {
+		t.Fatalf("provider calls = %d, want 22", provider.calls)
+	}
+}
+
+func TestRunWithPositiveMaxTurnsStillLimits(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	provider := &loopingProvider{finalAfter: 4}
+	eng := NewAgentEngine(
+		provider,
+		tools.NewRegistry(),
+		workDir,
+		staticComposer{},
+		Config{MaxTurns: 2},
+	)
+
+	result, err := eng.RunWithReporter(context.Background(), sess, "hello", nil)
+	if err == nil {
+		t.Fatal("RunWithReporter() error = nil, want max turn limit error")
+	}
+	if !strings.Contains(err.Error(), "超过最大 Turn 数限制: 2") {
+		t.Fatalf("error = %q, want max turn limit", err.Error())
+	}
+	if result == nil {
+		t.Fatal("RunWithReporter() result = nil, want partial result")
+	}
+	if provider.calls != 2 {
+		t.Fatalf("provider calls = %d, want 2", provider.calls)
+	}
 }
 
 func TestModelCallTraceRecordsProviderAndModel(t *testing.T) {

@@ -109,7 +109,7 @@ type indexedToolResult struct {
 // The r parameter is the tool registry for managing and executing tools.
 // The workDir parameter specifies the working directory for file operations.
 // The composer parameter creates system prompts from user input.
-// The config parameter controls engine behavior; if MaxTurns is <= 0, it defaults to 20.
+// The config parameter controls engine behavior; if MaxTurns is <= 0, there is no turn limit.
 //
 // Returns a configured AgentEngine ready to run agent sessions.
 func NewAgentEngine(
@@ -119,9 +119,6 @@ func NewAgentEngine(
 	composer PromptComposer,
 	config Config,
 ) *AgentEngine {
-	if config.MaxTurns <= 0 {
-		config.MaxTurns = 20
-	}
 	if metadata, ok := p.(providerMetadata); ok {
 		if config.ProviderProtocol == "" {
 			config.ProviderProtocol = metadata.ProviderProtocol()

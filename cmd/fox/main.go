@@ -17,7 +17,7 @@
 //	-provider   Provider protocol: openai or claude (default: "openai")
 //	-thinking   Enable legacy per-turn Thinking mode
 //	-plan       Enable Plan Mode (default: true)
-//	-max-turns  Maximum number of agent turns (default: 20)
+//	-max-turns  Maximum number of agent turns; 0 means unlimited (default: 0)
 //	-session    Resume a specific session ID
 //	-continue   Resume the latest CLI session
 //	-new        Force creation of a new session (default behavior)
@@ -113,7 +113,7 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 	fs.StringVar(&cfg.Provider, "provider", "openai", "provider protocol: openai or claude")
 	fs.BoolVar(&cfg.EnableThinking, "thinking", false, "enable legacy per-turn Thinking mode; disabled when Plan Mode succeeds")
 	fs.BoolVar(&cfg.EnablePlanMode, "plan", true, "enable Plan Mode")
-	fs.IntVar(&cfg.MaxTurns, "max-turns", 20, "maximum number of agent turns")
+	fs.IntVar(&cfg.MaxTurns, "max-turns", 0, "maximum number of agent turns; 0 means unlimited")
 	fs.StringVar(&cfg.SessionID, "session", "", "resume a specific session ID")
 	fs.StringVar(&cfg.SessionID, "r", "", "resume a specific session ID")
 	fs.BoolVar(&cfg.ContinueSession, "continue", false, "resume the latest CLI session")

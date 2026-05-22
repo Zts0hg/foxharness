@@ -10,8 +10,8 @@ type Config struct {
 	EnableThinking bool
 
 	// MaxTurns is the maximum number of turns the engine will execute.
-	// If <= 0, defaults to 20. Each turn consists of optional thinking
-	// followed by action execution.
+	// If <= 0, the engine has no turn limit. Each turn consists of optional
+	// thinking followed by action execution.
 	MaxTurns int
 
 	// ProviderProtocol identifies the provider wire protocol used for model
@@ -23,10 +23,10 @@ type Config struct {
 }
 
 // DefaultConfig returns a Config with sensible defaults.
-// EnableThinking is disabled, and MaxTurns is set to 20.
+// EnableThinking is disabled, and MaxTurns is unlimited.
 func DefaultConfig() Config {
 	return Config{
 		EnableThinking: false,
-		MaxTurns:       20,
+		MaxTurns:       0,
 	}
 }
