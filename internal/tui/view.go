@@ -616,11 +616,11 @@ func renderCommandEntry(e entry, width int) string {
 }
 
 func renderToolCall(e entry, width int) string {
-	name := strings.TrimPrefix(strings.TrimSpace(e.body), "Ran ")
-	if name == "" {
-		name = strings.TrimPrefix(strings.TrimSpace(e.title), "call ")
+	label := strings.TrimSpace(e.body)
+	if label == "" {
+		label = strings.TrimPrefix(strings.TrimSpace(e.title), "call ")
 	}
-	line := toolLabelStyle.Render("↳ EXEC · " + name)
+	line := toolLabelStyle.Render("◆ " + label)
 	return fitLine(line, width)
 }
 
@@ -629,14 +629,22 @@ func renderToolResult(e entry, width int) string {
 	if output == "" {
 		output = "(no output)"
 	}
-	return lipgloss.NewStyle().
-		Foreground(cTextMuted).
-		Border(lipgloss.Border{Left: "│"}, false, false, false, true).
-		BorderForeground(cTextVeryDim).
-		Padding(0, 1).
-		MarginLeft(2).
-		Width(max(width-2, 20)).
-		Render(wrapText(output, max(width-4, 20)))
+	prefix := "└─ "
+	bodyWidth := max(width-lipgloss.Width(prefix), 20)
+	wrapped := wrapText(output, bodyWidth)
+	lines := strings.Split(wrapped, "\n")
+	for i := range lines {
+		if i == 0 {
+			lines[i] = prefix + lines[i]
+			continue
+		}
+		lines[i] = strings.Repeat(" ", lipgloss.Width(prefix)) + lines[i]
+	}
+	style := mutedStyle
+	if e.err {
+		style = errorLabelStyle
+	}
+	return style.Width(width).Render(strings.Join(lines, "\n"))
 }
 
 func isToolResultPair(prev entry, current entry) bool {

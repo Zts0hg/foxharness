@@ -234,13 +234,63 @@ func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 	}
 	for _, want := range []string{
 		"hello, what's the day today?",
-		"↳ EXEC · date",
-		"│ 2026年 5月17日",
+		"◆ Bash (date)",
+		"└─ 2026年 5月17日",
 		"answer: hello, what's the day today?",
 	} {
 		if !strings.Contains(plainView, want) {
 			t.Fatalf("view missing compact fragment %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestToolCallRenderingUsesReferenceStyleLabels(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "read", body: formatToolInvocation("read_file", `{"path":"internal/foo.go"}`), want: "◆ Read (internal/foo.go)"},
+		{name: "write", body: formatToolInvocation("write_file", `{"path":"cmd/app.go"}`), want: "◆ Write (cmd/app.go)"},
+		{name: "edit", body: formatToolInvocation("edit_file", `{"path":"internal/app.go"}`), want: "◆ Edit (internal/app.go)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rendered := renderEntry(entry{
+				role:  "tool",
+				title: "call " + tt.name,
+				body:  tt.body,
+			}, 100)
+			if plain := stripANSI(rendered); !strings.Contains(plain, tt.want) {
+				t.Fatalf("rendered tool call missing %q:\n%s", tt.want, rendered)
+			}
+		})
+	}
+}
+
+func TestToolResultRenderingUsesTreePrefix(t *testing.T) {
+	rendered := renderEntry(entry{
+		role:  "tool",
+		title: "result bash",
+		body:  "first line\nsecond line",
+	}, 100)
+	plain := stripANSI(rendered)
+
+	for _, want := range []string{"└─ first line", "   second line"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("rendered tool result missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestToolResultRenderingShowsEmptyOutputFallback(t *testing.T) {
+	rendered := renderEntry(entry{
+		role:  "tool",
+		title: "result bash",
+	}, 100)
+	if plain := stripANSI(rendered); !strings.Contains(plain, "└─ (no output)") {
+		t.Fatalf("rendered empty tool result missing fallback:\n%s", rendered)
 	}
 }
 
@@ -393,7 +443,7 @@ func TestModelRestoresToolHistoryWhenAvailable(t *testing.T) {
 	}
 
 	m := NewModel(context.Background(), runner, Config{})
-	if !entriesContain(m.entries, "tool", "Ran date") {
+	if !entriesContain(m.entries, "tool", "Bash (date)") {
 		t.Fatalf("restored entries missing tool call: %#v", m.entries)
 	}
 	if !entriesContain(m.entries, "tool", "2026年 5月17日") {

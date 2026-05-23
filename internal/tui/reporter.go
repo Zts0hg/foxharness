@@ -104,29 +104,29 @@ func formatToolInvocation(toolName string, args string) string {
 	switch toolName {
 	case "bash":
 		if command := fields["command"]; command != "" {
-			return "Ran " + command
+			return "Bash (" + truncateInline(command, 120) + ")"
 		}
 	case "read_file":
 		if path := fields["path"]; path != "" {
-			return "Read " + path
+			return "Read (" + truncateInline(path, 120) + ")"
 		}
 	case "write_file":
 		if path := fields["path"]; path != "" {
-			return "Wrote " + path
+			return "Write (" + truncateInline(path, 120) + ")"
 		}
 	case "edit_file":
 		if path := fields["path"]; path != "" {
-			return "Edited " + path
+			return "Edit (" + truncateInline(path, 120) + ")"
 		}
 	case "delegate_task":
 		if task := fields["task"]; task != "" {
-			return "Delegated " + truncateInline(task, 80)
+			return "Task (" + truncateInline(task, 80) + ")"
 		}
 	}
 
 	args = strings.TrimSpace(args)
 	if args == "" {
-		return "Used " + toolName
+		return toolName
 	}
 	return fmt.Sprintf("%s(%s)", toolName, truncateInline(args, 120))
 }
