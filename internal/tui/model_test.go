@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -890,13 +891,90 @@ func TestModelMouseWheelScrollsTranscript(t *testing.T) {
 
 func TestFragmentedSGRMousePayloadDoesNotEnterInput(t *testing.T) {
 	runner := newFakeRunner()
+	for _, payload := range []string{
+		"[<64;57;23M",
+		"[<65;72;19M",
+		"[>64;55;16M",
+		"[<80;57;23M",
+	} {
+		t.Run(payload, func(t *testing.T) {
+			m := NewModel(context.Background(), runner, Config{})
+			m.input = []rune("draft")
+			m.scrollOffset = 1
+
+			m, _ = update(t, m, keyRunes(payload))
+
+			if got := string(m.input); got != "draft" {
+				t.Fatalf("input after fragmented mouse payload = %q, want draft", got)
+			}
+		})
+	}
+}
+
+func TestFragmentedSGRMousePayloadScrollsTranscript(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("[<64;57;23M"))
+	if m.scrollOffset != 1 {
+		t.Fatalf("scrollOffset after fragmented wheel up = %d, want 1", m.scrollOffset)
+	}
+
+	m, _ = update(t, m, keyRunes("[<65;72;19M"))
+	if m.scrollOffset != 0 {
+		t.Fatalf("scrollOffset after fragmented wheel down = %d, want 0", m.scrollOffset)
+	}
+
+	m, _ = update(t, m, keyRunes("[<80;57;23M"))
+	if m.scrollOffset != 1 {
+		t.Fatalf("scrollOffset after modified wheel up = %d, want 1", m.scrollOffset)
+	}
+}
+
+func TestFragmentedSGRMousePayloadHandlesBatchedTails(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("[<64;57;23M[<64;58;23M"))
+
+	if m.scrollOffset != 2 {
+		t.Fatalf("scrollOffset after batched wheel tails = %d, want 2", m.scrollOffset)
+	}
+	if got := string(m.input); got != "" {
+		t.Fatalf("input after batched mouse tails = %q, want empty", got)
+	}
+}
+
+func TestSplitFragmentedSGRMousePayloadDoesNotEnterInput(t *testing.T) {
+	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
 	m.input = []rune("draft")
 
-	m, _ = update(t, m, keyRunes("[<64;43;17M"))
+	m, _ = update(t, m, keyEsc())
+	for _, part := range []string{"[", "<64;", "57;23", "M"} {
+		m, _ = update(t, m, keyRunes(part))
+	}
 
 	if got := string(m.input); got != "draft" {
-		t.Fatalf("input after fragmented mouse payload = %q, want draft", got)
+		t.Fatalf("input after split mouse payload = %q, want draft", got)
+	}
+	if m.scrollOffset != 1 {
+		t.Fatalf("scrollOffset after split wheel up = %d, want 1", m.scrollOffset)
+	}
+	if strings.Contains(m.status, "Esc again") || strings.Contains(m.status, "Press Esc again") {
+		t.Fatalf("status = %q, want no esc prompt", m.status)
+	}
+}
+
+func TestFragmentedMouseTailDoesNotSwallowOrdinaryInput(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("[not mouse]"))
+	m, _ = update(t, m, keyRunes("[<64;57;23X"))
+
+	if got := string(m.input); got != "[not mouse][<64;57;23X" {
+		t.Fatalf("input after ordinary bracket text = %q", got)
 	}
 }
 
@@ -1706,6 +1784,31 @@ func TestModelMouseWheelScrollsSidebarPlan(t *testing.T) {
 	}
 	if !strings.Contains(plainView, "03 plan") {
 		t.Fatalf("scrolled sidebar plan should show later content:\n%s", plainView)
+	}
+}
+
+func TestFragmentedMousePayloadScrollsSidebarPlan(t *testing.T) {
+	workDir := t.TempDir()
+	sessionDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", "memory")
+	writeTestFile(t, sessionDir, "PLAN.md", numberedLines("plan line", 24))
+	writeTestFile(t, sessionDir, "TODO.md", "todo")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	runner.sessionDir = sessionDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+
+	x, y := sidebarPoint(t, m, 1)
+	payload := fmt.Sprintf("[<65;%d;%dM", x+1, y+1)
+	m, _ = update(t, m, keyRunes(payload))
+
+	if m.sidebarScrollOffsets[1] != 1 {
+		t.Fatalf("plan sidebar offset after fragmented wheel down = %d, want 1", m.sidebarScrollOffsets[1])
+	}
+	if got := string(m.input); got != "" {
+		t.Fatalf("input after fragmented sidebar wheel = %q, want empty", got)
 	}
 }
 

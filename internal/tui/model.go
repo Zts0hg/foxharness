@@ -122,6 +122,8 @@ type Model struct {
 	lastEscAction escAction
 	pendingEsc    time.Time
 	pendingEscID  uint64
+	mouseTail     []rune
+	mouseTailEsc  bool
 
 	sessionID    string
 	modelName    string
@@ -378,9 +380,20 @@ func (m Model) shouldRenderSidebar() bool {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.Type == tea.KeyRunes && isFragmentedSGRMousePayload(msg.Runes) {
-		m.pendingEsc = time.Time{}
-		return m, nil
+	if msg.Type == tea.KeyRunes {
+		if next, cmd, ok := m.handleFragmentedMouseTail(msg.Runes); ok {
+			return next, cmd
+		}
+	} else if len(m.mouseTail) > 0 {
+		next, cmd := m.flushMouseTailAsInput()
+		typed, ok := next.(Model)
+		if !ok {
+			return next, cmd
+		}
+		m = typed
+		if cmd != nil {
+			return m, cmd
+		}
 	}
 
 	if !m.pendingEsc.IsZero() {
@@ -514,9 +527,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.Type == tea.KeyRunes {
-		m.resetHistoryNavigation()
-		m.input = append(m.input, msg.Runes...)
-		m.updateCompletions()
+		m.appendInputRunes(msg.Runes)
 	}
 	return m, nil
 }
@@ -568,27 +579,196 @@ func (m Model) applyEscKey() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func isFragmentedSGRMousePayload(runes []rune) bool {
-	if len(runes) < len("[<0;0;0M") || runes[0] != '[' || runes[1] != '<' {
-		return false
+func (m *Model) appendInputRunes(runes []rune) {
+	if len(runes) == 0 {
+		return
+	}
+	m.resetHistoryNavigation()
+	m.input = append(m.input, runes...)
+	m.updateCompletions()
+}
+
+func (m Model) handleFragmentedMouseTail(runes []rune) (tea.Model, tea.Cmd, bool) {
+	if len(runes) == 0 {
+		return m, nil, false
+	}
+	if len(m.mouseTail) > 0 {
+		return m.consumeMouseTail(runes, true)
+	}
+	if tails, partial, ok := parseMouseTailRunes(runes); ok {
+		hadEsc := !m.pendingEsc.IsZero()
+		if len(partial) > 0 && !hadEsc && len(tails) == 0 {
+			return m, nil, false
+		}
+		m.pendingEsc = time.Time{}
+		if len(tails) > 0 {
+			m.applyMouseTails(tails)
+		}
+		if len(partial) > 0 {
+			m.mouseTail = append([]rune(nil), partial...)
+			m.mouseTailEsc = hadEsc
+		}
+		return m, nil, true
+	}
+	if !m.pendingEsc.IsZero() && isMouseTailPrefix(runes) {
+		m.mouseTail = append([]rune(nil), runes...)
+		m.mouseTailEsc = true
+		m.pendingEsc = time.Time{}
+		return m, nil, true
+	}
+	return m, nil, false
+}
+
+func (m Model) consumeMouseTail(runes []rune, applyEscOnInvalid bool) (tea.Model, tea.Cmd, bool) {
+	combined := make([]rune, 0, len(m.mouseTail)+len(runes))
+	combined = append(combined, m.mouseTail...)
+	combined = append(combined, runes...)
+	tails, partial, ok := parseMouseTailRunes(combined)
+	if ok {
+		m.mouseTail = nil
+		m.applyMouseTails(tails)
+		if len(partial) > 0 {
+			m.mouseTail = append([]rune(nil), partial...)
+		} else {
+			m.mouseTailEsc = false
+		}
+		return m, nil, true
+	}
+	if !applyEscOnInvalid {
+		return m, nil, false
+	}
+	hadEsc := m.mouseTailEsc
+	m.mouseTail = nil
+	m.mouseTailEsc = false
+	var cmd tea.Cmd
+	if hadEsc {
+		next, nextCmd := m.applyEscKey()
+		typed, ok := next.(Model)
+		if !ok {
+			return next, nextCmd, true
+		}
+		m = typed
+		cmd = nextCmd
+	}
+	m.appendInputRunes(combined)
+	return m, cmd, true
+}
+
+func (m Model) flushMouseTailAsInput() (tea.Model, tea.Cmd) {
+	if len(m.mouseTail) == 0 {
+		return m, nil
+	}
+	payload := append([]rune(nil), m.mouseTail...)
+	hadEsc := m.mouseTailEsc
+	m.mouseTail = nil
+	m.mouseTailEsc = false
+	var cmd tea.Cmd
+	if hadEsc {
+		next, nextCmd := m.applyEscKey()
+		typed, ok := next.(Model)
+		if !ok {
+			return next, nextCmd
+		}
+		m = typed
+		cmd = nextCmd
+	}
+	m.appendInputRunes(payload)
+	return m, cmd
+}
+
+func (m *Model) applyMouseTails(tails []mouseTailEvent) {
+	for _, tail := range tails {
+		button := tea.MouseButton(0)
+		switch {
+		case (tail.button & 0x43) == 0x40:
+			button = tea.MouseButtonWheelUp
+		case (tail.button & 0x43) == 0x41:
+			button = tea.MouseButtonWheelDown
+		default:
+			continue
+		}
+		next, _ := m.handleMouse(tea.MouseMsg{X: tail.col - 1, Y: tail.row - 1, Button: button})
+		if typed, ok := next.(Model); ok {
+			*m = typed
+		}
+	}
+}
+
+type mouseTailEvent struct {
+	button int
+	col    int
+	row    int
+}
+
+func parseMouseTailRunes(runes []rune) ([]mouseTailEvent, []rune, bool) {
+	var tails []mouseTailEvent
+	for len(runes) > 0 {
+		tail, consumed, partial, ok := parseOneMouseTail(runes)
+		if !ok {
+			return nil, nil, false
+		}
+		if partial {
+			return tails, append([]rune(nil), runes...), true
+		}
+		tails = append(tails, tail)
+		runes = runes[consumed:]
+	}
+	return tails, nil, len(tails) > 0
+}
+
+func isMouseTailPrefix(runes []rune) bool {
+	_, _, partial, ok := parseOneMouseTail(runes)
+	return ok && partial
+}
+
+func parseOneMouseTail(runes []rune) (mouseTailEvent, int, bool, bool) {
+	var tail mouseTailEvent
+	if len(runes) == 0 {
+		return tail, 0, true, true
+	}
+	if runes[0] != '[' {
+		return tail, 0, false, false
+	}
+	if len(runes) == 1 {
+		return tail, 0, true, true
+	}
+	if runes[1] != '<' && runes[1] != '>' {
+		return tail, 0, false, false
 	}
 	i := 2
+	fields := [3]int{}
 	for field := 0; field < 3; field++ {
+		if i >= len(runes) {
+			return tail, 0, true, true
+		}
 		start := i
+		value := 0
 		for i < len(runes) && runes[i] >= '0' && runes[i] <= '9' {
+			value = value*10 + int(runes[i]-'0')
 			i++
 		}
 		if i == start {
-			return false
+			return tail, 0, false, false
 		}
+		fields[field] = value
 		if field < 2 {
-			if i >= len(runes) || runes[i] != ';' {
-				return false
+			if i >= len(runes) {
+				return tail, 0, true, true
+			}
+			if runes[i] != ';' {
+				return tail, 0, false, false
 			}
 			i++
 		}
 	}
-	return i == len(runes)-1 && (runes[i] == 'M' || runes[i] == 'm')
+	if i >= len(runes) {
+		return tail, 0, true, true
+	}
+	if runes[i] != 'M' && runes[i] != 'm' {
+		return tail, 0, false, false
+	}
+	tail = mouseTailEvent{button: fields[0], col: fields[1], row: fields[2]}
+	return tail, i + 1, false, true
 }
 
 func (m Model) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
