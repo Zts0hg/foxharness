@@ -137,6 +137,21 @@ func trim(s string) string {
 	return s[:40] + "..."
 }
 
+func BenchmarkLooksLikeJSON(b *testing.B) {
+	plain := strings.Repeat("plain text content ", 1024)
+	jsonText := "{" + strings.Repeat("\"k\":\"v\",", 1024) + "\"end\":true}"
+	b.Run("plain", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			looksLikeJSON(plain)
+		}
+	})
+	b.Run("json", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			looksLikeJSON(jsonText)
+		}
+	})
+}
+
 func BenchmarkImprovedRoughEstimator(b *testing.B) {
 	messages := make([]schema.Message, 500)
 	body := strings.Repeat("token ", 100)

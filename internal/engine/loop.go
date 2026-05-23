@@ -91,6 +91,9 @@ type AgentEngine struct {
 	recovery *recovery.Tracker
 	// reminder manages system reminder injection based on tool patterns.
 	reminder *reminder.Manager
+	// fs is the FileSystem used for tool-result persistence. Defaults to
+	// toolresult.OSFileSystem; tests can swap this via WithFileSystem.
+	fs toolresult.FileSystem
 }
 
 type providerMetadata interface {
@@ -148,6 +151,7 @@ func NewAgentEngine(
 		config:   config,
 		recovery: recovery.NewTracker(),
 		reminder: reminder.NewManager(),
+		fs:       toolresult.OSFileSystem{},
 	}
 }
 
@@ -157,6 +161,16 @@ func NewAgentEngine(
 // If c is nil, no compaction is performed.
 func (e *AgentEngine) WithCompactor(c *compaction.Compactor) {
 	e.compactor = c
+}
+
+// WithFileSystem swaps the FileSystem used for tool-result persistence.
+// The default (toolresult.OSFileSystem) writes to the session directory;
+// tests can inject an in-memory implementation to avoid disk I/O. Passing
+// nil leaves the existing FileSystem unchanged.
+func (e *AgentEngine) WithFileSystem(fs toolresult.FileSystem) {
+	if fs != nil {
+		e.fs = fs
+	}
 }
 
 func (e *AgentEngine) executeToolCalls(ctx context.Context, tracer *tracing.Tracer, parentSpanID string, calls []schema.ToolCall) []indexedToolResult {
@@ -639,13 +653,12 @@ func (e *AgentEngine) processToolResults(
 		}
 	}
 
-	fs := toolresult.OSFileSystem{}
 	dir := sess.ToolResultsDir()
 	persisted := make([]toolresult.PersistedResult, len(raw))
 	for i, item := range raw {
-		persisted[i] = toolresult.PersistIfNeeded(fs, dir, item.Result)
+		persisted[i] = toolresult.PersistIfNeeded(e.fs, dir, item.Result)
 	}
-	persisted = toolresult.EnforceBudget(fs, dir, persisted, seenIDs)
+	persisted = toolresult.EnforceBudget(e.fs, dir, persisted, seenIDs)
 
 	out := make([]processedToolResult, len(raw))
 	for i, item := range raw {

@@ -1,10 +1,6 @@
 package compaction
 
-import (
-	"unicode"
-
-	"github.com/Zts0hg/foxharness/internal/schema"
-)
+import "github.com/Zts0hg/foxharness/internal/schema"
 
 // ImprovedRoughEstimator approximates token cost from byte length with a
 // separate, denser ratio for JSON-shaped payloads. The shared 4/3 safety
@@ -93,12 +89,20 @@ func totalUsageTokens(u *schema.Usage) int {
 	return int(u.InputTokens + u.OutputTokens + u.CacheCreationTokens + u.CacheReadTokens)
 }
 
+// looksLikeJSON reports whether text appears to be a JSON object or array.
+// The check only needs ASCII whitespace and the single-byte sentinels
+// {/[, so a byte loop is correct and ~3-5x faster than a rune loop on
+// large strings.
 func looksLikeJSON(text string) bool {
-	for _, r := range text {
-		if unicode.IsSpace(r) {
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case ' ', '\t', '\n', '\r':
 			continue
+		case '{', '[':
+			return true
+		default:
+			return false
 		}
-		return r == '{' || r == '['
 	}
 	return false
 }

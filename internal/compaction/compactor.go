@@ -71,10 +71,10 @@ func (RoughEstimator) Estimate(messages []schema.Message) int {
 // ContextWindow is left zero. Enabled defaults to true and may be flipped to
 // false by config or environment variables.
 //
-// Estimator and AutoCompactThreshold are optional injection points primarily
-// used by tests and benchmarks that need deterministic token counts. Leaving
-// them at their zero values selects the production defaults
-// (HybridEstimator + ThresholdConfig.AutoCompact()).
+// Estimator, AutoCompactThreshold, and Clock are optional injection points
+// primarily used by tests and benchmarks that need deterministic token counts
+// or timestamps. Leaving them at their zero values selects the production
+// defaults (HybridEstimator + ThresholdConfig.AutoCompact() + time.Now).
 type CompactionConfig struct {
 	Enabled              bool
 	Model                string
@@ -86,6 +86,7 @@ type CompactionConfig struct {
 	Overrides            map[string]int
 	Estimator            TokenEstimator
 	AutoCompactThreshold int
+	Clock                func() time.Time
 }
 
 // DefaultCompactionConfig returns a CompactionConfig with Enabled=true and
@@ -111,6 +112,7 @@ type Compactor struct {
 
 	config               CompactionConfig
 	autoCompactThreshold int
+	clock                func() time.Time
 
 	disabled     bool
 	autoDisabled bool
@@ -156,6 +158,11 @@ func NewCompactor(p provider.LLMProvider, cfg CompactionConfig) (*Compactor, err
 		estimator = NewHybridEstimator(ImprovedRoughEstimator{})
 	}
 
+	clock := cfg.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+
 	disabled := envHasValue(EnvDisableCompact)
 	autoDisabled := disabled || envHasValue(EnvDisableAutoCompact) || !cfg.Enabled
 
@@ -166,6 +173,7 @@ func NewCompactor(p provider.LLMProvider, cfg CompactionConfig) (*Compactor, err
 		thresholds:           thresholds,
 		config:               cfg,
 		autoCompactThreshold: cfg.AutoCompactThreshold,
+		clock:                clock,
 
 		disabled:     disabled,
 		autoDisabled: autoDisabled,
@@ -314,7 +322,7 @@ func (c *Compactor) MaybeCompact(ctx context.Context, messages []schema.Message)
 		Trigger:            "auto",
 		PreTokens:          used,
 		MessagesSummarized: len(old),
-		Timestamp:          time.Now().UTC().Format(time.RFC3339),
+		Timestamp:          c.clock().UTC().Format(time.RFC3339),
 	}
 	summaryMessage := BuildSummaryMessage(summary, c.config.TranscriptPath)
 

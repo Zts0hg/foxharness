@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -330,6 +331,46 @@ func TestCompact_SummaryWithNoTools(t *testing.T) {
 	}
 	if summary == nil {
 		t.Fatalf("expected summary message in compacted output: %#v", out)
+	}
+}
+
+func TestMaybeCompact_BoundaryUsesInjectedClock(t *testing.T) {
+	t.Setenv("FOXHARNESS_DISABLE_COMPACT", "")
+	t.Setenv("FOXHARNESS_DISABLE_AUTO_COMPACT", "")
+	fixed := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
+	p := &stubProvider{
+		response: &provider.GenerateResponse{
+			Message: &schema.Message{Role: schema.RoleAssistant, Content: "<summary>ok</summary>"},
+		},
+	}
+	c := newTestCompactor(t, p, func(c *CompactionConfig) {
+		c.Clock = func() time.Time { return fixed }
+	})
+
+	messages := []schema.Message{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleUser, Content: "anchor"},
+		{Role: schema.RoleAssistant, Content: "earlier 1"},
+		{Role: schema.RoleAssistant, Content: "earlier 2"},
+		{Role: schema.RoleUser, Content: "recent"},
+	}
+	out, err := c.MaybeCompact(context.Background(), messages)
+	if err != nil {
+		t.Fatalf("MaybeCompact: %v", err)
+	}
+	var boundaryContent string
+	for _, m := range out {
+		if m.Role == schema.RoleSystem && strings.HasPrefix(m.Content, BoundaryMarkerPrefix) {
+			boundaryContent = m.Content
+			break
+		}
+	}
+	if boundaryContent == "" {
+		t.Fatalf("no boundary marker found in output: %#v", out)
+	}
+	want := fixed.Format(time.RFC3339)
+	if !strings.Contains(boundaryContent, want) {
+		t.Fatalf("boundary timestamp = %q, want it to contain %q", boundaryContent, want)
 	}
 }
 

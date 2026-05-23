@@ -162,6 +162,72 @@ func TestEngine_FullCompactionFlow(t *testing.T) {
 	}
 }
 
+// inMemoryFS records all WriteFile calls so a test can prove the engine
+// routed tool-result persistence through the injected FileSystem instead
+// of touching the real disk.
+type inMemoryFS struct {
+	writes map[string][]byte
+}
+
+func newInMemoryFS() *inMemoryFS { return &inMemoryFS{writes: map[string][]byte{}} }
+
+func (f *inMemoryFS) WriteFile(path string, data []byte, _ os.FileMode) error {
+	buf := make([]byte, len(data))
+	copy(buf, data)
+	f.writes[path] = buf
+	return nil
+}
+func (f *inMemoryFS) Stat(path string) (os.FileInfo, error) {
+	if _, ok := f.writes[path]; ok {
+		return nil, nil
+	}
+	return nil, os.ErrNotExist
+}
+func (f *inMemoryFS) MkdirAll(_ string, _ os.FileMode) error { return nil }
+
+func TestEngine_ToolResultsUseInjectedFileSystem(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	registry := tools.NewRegistry()
+	largeOutput := strings.Repeat("Z", 60000)
+	registry.Register(&bigOutputTool{name: "big_dump", output: largeOutput})
+
+	p := &sequencedProvider{responses: []*provider.GenerateResponse{
+		{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID:        "call_mem",
+				Name:      "big_dump",
+				Arguments: json.RawMessage(`{}`),
+			}},
+		}},
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+	}}
+
+	fs := newInMemoryFS()
+	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 4})
+	eng.WithFileSystem(fs)
+
+	if _, err := eng.RunWithReporter(context.Background(), sess, "go", nil); err != nil {
+		t.Fatalf("RunWithReporter: %v", err)
+	}
+
+	if len(fs.writes) == 0 {
+		t.Fatalf("expected at least one write to the injected filesystem")
+	}
+	if _, err := os.Stat(filepath.Join(sess.ToolResultsDir(), "call_mem.txt")); err == nil {
+		t.Fatalf("engine wrote to disk despite injected in-memory FileSystem")
+	}
+}
+
 func TestEngine_ToolResultPersistence(t *testing.T) {
 	workDir := t.TempDir()
 	manager := session.NewManagerWithHome(workDir, t.TempDir())
