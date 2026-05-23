@@ -279,8 +279,9 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 }
 
 // RunWithReporter executes the agent loop and streams lifecycle events to
-// reporter when one is provided. Passing nil keeps the legacy CLI-oriented
-// behavior.
+// reporter when one is provided. The engine does not write user-facing output
+// directly to the terminal; callers are responsible for presenting the
+// returned final message or reporter events.
 func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session, userPrompt string, reporter Reporter) (*RunResult, error) {
 	log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", sess.ID, e.workDir)
 	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.config.EnableThinking)
@@ -540,8 +541,6 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			final = actionResponse.Content
 			if reporter != nil {
 				reporter.OnMessage(ctx, actionResponse.Content)
-			} else {
-				fmt.Printf("🤖 [对外回复]: %s\n", actionResponse.Content)
 			}
 		}
 

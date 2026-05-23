@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -322,4 +324,67 @@ func TestRunWithReporterEmitsLifecycleAndPersistsMessages(t *testing.T) {
 	if messages[1].Role != schema.RoleAssistant || messages[1].Content != "done" {
 		t.Fatalf("second message = %#v, want assistant done", messages[1])
 	}
+}
+
+func TestRunWithoutReporterDoesNotWriteStdout(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	eng := NewAgentEngine(
+		&finalProvider{},
+		tools.NewRegistry(),
+		workDir,
+		staticComposer{},
+		Config{MaxTurns: 3},
+	)
+
+	stdout := captureStdout(t, func() {
+		result, err := eng.RunWithReporter(context.Background(), sess, "hello", nil)
+		if err != nil {
+			t.Fatalf("RunWithReporter() error = %v", err)
+		}
+		if result == nil || result.FinalMessage != "done" {
+			t.Fatalf("RunWithReporter() result = %#v, want final message done", result)
+		}
+	})
+
+	if stdout != "" {
+		t.Fatalf("RunWithReporter() wrote stdout %q, want empty", stdout)
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	previous := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe() error = %v", err)
+	}
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = previous
+	}()
+
+	fn()
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	out, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("reader Close() error = %v", err)
+	}
+
+	return string(out)
 }
