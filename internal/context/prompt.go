@@ -94,8 +94,10 @@ Persistent files:
 
 Rules:
 - Use the current session plan and todo to track complex multi-step tasks.
+- Use read_todo and update_todo to inspect and maintain Session TODO.md.
+- Do not use bash, write_file, or edit_file to modify Session TODO.md.
 - Add only durable, high-value facts to MEMORY.md.
-- DO not dump raw logs or large file contents into memory files.
+- Do not dump raw logs or large file contents into memory files.
 - Prefer edit_file for focused updates to project MEMORY.md.
 `)
 }

@@ -37,6 +37,7 @@ type Runner interface {
 	ContextUsage() string
 	MessageHistory() ([]session.MessageRecord, error)
 	TruncateMessageHistory(seq int64) error
+	RestoreSessionStateBeforeMessage(seq int64) (bool, error)
 	Checkpointer() checkpoint.Checkpointer
 	PlanMode() bool
 	SetPlanMode(enabled bool)
@@ -1132,6 +1133,17 @@ func (m Model) handleSelectorResult(msg selector.ResultMsg) (tea.Model, tea.Cmd)
 			m.appendEntry("error", "rewind conversation", err.Error(), true)
 			m.status = "Conversation restore failed"
 			return m, nil
+		}
+		restored, err := m.runner.RestoreSessionStateBeforeMessage(seq)
+		if err != nil {
+			m.appendEntry("error", "rewind session state", err.Error(), true)
+			m.status = "Session state restore failed"
+			return m, nil
+		}
+		if restored {
+			m.appendCommandEntry("Rewind session state", "Restored PLAN.md and TODO.md.")
+		} else {
+			m.appendCommandEntry("Rewind session state", "No PLAN.md/TODO.md snapshot found.")
 		}
 	}
 

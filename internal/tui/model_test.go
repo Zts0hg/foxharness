@@ -27,18 +27,21 @@ type fakeRunner struct {
 	workDir    string
 	model      string
 
-	runs         []string
-	runErr       error
-	runErrs      []error
-	setModelErr  error
-	newErr       error
-	nextRunID    int
-	planMode     bool
-	contextUsage string
-	history      []session.MessageRecord
-	historyErr   error
-	truncatedSeq int64
-	checkpointer checkpoint.Checkpointer
+	runs            []string
+	runErr          error
+	runErrs         []error
+	setModelErr     error
+	newErr          error
+	nextRunID       int
+	planMode        bool
+	contextUsage    string
+	history         []session.MessageRecord
+	historyErr      error
+	truncatedSeq    int64
+	restoreStateSeq int64
+	restoreStateOK  bool
+	restoreStateErr error
+	checkpointer    checkpoint.Checkpointer
 }
 
 func (r *fakeRunner) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
@@ -130,6 +133,14 @@ func (r *fakeRunner) TruncateMessageHistory(seq int64) error {
 	}
 	r.history = next
 	return nil
+}
+
+func (r *fakeRunner) RestoreSessionStateBeforeMessage(seq int64) (bool, error) {
+	r.restoreStateSeq = seq
+	if r.restoreStateErr != nil {
+		return false, r.restoreStateErr
+	}
+	return r.restoreStateOK, nil
 }
 
 func (r *fakeRunner) Checkpointer() checkpoint.Checkpointer {
@@ -253,6 +264,8 @@ func TestToolCallRenderingUsesReferenceStyleLabels(t *testing.T) {
 		{name: "read", body: formatToolInvocation("read_file", `{"path":"internal/foo.go"}`), want: "◆ Read (internal/foo.go)"},
 		{name: "write", body: formatToolInvocation("write_file", `{"path":"cmd/app.go"}`), want: "◆ Write (cmd/app.go)"},
 		{name: "edit", body: formatToolInvocation("edit_file", `{"path":"internal/app.go"}`), want: "◆ Edit (internal/app.go)"},
+		{name: "read todo", body: formatToolInvocation("read_todo", `{}`), want: "◆ Read TODO"},
+		{name: "update todo", body: formatToolInvocation("update_todo", `{"content":"# TODO"}`), want: "◆ Update TODO"},
 	}
 
 	for _, tt := range tests {
@@ -580,6 +593,9 @@ func TestSlashCommandsOpenRewindSelector(t *testing.T) {
 	}
 	if runner.truncatedSeq != 0 {
 		t.Fatalf("truncated seq = %d, want 0", runner.truncatedSeq)
+	}
+	if runner.restoreStateSeq != 0 {
+		t.Fatalf("restoreStateSeq = %d, want 0", runner.restoreStateSeq)
 	}
 	if got := string(m.input); got != "restore this" {
 		t.Fatalf("input after rewind = %q, want restore this", got)

@@ -85,6 +85,18 @@ func (l *MessageLog) AppendKind(runID, kind string, msg schema.Message) (int64, 
 	return seq, nil
 }
 
+// NextSeq returns the sequence number that will be assigned to the next
+// appended message without mutating the log.
+func (l *MessageLog) NextSeq() (int64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if err := l.ensureSeqLoaded(); err != nil {
+		return 0, err
+	}
+	return l.nextSeq, nil
+}
+
 // TruncateBeforeSeq removes the selected message and all records after it.
 // The next append reuses seq so a restored prompt can be submitted again.
 func (l *MessageLog) TruncateBeforeSeq(seq int64) error {

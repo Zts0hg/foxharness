@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -148,6 +149,14 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 	model := r.model
 	maxTurns := r.maxTurns
 	r.mu.Unlock()
+
+	nextSeq, err := session.NewMessageLog(sess).NextSeq()
+	if err != nil {
+		return nil, fmt.Errorf("读取下一条消息序号失败: %w", err)
+	}
+	if err := memory.NewStateHistory(store).SnapshotBeforeMessage(nextSeq); err != nil {
+		return nil, fmt.Errorf("创建 session state 快照失败: %w", err)
+	}
 
 	if enablePlanMode {
 		planner := memory.NewPlanner(llmProvider, store)
@@ -326,6 +335,23 @@ func (r *AgentRunner) TruncateMessageHistory(seq int64) error {
 	return session.NewMessageLog(sess).TruncateBeforeSeq(seq)
 }
 
+func (r *AgentRunner) RestoreSessionStateBeforeMessage(seq int64) (bool, error) {
+	r.mu.Lock()
+	store := r.store
+	r.mu.Unlock()
+	if store == nil {
+		return false, nil
+	}
+	err := memory.NewStateHistory(store).RestoreBeforeMessage(seq)
+	if errors.Is(err, memory.ErrStateSnapshotNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (r *AgentRunner) Checkpointer() checkpoint.Checkpointer {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -351,6 +377,8 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 	registry.Register(tools.NewWriteFileTool(r.workDir))
 	registry.Register(tools.NewBashTool(r.workDir))
 	registry.Register(tools.NewEditFileTool(r.workDir))
+	registry.Register(tools.NewReadTodoTool(sess.RootDir))
+	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
 
 	subManager := subagent.NewManager(llmProvider, r.workDir)
 	registry.Register(subagent.NewTool(subManager, sess.ID))

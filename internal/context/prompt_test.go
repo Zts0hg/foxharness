@@ -122,3 +122,18 @@ func TestComposeLoadsProjectMemorySeparatelyFromWorkingMemory(t *testing.T) {
 		}
 	}
 }
+
+func TestComposeIncludesTodoToolInstructions(t *testing.T) {
+	prompt, err := NewComposer(t.TempDir()).Compose("普通任务")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Use read_todo and update_todo to inspect and maintain Session TODO.md.",
+		"Do not use bash, write_file, or edit_file to modify Session TODO.md.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
