@@ -54,7 +54,7 @@ func (t *LogSearchTool) Definition() schema.ToolDefinition {
 					"description": "要搜索的关键词，例如 ERROR 或 timeout",
 				},
 				"limit": map[string]interface{}{
-					"type":         "integer",
+					"type":        "integer",
 					"description": "最多返回多少行，默认50",
 				},
 			},

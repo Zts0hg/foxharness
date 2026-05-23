@@ -80,10 +80,10 @@ func Save(homeDir string, s *Settings) error {
 
 // ResolveModel picks the effective model from a four-level priority cascade:
 //
-//	1. cliFlag   (CLI --model argument)
-//	2. envVar    (FOX_MODEL environment variable)
-//	3. s.Model   (settings.json value)
-//	4. fallback  (built-in default passed by caller)
+//  1. cliFlag   (CLI --model argument)
+//  2. envVar    (FOX_MODEL environment variable)
+//  3. s.Model   (settings.json value)
+//  4. fallback  (built-in default passed by caller)
 func ResolveModel(cliFlag, envVar, fallback string, s *Settings) string {
 	if cliFlag != "" {
 		return cliFlag

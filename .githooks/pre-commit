@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.go' | grep -v '^vendor/' || true)
+
+if [ -z "$files" ]; then
+	exit 0
+fi
+
+printf '%s\n' "$files" | xargs gofmt -w
+printf '%s\n' "$files" | xargs git add
+
+echo "gofmt applied to staged Go files."
