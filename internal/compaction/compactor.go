@@ -196,36 +196,6 @@ func (c *Compactor) Threshold() int {
 	return c.thresholds.AutoCompact()
 }
 
-// Thresholds exposes the underlying multi-level threshold configuration.
-func (c *Compactor) Thresholds() ThresholdConfig {
-	return c.thresholds
-}
-
-// Registry exposes the embedded ModelRegistry.
-func (c *Compactor) Registry() *ModelRegistry {
-	return c.registry
-}
-
-// Config returns a defensive copy of the active CompactionConfig so callers
-// cannot mutate the Compactor's internal state through the returned map
-// reference.
-func (c *Compactor) Config() CompactionConfig {
-	cfg := c.config
-	if len(c.config.Overrides) > 0 {
-		cfg.Overrides = make(map[string]int, len(c.config.Overrides))
-		for k, v := range c.config.Overrides {
-			cfg.Overrides[k] = v
-		}
-	}
-	return cfg
-}
-
-// TranscriptPath returns the configured transcript path used when wrapping
-// summary messages with continuation instructions.
-func (c *Compactor) TranscriptPath() string {
-	return c.config.TranscriptPath
-}
-
 // RecentKeep returns the number of recent messages preserved during
 // compaction.
 func (c *Compactor) RecentKeep() int {
@@ -266,6 +236,10 @@ func BuildSummaryMessage(summary, transcriptPath string) schema.Message {
 // anchor, and the most recent messages. If compaction is not needed or has
 // been disabled the original slice is returned unchanged.
 func (c *Compactor) MaybeCompact(ctx context.Context, messages []schema.Message) ([]schema.Message, error) {
+	// The mutex protects only the compacting flag — it is released before the
+	// estimator and provider calls so that concurrent MaybeCompact invocations
+	// can see the flag and bail out immediately rather than blocking on the
+	// in-flight summarize. The flag is reset under the mutex on the way out.
 	c.mu.Lock()
 	if c.compacting {
 		c.mu.Unlock()

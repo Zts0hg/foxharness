@@ -247,7 +247,7 @@ func TestNewCompactor_WithRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCompactor: %v", err)
 	}
-	if got := c.Thresholds().ContextWindow; got != 200000 {
+	if got := c.thresholds.ContextWindow; got != 200000 {
 		t.Fatalf("ContextWindow = %d, want 200000 from registry lookup", got)
 	}
 
@@ -258,7 +258,7 @@ func TestNewCompactor_WithRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCompactor with overrides: %v", err)
 	}
-	if got := c2.Thresholds().ContextWindow; got != 300000 {
+	if got := c2.thresholds.ContextWindow; got != 300000 {
 		t.Fatalf("ContextWindow with override = %d, want 300000", got)
 	}
 }
