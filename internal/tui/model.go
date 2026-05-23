@@ -68,6 +68,14 @@ type slashCommand struct {
 	Description string
 }
 
+type escAction string
+
+const (
+	escActionNone   escAction = ""
+	escActionClear  escAction = "clear"
+	escActionRewind escAction = "rewind"
+)
+
 var slashCommands = []slashCommand{
 	{Name: "/session", Description: "show current session paths"},
 	{Name: "/clear", Description: "clear the visible transcript"},
@@ -101,17 +109,18 @@ type Model struct {
 	fileMentions   []fileMention
 	queuedPrompts  []string
 
-	entries      []entry
-	status       string
-	running      bool
-	runStartedAt time.Time
-	spinnerFrame int
-	scrollOffset int
-	cancelRun    context.CancelFunc
-	lastCtrlC    time.Time
-	lastEsc      time.Time
-	pendingEsc   time.Time
-	pendingEscID uint64
+	entries       []entry
+	status        string
+	running       bool
+	runStartedAt  time.Time
+	spinnerFrame  int
+	scrollOffset  int
+	cancelRun     context.CancelFunc
+	lastCtrlC     time.Time
+	lastEsc       time.Time
+	lastEscAction escAction
+	pendingEsc    time.Time
+	pendingEscID  uint64
 
 	sessionID    string
 	modelName    string
@@ -403,6 +412,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if key != "esc" {
 		m.lastEsc = time.Time{}
+		m.lastEscAction = escActionNone
 	}
 
 	switch key {
@@ -530,15 +540,30 @@ func (m Model) applyEscKey() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	now := m.nowTime()
-	if !m.lastEsc.IsZero() && now.Sub(m.lastEsc) <= quitConfirmWindow {
+	action := escActionRewind
+	if len(m.input) > 0 {
+		action = escActionClear
+	}
+	if !m.lastEsc.IsZero() && m.lastEscAction == action && now.Sub(m.lastEsc) <= quitConfirmWindow {
 		m.lastEsc = time.Time{}
+		m.lastEscAction = escActionNone
+		if action == escActionClear {
+			m.addInputHistory(string(m.input))
+			m.input = nil
+			m.resetHistoryNavigation()
+			m.resetCompletions()
+			m.status = "Input cleared"
+			return m, nil
+		}
 		return m.openRewindSelector()
 	}
 	m.lastEsc = now
+	m.lastEscAction = action
+	if action == escActionClear {
+		m.status = "Esc again to clear"
+		return m, nil
+	}
 	m.status = "Press Esc again within 2s to rewind"
-	m.input = nil
-	m.resetHistoryNavigation()
-	m.resetCompletions()
 	return m, nil
 }
 

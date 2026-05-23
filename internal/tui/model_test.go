@@ -544,11 +544,8 @@ func TestSlashCommandsOpenRewindSelector(t *testing.T) {
 	}
 }
 
-func TestDoubleEscOpensRewindSelector(t *testing.T) {
+func TestDoubleEscClearsInputAndRecordsHistory(t *testing.T) {
 	runner := newFakeRunner()
-	runner.history = []session.MessageRecord{
-		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "restore this"}),
-	}
 	m := NewModel(context.Background(), runner, Config{})
 	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.Local)
 	m.now = func() time.Time { return now }
@@ -556,14 +553,51 @@ func TestDoubleEscOpensRewindSelector(t *testing.T) {
 
 	m, _ = update(t, m, keyEsc())
 	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
+	if got := string(m.input); got != "draft" {
+		t.Fatalf("first esc input = %q, want draft", got)
+	}
+	if !strings.Contains(m.status, "Esc again to clear") {
+		t.Fatalf("first esc status = %q, want clear prompt", m.status)
+	}
 	if m.rewindSelector != nil {
 		t.Fatalf("first esc opened rewind selector")
 	}
+
+	now = now.Add(time.Second)
+	m, cmd := update(t, m, keyEsc())
+	m, cmd = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
+	if cmd != nil {
+		t.Fatalf("second esc returned unexpected command")
+	}
 	if got := string(m.input); got != "" {
-		t.Fatalf("first esc input = %q, want cleared", got)
+		t.Fatalf("second esc input = %q, want cleared", got)
+	}
+	if len(m.inputHistory) != 1 || m.inputHistory[0] != "draft" {
+		t.Fatalf("inputHistory = %#v, want draft", m.inputHistory)
+	}
+
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != "draft" {
+		t.Fatalf("up after clear restored %q, want draft", got)
+	}
+}
+
+func TestDoubleEscOpensRewindSelectorWhenInputEmpty(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "restore this"}),
+	}
+	m := NewModel(context.Background(), runner, Config{})
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.Local)
+	m.now = func() time.Time { return now }
+
+	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
+	if m.rewindSelector != nil {
+		t.Fatalf("first esc opened rewind selector")
 	}
 	if !strings.Contains(m.status, "Press Esc again") {
-		t.Fatalf("first esc status = %q, want second-esc prompt", m.status)
+		t.Fatalf("first esc status = %q, want second-esc rewind prompt", m.status)
 	}
 
 	now = now.Add(time.Second)
@@ -577,6 +611,64 @@ func TestDoubleEscOpensRewindSelector(t *testing.T) {
 	}
 	if !strings.Contains(stripANSI(m.View()), "restore this") {
 		t.Fatalf("selector view missing rewind target:\n%s", m.View())
+	}
+}
+
+func TestDoubleEscClearExpiresAfterConfirmWindow(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.Local)
+	m.now = func() time.Time { return now }
+	m.input = []rune("draft")
+
+	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
+	now = now.Add(quitConfirmWindow + time.Millisecond)
+	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
+
+	if got := string(m.input); got != "draft" {
+		t.Fatalf("expired second esc input = %q, want draft", got)
+	}
+	if len(m.inputHistory) != 0 {
+		t.Fatalf("inputHistory = %#v, want empty", m.inputHistory)
+	}
+	if !strings.Contains(m.status, "Esc again to clear") {
+		t.Fatalf("status = %q, want clear prompt", m.status)
+	}
+}
+
+func TestDoubleEscClearThenRewindRequiresTwoMoreEscapes(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "restore this"}),
+	}
+	m := NewModel(context.Background(), runner, Config{})
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.Local)
+	m.now = func() time.Time { return now }
+	m.input = []rune("draft")
+
+	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
+	now = now.Add(time.Second)
+	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
+	if m.rewindSelector != nil {
+		t.Fatalf("clear opened rewind selector")
+	}
+
+	now = now.Add(time.Second)
+	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
+	if m.rewindSelector != nil {
+		t.Fatalf("first empty esc after clear opened rewind selector")
+	}
+
+	now = now.Add(time.Second)
+	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
+	if m.rewindSelector == nil {
+		t.Fatalf("second empty esc after clear did not open rewind selector")
 	}
 }
 
@@ -779,7 +871,7 @@ func TestRunningSplitSGRMousePayloadDoesNotCancel(t *testing.T) {
 	}
 }
 
-func TestEscTimeoutAppliesRealEsc(t *testing.T) {
+func TestEscTimeoutPromptsToClearNonEmptyInput(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
 	m.input = []rune("draft")
@@ -787,11 +879,11 @@ func TestEscTimeoutAppliesRealEsc(t *testing.T) {
 	m, _ = update(t, m, keyEsc())
 	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
 
-	if got := string(m.input); got != "" {
-		t.Fatalf("input after esc timeout = %q, want empty", got)
+	if got := string(m.input); got != "draft" {
+		t.Fatalf("input after esc timeout = %q, want draft", got)
 	}
-	if !strings.Contains(m.status, "Press Esc again") {
-		t.Fatalf("status = %q, want second-esc prompt", m.status)
+	if !strings.Contains(m.status, "Esc again to clear") {
+		t.Fatalf("status = %q, want clear prompt", m.status)
 	}
 }
 
