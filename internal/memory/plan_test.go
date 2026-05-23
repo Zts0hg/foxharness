@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
@@ -17,11 +18,13 @@ type fakePlanProvider struct {
 	err     error
 }
 
-func (p fakePlanProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+func (p fakePlanProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
-	return &schema.Message{Role: schema.RoleAssistant, Content: p.content}, nil
+	return &provider.GenerateResponse{
+		Message: &schema.Message{Role: schema.RoleAssistant, Content: p.content},
+	}, nil
 }
 
 func TestBuildPlanWritesPlanAndTodoFromJSON(t *testing.T) {

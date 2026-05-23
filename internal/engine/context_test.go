@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/compaction"
+	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
@@ -14,9 +15,11 @@ type summaryProvider struct {
 	calls int
 }
 
-func (p *summaryProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+func (p *summaryProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
 	p.calls++
-	return &schema.Message{Role: schema.RoleAssistant, Content: "short persisted summary"}, nil
+	return &provider.GenerateResponse{
+		Message: &schema.Message{Role: schema.RoleAssistant, Content: "short persisted summary"},
+	}, nil
 }
 
 func TestBuildInitialContextPersistsCompactState(t *testing.T) {
@@ -41,15 +44,19 @@ func TestBuildInitialContextPersistsCompactState(t *testing.T) {
 		})
 	}
 
-	provider := &summaryProvider{}
-	eng := &AgentEngine{
-		compactor: compaction.NewCompactor(provider, compaction.RoughEstimator{}, compaction.Config{
-			MaxTokens:        500,
-			SoftRatio:        0.5,
-			RecentKeep:       2,
-			SummaryMaxTokens: 128,
-		}),
+	p := &summaryProvider{}
+	cfg := compaction.DefaultCompactionConfig()
+	cfg.Model = "test-model"
+	cfg.RecentKeep = 2
+	cfg.SummaryMaxTokens = 128
+	cfg.ContextWindow = 500
+	compactor, err := compaction.NewCompactor(p, cfg)
+	if err != nil {
+		t.Fatalf("NewCompactor() error = %v", err)
 	}
+	compactor.SetEstimator(compaction.RoughEstimator{})
+	compactor.SetAutoCompactThreshold(250)
+	eng := &AgentEngine{compactor: compactor}
 
 	current := schema.Message{Role: schema.RoleUser, Content: "current"}
 	projected, compacted, err := eng.buildInitialContext(context.Background(), sess, "system", records, current)
@@ -59,8 +66,8 @@ func TestBuildInitialContextPersistsCompactState(t *testing.T) {
 	if !compacted {
 		t.Fatalf("buildInitialContext() compacted = false, want true")
 	}
-	if provider.calls != 1 {
-		t.Fatalf("summary provider calls = %d, want 1", provider.calls)
+	if p.calls != 1 {
+		t.Fatalf("summary provider calls = %d, want 1", p.calls)
 	}
 	if len(projected) != 5 {
 		t.Fatalf("projected len = %d, want system + summary + 2 recent + current", len(projected))
@@ -84,8 +91,8 @@ func TestBuildInitialContextPersistsCompactState(t *testing.T) {
 	if compactedAgain {
 		t.Fatalf("second buildInitialContext() compacted = true, want false")
 	}
-	if provider.calls != 1 {
-		t.Fatalf("summary provider calls after second projection = %d, want 1", provider.calls)
+	if p.calls != 1 {
+		t.Fatalf("summary provider calls after second projection = %d, want 1", p.calls)
 	}
 	if len(projectedAgain) != len(projected) {
 		t.Fatalf("second projected len = %d, want %d", len(projectedAgain), len(projected))

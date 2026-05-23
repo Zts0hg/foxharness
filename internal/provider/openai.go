@@ -73,7 +73,7 @@ func (p *OpenAIProvider) ModelName() string {
 //
 // Returns a schema.Message with the LLM's response, including any tool calls,
 // or an error if the API request fails or returns an empty response.
-func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*GenerateResponse, error) {
 	var openaiMessages []openai.ChatCompletionMessageParamUnion
 
 	for _, message := range messages {
@@ -176,7 +176,14 @@ func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message
 	}
 
 	normalized := schema.NormalizeMessage(*resultMessage)
-	return &normalized, nil
+	usage := schema.Usage{
+		InputTokens:  int(resp.Usage.PromptTokens),
+		OutputTokens: int(resp.Usage.CompletionTokens),
+	}
+	return &GenerateResponse{
+		Message: &normalized,
+		Usage:   usage,
+	}, nil
 }
 
 func (p *OpenAIProvider) chatCompletionWithRetry(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {

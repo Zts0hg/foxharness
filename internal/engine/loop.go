@@ -32,6 +32,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/reminder"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/toolresult"
 	"github.com/Zts0hg/foxharness/internal/tools"
 	"github.com/Zts0hg/foxharness/internal/tracing"
 )
@@ -554,7 +555,27 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		}
 
 		toolResults := e.executeToolCalls(ctx, tracer, turnSpan.ID(), actionResponse.ToolCalls)
-		for _, item := range toolResults {
+
+		for i := range toolResults {
+			toolResults[i].Result.Output = toolresult.TruncateToCap(toolResults[i].Result.Output)
+		}
+
+		seenIDs := make(map[string]bool, len(contextHistory))
+		for _, msg := range contextHistory {
+			if msg.ToolCallID != "" {
+				seenIDs[msg.ToolCallID] = true
+			}
+		}
+
+		fs := toolresult.OSFileSystem{}
+		dir := sess.ToolResultsDir()
+		persistedResults := make([]toolresult.PersistedResult, len(toolResults))
+		for i, item := range toolResults {
+			persistedResults[i] = toolresult.PersistIfNeeded(fs, dir, item.Result)
+		}
+		persistedResults = toolresult.EnforceBudget(fs, dir, persistedResults, seenIDs)
+
+		for i, item := range toolResults {
 			e.reminder.Record(turnCount, item.Call, item.Result)
 			e.recovery.Record(item.Call, item.Result)
 			if reporter != nil {
@@ -585,9 +606,10 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			})
 			aggregator.AddTool(item.Result.IsError)
 
+			content := persistedResults[i].Preview
 			observationMessage := schema.Message{
 				Role:       schema.RoleUser,
-				Content:    item.Result.Output,
+				Content:    content,
 				ToolCallID: item.Call.ID,
 			}
 			contextHistory = append(contextHistory, observationMessage)
@@ -650,15 +672,18 @@ func (e *AgentEngine) callModel(
 	started := time.Now()
 	resp, err := e.provider.Generate(ctx, messages, tools)
 	duration := time.Since(started)
-	if resp != nil {
-		normalized := schema.NormalizeMessage(*resp)
-		resp = &normalized
+	var message *schema.Message
+	if resp != nil && resp.Message != nil {
+		normalized := schema.NormalizeMessage(*resp.Message)
+		message = &normalized
+		usage := resp.Usage
+		message.Usage = &usage
 	}
 
 	outputTokens := 0
-	if resp != nil {
-		outputTokens = estimator.EstimateText(resp.Content)
-		for _, call := range resp.ToolCalls {
+	if message != nil {
+		outputTokens = estimator.EstimateText(message.Content)
+		for _, call := range message.ToolCalls {
 			outputTokens += estimator.EstimateText(call.Name)
 			outputTokens += estimator.EstimateText(string(call.Arguments))
 		}
@@ -685,10 +710,15 @@ func (e *AgentEngine) callModel(
 		span.End("error", map[string]any{"error": err.Error()})
 		return nil, err
 	}
+	if message == nil {
+		err := fmt.Errorf("provider returned empty response")
+		span.End("error", map[string]any{"error": err.Error()})
+		return nil, err
+	}
 	span.End("ok", map[string]any{
-		"content_bytes": len(resp.Content),
-		"tool_calls":    len(resp.ToolCalls),
+		"content_bytes": len(message.Content),
+		"tool_calls":    len(message.ToolCalls),
 	})
 
-	return resp, nil
+	return message, nil
 }

@@ -284,6 +284,24 @@ func TestManagerDoesNotReadLegacyProjectLocalSessions(t *testing.T) {
 	}
 }
 
+func TestSessionToolResultsDir(t *testing.T) {
+	workDir := t.TempDir()
+	manager := NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(CreateOptions{
+		Source:  SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	got := sess.ToolResultsDir()
+	want := filepath.Join(sess.RootDir, "tool-results")
+	if got != want {
+		t.Fatalf("ToolResultsDir() = %q, want %q", got, want)
+	}
+}
+
 func TestCompactStateRoundTrip(t *testing.T) {
 	workDir := t.TempDir()
 	manager := NewManagerWithHome(workDir, t.TempDir())
