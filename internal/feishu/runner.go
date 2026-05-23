@@ -117,13 +117,15 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 			MaxTurns:       20,
 		},
 	)
-	eng.WithCompactor(
-		compaction.NewCompactor(
-			r.provider,
-			compaction.RoughEstimator{},
-			compaction.DefaultConfig(),
-		),
-	)
+	compCfg := compaction.DefaultCompactionConfig()
+	compCfg.SessionDir = sess.RootDir
+	compCfg.TranscriptPath = sess.TranscriptPath()
+	compactor, err := compaction.NewCompactor(r.provider, compCfg)
+	if err != nil {
+		log.Printf("[Feishu Runner] 初始化 Compactor 失败: %v", err)
+		return
+	}
+	eng.WithCompactor(compactor)
 	taskPrompt := fmt.Sprintf(
 		"以下任务来自飞书用户 %s，消息 ID 为 %s。\n\n%s",
 		task.SenderID,

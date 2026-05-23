@@ -19,6 +19,15 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// GenerateResponse wraps the assistant message produced by an LLM provider
+// together with the token usage metadata reported by the underlying API.
+// Usage carries zero-values when the provider does not surface usage data,
+// so callers may safely access fields without nil checks.
+type GenerateResponse struct {
+	Message *schema.Message
+	Usage   schema.Usage
+}
+
 // LLMProvider defines the interface for Large Language Model providers.
 // Implementations can support various LLM backends (OpenAI, Anthropic, local models, etc.)
 // while providing a consistent API for the engine.
@@ -34,9 +43,8 @@ type LLMProvider interface {
 	// The messages parameter contains the conversation history including system, user, and assistant messages.
 	// The availableTools parameter lists tools the LLM may invoke; empty means no tools available.
 	//
-	// Returns a Message containing the LLM's response, which may include:
-	//   - Text content in the Content field
-	//   - Tool calls to invoke in the ToolCalls field
-	//   - An error if the generation fails
-	Generate(ctx context.Context, message []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error)
+	// Returns a GenerateResponse containing the LLM's response message and token
+	// usage metadata. The message may include text content, tool calls, or both.
+	// Returns an error if the generation fails.
+	Generate(ctx context.Context, message []schema.Message, availableTools []schema.ToolDefinition) (*GenerateResponse, error)
 }

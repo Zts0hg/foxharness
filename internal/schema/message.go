@@ -20,12 +20,27 @@ const (
 
 // Message represents a single turn in the conversation history. Messages with
 // a non-empty ToolCalls slice indicate assistant requests to invoke tools;
-// messages with a non-empty ToolCallID carry tool execution results.
+// messages with a non-empty ToolCallID carry tool execution results. Usage
+// is populated on assistant messages after the provider reports actual token
+// consumption; it enables hybrid token counting without a separate tracking
+// channel and is omitted from JSON when absent for backward compatibility.
 type Message struct {
 	Role       Role       `json:"role"`
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Usage      *Usage     `json:"usage,omitempty"`
+}
+
+// Usage reports token consumption attributed to a single LLM API response.
+// CacheCreationTokens and CacheReadTokens are zero for providers without
+// prompt-caching support. Fields are int64 to match the wire types reported
+// by upstream SDKs and to avoid silent truncation on 32-bit platforms.
+type Usage struct {
+	InputTokens         int64 `json:"input_tokens"`
+	OutputTokens        int64 `json:"output_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
+	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
 }
 
 // ToolCall describes a single tool invocation requested by the assistant,

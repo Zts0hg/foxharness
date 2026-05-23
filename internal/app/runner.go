@@ -187,11 +187,15 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 			OnUserMessageID:  setCurrentMessageID,
 		},
 	)
-	eng.WithCompactor(compaction.NewCompactor(
-		llmProvider,
-		compaction.RoughEstimator{},
-		compaction.DefaultConfig(),
-	))
+	compCfg := compaction.DefaultCompactionConfig()
+	compCfg.Model = model
+	compCfg.SessionDir = sess.RootDir
+	compCfg.TranscriptPath = sess.TranscriptPath()
+	compactor, err := compaction.NewCompactor(llmProvider, compCfg)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 Compactor 失败: %w", err)
+	}
+	eng.WithCompactor(compactor)
 
 	return eng.RunWithReporter(ctx, sess, userPrompt, reporter)
 }
@@ -297,8 +301,9 @@ func (r *AgentRunner) ContextUsage() string {
 		log.Printf("[Runner] 读取 Session 上下文使用量失败: %v", err)
 		return "unknown"
 	}
-	used := compaction.RoughEstimator{}.Estimate(messages)
-	return formatContextUsage(used, compaction.DefaultConfig().MaxTokens)
+	used := compaction.ImprovedRoughEstimator{}.Estimate(messages)
+	contextWindow := compaction.NewModelRegistry().Lookup(r.model)
+	return formatContextUsage(used, contextWindow)
 }
 
 func (r *AgentRunner) MessageHistory() ([]session.MessageRecord, error) {

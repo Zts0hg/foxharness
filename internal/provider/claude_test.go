@@ -31,7 +31,7 @@ func TestClaudeProviderTranslatesMessagesToolsAndToolUseResponse(t *testing.T) {
 	defer server.Close()
 
 	provider := newTestClaudeProvider(server.URL, RetryConfig{MaxAttempts: 1})
-	msg, err := provider.Generate(context.Background(), []schema.Message{
+	resp, err := provider.Generate(context.Background(), []schema.Message{
 		{Role: schema.RoleSystem, Content: "You are a coding agent."},
 		{Role: schema.RoleUser, Content: "Inspect README"},
 		{Role: schema.RoleAssistant, Content: "I will read it.", ToolCalls: []schema.ToolCall{{
@@ -56,6 +56,7 @@ func TestClaudeProviderTranslatesMessagesToolsAndToolUseResponse(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
+	msg := resp.Message
 	if msg.Role != schema.RoleAssistant {
 		t.Fatalf("response role = %q, want assistant", msg.Role)
 	}
@@ -101,6 +102,52 @@ func TestClaudeProviderTranslatesMessagesToolsAndToolUseResponse(t *testing.T) {
 	}
 }
 
+func TestClaudeProviderReturnsUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, err := fmt.Fprint(w, `{
+			"id": "msg-test",
+			"type": "message",
+			"role": "assistant",
+			"model": "test-model",
+			"content": [{"type": "text", "text": "ok"}],
+			"stop_reason": "end_turn",
+			"stop_sequence": null,
+			"usage": {"input_tokens": 1000, "output_tokens": 500, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 50}
+		}`)
+		if err != nil {
+			t.Fatalf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestClaudeProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	resp, err := provider.Generate(context.Background(), []schema.Message{
+		{Role: schema.RoleUser, Content: "hi"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if resp == nil || resp.Message == nil {
+		t.Fatalf("Generate() returned nil response")
+	}
+	if resp.Message.Content != "ok" {
+		t.Fatalf("Message.Content = %q, want ok", resp.Message.Content)
+	}
+	if resp.Usage.InputTokens != 1000 {
+		t.Fatalf("Usage.InputTokens = %d, want 1000", resp.Usage.InputTokens)
+	}
+	if resp.Usage.OutputTokens != 500 {
+		t.Fatalf("Usage.OutputTokens = %d, want 500", resp.Usage.OutputTokens)
+	}
+	if resp.Usage.CacheCreationTokens != 200 {
+		t.Fatalf("Usage.CacheCreationTokens = %d, want 200", resp.Usage.CacheCreationTokens)
+	}
+	if resp.Usage.CacheReadTokens != 50 {
+		t.Fatalf("Usage.CacheReadTokens = %d, want 50", resp.Usage.CacheReadTokens)
+	}
+}
+
 func TestClaudeProviderRetriesTransientHTTPFailure(t *testing.T) {
 	var attempts int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,14 +166,14 @@ func TestClaudeProviderRetriesTransientHTTPFailure(t *testing.T) {
 		MaxDelay:     time.Nanosecond,
 	})
 
-	msg, err := provider.Generate(context.Background(), []schema.Message{
+	resp, err := provider.Generate(context.Background(), []schema.Message{
 		{Role: schema.RoleUser, Content: "hello"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	if msg.Content != "recovered" {
-		t.Fatalf("content = %q, want recovered", msg.Content)
+	if resp.Message.Content != "recovered" {
+		t.Fatalf("content = %q, want recovered", resp.Message.Content)
 	}
 	if attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts)
