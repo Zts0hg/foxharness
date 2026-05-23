@@ -966,6 +966,53 @@ func TestSplitFragmentedSGRMousePayloadDoesNotEnterInput(t *testing.T) {
 	}
 }
 
+func TestSplitFragmentedMousePayloadAfterEscTimeoutDoesNotEnterInput(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.scrollOffset = 1
+
+	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
+	m, _ = update(t, m, keyRunes("["))
+	m, _ = update(t, m, keyRunes("<65;72;19M"))
+
+	if got := string(m.input); got != "" {
+		t.Fatalf("input after delayed split wheel down = %q, want empty", got)
+	}
+	if m.scrollOffset != 0 {
+		t.Fatalf("scrollOffset after delayed split wheel down = %d, want 0", m.scrollOffset)
+	}
+}
+
+func TestPartialMouseTailWithoutEscCompletesOrFlushes(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, cmd := update(t, m, keyRunes("["))
+	if cmd == nil {
+		t.Fatalf("partial mouse tail should schedule a timeout")
+	}
+	if got := string(m.input); got != "" {
+		t.Fatalf("input while partial mouse tail is pending = %q, want empty", got)
+	}
+	m, _ = update(t, m, keyRunes("<64;57;23M"))
+	if got := string(m.input); got != "" {
+		t.Fatalf("input after completed partial mouse tail = %q, want empty", got)
+	}
+	if m.scrollOffset != 1 {
+		t.Fatalf("scrollOffset after completed partial wheel up = %d, want 1", m.scrollOffset)
+	}
+
+	m, cmd = update(t, m, keyRunes("["))
+	if cmd == nil {
+		t.Fatalf("partial ordinary bracket should schedule a timeout")
+	}
+	m, _ = update(t, m, mouseTailTimeoutMsg{id: m.mouseTailID})
+	if got := string(m.input); got != "[" {
+		t.Fatalf("input after partial mouse timeout = %q, want [", got)
+	}
+}
+
 func TestFragmentedMouseTailDoesNotSwallowOrdinaryInput(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})

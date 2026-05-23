@@ -22,6 +22,7 @@ const (
 	quitConfirmWindow = 2 * time.Second
 	runningTickEvery  = 500 * time.Millisecond
 	pendingEscDelay   = 50 * time.Millisecond
+	mouseTailDelay    = 150 * time.Millisecond
 )
 
 // Runner is the app-facing runtime required by the TUI. It is intentionally
@@ -124,6 +125,7 @@ type Model struct {
 	pendingEscID  uint64
 	mouseTail     []rune
 	mouseTailEsc  bool
+	mouseTailID   uint64
 
 	sessionID    string
 	modelName    string
@@ -269,6 +271,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pendingEsc = time.Time{}
 		return m.applyEscKey()
+
+	case mouseTailTimeoutMsg:
+		if len(m.mouseTail) == 0 || m.mouseTailID != msg.id {
+			return m, nil
+		}
+		return m.flushMouseTailAsInput()
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -597,26 +605,33 @@ func (m Model) handleFragmentedMouseTail(runes []rune) (tea.Model, tea.Cmd, bool
 	}
 	if tails, partial, ok := parseMouseTailRunes(runes); ok {
 		hadEsc := !m.pendingEsc.IsZero()
-		if len(partial) > 0 && !hadEsc && len(tails) == 0 {
-			return m, nil, false
-		}
 		m.pendingEsc = time.Time{}
 		if len(tails) > 0 {
 			m.applyMouseTails(tails)
 		}
 		if len(partial) > 0 {
-			m.mouseTail = append([]rune(nil), partial...)
-			m.mouseTailEsc = hadEsc
+			cmd := m.startMouseTail(partial, hadEsc)
+			return m, cmd, true
 		}
 		return m, nil, true
 	}
 	if !m.pendingEsc.IsZero() && isMouseTailPrefix(runes) {
-		m.mouseTail = append([]rune(nil), runes...)
-		m.mouseTailEsc = true
+		cmd := m.startMouseTail(runes, true)
 		m.pendingEsc = time.Time{}
-		return m, nil, true
+		return m, cmd, true
+	}
+	if isMouseTailPrefix(runes) {
+		cmd := m.startMouseTail(runes, false)
+		return m, cmd, true
 	}
 	return m, nil, false
+}
+
+func (m *Model) startMouseTail(runes []rune, hadEsc bool) tea.Cmd {
+	m.mouseTail = append([]rune(nil), runes...)
+	m.mouseTailEsc = hadEsc
+	m.mouseTailID++
+	return mouseTailCmd(m.mouseTailID)
 }
 
 func (m Model) consumeMouseTail(runes []rune, applyEscOnInvalid bool) (tea.Model, tea.Cmd, bool) {
@@ -628,7 +643,8 @@ func (m Model) consumeMouseTail(runes []rune, applyEscOnInvalid bool) (tea.Model
 		m.mouseTail = nil
 		m.applyMouseTails(tails)
 		if len(partial) > 0 {
-			m.mouseTail = append([]rune(nil), partial...)
+			cmd := m.startMouseTail(partial, m.mouseTailEsc)
+			return m, cmd, true
 		} else {
 			m.mouseTailEsc = false
 		}
@@ -1679,6 +1695,16 @@ type pendingEscTimeoutMsg struct {
 func pendingEscCmd(id uint64) tea.Cmd {
 	return tea.Tick(pendingEscDelay, func(time.Time) tea.Msg {
 		return pendingEscTimeoutMsg{id: id}
+	})
+}
+
+type mouseTailTimeoutMsg struct {
+	id uint64
+}
+
+func mouseTailCmd(id uint64) tea.Cmd {
+	return tea.Tick(mouseTailDelay, func(time.Time) tea.Msg {
+		return mouseTailTimeoutMsg{id: id}
 	})
 }
 
