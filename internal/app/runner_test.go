@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -359,6 +361,54 @@ func TestAgentRunnerMessageHistory(t *testing.T) {
 	}
 }
 
+func TestAgentRunnerRestoresSessionStateBeforeMessage(t *testing.T) {
+	workDir := t.TempDir()
+	sessionDir := t.TempDir()
+	store := memory.NewSessionStore(workDir, sessionDir)
+	if err := os.WriteFile(filepath.Join(sessionDir, "PLAN.md"), []byte("old plan"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "TODO.md"), []byte("old todo"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.NewStateHistory(store).SnapshotBeforeMessage(4); err != nil {
+		t.Fatalf("SnapshotBeforeMessage() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "PLAN.md"), []byte("new plan"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "TODO.md"), []byte("new todo"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &AgentRunner{store: store}
+	restored, err := runner.RestoreSessionStateBeforeMessage(4)
+	if err != nil {
+		t.Fatalf("RestoreSessionStateBeforeMessage() error = %v", err)
+	}
+	if !restored {
+		t.Fatalf("RestoreSessionStateBeforeMessage() restored = false, want true")
+	}
+	assertFileContent(t, filepath.Join(sessionDir, "PLAN.md"), "old plan")
+	assertFileContent(t, filepath.Join(sessionDir, "TODO.md"), "old todo")
+}
+
+func TestAgentRunnerRegistryIncludesTodoTools(t *testing.T) {
+	runner := &AgentRunner{workDir: t.TempDir()}
+	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
+	registry := runner.buildRegistry(sess, &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})}, nil, func() string { return "" })
+
+	names := map[string]bool{}
+	for _, def := range registry.GetAvailableTools() {
+		names[def.Name] = true
+	}
+	for _, name := range []string{"read_todo", "update_todo"} {
+		if !names[name] {
+			t.Fatalf("registry missing %s", name)
+		}
+	}
+}
+
 func TestFormatContextUsage(t *testing.T) {
 	cases := []struct {
 		used int
@@ -376,5 +426,16 @@ func TestFormatContextUsage(t *testing.T) {
 		if got := formatContextUsage(tc.used, tc.max); got != tc.want {
 			t.Fatalf("formatContextUsage(%d, %d) = %q, want %q", tc.used, tc.max, got, tc.want)
 		}
+	}
+}
+
+func assertFileContent(t *testing.T, path string, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	if got := string(data); got != want {
+		t.Fatalf("%s = %q, want %q", path, got, want)
 	}
 }

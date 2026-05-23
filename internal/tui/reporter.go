@@ -118,6 +118,10 @@ func formatToolInvocation(toolName string, args string) string {
 		if path := fields["path"]; path != "" {
 			return "Edit (" + truncateInline(path, 120) + ")"
 		}
+	case "read_todo":
+		return "Read TODO"
+	case "update_todo":
+		return "Update TODO"
 	case "delegate_task":
 		if task := fields["task"]; task != "" {
 			return "Task (" + truncateInline(task, 80) + ")"
