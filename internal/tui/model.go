@@ -21,6 +21,7 @@ const (
 
 	quitConfirmWindow = 2 * time.Second
 	runningTickEvery  = 500 * time.Millisecond
+	pendingEscDelay   = 50 * time.Millisecond
 )
 
 // Runner is the app-facing runtime required by the TUI. It is intentionally
@@ -109,6 +110,8 @@ type Model struct {
 	cancelRun    context.CancelFunc
 	lastCtrlC    time.Time
 	lastEsc      time.Time
+	pendingEsc   time.Time
+	pendingEscID uint64
 
 	sessionID    string
 	modelName    string
@@ -248,6 +251,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampSidebarScrollOffsets()
 		return m, runningTickCmd()
 
+	case pendingEscTimeoutMsg:
+		if m.pendingEsc.IsZero() || m.pendingEscID != msg.id {
+			return m, nil
+		}
+		m.pendingEsc = time.Time{}
+		return m.applyEscKey()
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
@@ -358,6 +368,27 @@ func (m Model) shouldRenderSidebar() bool {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyRunes && isFragmentedSGRMousePayload(msg.Runes) {
+		m.pendingEsc = time.Time{}
+		return m, nil
+	}
+
+	if !m.pendingEsc.IsZero() {
+		m.pendingEsc = time.Time{}
+		next, cmd := m.applyEscKey()
+		typed, ok := next.(Model)
+		if !ok {
+			return next, cmd
+		}
+		m = typed
+		if msg.Type == tea.KeyEsc {
+			m, nextCmd := m.startPendingEsc()
+			return m, tea.Batch(cmd, nextCmd)
+		}
+		next, nextCmd := m.handleKey(msg)
+		return next, tea.Batch(cmd, nextCmd)
+	}
+
 	if m.rewindSelector != nil {
 		next, cmd := m.rewindSelector.Update(msg)
 		if typed, ok := next.(selector.Model); ok {
@@ -403,23 +434,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch key {
 	case "esc":
-		if m.running && m.cancelRun != nil {
-			m.cancelRun()
-			m.status = "Cancel requested"
-			m.appendEntry("system", "cancel", "Current run cancellation requested.", false)
-			return m, nil
-		}
-		now := m.nowTime()
-		if !m.lastEsc.IsZero() && now.Sub(m.lastEsc) <= quitConfirmWindow {
-			m.lastEsc = time.Time{}
-			return m.openRewindSelector()
-		}
-		m.lastEsc = now
-		m.status = "Press Esc again within 2s to rewind"
-		m.input = nil
-		m.resetHistoryNavigation()
-		m.resetCompletions()
-		return m, nil
+		return m.startPendingEsc()
 	case "enter":
 		return m.submitInput()
 	case "shift+enter", "ctrl+j":
@@ -499,6 +514,55 @@ func (m *Model) insertInputNewline() {
 	m.resetHistoryNavigation()
 	m.input = append(m.input, '\n')
 	m.resetCompletions()
+}
+
+func (m Model) startPendingEsc() (tea.Model, tea.Cmd) {
+	m.pendingEsc = m.nowTime()
+	m.pendingEscID++
+	return m, pendingEscCmd(m.pendingEscID)
+}
+
+func (m Model) applyEscKey() (tea.Model, tea.Cmd) {
+	if m.running && m.cancelRun != nil {
+		m.cancelRun()
+		m.status = "Cancel requested"
+		m.appendEntry("system", "cancel", "Current run cancellation requested.", false)
+		return m, nil
+	}
+	now := m.nowTime()
+	if !m.lastEsc.IsZero() && now.Sub(m.lastEsc) <= quitConfirmWindow {
+		m.lastEsc = time.Time{}
+		return m.openRewindSelector()
+	}
+	m.lastEsc = now
+	m.status = "Press Esc again within 2s to rewind"
+	m.input = nil
+	m.resetHistoryNavigation()
+	m.resetCompletions()
+	return m, nil
+}
+
+func isFragmentedSGRMousePayload(runes []rune) bool {
+	if len(runes) < len("[<0;0;0M") || runes[0] != '[' || runes[1] != '<' {
+		return false
+	}
+	i := 2
+	for field := 0; field < 3; field++ {
+		start := i
+		for i < len(runes) && runes[i] >= '0' && runes[i] <= '9' {
+			i++
+		}
+		if i == start {
+			return false
+		}
+		if field < 2 {
+			if i >= len(runes) || runes[i] != ';' {
+				return false
+			}
+			i++
+		}
+	}
+	return i == len(runes)-1 && (runes[i] == 'M' || runes[i] == 'm')
 }
 
 func (m Model) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1388,6 +1452,16 @@ type runningTickMsg struct{}
 func runningTickCmd() tea.Cmd {
 	return tea.Tick(runningTickEvery, func(time.Time) tea.Msg {
 		return runningTickMsg{}
+	})
+}
+
+type pendingEscTimeoutMsg struct {
+	id uint64
+}
+
+func pendingEscCmd(id uint64) tea.Cmd {
+	return tea.Tick(pendingEscDelay, func(time.Time) tea.Msg {
+		return pendingEscTimeoutMsg{id: id}
 	})
 }
 

@@ -555,6 +555,7 @@ func TestDoubleEscOpensRewindSelector(t *testing.T) {
 	m.input = []rune("draft")
 
 	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
 	if m.rewindSelector != nil {
 		t.Fatalf("first esc opened rewind selector")
 	}
@@ -567,6 +568,7 @@ func TestDoubleEscOpensRewindSelector(t *testing.T) {
 
 	now = now.Add(time.Second)
 	m, cmd := update(t, m, keyEsc())
+	m, cmd = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
 	if cmd != nil {
 		t.Fatalf("second esc returned unexpected command")
 	}
@@ -725,6 +727,71 @@ func TestModelMouseWheelScrollsTranscript(t *testing.T) {
 	m, _ = update(t, m, tea.MouseMsg{Button: tea.MouseButtonWheelDown})
 	if m.scrollOffset != 0 {
 		t.Fatalf("scrollOffset after extra wheel down = %d, want clamped 0", m.scrollOffset)
+	}
+}
+
+func TestFragmentedSGRMousePayloadDoesNotEnterInput(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.input = []rune("draft")
+
+	m, _ = update(t, m, keyRunes("[<64;43;17M"))
+
+	if got := string(m.input); got != "draft" {
+		t.Fatalf("input after fragmented mouse payload = %q, want draft", got)
+	}
+}
+
+func TestPendingEscFragmentedSGRMousePayloadIsDropped(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.input = []rune("draft")
+
+	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, keyRunes("[<65;60;20M"))
+
+	if got := string(m.input); got != "draft" {
+		t.Fatalf("input after split mouse payload = %q, want draft", got)
+	}
+	if m.rewindSelector != nil {
+		t.Fatalf("split mouse payload opened rewind selector")
+	}
+	if strings.Contains(m.status, "Press Esc again") {
+		t.Fatalf("status = %q, want no esc prompt", m.status)
+	}
+}
+
+func TestRunningSplitSGRMousePayloadDoesNotCancel(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.running = true
+	cancelled := false
+	m.cancelRun = func() { cancelled = true }
+
+	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, keyRunes("[<64;43;17M"))
+
+	if cancelled {
+		t.Fatalf("split mouse payload called cancelRun")
+	}
+	if !m.running {
+		t.Fatalf("running = false, want true")
+	}
+}
+
+func TestEscTimeoutAppliesRealEsc(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.input = []rune("draft")
+
+	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
+
+	if got := string(m.input); got != "" {
+		t.Fatalf("input after esc timeout = %q, want empty", got)
+	}
+	if !strings.Contains(m.status, "Press Esc again") {
+		t.Fatalf("status = %q, want second-esc prompt", m.status)
 	}
 }
 
@@ -1060,6 +1127,7 @@ func TestModelQueuesInputWhileRunIsActiveAndCancelsCurrentRun(t *testing.T) {
 	}
 
 	m, _ = update(t, m, keyEsc())
+	m, _ = update(t, m, pendingEscTimeoutMsg{id: m.pendingEscID})
 	if !strings.Contains(m.status, "Cancel") {
 		t.Fatalf("status = %q, want cancel status", m.status)
 	}
