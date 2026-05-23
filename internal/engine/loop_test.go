@@ -134,12 +134,12 @@ func TestEngine_FullCompactionFlow(t *testing.T) {
 	compCfg.RecentKeep = 1
 	compCfg.SessionDir = sess.RootDir
 	compCfg.TranscriptPath = sess.TranscriptPath()
+	compCfg.Estimator = compaction.RoughEstimator{}
+	compCfg.AutoCompactThreshold = 1
 	compactor, err := compaction.NewCompactor(p, compCfg)
 	if err != nil {
 		t.Fatalf("NewCompactor: %v", err)
 	}
-	compactor.SetEstimator(compaction.RoughEstimator{})
-	compactor.SetAutoCompactThreshold(1)
 	eng.WithCompactor(compactor)
 
 	log := session.NewMessageLog(sess)

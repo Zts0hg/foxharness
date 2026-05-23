@@ -177,8 +177,8 @@ func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message
 
 	normalized := schema.NormalizeMessage(*resultMessage)
 	usage := schema.Usage{
-		InputTokens:  int(resp.Usage.PromptTokens),
-		OutputTokens: int(resp.Usage.CompletionTokens),
+		InputTokens:  resp.Usage.PromptTokens,
+		OutputTokens: resp.Usage.CompletionTokens,
 	}
 	return &GenerateResponse{
 		Message: &normalized,

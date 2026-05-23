@@ -50,12 +50,12 @@ func TestBuildInitialContextPersistsCompactState(t *testing.T) {
 	cfg.RecentKeep = 2
 	cfg.SummaryMaxTokens = 128
 	cfg.ContextWindow = 500
+	cfg.Estimator = compaction.RoughEstimator{}
+	cfg.AutoCompactThreshold = 250
 	compactor, err := compaction.NewCompactor(p, cfg)
 	if err != nil {
 		t.Fatalf("NewCompactor() error = %v", err)
 	}
-	compactor.SetEstimator(compaction.RoughEstimator{})
-	compactor.SetAutoCompactThreshold(250)
 	eng := &AgentEngine{compactor: compactor}
 
 	current := schema.Message{Role: schema.RoleUser, Content: "current"}

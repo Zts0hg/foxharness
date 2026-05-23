@@ -105,6 +105,16 @@ type indexedToolResult struct {
 	DurationMS int64
 }
 
+// processedToolResult bundles a raw tool execution with the content that
+// should be appended to the conversation history. ContextContent is either
+// the (post-truncation) full output for small results, or a preview that
+// references the persisted on-disk copy for large outputs.
+type processedToolResult struct {
+	indexedToolResult
+	ContextContent string
+	Persisted      bool
+}
+
 // NewAgentEngine creates a new AgentEngine with the provided configuration.
 //
 // The p parameter is the LLM provider for generating responses.
@@ -403,8 +413,8 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			compacted, err := e.compactor.MaybeCompact(ctx, contextHistory)
 			if err != nil {
 				log.Printf("[Compactor] 压缩失败，将继续使用原始上下文: %v", err)
-			} else if len(compacted) != len(contextHistory) {
-				log.Printf("[Compactor] 上下文已压缩: %d -> %d 条消息", len(contextHistory), len(compacted))
+			} else if !sameMessages(compacted, contextHistory) {
+				log.Printf("[Compactor] 上下文已压缩: %d -> %d 条消息（含 boundary + summary）", len(contextHistory), len(compacted))
 				contextHistory = compacted
 				_ = transcript.AppendRun(run.ID, "context_compacted", map[string]any{
 					"turn": turnCount,
@@ -413,11 +423,6 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 					reporter.OnCompaction(ctx, "turn_context")
 				}
 			}
-
-			// tracer.Annotate(turnSpan.ID(), "context_compacted", map[string]any{
-			// 	"before_messages": before,
-			// 	"after_messages":  after,
-			// })
 		}
 		if e.recovery.ShouldInject() {
 			recoveryPrompt := e.recovery.BuildPrompt()
@@ -554,28 +559,9 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			}
 		}
 
-		toolResults := e.executeToolCalls(ctx, tracer, turnSpan.ID(), actionResponse.ToolCalls)
+		processed := e.processToolResults(sess, contextHistory, e.executeToolCalls(ctx, tracer, turnSpan.ID(), actionResponse.ToolCalls))
 
-		for i := range toolResults {
-			toolResults[i].Result.Output = toolresult.TruncateToCap(toolResults[i].Result.Output)
-		}
-
-		seenIDs := make(map[string]bool, len(contextHistory))
-		for _, msg := range contextHistory {
-			if msg.ToolCallID != "" {
-				seenIDs[msg.ToolCallID] = true
-			}
-		}
-
-		fs := toolresult.OSFileSystem{}
-		dir := sess.ToolResultsDir()
-		persistedResults := make([]toolresult.PersistedResult, len(toolResults))
-		for i, item := range toolResults {
-			persistedResults[i] = toolresult.PersistIfNeeded(fs, dir, item.Result)
-		}
-		persistedResults = toolresult.EnforceBudget(fs, dir, persistedResults, seenIDs)
-
-		for i, item := range toolResults {
+		for _, item := range processed {
 			e.reminder.Record(turnCount, item.Call, item.Result)
 			e.recovery.Record(item.Call, item.Result)
 			if reporter != nil {
@@ -606,10 +592,9 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			})
 			aggregator.AddTool(item.Result.IsError)
 
-			content := persistedResults[i].Preview
 			observationMessage := schema.Message{
 				Role:       schema.RoleUser,
-				Content:    content,
+				Content:    item.ContextContent,
 				ToolCallID: item.Call.ID,
 			}
 			contextHistory = append(contextHistory, observationMessage)
@@ -626,6 +611,67 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			"tool_calls": len(actionResponse.ToolCalls),
 		})
 	}
+}
+
+// processToolResults applies the absolute size cap, persists oversize results
+// to disk, and enforces the per-turn budget before returning the per-result
+// content that should be inserted into the conversation history.
+//
+// seenIDs is derived from contextHistory at call time and lists tool result
+// IDs the model has already observed in earlier turns; these are excluded
+// from budget-driven retroactive persistence so the prompt cache stays
+// consistent. The current turn's new results are not yet in contextHistory,
+// so they remain eligible for persistence. This relies on tool call IDs
+// being unique per call — providers guarantee this within a single response.
+func (e *AgentEngine) processToolResults(
+	sess *session.Session,
+	contextHistory []schema.Message,
+	raw []indexedToolResult,
+) []processedToolResult {
+	for i := range raw {
+		raw[i].Result.Output = toolresult.TruncateToCap(raw[i].Result.Output)
+	}
+
+	seenIDs := make(map[string]bool, len(contextHistory))
+	for _, msg := range contextHistory {
+		if msg.ToolCallID != "" {
+			seenIDs[msg.ToolCallID] = true
+		}
+	}
+
+	fs := toolresult.OSFileSystem{}
+	dir := sess.ToolResultsDir()
+	persisted := make([]toolresult.PersistedResult, len(raw))
+	for i, item := range raw {
+		persisted[i] = toolresult.PersistIfNeeded(fs, dir, item.Result)
+	}
+	persisted = toolresult.EnforceBudget(fs, dir, persisted, seenIDs)
+
+	out := make([]processedToolResult, len(raw))
+	for i, item := range raw {
+		out[i] = processedToolResult{
+			indexedToolResult: item,
+			ContextContent:    persisted[i].Preview,
+			Persisted:         persisted[i].Persisted,
+		}
+	}
+	return out
+}
+
+// sameMessages reports whether two message slices refer to the same backing
+// array — the cheap "did compaction return the input unchanged?" check. We
+// cannot rely on len-equality because a compaction round can leave the count
+// unchanged (e.g., recent-keep window matches the input size) while still
+// mutating content; conversely the new format can produce more messages than
+// the input thanks to the boundary marker.
+func sameMessages(a, b []schema.Message) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	return &a[0] == &b[0]
 }
 
 func truncateReporterOutput(s string, limit int) string {

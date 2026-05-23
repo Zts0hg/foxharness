@@ -1,6 +1,7 @@
 package toolresult
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -9,6 +10,22 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
+
+// failingFS lets a test inject a write failure on the next call.
+type failingFS struct {
+	writeErr error
+	writes   int
+}
+
+func (f *failingFS) WriteFile(_ string, _ []byte, _ os.FileMode) error {
+	f.writes++
+	return f.writeErr
+}
+
+func (f *failingFS) Stat(_ string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+func (f *failingFS) MkdirAll(_ string, _ os.FileMode) error {
+	return nil
+}
 
 // memFS is an in-memory FileSystem implementation used by persistence tests.
 type memFS struct {
@@ -177,6 +194,58 @@ func BenchmarkPersistIfNeeded(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		result := schema.ToolResult{ToolCallID: "bench-call", Output: content}
 		PersistIfNeeded(fs, dir, result)
+	}
+}
+
+func TestPersistIfNeeded_WriteFailureSurfacesError(t *testing.T) {
+	fs := &failingFS{writeErr: errors.New("disk full")}
+	result := schema.ToolResult{ToolCallID: "boom", Output: strings.Repeat("x", 60000)}
+	got := PersistIfNeeded(fs, "/sess", result)
+	if got.Persisted {
+		t.Fatalf("expected Persisted=false on write failure")
+	}
+	if got.PersistError == nil {
+		t.Fatalf("expected PersistError to be set on write failure")
+	}
+	if got.Preview != result.Output {
+		t.Fatalf("expected fallback Preview to be full output when persistence fails")
+	}
+}
+
+func TestPersistIfNeeded_JSONContentGetsJSONExtension(t *testing.T) {
+	fs := newMemFS()
+	jsonContent := "{\n" + strings.Repeat("\"k\":\"v\",", 8000) + "\"end\":true}"
+	if len(jsonContent) <= PersistenceThreshold {
+		t.Fatalf("test setup: JSON content should exceed threshold, got %d", len(jsonContent))
+	}
+	got := PersistIfNeeded(fs, "/sess", schema.ToolResult{ToolCallID: "js", Output: jsonContent})
+	if !strings.HasSuffix(got.FilePath, ".json") {
+		t.Fatalf("FilePath = %q, want .json suffix for JSON content", got.FilePath)
+	}
+}
+
+func TestPersistIfNeeded_NonJSONContentGetsTxtExtension(t *testing.T) {
+	fs := newMemFS()
+	got := PersistIfNeeded(fs, "/sess", schema.ToolResult{ToolCallID: "text", Output: strings.Repeat("abc\n", 20000)})
+	if !strings.HasSuffix(got.FilePath, ".txt") {
+		t.Fatalf("FilePath = %q, want .txt suffix for plain text", got.FilePath)
+	}
+}
+
+func TestEnforceBudget_SkipsFailingResultsWithoutLooping(t *testing.T) {
+	fs := &failingFS{writeErr: errors.New("disk full")}
+	results := []PersistedResult{
+		{Original: schema.ToolResult{ToolCallID: "a", Output: strings.Repeat("a", 150000)}, Preview: strings.Repeat("a", 150000)},
+		{Original: schema.ToolResult{ToolCallID: "b", Output: strings.Repeat("b", 120000)}, Preview: strings.Repeat("b", 120000)},
+	}
+	out := EnforceBudget(fs, "/sess", results, map[string]bool{})
+	if fs.writes > len(results) {
+		t.Fatalf("EnforceBudget retried failing writes (%d writes > %d candidates)", fs.writes, len(results))
+	}
+	for _, r := range out {
+		if r.Persisted {
+			t.Fatalf("Persisted should be false when filesystem rejects writes")
+		}
 	}
 }
 

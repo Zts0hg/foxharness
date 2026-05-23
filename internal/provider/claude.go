@@ -95,10 +95,10 @@ func (p *ClaudeProvider) Generate(ctx context.Context, messages []schema.Message
 
 	normalized := schema.NormalizeMessage(*result)
 	usage := schema.Usage{
-		InputTokens:         int(resp.Usage.InputTokens),
-		OutputTokens:        int(resp.Usage.OutputTokens),
-		CacheCreationTokens: int(resp.Usage.CacheCreationInputTokens),
-		CacheReadTokens:     int(resp.Usage.CacheReadInputTokens),
+		InputTokens:         resp.Usage.InputTokens,
+		OutputTokens:        resp.Usage.OutputTokens,
+		CacheCreationTokens: resp.Usage.CacheCreationInputTokens,
+		CacheReadTokens:     resp.Usage.CacheReadInputTokens,
 	}
 	return &GenerateResponse{
 		Message: &normalized,

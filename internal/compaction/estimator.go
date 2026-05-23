@@ -90,7 +90,7 @@ func totalUsageTokens(u *schema.Usage) int {
 	if u == nil {
 		return 0
 	}
-	return u.InputTokens + u.OutputTokens + u.CacheCreationTokens + u.CacheReadTokens
+	return int(u.InputTokens + u.OutputTokens + u.CacheCreationTokens + u.CacheReadTokens)
 }
 
 func looksLikeJSON(text string) bool {

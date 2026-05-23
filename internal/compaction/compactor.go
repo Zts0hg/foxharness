@@ -70,15 +70,22 @@ func (RoughEstimator) Estimate(messages []schema.Message) int {
 // looked up in the embedded ModelRegistry to derive the ContextWindow when
 // ContextWindow is left zero. Enabled defaults to true and may be flipped to
 // false by config or environment variables.
+//
+// Estimator and AutoCompactThreshold are optional injection points primarily
+// used by tests and benchmarks that need deterministic token counts. Leaving
+// them at their zero values selects the production defaults
+// (HybridEstimator + ThresholdConfig.AutoCompact()).
 type CompactionConfig struct {
-	Enabled          bool
-	Model            string
-	ContextWindow    int
-	RecentKeep       int
-	SummaryMaxTokens int
-	SessionDir       string
-	TranscriptPath   string
-	Overrides        map[string]int
+	Enabled              bool
+	Model                string
+	ContextWindow        int
+	RecentKeep           int
+	SummaryMaxTokens     int
+	SessionDir           string
+	TranscriptPath       string
+	Overrides            map[string]int
+	Estimator            TokenEstimator
+	AutoCompactThreshold int
 }
 
 // DefaultCompactionConfig returns a CompactionConfig with Enabled=true and
@@ -102,14 +109,14 @@ type Compactor struct {
 	registry   *ModelRegistry
 	thresholds ThresholdConfig
 
-	config CompactionConfig
+	config               CompactionConfig
+	autoCompactThreshold int
 
 	disabled     bool
 	autoDisabled bool
 
-	mu                  sync.Mutex
-	compacting          bool
-	autoCompactOverride int
+	mu         sync.Mutex
+	compacting bool
 }
 
 // NewCompactor constructs a Compactor with the supplied provider and
@@ -144,33 +151,25 @@ func NewCompactor(p provider.LLMProvider, cfg CompactionConfig) (*Compactor, err
 		cfg.SummaryMaxTokens = DefaultSummaryMaxTokens
 	}
 
+	estimator := cfg.Estimator
+	if estimator == nil {
+		estimator = NewHybridEstimator(ImprovedRoughEstimator{})
+	}
+
 	disabled := envHasValue(EnvDisableCompact)
 	autoDisabled := disabled || envHasValue(EnvDisableAutoCompact) || !cfg.Enabled
 
 	return &Compactor{
-		provider:   p,
-		estimator:  NewHybridEstimator(ImprovedRoughEstimator{}),
-		registry:   registry,
-		thresholds: thresholds,
-		config:     cfg,
+		provider:             p,
+		estimator:            estimator,
+		registry:             registry,
+		thresholds:           thresholds,
+		config:               cfg,
+		autoCompactThreshold: cfg.AutoCompactThreshold,
 
 		disabled:     disabled,
 		autoDisabled: autoDisabled,
 	}, nil
-}
-
-// SetEstimator overrides the default HybridEstimator. It is primarily useful
-// for tests that need deterministic token counts.
-func (c *Compactor) SetEstimator(est TokenEstimator) {
-	if est != nil {
-		c.estimator = est
-	}
-}
-
-// SetAutoCompactThreshold overrides the automatic compaction threshold. It is
-// intended for tests that need to drive compaction with small message sets.
-func (c *Compactor) SetAutoCompactThreshold(threshold int) {
-	c.autoCompactOverride = threshold
 }
 
 // Estimate returns the estimated token count for messages using the
@@ -180,9 +179,11 @@ func (c *Compactor) Estimate(messages []schema.Message) int {
 }
 
 // Threshold returns the soft token threshold that triggers compaction.
+// When CompactionConfig.AutoCompactThreshold is set (non-zero), that value
+// takes precedence; otherwise the ThresholdConfig-derived value is used.
 func (c *Compactor) Threshold() int {
-	if c.autoCompactOverride > 0 {
-		return c.autoCompactOverride
+	if c.autoCompactThreshold > 0 {
+		return c.autoCompactThreshold
 	}
 	return c.thresholds.AutoCompact()
 }
@@ -197,9 +198,24 @@ func (c *Compactor) Registry() *ModelRegistry {
 	return c.registry
 }
 
-// Config returns the active CompactionConfig.
+// Config returns a defensive copy of the active CompactionConfig so callers
+// cannot mutate the Compactor's internal state through the returned map
+// reference.
 func (c *Compactor) Config() CompactionConfig {
-	return c.config
+	cfg := c.config
+	if len(c.config.Overrides) > 0 {
+		cfg.Overrides = make(map[string]int, len(c.config.Overrides))
+		for k, v := range c.config.Overrides {
+			cfg.Overrides[k] = v
+		}
+	}
+	return cfg
+}
+
+// TranscriptPath returns the configured transcript path used when wrapping
+// summary messages with continuation instructions.
+func (c *Compactor) TranscriptPath() string {
+	return c.config.TranscriptPath
 }
 
 // RecentKeep returns the number of recent messages preserved during
@@ -213,18 +229,6 @@ func (c *Compactor) RecentKeep() int {
 // summarized is the supplied messages slice.
 func (c *Compactor) Summarize(ctx context.Context, messages []schema.Message) (string, error) {
 	return c.summarize(ctx, messages, messages)
-}
-
-// SummaryMessage builds the legacy summary marker used by session-level
-// projections that do not provide a transcript path. New code should prefer
-// BuildSummaryMessage which includes the continuation wrapper.
-func SummaryMessage(summary string) schema.Message {
-	return schema.Message{
-		Role: schema.RoleUser,
-		Content: "## Compacted Context Summary\n\n" +
-			"以下是较早会话历史的压缩摘要。原始消息仍保存在 session 的 messages.jsonl 中；此摘要仅用于控制本轮上下文窗口。\n\n" +
-			strings.TrimSpace(summary),
-	}
 }
 
 // BuildSummaryMessage builds the model-visible summary message including the
@@ -320,12 +324,16 @@ func (c *Compactor) MaybeCompact(ctx context.Context, messages []schema.Message)
 	compacted = append(compacted, BoundaryMessage(boundary))
 	compacted = append(compacted, summaryMessage)
 	compacted = append(compacted, recent...)
-	c.runPostCompactCleanup(used, len(old))
+	c.runPostCompactCleanup(used, len(old), compacted)
 	return compacted, nil
 }
 
-func (c *Compactor) runPostCompactCleanup(preTokens, summarized int) {
-	log.Printf("[Compactor] compacted %d messages (pre-tokens=%d)", summarized, preTokens)
+// runPostCompactCleanup emits an observability log line summarizing the
+// compaction event with pre/post token counts as required by REQ-009c.
+func (c *Compactor) runPostCompactCleanup(preTokens, summarized int, compacted []schema.Message) {
+	postTokens := c.Estimate(compacted)
+	log.Printf("[Compactor] summarized %d messages (pre-tokens=%d post-tokens=%d delta=%d)",
+		summarized, preTokens, postTokens, preTokens-postTokens)
 }
 
 func moveSplitToProtocolBoundary(messages []schema.Message, split int, min int) int {
@@ -338,14 +346,6 @@ func moveSplitToProtocolBoundary(messages []schema.Message, split int, min int) 
 	}
 
 	return split
-}
-
-func stripExistingCompactionSummary(content string) string {
-	marker := "\n\n## Compacted Context Summary\n\n"
-	if idx := strings.Index(content, marker); idx >= 0 {
-		return content[:idx]
-	}
-	return content
 }
 
 func (c *Compactor) summarize(ctx context.Context, fullHistory, toCompact []schema.Message) (string, error) {

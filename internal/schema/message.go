@@ -34,12 +34,13 @@ type Message struct {
 
 // Usage reports token consumption attributed to a single LLM API response.
 // CacheCreationTokens and CacheReadTokens are zero for providers without
-// prompt-caching support.
+// prompt-caching support. Fields are int64 to match the wire types reported
+// by upstream SDKs and to avoid silent truncation on 32-bit platforms.
 type Usage struct {
-	InputTokens         int `json:"input_tokens"`
-	OutputTokens        int `json:"output_tokens"`
-	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
-	CacheReadTokens     int `json:"cache_read_tokens,omitempty"`
+	InputTokens         int64 `json:"input_tokens"`
+	OutputTokens        int64 `json:"output_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
+	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
 }
 
 // ToolCall describes a single tool invocation requested by the assistant,

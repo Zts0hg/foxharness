@@ -50,12 +50,17 @@ func (alwaysCompactEstimator) Estimate(messages []schema.Message) int {
 	return 100
 }
 
+// newTestCompactor wires up a Compactor that always triggers compaction so
+// tests can drive small message sets through MaybeCompact without needing
+// hundreds of synthetic messages to cross the production threshold.
 func newTestCompactor(t *testing.T, p provider.LLMProvider, opts ...func(*CompactionConfig)) *Compactor {
 	t.Helper()
 	cfg := DefaultCompactionConfig()
 	cfg.Model = "test-model"
 	cfg.RecentKeep = 1
 	cfg.ContextWindow = 10000
+	cfg.Estimator = alwaysCompactEstimator{}
+	cfg.AutoCompactThreshold = 1
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -69,8 +74,6 @@ func newTestCompactor(t *testing.T, p provider.LLMProvider, opts ...func(*Compac
 func TestMaybeCompactKeepsOriginalUserAndToolProtocolSuffix(t *testing.T) {
 	p := &fakeProvider{}
 	c := newTestCompactor(t, p)
-	c.SetEstimator(alwaysCompactEstimator{})
-	c.SetAutoCompactThreshold(1)
 
 	messages := []schema.Message{
 		{Role: schema.RoleSystem, Content: "system rules"},
@@ -122,8 +125,6 @@ func TestMaybeCompactKeepsOriginalUserAndToolProtocolSuffix(t *testing.T) {
 func TestCompactor_RecursiveGuard(t *testing.T) {
 	p := &stubProvider{}
 	c := newTestCompactor(t, p)
-	c.SetEstimator(alwaysCompactEstimator{})
-	c.SetAutoCompactThreshold(1)
 	c.compacting = true
 
 	messages := []schema.Message{
@@ -149,8 +150,6 @@ func TestCompactor_DisableViaEnvAll(t *testing.T) {
 	t.Setenv("FOXHARNESS_DISABLE_COMPACT", "1")
 	p := &stubProvider{}
 	c := newTestCompactor(t, p)
-	c.SetEstimator(alwaysCompactEstimator{})
-	c.SetAutoCompactThreshold(1)
 
 	messages := []schema.Message{
 		{Role: schema.RoleSystem, Content: "sys"},
@@ -176,8 +175,6 @@ func TestCompactor_DisableViaEnvAuto(t *testing.T) {
 	t.Setenv("FOXHARNESS_DISABLE_AUTO_COMPACT", "true")
 	p := &stubProvider{}
 	c := newTestCompactor(t, p)
-	c.SetEstimator(alwaysCompactEstimator{})
-	c.SetAutoCompactThreshold(1)
 
 	messages := []schema.Message{
 		{Role: schema.RoleSystem, Content: "sys"},
@@ -201,8 +198,6 @@ func TestCompactor_DisableViaConfig(t *testing.T) {
 	c := newTestCompactor(t, p, func(c *CompactionConfig) {
 		c.Enabled = false
 	})
-	c.SetEstimator(alwaysCompactEstimator{})
-	c.SetAutoCompactThreshold(1)
 
 	messages := []schema.Message{
 		{Role: schema.RoleSystem, Content: "sys"},
@@ -225,8 +220,6 @@ func TestCompactor_EnvVarOverridesConfig(t *testing.T) {
 	c := newTestCompactor(t, p, func(c *CompactionConfig) {
 		c.Enabled = true
 	})
-	c.SetEstimator(alwaysCompactEstimator{})
-	c.SetAutoCompactThreshold(1)
 
 	messages := []schema.Message{
 		{Role: schema.RoleSystem, Content: "sys"},
@@ -303,8 +296,6 @@ func TestCompact_SummaryWithNoTools(t *testing.T) {
 		},
 	}
 	c := newTestCompactor(t, p)
-	c.SetEstimator(alwaysCompactEstimator{})
-	c.SetAutoCompactThreshold(1)
 
 	messages := []schema.Message{
 		{Role: schema.RoleSystem, Content: "sys"},
@@ -354,8 +345,6 @@ func TestMaybeCompact_MessageFormat(t *testing.T) {
 		},
 	}
 	c := newTestCompactor(t, p)
-	c.SetEstimator(alwaysCompactEstimator{})
-	c.SetAutoCompactThreshold(1)
 
 	messages := []schema.Message{
 		{Role: schema.RoleSystem, Content: "sys"},
@@ -418,8 +407,6 @@ func TestMaybeCompact_SummaryFailureReturnsOriginal(t *testing.T) {
 	t.Setenv("FOXHARNESS_DISABLE_AUTO_COMPACT", "")
 	p := &stubProvider{err: errors.New("upstream failure")}
 	c := newTestCompactor(t, p)
-	c.SetEstimator(alwaysCompactEstimator{})
-	c.SetAutoCompactThreshold(1)
 
 	messages := []schema.Message{
 		{Role: schema.RoleSystem, Content: "sys"},
