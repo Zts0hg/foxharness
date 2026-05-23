@@ -120,6 +120,14 @@ func (s *Session) ArtifactsDir() string {
 	return filepath.Join(s.RootDir, "artifacts")
 }
 
+// ToolResultsDir returns the directory used to persist tool results that
+// exceed the in-context size threshold. The directory is created lazily by
+// the persistence layer rather than at session construction so existing
+// session directories remain backward-compatible.
+func (s *Session) ToolResultsDir() string {
+	return filepath.Join(s.RootDir, "tool-results")
+}
+
 // RunsDir returns the directory path for run-specific artifacts.
 func (s *Session) RunsDir() string {
 	return filepath.Join(s.RootDir, "runs")

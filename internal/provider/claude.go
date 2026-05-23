@@ -56,7 +56,7 @@ func (p *ClaudeProvider) ModelName() string {
 
 // Generate translates foxharness messages/tools into Anthropic Messages API
 // requests and normalizes text/tool_use response blocks back to schema.Message.
-func (p *ClaudeProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+func (p *ClaudeProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*GenerateResponse, error) {
 	anthropicMessages, systemBlocks := toAnthropicMessages(messages)
 	anthropicTools := toAnthropicTools(availableTools)
 
@@ -94,7 +94,16 @@ func (p *ClaudeProvider) Generate(ctx context.Context, messages []schema.Message
 	}
 
 	normalized := schema.NormalizeMessage(*result)
-	return &normalized, nil
+	usage := schema.Usage{
+		InputTokens:         resp.Usage.InputTokens,
+		OutputTokens:        resp.Usage.OutputTokens,
+		CacheCreationTokens: resp.Usage.CacheCreationInputTokens,
+		CacheReadTokens:     resp.Usage.CacheReadInputTokens,
+	}
+	return &GenerateResponse{
+		Message: &normalized,
+		Usage:   usage,
+	}, nil
 }
 
 func (p *ClaudeProvider) messagesNewWithRetry(ctx context.Context, params anthropic.MessageNewParams) (*anthropic.Message, error) {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -15,8 +16,10 @@ import (
 
 type finalProvider struct{}
 
-func (p *finalProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
-	return &schema.Message{Role: schema.RoleAssistant, Content: "done"}, nil
+func (p *finalProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	return &provider.GenerateResponse{
+		Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"},
+	}, nil
 }
 
 type loopingProvider struct {
@@ -24,16 +27,20 @@ type loopingProvider struct {
 	finalAfter int
 }
 
-func (p *loopingProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+func (p *loopingProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
 	p.calls++
 	if p.calls >= p.finalAfter {
-		return &schema.Message{Role: schema.RoleAssistant, Content: "done"}, nil
+		return &provider.GenerateResponse{
+			Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"},
+		}, nil
 	}
-	return &schema.Message{
-		Role:    schema.RoleAssistant,
-		Content: fmt.Sprintf("turn %d", p.calls),
-		ToolCalls: []schema.ToolCall{
-			{ID: fmt.Sprintf("call-%d", p.calls), Name: "missing_tool"},
+	return &provider.GenerateResponse{
+		Message: &schema.Message{
+			Role:    schema.RoleAssistant,
+			Content: fmt.Sprintf("turn %d", p.calls),
+			ToolCalls: []schema.ToolCall{
+				{ID: fmt.Sprintf("call-%d", p.calls), Name: "missing_tool"},
+			},
 		},
 	}, nil
 }

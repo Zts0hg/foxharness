@@ -198,7 +198,7 @@ Common options:
 | `-provider` | Provider protocol: `openai` or `claude`. Defaults to `openai`. |
 | `-plan` | Enable Plan Mode. Defaults to `true`. |
 | `-thinking` | Enable legacy per-turn thinking mode when Plan Mode is not used. |
-| `-max-turns` | Maximum agent turns. Defaults to `20`. |
+| `-max-turns` | Maximum agent turns. Defaults to unlimited; use a positive value to cap turns. |
 | `-c`, `-continue` | Resume the latest CLI session. |
 | `-r`, `-session` | Resume a specific session ID. |
 | `-new` | Force creation of a new session. |
@@ -350,7 +350,16 @@ The GitHub Actions release workflow builds binaries for:
 
 Each release uploads both versioned archives, such as `fox_vX.Y.Z_linux_amd64.tar.gz`, and stable latest-download archives, such as `fox_linux_amd64.tar.gz`.
 
-Create and push a version tag to publish a release:
+To publish the next patch release from the latest remote `main`, run:
+
+```bash
+scripts/release-patch.sh --dry-run
+scripts/release-patch.sh
+```
+
+The script finds the latest `vMAJOR.MINOR.PATCH` tag, increments the patch number, tags `origin/main`, and pushes the new tag. Pushing the tag triggers the release workflow.
+
+To publish a specific version manually, create and push a version tag:
 
 ```bash
 git tag -a vX.Y.Z -m "vX.Y.Z"

@@ -118,11 +118,14 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 			MaxTurns:       24,
 		},
 	)
-	eng.WithCompactor(compaction.NewCompactor(
-		r.provider,
-		compaction.RoughEstimator{},
-		compaction.DefaultConfig(),
-	))
+	compCfg := compaction.DefaultCompactionConfig()
+	compCfg.SessionDir = sess.RootDir
+	compCfg.TranscriptPath = sess.TranscriptPath()
+	compactor, err := compaction.NewCompactor(r.provider, compCfg)
+	if err != nil {
+		return fmt.Errorf("初始化 Compactor 失败: %w", err)
+	}
+	eng.WithCompactor(compactor)
 
 	result, err := eng.Run(ctx, sess, taskPrompt)
 	if err != nil {

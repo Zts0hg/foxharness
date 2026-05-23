@@ -15,6 +15,48 @@ import (
 	"github.com/openai/openai-go/v3/option"
 )
 
+func TestOpenAIProviderReturnsUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, err := fmt.Fprint(w, `{
+			"id": "chatcmpl-test",
+			"object": "chat.completion",
+			"created": 0,
+			"model": "test-model",
+			"choices": [{
+				"index": 0,
+				"message": {"role": "assistant", "content": "ok"},
+				"finish_reason": "stop"
+			}],
+			"usage": {"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500}
+		}`)
+		if err != nil {
+			t.Fatalf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestOpenAIProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	resp, err := provider.Generate(context.Background(), []schema.Message{
+		{Role: schema.RoleUser, Content: "hello"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if resp == nil || resp.Message == nil {
+		t.Fatalf("Generate() returned nil response or message")
+	}
+	if resp.Message.Content != "ok" {
+		t.Fatalf("Message.Content = %q, want ok", resp.Message.Content)
+	}
+	if resp.Usage.InputTokens != 1000 {
+		t.Fatalf("Usage.InputTokens = %d, want 1000", resp.Usage.InputTokens)
+	}
+	if resp.Usage.OutputTokens != 500 {
+		t.Fatalf("Usage.OutputTokens = %d, want 500", resp.Usage.OutputTokens)
+	}
+}
+
 func TestOpenAIProviderRetriesTransientHTTPFailure(t *testing.T) {
 	var attempts int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -33,14 +75,14 @@ func TestOpenAIProviderRetriesTransientHTTPFailure(t *testing.T) {
 		MaxDelay:     time.Nanosecond,
 	})
 
-	msg, err := provider.Generate(context.Background(), []schema.Message{
+	resp, err := provider.Generate(context.Background(), []schema.Message{
 		{Role: schema.RoleUser, Content: "hello"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	if msg.Content != "recovered" {
-		t.Fatalf("content = %q, want recovered", msg.Content)
+	if resp.Message.Content != "recovered" {
+		t.Fatalf("content = %q, want recovered", resp.Message.Content)
 	}
 	if attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts)
@@ -65,14 +107,14 @@ func TestOpenAIProviderRetriesPerAttemptTimeout(t *testing.T) {
 		MaxDelay:     time.Nanosecond,
 	}, option.WithRequestTimeout(5*time.Millisecond))
 
-	msg, err := provider.Generate(context.Background(), []schema.Message{
+	resp, err := provider.Generate(context.Background(), []schema.Message{
 		{Role: schema.RoleUser, Content: "hello"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	if msg.Content != "after timeout" {
-		t.Fatalf("content = %q, want after timeout", msg.Content)
+	if resp.Message.Content != "after timeout" {
+		t.Fatalf("content = %q, want after timeout", resp.Message.Content)
 	}
 	if attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts)
@@ -138,7 +180,7 @@ func TestOpenAIProviderNormalizesEmptyToolCallArguments(t *testing.T) {
 	defer server.Close()
 
 	provider := newTestOpenAIProvider(server.URL, RetryConfig{MaxAttempts: 1})
-	msg, err := provider.Generate(context.Background(), []schema.Message{
+	resp, err := provider.Generate(context.Background(), []schema.Message{
 		{Role: schema.RoleUser, Content: "read README"},
 	}, []schema.ToolDefinition{{
 		Name: "read_file",
@@ -152,10 +194,10 @@ func TestOpenAIProviderNormalizesEmptyToolCallArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	if len(msg.ToolCalls) != 1 {
-		t.Fatalf("ToolCalls len = %d, want 1", len(msg.ToolCalls))
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1", len(resp.Message.ToolCalls))
 	}
-	if got := string(msg.ToolCalls[0].Arguments); got != "{}" {
+	if got := string(resp.Message.ToolCalls[0].Arguments); got != "{}" {
 		t.Fatalf("tool call arguments = %q, want {}", got)
 	}
 }

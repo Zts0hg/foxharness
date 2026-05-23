@@ -63,19 +63,20 @@ func (p *Planner) BuildPlan(ctx context.Context, userPrompt string) error {
 	if err != nil {
 		return fmt.Errorf("生成 Plan 失败: %w", err)
 	}
-	if resp == nil {
+	if resp == nil || resp.Message == nil {
 		return fmt.Errorf("生成 Plan 失败: provider 返回空响应")
 	}
 
-	draft, err := parsePlanDraft(resp.Content)
+	content := resp.Message.Content
+	draft, err := parsePlanDraft(content)
 	if err != nil {
-		return fmt.Errorf("解析 Plan JSON 失败: %w\nRaw Response Content:\n%s", err, resp.Content)
+		return fmt.Errorf("解析 Plan JSON 失败: %w\nRaw Response Content:\n%s", err, content)
 	}
 
 	plan := strings.TrimSpace(draft.Plan)
 	todo := strings.TrimSpace(draft.Todo)
 	if strings.TrimSpace(plan) == "" || strings.TrimSpace(todo) == "" {
-		return fmt.Errorf("Plan JSON 缺少有效的 plan 或 todo 字段\nRaw Response Content:\n%s", resp.Content)
+		return fmt.Errorf("Plan JSON 缺少有效的 plan 或 todo 字段\nRaw Response Content:\n%s", content)
 	}
 
 	if err := os.WriteFile(p.store.PlanPath(), []byte(ensureTrailingNewline(plan)), 0644); err != nil {

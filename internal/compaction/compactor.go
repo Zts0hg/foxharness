@@ -8,19 +8,43 @@ package compaction
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// EnvDisableCompact is the environment variable name that disables all
+// compaction operations (both automatic and any future manual triggers).
+const EnvDisableCompact = "FOXHARNESS_DISABLE_COMPACT"
+
+// EnvDisableAutoCompact is the environment variable name that disables only
+// automatic compaction while leaving manual triggers enabled.
+const EnvDisableAutoCompact = "FOXHARNESS_DISABLE_AUTO_COMPACT"
+
+// DefaultRecentKeep is the number of trailing messages preserved verbatim
+// when compaction collapses earlier turns.
+const DefaultRecentKeep = 12
+
+// DefaultSummaryMaxTokens is the historical summary response budget; the
+// engine relies on the LLM's natural output length and treats this as a soft
+// hint for compatibility with persisted configurations.
+const DefaultSummaryMaxTokens = 2048
+
 // TokenEstimator estimates the token cost of a message slice.
 type TokenEstimator interface {
 	Estimate(messages []schema.Message) int
 }
 
-// RoughEstimator provides a fast, rune-count-based token approximation.
+// RoughEstimator provides a fast, rune-count-based token approximation. It is
+// retained for callers and tests that still depend on the historical
+// estimator. New code should prefer ImprovedRoughEstimator with
+// HybridEstimator for more accurate counting.
 type RoughEstimator struct{}
 
 // Estimate returns a rough token count for the given messages by summing
@@ -42,84 +66,197 @@ func (RoughEstimator) Estimate(messages []schema.Message) int {
 	return chars + 1
 }
 
-// Config controls the compaction behavior including token thresholds and
-// how many recent messages to preserve.
-type Config struct {
-	MaxTokens        int
-	SoftRatio        float64
-	RecentKeep       int
-	SummaryMaxTokens int
+// CompactionConfig controls the behavior of the Compactor. The Model field is
+// looked up in the embedded ModelRegistry to derive the ContextWindow when
+// ContextWindow is left zero. Enabled defaults to true and may be flipped to
+// false by config or environment variables.
+//
+// Estimator, AutoCompactThreshold, and Clock are optional injection points
+// primarily used by tests and benchmarks that need deterministic token counts
+// or timestamps. Leaving them at their zero values selects the production
+// defaults (HybridEstimator + ThresholdConfig.AutoCompact() + time.Now).
+type CompactionConfig struct {
+	Enabled              bool
+	Model                string
+	ContextWindow        int
+	RecentKeep           int
+	SummaryMaxTokens     int
+	SessionDir           string
+	TranscriptPath       string
+	Overrides            map[string]int
+	Estimator            TokenEstimator
+	AutoCompactThreshold int
+	Clock                func() time.Time
 }
 
-// DefaultConfig returns a Config with sensible defaults for a 128k-token
-// context window.
-func DefaultConfig() Config {
-	return Config{
-		MaxTokens:        128000,
-		SoftRatio:        0.75,
-		RecentKeep:       12,
-		SummaryMaxTokens: 2048,
+// DefaultCompactionConfig returns a CompactionConfig with Enabled=true and
+// the standard recent-message and summary budgets pre-populated.
+func DefaultCompactionConfig() CompactionConfig {
+	return CompactionConfig{
+		Enabled:          true,
+		RecentKeep:       DefaultRecentKeep,
+		SummaryMaxTokens: DefaultSummaryMaxTokens,
 	}
-
 }
 
-// Compactor decides when and how to summarize conversation history to
-// stay within token limits. It uses an LLM provider to generate summaries
-// of older messages while keeping recent context intact.
+// Compactor decides when and how to summarize conversation history to stay
+// within token limits. It tracks an active-compaction flag to prevent
+// recursive entry and reads disable toggles from configuration plus
+// environment variables.
 type Compactor struct {
-	provider  provider.LLMProvider
-	estimator TokenEstimator
-	config    Config
+	provider provider.LLMProvider
+
+	estimator  TokenEstimator
+	registry   *ModelRegistry
+	thresholds ThresholdConfig
+
+	config               CompactionConfig
+	autoCompactThreshold int
+	clock                func() time.Time
+
+	disabled     bool
+	autoDisabled bool
+
+	mu         sync.Mutex
+	compacting bool
 }
 
-// NewCompactor creates a Compactor with the given LLM provider, token
-// estimator, and configuration.
-func NewCompactor(p provider.LLMProvider, estimator TokenEstimator, config Config) *Compactor {
-	return &Compactor{
-		provider:  p,
-		estimator: estimator,
-		config:    config,
+// NewCompactor constructs a Compactor with the supplied provider and
+// configuration. The model name is resolved against the built-in
+// ModelRegistry (and any user overrides) to determine the context window
+// when CompactionConfig.ContextWindow is zero. Disable flags from
+// FOXHARNESS_DISABLE_COMPACT and FOXHARNESS_DISABLE_AUTO_COMPACT are read
+// once at construction time so the Compactor is hermetic per session.
+func NewCompactor(p provider.LLMProvider, cfg CompactionConfig) (*Compactor, error) {
+	if p == nil {
+		return nil, fmt.Errorf("compaction: provider is required")
 	}
+
+	registry := NewModelRegistry()
+	if len(cfg.Overrides) > 0 {
+		registry.SetConfigOverride(cfg.Overrides)
+	}
+
+	contextWindow := cfg.ContextWindow
+	if contextWindow <= 0 {
+		contextWindow = registry.Lookup(cfg.Model)
+	}
+	thresholds := DefaultThresholdConfig(contextWindow)
+	if thresholds.IsShortWindow() {
+		log.Printf("[Compactor] effective window %d is below 40K — compaction headroom is degraded", thresholds.EffectiveWindow())
+	}
+
+	if cfg.RecentKeep <= 0 {
+		cfg.RecentKeep = DefaultRecentKeep
+	}
+	if cfg.SummaryMaxTokens <= 0 {
+		cfg.SummaryMaxTokens = DefaultSummaryMaxTokens
+	}
+
+	estimator := cfg.Estimator
+	if estimator == nil {
+		estimator = NewHybridEstimator(ImprovedRoughEstimator{})
+	}
+
+	clock := cfg.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+
+	disabled := envHasValue(EnvDisableCompact)
+	autoDisabled := disabled || envHasValue(EnvDisableAutoCompact) || !cfg.Enabled
+
+	return &Compactor{
+		provider:             p,
+		estimator:            estimator,
+		registry:             registry,
+		thresholds:           thresholds,
+		config:               cfg,
+		autoCompactThreshold: cfg.AutoCompactThreshold,
+		clock:                clock,
+
+		disabled:     disabled,
+		autoDisabled: autoDisabled,
+	}, nil
 }
 
-// Estimate returns the estimated token cost for messages using the configured
-// estimator.
+// Estimate returns the estimated token count for messages using the
+// configured estimator.
 func (c *Compactor) Estimate(messages []schema.Message) int {
 	return c.estimator.Estimate(messages)
 }
 
 // Threshold returns the soft token threshold that triggers compaction.
+// When CompactionConfig.AutoCompactThreshold is set (non-zero), that value
+// takes precedence; otherwise the ThresholdConfig-derived value is used.
 func (c *Compactor) Threshold() int {
-	return int(float64(c.config.MaxTokens) * c.config.SoftRatio)
+	if c.autoCompactThreshold > 0 {
+		return c.autoCompactThreshold
+	}
+	return c.thresholds.AutoCompact()
 }
 
-// RecentKeep returns the number of recent messages preserved during compaction.
+// RecentKeep returns the number of recent messages preserved during
+// compaction.
 func (c *Compactor) RecentKeep() int {
 	return c.config.RecentKeep
 }
 
-// Summarize produces a high-density summary for messages.
+// Summarize produces a high-density summary for messages. The full message
+// history is used only to detect the summary language; the actual content
+// summarized is the supplied messages slice.
 func (c *Compactor) Summarize(ctx context.Context, messages []schema.Message) (string, error) {
-	return c.summarize(ctx, messages)
+	return c.summarize(ctx, messages, messages)
 }
 
-// SummaryMessage builds the model-visible summary marker used when projecting
-// a compacted session context.
-func SummaryMessage(summary string) schema.Message {
+// BuildSummaryMessage builds the model-visible summary message including the
+// continuation wrapper (REQ-009a). The wrapper instructs the model to resume
+// without acknowledging the summary and links to the full transcript for
+// detail recovery when the transcript path is non-empty.
+func BuildSummaryMessage(summary, transcriptPath string) schema.Message {
+	body := strings.TrimSpace(summary)
+	var b strings.Builder
+	b.WriteString("## Compacted Context Summary\n\n")
+	b.WriteString("This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion.\n\n")
+	b.WriteString(body)
+	b.WriteString("\n\n")
+	if transcriptPath != "" {
+		b.WriteString(fmt.Sprintf("If you need specific details from before compaction, read the full transcript at: %s\n\n", transcriptPath))
+	}
+	b.WriteString("Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary.")
 	return schema.Message{
-		Role: schema.RoleUser,
-		Content: "## Compacted Context Summary\n\n" +
-			"以下是较早会话历史的压缩摘要。原始消息仍保存在 session 的 messages.jsonl 中；此摘要仅用于控制本轮上下文窗口。\n\n" +
-			strings.TrimSpace(summary),
+		Role:    schema.RoleUser,
+		Content: b.String(),
 	}
 }
 
 // MaybeCompact checks whether the estimated token usage exceeds the
-// soft threshold and, if so, summarizes older messages into the system
-// prompt. It preserves the system message, the first user message as an
-// anchor, and the most recent messages. If compaction is not needed the
-// original slice is returned unchanged.
+// automatic-compaction threshold and, if so, summarizes older messages into a
+// new user message while preserving the system prompt, the first user message
+// anchor, and the most recent messages. If compaction is not needed or has
+// been disabled the original slice is returned unchanged.
 func (c *Compactor) MaybeCompact(ctx context.Context, messages []schema.Message) ([]schema.Message, error) {
+	// The mutex protects only the compacting flag — it is released before the
+	// estimator and provider calls so that concurrent MaybeCompact invocations
+	// can see the flag and bail out immediately rather than blocking on the
+	// in-flight summarize. The flag is reset under the mutex on the way out.
+	c.mu.Lock()
+	if c.compacting {
+		c.mu.Unlock()
+		return messages, nil
+	}
+	if c.disabled || c.autoDisabled {
+		c.mu.Unlock()
+		return messages, nil
+	}
+	c.compacting = true
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.compacting = false
+		c.mu.Unlock()
+	}()
+
 	used := c.Estimate(messages)
 	threshold := c.Threshold()
 
@@ -150,21 +287,35 @@ func (c *Compactor) MaybeCompact(ctx context.Context, messages []schema.Message)
 
 	old := messages[keepStart:split]
 	recent := messages[split:]
-	summary, err := c.summarize(ctx, old)
+	summary, err := c.summarize(ctx, messages, old)
 	if err != nil {
 		return messages, fmt.Errorf("context compaction 失败: %w", err)
 	}
 
-	compactedSystem := system
-	compactedSystem.Content = strings.TrimSpace(stripExistingCompactionSummary(system.Content)) +
-		"\n\n## Compacted Context Summary\n\n" +
-		"以下是较早会话历史的压缩摘要。它替代了已被压缩的原始消息，用于帮助你延续任务上下文。\n\n" +
-		summary
+	boundary := CompactBoundary{
+		Trigger:            "auto",
+		PreTokens:          used,
+		MessagesSummarized: len(old),
+		Timestamp:          c.clock().UTC().Format(time.RFC3339),
+	}
+	summaryMessage := BuildSummaryMessage(summary, c.config.TranscriptPath)
 
-	compacted := []schema.Message{compactedSystem}
+	compacted := make([]schema.Message, 0, 3+len(anchors)+len(recent))
+	compacted = append(compacted, system)
 	compacted = append(compacted, anchors...)
+	compacted = append(compacted, BoundaryMessage(boundary))
+	compacted = append(compacted, summaryMessage)
 	compacted = append(compacted, recent...)
+	c.runPostCompactCleanup(used, len(old), compacted)
 	return compacted, nil
+}
+
+// runPostCompactCleanup emits an observability log line summarizing the
+// compaction event with pre/post token counts as required by REQ-009c.
+func (c *Compactor) runPostCompactCleanup(preTokens, summarized int, compacted []schema.Message) {
+	postTokens := c.Estimate(compacted)
+	log.Printf("[Compactor] summarized %d messages (pre-tokens=%d post-tokens=%d delta=%d)",
+		summarized, preTokens, postTokens, preTokens-postTokens)
 }
 
 func moveSplitToProtocolBoundary(messages []schema.Message, split int, min int) int {
@@ -179,45 +330,21 @@ func moveSplitToProtocolBoundary(messages []schema.Message, split int, min int) 
 	return split
 }
 
-func stripExistingCompactionSummary(content string) string {
-	marker := "\n\n## Compacted Context Summary\n\n"
-	if idx := strings.Index(content, marker); idx >= 0 {
-		return content[:idx]
-	}
-	return content
-}
+func (c *Compactor) summarize(ctx context.Context, fullHistory, toCompact []schema.Message) (string, error) {
+	language := DetectSummaryLanguage(fullHistory)
+	prompt := BuildCompactPrompt(toCompact, language)
 
-func (c *Compactor) summarize(ctx context.Context, old []schema.Message) (string, error) {
-	text := renderMessagesForSummary(old)
-	prompt := fmt.Sprintf(`
-请将以下 Agent 会话历史压缩成一份高密度中文摘要。
-
-必须保留：
-- 用户的原始目标和约束。
-- 已经确认的关键事实。
-- 已经修改过的文件和修改意图。
-- 失败过的命令、错误原因和修复尝试。
-- 当前尚未解决的问题。
-- 下一步最合理的行动建议。
-
-不要保留：
-- 大段原始文件内容。
-- 重复日志。
-- 与任务无关的寒暄。
-
-会话历史如下：
-
-%s
-`, text)
 	resp, err := c.provider.Generate(ctx, []schema.Message{
 		{Role: schema.RoleUser, Content: prompt},
 	}, nil)
 	if err != nil {
 		return "", err
 	}
+	if resp == nil || resp.Message == nil {
+		return "", fmt.Errorf("compaction summary provider returned empty response")
+	}
 
-	return strings.TrimSpace(resp.Content), nil
-
+	return FormatSummary(resp.Message.Content), nil
 }
 
 func renderMessagesForSummary(messages []schema.Message) string {
@@ -252,4 +379,12 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "\n...[truncated for compaction]..."
+}
+
+func envHasValue(name string) bool {
+	v, ok := os.LookupEnv(name)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(v) != ""
 }

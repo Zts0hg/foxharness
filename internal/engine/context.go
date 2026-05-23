@@ -29,7 +29,8 @@ func (e *AgentEngine) buildInitialContext(
 		return nil, false, err
 	}
 
-	projected := projectedContext(systemMessage, state, history, currentUser)
+	transcriptPath := sess.TranscriptPath()
+	projected := projectedContext(systemMessage, transcriptPath, state, history, currentUser)
 	if e.compactor.Estimate(projected) < e.compactor.Threshold() {
 		return projected, false, nil
 	}
@@ -46,7 +47,7 @@ func (e *AgentEngine) buildInitialContext(
 
 	toSummarize := make([]schema.Message, 0, split+1)
 	if state.Summary != "" {
-		toSummarize = append(toSummarize, compaction.SummaryMessage(state.Summary))
+		toSummarize = append(toSummarize, compaction.BuildSummaryMessage(state.Summary, transcriptPath))
 	}
 	for _, record := range active[:split] {
 		toSummarize = append(toSummarize, record.Message)
@@ -65,7 +66,7 @@ func (e *AgentEngine) buildInitialContext(
 		return nil, false, err
 	}
 
-	return projectedContext(systemMessage, nextState, history, currentUser), true, nil
+	return projectedContext(systemMessage, transcriptPath, nextState, history, currentUser), true, nil
 }
 
 func rawContext(system schema.Message, history []session.MessageRecord, current schema.Message) []schema.Message {
@@ -78,12 +79,12 @@ func rawContext(system schema.Message, history []session.MessageRecord, current 
 	return messages
 }
 
-func projectedContext(system schema.Message, state *session.CompactState, history []session.MessageRecord, current schema.Message) []schema.Message {
+func projectedContext(system schema.Message, transcriptPath string, state *session.CompactState, history []session.MessageRecord, current schema.Message) []schema.Message {
 	active := recordsAfter(history, stateCoveredUntilSeq(state))
 	messages := make([]schema.Message, 0, len(active)+3)
 	messages = append(messages, system)
 	if state.Summary != "" {
-		messages = append(messages, compaction.SummaryMessage(state.Summary))
+		messages = append(messages, compaction.BuildSummaryMessage(state.Summary, transcriptPath))
 	}
 	for _, record := range active {
 		messages = append(messages, record.Message)

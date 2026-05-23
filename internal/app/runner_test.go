@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/memory"
+	providerpkg "github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
@@ -192,7 +193,7 @@ func TestAgentRunnerSetModelCallbackSuccess(t *testing.T) {
 	}
 }
 
-func (p *blockingLLMProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+func (p *blockingLLMProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*providerpkg.GenerateResponse, error) {
 	select {
 	case <-p.entered:
 	default:
@@ -201,7 +202,9 @@ func (p *blockingLLMProvider) Generate(ctx context.Context, messages []schema.Me
 
 	select {
 	case <-p.release:
-		return &schema.Message{Role: schema.RoleAssistant, Content: "done"}, nil
+		return &providerpkg.GenerateResponse{
+			Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"},
+		}, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
