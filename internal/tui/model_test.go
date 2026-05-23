@@ -1568,6 +1568,28 @@ func TestModelWideViewRendersSidebarDocuments(t *testing.T) {
 	}
 }
 
+func TestSidebarBoxHeightsSplitDocumentAreaEvenly(t *testing.T) {
+	heights := sidebarBoxHeights(22, 3)
+	if len(heights) != 3 {
+		t.Fatalf("sidebarBoxHeights len = %d, want 3: %#v", len(heights), heights)
+	}
+
+	total := 0
+	minHeight := heights[0]
+	maxHeight := heights[0]
+	for _, height := range heights {
+		total += height
+		minHeight = min(minHeight, height)
+		maxHeight = max(maxHeight, height)
+	}
+	if total != 22 {
+		t.Fatalf("sidebarBoxHeights total = %d, want 22: %#v", total, heights)
+	}
+	if maxHeight-minHeight > 1 {
+		t.Fatalf("sidebarBoxHeights should differ by at most one row: %#v", heights)
+	}
+}
+
 func TestModelWideViewSidebarLongPlanStartsAtTop(t *testing.T) {
 	workDir := t.TempDir()
 	sessionDir := t.TempDir()
@@ -2159,8 +2181,7 @@ func numberedLines(prefix string, count int) string {
 func sidebarPoint(t *testing.T, m Model, index int) (int, int) {
 	t.Helper()
 	contentWidth, contentHeight := m.contentDimensions()
-	width := m.sidebarWidth()
-	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarDocumentAreaHeight(contentHeight, len(m.sidebarDocuments)), m.sidebarDocuments)
+	heights := sidebarBoxHeights(sidebarDocumentAreaHeight(contentHeight, len(m.sidebarDocuments)), len(m.sidebarDocuments))
 	if index < 0 || index >= len(heights) {
 		t.Fatalf("sidebar index %d out of range for heights %#v", index, heights)
 	}

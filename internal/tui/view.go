@@ -329,7 +329,7 @@ func (m Model) renderSidebar(width int, height int) string {
 
 	contentWidth := sidebarContentWidth(width)
 	boxesHeight := sidebarDocumentAreaHeight(height, len(docs))
-	boxHeights := sidebarDocumentHeights(contentWidth, boxesHeight, docs)
+	boxHeights := sidebarBoxHeights(boxesHeight, len(docs))
 	sections := make([]string, 0, len(docs)+1)
 	for i, doc := range docs {
 		offset := 0
@@ -414,58 +414,6 @@ func sidebarSeparatorsHeight(count int) int {
 
 func renderSidebarSeparator(width int) string {
 	return sidebarDividerStyle.Render(strings.Repeat("┄", max(width, 1)))
-}
-
-func sidebarDocumentHeights(width int, height int, docs []sidebarDocument) []int {
-	if len(docs) == 0 {
-		return nil
-	}
-	heights := make([]int, len(docs))
-	total := 0
-	for i, doc := range docs {
-		lines := sidebarRenderedLineCount(doc, width)
-		heights[i] = min(max(lines+2, 5), 6)
-		total += heights[i]
-	}
-	for total > height {
-		changed := false
-		for i := range heights {
-			if total <= height {
-				break
-			}
-			if heights[i] > 5 {
-				heights[i]--
-				total--
-				changed = true
-			}
-		}
-		if !changed {
-			break
-		}
-	}
-	if total > height {
-		base := max(height/len(docs), 1)
-		remainder := max(height-base*len(docs), 0)
-		for i := range heights {
-			heights[i] = base
-			if i < remainder {
-				heights[i]++
-			}
-		}
-	}
-	return heights
-}
-
-func sidebarRenderedLineCount(doc sidebarDocument, width int) int {
-	text := doc.Content
-	if doc.Error != "" {
-		text = doc.Content + "\n" + doc.Error
-	}
-	rendered := xansi.Wrap(renderMarkdown(text, max(width, 20)), width, " ")
-	if strings.TrimSpace(rendered) == "" {
-		return 0
-	}
-	return len(strings.Split(rendered, "\n"))
 }
 
 func renderSidebarHint(width int, focused bool) string {

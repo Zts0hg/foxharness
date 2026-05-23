@@ -319,7 +319,7 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 	if len(docs) == 0 {
 		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
 	}
-	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarDocumentAreaHeight(contentHeight, len(docs)), docs)
+	heights := sidebarBoxHeights(sidebarDocumentAreaHeight(contentHeight, len(docs)), len(docs))
 	top := 0
 	for i, height := range heights {
 		bottom := top + height
@@ -353,7 +353,7 @@ func (m *Model) clampSidebarScrollOffsets() {
 
 	_, contentHeight := m.contentDimensions()
 	width := m.sidebarWidth()
-	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarDocumentAreaHeight(contentHeight, len(docs)), docs)
+	heights := sidebarBoxHeights(sidebarDocumentAreaHeight(contentHeight, len(docs)), len(docs))
 	for i := range m.sidebarScrollOffsets {
 		if i >= len(docs) || i >= len(heights) {
 			m.sidebarScrollOffsets[i] = 0
@@ -696,7 +696,7 @@ func (m Model) maxFocusedSidebarOffset() int {
 	}
 	_, contentHeight := m.contentDimensions()
 	width := m.sidebarWidth()
-	heights := sidebarDocumentHeights(sidebarContentWidth(width), sidebarDocumentAreaHeight(contentHeight, len(m.sidebarDocuments)), m.sidebarDocuments)
+	heights := sidebarBoxHeights(sidebarDocumentAreaHeight(contentHeight, len(m.sidebarDocuments)), len(m.sidebarDocuments))
 	if m.sidebarFocusIndex >= len(heights) {
 		return 0
 	}
