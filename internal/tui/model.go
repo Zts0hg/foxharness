@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -93,11 +96,24 @@ var slashCommands = []slashCommand{
 
 var workingFrames = []string{"•", "◦", "●", "◌"}
 
+type selectionPoint struct {
+	line int
+	col  int
+}
+
+type selectionState struct {
+	anchor   selectionPoint
+	focus    selectionPoint
+	active   bool
+	dragging bool
+}
+
 type Model struct {
-	ctx    context.Context
-	runner Runner
-	events chan tea.Msg
-	now    func() time.Time
+	ctx           context.Context
+	runner        Runner
+	events        chan tea.Msg
+	now           func() time.Time
+	copySelection func(string) error
 
 	width  int
 	height int
@@ -126,6 +142,7 @@ type Model struct {
 	mouseTail     []rune
 	mouseTailEsc  bool
 	mouseTailID   uint64
+	selection     selectionState
 
 	sessionID    string
 	modelName    string
@@ -158,6 +175,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		runner:            runner,
 		events:            make(chan tea.Msg, 256),
 		now:               time.Now,
+		copySelection:     copyToClipboard,
 		width:             96,
 		height:            28,
 		input:             []rune(cfg.InitialPrompt),
@@ -190,6 +208,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = max(msg.Width, minWidth)
 		m.height = max(msg.Height, minHeight)
+		m.clearSelection()
 		m.clampSidebarScrollOffsets()
 		if !m.shouldRenderSidebar() {
 			m.sidebarFocused = false
@@ -289,7 +308,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.selection.dragging && !isWheelMouse(msg) {
+		next, _ := m.handleTranscriptSelectionMouse(msg)
+		return next, nil
+	}
+
 	if sidebarIndex, ok := m.sidebarIndexAt(msg.X, msg.Y); ok {
+		if !isWheelMouse(msg) {
+			m.clearSelection()
+		}
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
 			m.sidebarScrollOffsets[sidebarIndex] -= scrollDelta("wheelup")
@@ -298,6 +325,10 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		m.clampSidebarScrollOffsets()
 		return m, nil
+	}
+
+	if next, ok := m.handleTranscriptSelectionMouse(msg); ok {
+		return next, nil
 	}
 
 	switch msg.Button {
@@ -310,6 +341,174 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func isWheelMouse(msg tea.MouseMsg) bool {
+	return msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown
+}
+
+func (m Model) handleTranscriptSelectionMouse(msg tea.MouseMsg) (Model, bool) {
+	if isWheelMouse(msg) {
+		return m, false
+	}
+
+	switch {
+	case msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress:
+		point, ok := m.transcriptPointAt(msg.X, msg.Y, false)
+		if !ok {
+			m.clearSelection()
+			return m, true
+		}
+		m.selection = selectionState{
+			anchor:   point,
+			focus:    point,
+			active:   true,
+			dragging: true,
+		}
+		return m, true
+
+	case m.selection.dragging && msg.Action == tea.MouseActionMotion:
+		point, ok := m.transcriptPointAt(msg.X, msg.Y, true)
+		if !ok {
+			return m, true
+		}
+		m.selection.focus = point
+		return m, true
+
+	case m.selection.dragging && msg.Action == tea.MouseActionRelease:
+		point, ok := m.transcriptPointAt(msg.X, msg.Y, true)
+		if ok {
+			m.selection.focus = point
+		}
+		m.selection.dragging = false
+		text := m.selectedTranscriptText()
+		if strings.TrimSpace(text) == "" {
+			m.clearSelection()
+			return m, true
+		}
+		if m.copySelection != nil {
+			if err := m.copySelection(text); err != nil {
+				m.status = "Copy failed: " + err.Error()
+			} else {
+				m.status = "Selection copied"
+			}
+		}
+		return m, true
+	}
+
+	return m, false
+}
+
+func (m Model) transcriptPointAt(x int, y int, clamp bool) (selectionPoint, bool) {
+	_, bodyHeight := m.contentDimensions()
+	layout := m.transcriptLayout(m.chatWidth(), bodyHeight)
+	if len(layout.plainLines) == 0 || layout.visibleEnd <= layout.visibleStart {
+		return selectionPoint{}, false
+	}
+
+	localX := x - viewPaddingLeft
+	localY := y - viewPaddingTop
+	if clamp {
+		localX = max(0, min(localX, m.chatWidth()))
+		localY = max(0, min(localY, layout.visibleEnd-layout.visibleStart-1))
+	} else if localX < 0 || localX >= m.chatWidth() || localY < 0 || localY >= layout.visibleEnd-layout.visibleStart {
+		return selectionPoint{}, false
+	}
+
+	line := layout.visibleStart + localY
+	if line < 0 || line >= len(layout.plainLines) {
+		return selectionPoint{}, false
+	}
+	col := max(0, min(localX, xansi.StringWidth(layout.plainLines[line])))
+	return selectionPoint{line: line, col: col}, true
+}
+
+func (m *Model) clearSelection() {
+	m.selection = selectionState{}
+}
+
+func (m Model) selectedTranscriptText() string {
+	if !m.selection.active {
+		return ""
+	}
+	layout := m.transcriptLayout(m.chatWidth(), m.transcriptHeight())
+	return selectedTextFromLines(layout.plainLines, m.selection)
+}
+
+func (m Model) transcriptHeight() int {
+	_, bodyHeight := m.contentDimensions()
+	return bodyHeight
+}
+
+func selectedTextFromLines(lines []string, selection selectionState) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	start, end := normalizedSelection(selection)
+	if start.line < 0 {
+		start.line = 0
+	}
+	if end.line < 0 {
+		return ""
+	}
+	if start.line >= len(lines) {
+		return ""
+	}
+	if end.line >= len(lines) {
+		end.line = len(lines) - 1
+		end.col = xansi.StringWidth(lines[end.line])
+	}
+	if start.line == end.line && start.col == end.col {
+		return ""
+	}
+
+	out := make([]string, 0, end.line-start.line+1)
+	for line := start.line; line <= end.line; line++ {
+		plain := strings.TrimRight(lines[line], " \t")
+		width := xansi.StringWidth(plain)
+		left, right := 0, width
+		if line == start.line {
+			left = min(max(start.col, 0), width)
+		}
+		if line == end.line {
+			right = min(max(end.col, 0), width)
+		}
+		if right < left {
+			right = left
+		}
+		out = append(out, xansi.Cut(plain, left, right))
+	}
+	return strings.Join(out, "\n")
+}
+
+func normalizedSelection(selection selectionState) (selectionPoint, selectionPoint) {
+	start := selection.anchor
+	end := selection.focus
+	if end.line < start.line || (end.line == start.line && end.col < start.col) {
+		start, end = end, start
+	}
+	return start, end
+}
+
+func copyToClipboard(text string) error {
+	cmd := exec.Command("pbcopy")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	_, writeErr := io.WriteString(stdin, text)
+	closeErr := stdin.Close()
+	waitErr := cmd.Wait()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return waitErr
 }
 
 func (m Model) sidebarIndexAt(x int, y int) (int, bool) {

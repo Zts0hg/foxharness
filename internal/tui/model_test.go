@@ -889,6 +889,146 @@ func TestModelMouseWheelScrollsTranscript(t *testing.T) {
 	}
 }
 
+func TestTranscriptPointAtUsesVisibleScrollOffset(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = nil
+	for i := 0; i < 12; i++ {
+		m.appendCommandEntry(fmt.Sprintf("line %02d", i), fmt.Sprintf("body %02d", i))
+	}
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	m.scrollOffset = 2
+
+	layout := m.transcriptLayout(m.chatWidth(), m.transcriptHeight())
+	localY := 0
+	for i := layout.visibleStart; i < layout.visibleEnd; i++ {
+		if len(layout.plainLines[i]) >= 8 {
+			localY = i - layout.visibleStart
+			break
+		}
+	}
+	point, ok := m.transcriptPointAt(viewPaddingLeft+3, viewPaddingTop+localY, false)
+	if !ok {
+		t.Fatalf("transcript point did not map")
+	}
+	if point.line != layout.visibleStart+localY || point.col != 3 {
+		t.Fatalf("point = %+v, want line %d col 3", point, layout.visibleStart+localY)
+	}
+}
+
+func TestTranscriptDragSelectionCopiesSingleLine(t *testing.T) {
+	m, copied := selectableTranscriptModel(t, "alpha beta gamma")
+	line, col := findTranscriptText(t, m, "alpha beta gamma")
+
+	m, _ = update(t, m, tea.MouseMsg{X: viewPaddingLeft + col, Y: viewPaddingTop + line, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m, _ = update(t, m, tea.MouseMsg{X: viewPaddingLeft + col + len("alpha beta"), Y: viewPaddingTop + line, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	m, _ = update(t, m, tea.MouseMsg{X: viewPaddingLeft + col + len("alpha beta"), Y: viewPaddingTop + line, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+
+	if *copied != "alpha beta" {
+		t.Fatalf("copied = %q, want alpha beta", *copied)
+	}
+}
+
+func TestTranscriptDragSelectionCopiesMultipleLinesAndReverse(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = nil
+	m.appendCommandEntry("selection fixture", "alpha beta\ngamma delta")
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	copied := ""
+	m.copySelection = func(text string) error {
+		copied = text
+		return nil
+	}
+	firstLine, firstCol := findTranscriptText(t, m, "alpha beta")
+	secondLine, secondCol := findTranscriptText(t, m, "gamma delta")
+
+	m, _ = update(t, m, tea.MouseMsg{X: viewPaddingLeft + secondCol + len("gamma"), Y: viewPaddingTop + secondLine, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m, _ = update(t, m, tea.MouseMsg{X: viewPaddingLeft + firstCol + len("alpha "), Y: viewPaddingTop + firstLine, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	m, _ = update(t, m, tea.MouseMsg{X: viewPaddingLeft + firstCol + len("alpha "), Y: viewPaddingTop + firstLine, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+
+	want := "beta\n  gamma"
+	if copied != want {
+		t.Fatalf("copied = %q, want %q", copied, want)
+	}
+}
+
+func TestTranscriptDragSelectionEmptyDoesNotCopy(t *testing.T) {
+	m, copied := selectableTranscriptModel(t, "alpha beta")
+	line, col := findTranscriptText(t, m, "alpha beta")
+
+	m, _ = update(t, m, tea.MouseMsg{X: viewPaddingLeft + col, Y: viewPaddingTop + line, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m, _ = update(t, m, tea.MouseMsg{X: viewPaddingLeft + col, Y: viewPaddingTop + line, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+
+	if *copied != "" {
+		t.Fatalf("copied = %q, want empty", *copied)
+	}
+	if m.selection.active {
+		t.Fatalf("empty selection should be cleared")
+	}
+}
+
+func TestTranscriptDragSelectionClampsOutsideBounds(t *testing.T) {
+	m, copied := selectableTranscriptModel(t, "alpha beta")
+	line, col := findTranscriptText(t, m, "alpha beta")
+
+	m, _ = update(t, m, tea.MouseMsg{X: viewPaddingLeft + col + len("alpha "), Y: viewPaddingTop + line, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m, _ = update(t, m, tea.MouseMsg{X: -10, Y: -10, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	m, _ = update(t, m, tea.MouseMsg{X: -10, Y: -10, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+
+	if *copied != "alpha " {
+		t.Fatalf("copied = %q, want %q", *copied, "alpha ")
+	}
+}
+
+func TestTranscriptSelectionHighlightRendersVisibleRange(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = nil
+	for i := 0; i < 30; i++ {
+		body := fmt.Sprintf("line %02d", i)
+		if i == 29 {
+			body = "alpha beta"
+		}
+		m.appendCommandEntry(fmt.Sprintf("entry %02d", i), body)
+	}
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	line, col := findTranscriptText(t, m, "alpha beta")
+	layout := m.transcriptLayout(m.chatWidth(), m.transcriptHeight())
+	m.selection = selectionState{
+		anchor: selectionPoint{line: layout.visibleStart + line, col: col + len("alpha ")},
+		focus:  selectionPoint{line: layout.visibleStart + line, col: col + len("alpha beta")},
+		active: true,
+	}
+
+	rendered := m.renderBody(m.chatWidth(), m.transcriptHeight())
+	if !strings.Contains(rendered, selectionStyle.Render("beta")) {
+		t.Fatalf("rendered body does not contain highlighted selection:\n%s", rendered)
+	}
+
+	m.scrollOffset = 8
+	rendered = m.renderBody(m.chatWidth(), m.transcriptHeight())
+	if strings.Contains(rendered, selectionStyle.Render("beta")) {
+		t.Fatalf("scrolled body should not highlight non-visible selection:\n%s", rendered)
+	}
+}
+
+func TestTranscriptSelectionHighlightOverridesMarkdownStyling(t *testing.T) {
+	m, _ := selectableTranscriptModel(t, "## foxharness 项目定位分析")
+	line, col := findTranscriptText(t, m, "foxharness")
+	layout := m.transcriptLayout(m.chatWidth(), m.transcriptHeight())
+	m.selection = selectionState{
+		anchor: selectionPoint{line: layout.visibleStart + line, col: col},
+		focus:  selectionPoint{line: layout.visibleStart + line, col: col + len("foxharness")},
+		active: true,
+	}
+
+	rendered := m.renderBody(m.chatWidth(), m.transcriptHeight())
+	if !strings.Contains(rendered, selectionStyle.Render("foxharness")) {
+		t.Fatalf("rendered markdown heading should contain plain highlighted selected text:\n%s", rendered)
+	}
+}
+
 func TestFragmentedSGRMousePayloadDoesNotEnterInput(t *testing.T) {
 	runner := newFakeRunner()
 	for _, payload := range []string{
@@ -2226,6 +2366,34 @@ func update(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 		t.Fatalf("Update returned %T, want tui.Model", next)
 	}
 	return typed, cmd
+}
+
+func selectableTranscriptModel(t *testing.T, body string) (Model, *string) {
+	t.Helper()
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = nil
+	m.appendEntry("assistant", "", body, false)
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	copied := ""
+	m.copySelection = func(text string) error {
+		copied = text
+		return nil
+	}
+	return m, &copied
+}
+
+func findTranscriptText(t *testing.T, m Model, text string) (int, int) {
+	t.Helper()
+	layout := m.transcriptLayout(m.chatWidth(), m.transcriptHeight())
+	for line := layout.visibleStart; line < layout.visibleEnd; line++ {
+		col := strings.Index(layout.plainLines[line], text)
+		if col >= 0 {
+			return line - layout.visibleStart, col
+		}
+	}
+	t.Fatalf("did not find %q in visible transcript lines: %#v", text, layout.plainLines[layout.visibleStart:layout.visibleEnd])
+	return 0, 0
 }
 
 func keyRunes(s string) tea.KeyMsg {

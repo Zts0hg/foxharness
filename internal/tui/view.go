@@ -26,6 +26,8 @@ const (
 	amberDimHex           = "#B07E48"
 	amberDividerHex       = "#6b4520"
 	amberProgressEmptyHex = "#5a3020"
+	selectionBgHex        = "#FFC56B"
+	selectionFgHex        = "#1a0e03"
 )
 
 var (
@@ -40,6 +42,8 @@ var (
 	cTextVeryDim   = lipgloss.Color(amberDividerHex)
 	cMsgBg         = lipgloss.Color(amberPanelHex)
 	cProgressEmpty = lipgloss.Color(amberProgressEmptyHex)
+	cSelectionBg   = lipgloss.Color(selectionBgHex)
+	cSelectionFg   = lipgloss.Color(selectionFgHex)
 
 	outerStyle = lipgloss.NewStyle().
 			Foreground(cAccent).
@@ -79,6 +83,10 @@ var (
 
 	footerStyle = lipgloss.NewStyle().
 			Foreground(cTextMuted)
+
+	selectionStyle = lipgloss.NewStyle().
+			Foreground(cSelectionFg).
+			Background(cSelectionBg)
 
 	userBubbleStyle = lipgloss.NewStyle().
 			Foreground(cAccent).
@@ -288,11 +296,30 @@ func contextUsageStyle(percent int) lipgloss.Style {
 }
 
 func (m Model) renderBody(width int, height int) string {
+	layout := m.transcriptLayout(width, height)
+	lines := append([]string(nil), layout.styledLines[layout.visibleStart:layout.visibleEnd]...)
+	m.applySelectionHighlight(lines, layout.visibleStart)
+	view := strings.Join(lines, "\n")
+	return bodyStyle.Width(width).Height(height).Render(view)
+}
+
+type transcriptLayout struct {
+	styledLines  []string
+	plainLines   []string
+	visibleStart int
+	visibleEnd   int
+}
+
+func (m Model) transcriptLayout(width int, height int) transcriptLayout {
 	contentWidth := max(width, 20)
 	content := m.renderEntries(contentWidth)
 	lines := strings.Split(content, "\n")
 	if len(lines) == 1 && lines[0] == "" {
 		lines = []string{placeholderStyle.Render("Start typing below. Use /help for commands.")}
+	}
+	plainLines := make([]string, len(lines))
+	for i, line := range lines {
+		plainLines[i] = xansi.Strip(line)
 	}
 
 	visible := max(height-bodyStyle.GetVerticalFrameSize(), 1)
@@ -301,8 +328,40 @@ func (m Model) renderBody(width int, height int) string {
 		start = 0
 	}
 	end := min(start+visible, len(lines))
-	view := strings.Join(lines[start:end], "\n")
-	return bodyStyle.Width(width).Height(height).Render(view)
+	return transcriptLayout{
+		styledLines:  lines,
+		plainLines:   plainLines,
+		visibleStart: start,
+		visibleEnd:   end,
+	}
+}
+
+func (m Model) applySelectionHighlight(lines []string, absoluteStart int) {
+	if !m.selection.active {
+		return
+	}
+	start, end := normalizedSelection(m.selection)
+	for i := range lines {
+		lineNo := absoluteStart + i
+		if lineNo < start.line || lineNo > end.line {
+			continue
+		}
+		lineWidth := xansi.StringWidth(lines[i])
+		left, right := 0, lineWidth
+		if lineNo == start.line {
+			left = min(max(start.col, 0), lineWidth)
+		}
+		if lineNo == end.line {
+			right = min(max(end.col, 0), lineWidth)
+		}
+		if right <= left {
+			continue
+		}
+		before := xansi.Cut(lines[i], 0, left)
+		selected := xansi.Cut(xansi.Strip(lines[i]), left, right)
+		after := xansi.Cut(lines[i], right, lineWidth)
+		lines[i] = before + selectionStyle.Render(selected) + after
+	}
 }
 
 func (m Model) renderMainArea(height int) string {
@@ -816,7 +875,7 @@ func (m Model) renderCursor() string {
 }
 
 func (m Model) renderFooter(width int) string {
-	help := "Enter send | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown/wheel scroll | Ctrl+F sidebar | Ctrl+C twice quit"
+	help := "Enter send | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown/wheel scroll | drag select to copy | Ctrl+F sidebar | Ctrl+C twice quit"
 	if m.sidebarFocused {
 		help = "Tab switch box | Up/Down/PgUp/PgDown scroll | 1/2/3 select | Esc close | Ctrl+C twice quit"
 	} else if m.hasSlashMenu() {
