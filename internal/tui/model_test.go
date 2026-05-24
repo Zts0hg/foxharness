@@ -1969,7 +1969,7 @@ func TestModelMouseWheelScrollsSidebarPlan(t *testing.T) {
 	if strings.Contains(plainView, "plan line 01") {
 		t.Fatalf("scrolled sidebar plan should hide the first line:\n%s", plainView)
 	}
-	if !strings.Contains(plainView, "03 plan") {
+	if !strings.Contains(plainView, "plan line 03") {
 		t.Fatalf("scrolled sidebar plan should show later content:\n%s", plainView)
 	}
 }
@@ -2035,7 +2035,7 @@ func TestModelKeyboardFocusScrollsSidebarPlan(t *testing.T) {
 	if strings.Contains(plainView, "plan line 01") {
 		t.Fatalf("focused sidebar scroll should hide the first plan line:\n%s", plainView)
 	}
-	if !strings.Contains(plainView, "03 plan") {
+	if !strings.Contains(plainView, "plan line 03") {
 		t.Fatalf("focused sidebar scroll should show later plan content:\n%s", plainView)
 	}
 }
@@ -2201,6 +2201,63 @@ func TestSidebarBottomDoesNotReplaceContentWithEllipsis(t *testing.T) {
 	}
 	if strings.Contains(box, "...") {
 		t.Fatalf("bottom sidebar view should not show trailing ellipsis:\n%s", box)
+	}
+}
+
+func TestSidebarMarkdownListsKeepMarkersWithText(t *testing.T) {
+	doc := sidebarDocument{
+		Title: "Plan",
+		Content: strings.Join([]string{
+			"# PLAN",
+			"",
+			"1. 分析项目代码，定位 README.md 中 sidebar 渲染提前换行的问题，并补充测试。",
+			"2. 修复 PLAN 和 TODO 的列表换行。",
+			"3. 运行 go test ./...",
+			"4. 验证边界线位置不偏移。",
+		}, "\n"),
+	}
+
+	box := stripANSI(renderSidebarBox(doc, sidebarWidth, 14, 0))
+	lines := strings.Split(box, "\n")
+	for _, want := range []string{"1. 分析项目", "2. 修复", "3. 运行", "4. 验证"} {
+		if !lineContainsAll(lines, want) {
+			t.Fatalf("sidebar list item missing inline marker/text %q:\n%s", want, box)
+		}
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "1." || trimmed == "2." || trimmed == "3." || trimmed == "4." {
+			t.Fatalf("sidebar rendered dangling ordered marker:\n%s", box)
+		}
+	}
+}
+
+func TestSidebarMarkdownTasksKeepCheckboxWithText(t *testing.T) {
+	doc := sidebarDocument{
+		Title: "Todo",
+		Content: strings.Join([]string{
+			"# TODO",
+			"",
+			"- [ ] 检查 README.md 后面的长待办是否正常换行并保持缩进",
+			"- [x] 已完成 sidebar 宽度计算",
+		}, "\n"),
+	}
+
+	box := stripANSI(renderSidebarBox(doc, sidebarWidth, 12, 0))
+	lines := strings.Split(box, "\n")
+	for _, want := range []string{"[ ] 检查", "[✓] 已完成"} {
+		if !lineContainsAll(lines, want) {
+			t.Fatalf("sidebar task item missing inline checkbox/text %q:\n%s", want, box)
+		}
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "[ ]" || trimmed == "[✓]" {
+			t.Fatalf("sidebar rendered dangling checkbox:\n%s", box)
+		}
+		if lipgloss.Width(line) > sidebarWidth {
+			t.Fatalf("sidebar task line width = %d, want <= %d: %q\n%s", lipgloss.Width(line), sidebarWidth, line, box)
+		}
 	}
 }
 

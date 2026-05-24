@@ -442,8 +442,7 @@ func renderSidebarSection(doc sidebarDocument, width int, height int, offset int
 	if doc.Error != "" {
 		text = doc.Content + "\n" + doc.Error
 	}
-	rendered := xansi.Wrap(renderMarkdown(text, max(width, 20)), width, " ")
-	lines := strings.Split(rendered, "\n")
+	lines := sidebarDocumentLines(text, width)
 	bodyLines := max(height-1, 1)
 	offset = clampSidebarOffset(offset, len(lines), bodyLines)
 	lines = sidebarVisibleLines(lines, offset, bodyLines)
@@ -521,8 +520,7 @@ func renderSidebarBoxWithFocus(doc sidebarDocument, width int, height int, offse
 	if doc.Error != "" {
 		text = doc.Content + "\n" + doc.Error
 	}
-	rendered := xansi.Wrap(renderMarkdown(text, max(bodyWidth, 20)), bodyWidth, " ")
-	lines := strings.Split(rendered, "\n")
+	lines := sidebarDocumentLines(text, bodyWidth)
 	availableBodyLines := max(contentHeight-2, 0)
 	offset = clampSidebarOffset(offset, len(lines), availableBodyLines)
 	if len(lines) > availableBodyLines {
@@ -573,9 +571,96 @@ func maxSidebarScrollOffset(doc sidebarDocument, width int, height int) int {
 	if doc.Error != "" {
 		text = doc.Content + "\n" + doc.Error
 	}
-	lines := strings.Split(xansi.Wrap(renderMarkdown(text, max(bodyWidth, 20)), bodyWidth, " "), "\n")
+	lines := sidebarDocumentLines(text, bodyWidth)
 	availableBodyLines := max(contentHeight-2, 0)
 	return clampSidebarOffset(len(lines), len(lines), availableBodyLines)
+}
+
+func sidebarDocumentLines(text string, width int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return []string{""}
+	}
+	width = max(width, 10)
+
+	var lines []string
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimRight(raw, " \t")
+		if strings.TrimSpace(line) == "" {
+			lines = append(lines, "")
+			continue
+		}
+		if prefix, body, ok := sidebarListPrefix(line); ok {
+			lines = append(lines, wrapSidebarPrefixedLine(prefix, body, width)...)
+			continue
+		}
+		lines = append(lines, wrapPlainLine(strings.TrimSpace(line), width)...)
+	}
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
+}
+
+func sidebarListPrefix(line string) (string, string, bool) {
+	indentLen := len(line) - len(strings.TrimLeft(line, " \t"))
+	indent := strings.Repeat(" ", min(indentLen, 8))
+	trimmed := strings.TrimLeft(line, " \t")
+
+	for _, marker := range []string{"- [ ] ", "* [ ] "} {
+		if strings.HasPrefix(trimmed, marker) {
+			return indent + "[ ] ", strings.TrimSpace(strings.TrimPrefix(trimmed, marker)), true
+		}
+	}
+	for _, marker := range []string{"- [x] ", "- [X] ", "* [x] ", "* [X] "} {
+		if strings.HasPrefix(trimmed, marker) {
+			return indent + "[✓] ", strings.TrimSpace(trimmed[len(marker):]), true
+		}
+	}
+	for _, marker := range []string{"- ", "* "} {
+		if strings.HasPrefix(trimmed, marker) {
+			return indent + "• ", strings.TrimSpace(strings.TrimPrefix(trimmed, marker)), true
+		}
+	}
+
+	dot := strings.IndexByte(trimmed, '.')
+	if dot <= 0 || dot+1 >= len(trimmed) || trimmed[dot+1] != ' ' {
+		return "", "", false
+	}
+	for _, r := range trimmed[:dot] {
+		if r < '0' || r > '9' {
+			return "", "", false
+		}
+	}
+	return indent + trimmed[:dot+2], strings.TrimSpace(trimmed[dot+2:]), true
+}
+
+func wrapSidebarPrefixedLine(prefix string, body string, width int) []string {
+	prefix = fitLine(prefix, max(width-1, 1))
+	prefixWidth := lipgloss.Width(prefix)
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return []string{fitLine(prefix, width)}
+	}
+
+	continuation := strings.Repeat(" ", min(prefixWidth, max(width-1, 1)))
+	var lines []string
+	currentPrefix := prefix
+	remaining := body
+	for {
+		available := max(width-lipgloss.Width(currentPrefix), 1)
+		head, tail := splitLineAtWidth(remaining, available)
+		if strings.TrimSpace(head) == "" {
+			head, tail = splitLineAtWidth(remaining, max(available, 2))
+		}
+		lines = append(lines, fitLine(currentPrefix+head, width))
+		if strings.TrimSpace(tail) == "" {
+			break
+		}
+		currentPrefix = continuation
+		remaining = strings.TrimSpace(tail)
+	}
+	return lines
 }
 
 func clampSidebarOffset(offset int, lineCount int, availableBodyLines int) int {
