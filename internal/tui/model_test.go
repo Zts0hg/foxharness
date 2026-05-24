@@ -1974,6 +1974,61 @@ func TestModelMouseWheelScrollsSidebarPlan(t *testing.T) {
 	}
 }
 
+func TestSidebarDragSelectionCopiesSingleLine(t *testing.T) {
+	m, copied := selectableSidebarModel(t, "alpha beta gamma")
+	line, col := findSidebarText(t, m, "alpha beta gamma")
+	x, y := sidebarSelectionPoint(t, m, line, col)
+
+	m, _ = update(t, m, tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m, _ = update(t, m, tea.MouseMsg{X: x + len("alpha beta"), Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	m, _ = update(t, m, tea.MouseMsg{X: x + len("alpha beta"), Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+
+	if *copied != "alpha beta" {
+		t.Fatalf("copied = %q, want alpha beta", *copied)
+	}
+}
+
+func TestSidebarDragSelectionCopiesMultipleLinesAndReverse(t *testing.T) {
+	m, copied := selectableSidebarModel(t, "alpha beta\ngamma delta")
+	firstLine, firstCol := findSidebarText(t, m, "alpha beta")
+	secondLine, secondCol := findSidebarText(t, m, "gamma delta")
+	startX, startY := sidebarSelectionPoint(t, m, secondLine, secondCol+len("gamma"))
+	endX, endY := sidebarSelectionPoint(t, m, firstLine, firstCol+len("alpha "))
+
+	m, _ = update(t, m, tea.MouseMsg{X: startX, Y: startY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m, _ = update(t, m, tea.MouseMsg{X: endX, Y: endY, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	m, _ = update(t, m, tea.MouseMsg{X: endX, Y: endY, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+
+	want := "beta\ngamma"
+	if *copied != want {
+		t.Fatalf("copied = %q, want %q", *copied, want)
+	}
+}
+
+func TestSidebarSelectionHighlightDoesNotHighlightTranscript(t *testing.T) {
+	m, _ := selectableSidebarModel(t, "alpha beta")
+	m.entries = nil
+	m.appendEntry("assistant", "", "alpha beta", false)
+	line, col := findSidebarText(t, m, "alpha beta")
+	m.selection = selectionState{
+		anchor: selectionPoint{line: line, col: col + len("alpha ")},
+		focus:  selectionPoint{line: line, col: col + len("alpha beta")},
+		active: true,
+		area:   selectionAreaSidebar,
+	}
+
+	renderedSidebar := m.renderSidebar(m.sidebarWidth(), m.transcriptHeight())
+	if !strings.Contains(renderedSidebar, selectionStyle.Render("beta")) {
+		t.Fatalf("rendered sidebar does not contain highlighted selection:\n%s", renderedSidebar)
+	}
+	renderedTranscript := m.renderBody(m.chatWidth(), m.transcriptHeight())
+	unselected := m
+	unselected.clearSelection()
+	if renderedTranscript != unselected.renderBody(unselected.chatWidth(), unselected.transcriptHeight()) {
+		t.Fatalf("transcript changed for sidebar selection:\n%s", renderedTranscript)
+	}
+}
+
 func TestFragmentedMousePayloadScrollsSidebarPlan(t *testing.T) {
 	workDir := t.TempDir()
 	sessionDir := t.TempDir()
@@ -2440,6 +2495,27 @@ func selectableTranscriptModel(t *testing.T, body string) (Model, *string) {
 	return m, &copied
 }
 
+func selectableSidebarModel(t *testing.T, plan string) (Model, *string) {
+	t.Helper()
+	workDir := t.TempDir()
+	sessionDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", "memory")
+	writeTestFile(t, sessionDir, "PLAN.md", plan)
+	writeTestFile(t, sessionDir, "TODO.md", "todo")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	runner.sessionDir = sessionDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+	copied := ""
+	m.copySelection = func(text string) error {
+		copied = text
+		return nil
+	}
+	return m, &copied
+}
+
 func findTranscriptText(t *testing.T, m Model, text string) (int, int) {
 	t.Helper()
 	layout := m.transcriptLayout(m.chatWidth(), m.transcriptHeight())
@@ -2451,6 +2527,25 @@ func findTranscriptText(t *testing.T, m Model, text string) (int, int) {
 	}
 	t.Fatalf("did not find %q in visible transcript lines: %#v", text, layout.plainLines[layout.visibleStart:layout.visibleEnd])
 	return 0, 0
+}
+
+func findSidebarText(t *testing.T, m Model, text string) (int, int) {
+	t.Helper()
+	layout := m.sidebarLayout(m.sidebarWidth(), m.transcriptHeight())
+	for line, plain := range layout.plainLines {
+		col := strings.Index(plain, text)
+		if col >= 0 {
+			return line, col
+		}
+	}
+	t.Fatalf("did not find %q in visible sidebar lines: %#v", text, layout.plainLines)
+	return 0, 0
+}
+
+func sidebarSelectionPoint(t *testing.T, m Model, line int, col int) (int, int) {
+	t.Helper()
+	contentWidth, _ := m.contentDimensions()
+	return viewPaddingLeft + contentWidth + sidebarGap + sidebarDividerWidth + col, viewPaddingTop + line
 }
 
 func keyRunes(s string) tea.KeyMsg {

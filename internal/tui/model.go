@@ -101,11 +101,19 @@ type selectionPoint struct {
 	col  int
 }
 
+type selectionArea string
+
+const (
+	selectionAreaTranscript selectionArea = "transcript"
+	selectionAreaSidebar    selectionArea = "sidebar"
+)
+
 type selectionState struct {
 	anchor   selectionPoint
 	focus    selectionPoint
 	active   bool
 	dragging bool
+	area     selectionArea
 }
 
 type Model struct {
@@ -309,14 +317,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.selection.dragging && !isWheelMouse(msg) {
+		if m.selection.area == selectionAreaSidebar {
+			next, _ := m.handleSidebarSelectionMouse(msg)
+			return next, nil
+		}
 		next, _ := m.handleTranscriptSelectionMouse(msg)
 		return next, nil
 	}
 
 	if sidebarIndex, ok := m.sidebarIndexAt(msg.X, msg.Y); ok {
-		if !isWheelMouse(msg) {
-			m.clearSelection()
-		}
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
 			m.sidebarScrollOffsets[sidebarIndex] -= scrollDelta("wheelup")
@@ -324,6 +333,9 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.sidebarScrollOffsets[sidebarIndex] += scrollDelta("wheeldown")
 		}
 		m.clampSidebarScrollOffsets()
+		if next, ok := m.handleSidebarSelectionMouse(msg); ok {
+			return next, nil
+		}
 		return m, nil
 	}
 
@@ -364,6 +376,7 @@ func (m Model) handleTranscriptSelectionMouse(msg tea.MouseMsg) (Model, bool) {
 			focus:    point,
 			active:   true,
 			dragging: true,
+			area:     selectionAreaTranscript,
 		}
 		return m, true
 
@@ -381,7 +394,60 @@ func (m Model) handleTranscriptSelectionMouse(msg tea.MouseMsg) (Model, bool) {
 			m.selection.focus = point
 		}
 		m.selection.dragging = false
-		text := m.selectedTranscriptText()
+		text := m.selectedText()
+		if strings.TrimSpace(text) == "" {
+			m.clearSelection()
+			return m, true
+		}
+		if m.copySelection != nil {
+			if err := m.copySelection(text); err != nil {
+				m.status = "Copy failed: " + err.Error()
+			} else {
+				m.status = "Selection copied"
+			}
+		}
+		return m, true
+	}
+
+	return m, false
+}
+
+func (m Model) handleSidebarSelectionMouse(msg tea.MouseMsg) (Model, bool) {
+	if isWheelMouse(msg) {
+		return m, false
+	}
+
+	switch {
+	case msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress:
+		point, ok := m.sidebarPointAt(msg.X, msg.Y, false)
+		if !ok {
+			m.clearSelection()
+			return m, true
+		}
+		m.selection = selectionState{
+			anchor:   point,
+			focus:    point,
+			active:   true,
+			dragging: true,
+			area:     selectionAreaSidebar,
+		}
+		return m, true
+
+	case m.selection.dragging && m.selection.area == selectionAreaSidebar && msg.Action == tea.MouseActionMotion:
+		point, ok := m.sidebarPointAt(msg.X, msg.Y, true)
+		if !ok {
+			return m, true
+		}
+		m.selection.focus = point
+		return m, true
+
+	case m.selection.dragging && m.selection.area == selectionAreaSidebar && msg.Action == tea.MouseActionRelease:
+		point, ok := m.sidebarPointAt(msg.X, msg.Y, true)
+		if ok {
+			m.selection.focus = point
+		}
+		m.selection.dragging = false
+		text := m.selectedText()
 		if strings.TrimSpace(text) == "" {
 			m.clearSelection()
 			return m, true
@@ -423,8 +489,41 @@ func (m Model) transcriptPointAt(x int, y int, clamp bool) (selectionPoint, bool
 	return selectionPoint{line: line, col: col}, true
 }
 
+func (m Model) sidebarPointAt(x int, y int, clamp bool) (selectionPoint, bool) {
+	if !m.shouldRenderSidebar() {
+		return selectionPoint{}, false
+	}
+	_, contentHeight := m.contentDimensions()
+	layout := m.sidebarLayout(m.sidebarWidth(), contentHeight)
+	if len(layout.plainLines) == 0 {
+		return selectionPoint{}, false
+	}
+
+	contentWidth, _ := m.contentDimensions()
+	sidebarX := viewPaddingLeft + contentWidth + sidebarGap
+	contentX := sidebarX + sidebarDividerWidth
+	localX := x - contentX
+	localY := y - viewPaddingTop
+	if clamp {
+		localX = max(0, min(localX, layout.width))
+		localY = max(0, min(localY, len(layout.plainLines)-1))
+	} else if localX < 0 || localX >= layout.width || localY < 0 || localY >= len(layout.plainLines) {
+		return selectionPoint{}, false
+	}
+
+	col := max(0, min(localX, xansi.StringWidth(layout.plainLines[localY])))
+	return selectionPoint{line: localY, col: col}, true
+}
+
 func (m *Model) clearSelection() {
 	m.selection = selectionState{}
+}
+
+func (m Model) selectedText() string {
+	if m.selection.area == selectionAreaSidebar {
+		return m.selectedSidebarText()
+	}
+	return m.selectedTranscriptText()
 }
 
 func (m Model) selectedTranscriptText() string {
@@ -432,6 +531,14 @@ func (m Model) selectedTranscriptText() string {
 		return ""
 	}
 	layout := m.transcriptLayout(m.chatWidth(), m.transcriptHeight())
+	return selectedTextFromLines(layout.plainLines, m.selection)
+}
+
+func (m Model) selectedSidebarText() string {
+	if !m.selection.active {
+		return ""
+	}
+	layout := m.sidebarLayout(m.sidebarWidth(), m.transcriptHeight())
 	return selectedTextFromLines(layout.plainLines, m.selection)
 }
 

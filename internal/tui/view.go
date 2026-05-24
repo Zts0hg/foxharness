@@ -12,10 +12,11 @@ import (
 const (
 	maxQueuedNoticeItems = 3
 
-	viewPaddingTop    = 1
-	viewPaddingRight  = 2
-	viewPaddingBottom = 0
-	viewPaddingLeft   = 2
+	viewPaddingTop      = 1
+	viewPaddingRight    = 2
+	viewPaddingBottom   = 0
+	viewPaddingLeft     = 2
+	sidebarDividerWidth = 3
 
 	amberBgHex            = "#0a0703"
 	amberPanelHex         = "#171006"
@@ -298,7 +299,7 @@ func contextUsageStyle(percent int) lipgloss.Style {
 func (m Model) renderBody(width int, height int) string {
 	layout := m.transcriptLayout(width, height)
 	lines := append([]string(nil), layout.styledLines[layout.visibleStart:layout.visibleEnd]...)
-	m.applySelectionHighlight(lines, layout.visibleStart)
+	m.applySelectionHighlight(lines, layout.visibleStart, selectionAreaTranscript)
 	view := strings.Join(lines, "\n")
 	return bodyStyle.Width(width).Height(height).Render(view)
 }
@@ -336,8 +337,8 @@ func (m Model) transcriptLayout(width int, height int) transcriptLayout {
 	}
 }
 
-func (m Model) applySelectionHighlight(lines []string, absoluteStart int) {
-	if !m.selection.active {
+func (m Model) applySelectionHighlight(lines []string, absoluteStart int, area selectionArea) {
+	if !m.selection.active || m.selectionArea() != area {
 		return
 	}
 	start, end := normalizedSelection(m.selection)
@@ -364,6 +365,13 @@ func (m Model) applySelectionHighlight(lines []string, absoluteStart int) {
 	}
 }
 
+func (m Model) selectionArea() selectionArea {
+	if m.selection.area == selectionAreaSidebar {
+		return selectionAreaSidebar
+	}
+	return selectionAreaTranscript
+}
+
 func (m Model) renderMainArea(height int) string {
 	chat := m.renderBody(m.chatWidth(), height)
 	if !m.shouldRenderSidebar() {
@@ -378,12 +386,28 @@ func (m Model) renderMainArea(height int) string {
 }
 
 func (m Model) renderSidebar(width int, height int) string {
+	layout := m.sidebarLayout(width, height)
+	lines := append([]string(nil), layout.styledLines...)
+	m.applySelectionHighlight(lines, 0, selectionAreaSidebar)
+	for i := range lines {
+		lines[i] = sidebarDividerStyle.Render("│") + "  " + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
+type sidebarLayout struct {
+	styledLines []string
+	plainLines  []string
+	width       int
+}
+
+func (m Model) sidebarLayout(width int, height int) sidebarLayout {
 	docs := m.sidebarDocuments
 	if len(docs) == 0 {
 		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
 	}
 	if len(docs) == 0 {
-		return ""
+		return sidebarLayout{}
 	}
 
 	contentWidth := sidebarContentWidth(width)
@@ -412,10 +436,16 @@ func (m Model) renderSidebar(width int, height int) string {
 	if len(lines) > height {
 		lines = lines[:height]
 	}
+	plainLines := make([]string, len(lines))
 	for i := range lines {
-		lines[i] = sidebarDividerStyle.Render("│") + "  " + fitLine(lines[i], contentWidth)
+		lines[i] = fitLine(lines[i], contentWidth)
+		plainLines[i] = xansi.Strip(lines[i])
 	}
-	return strings.Join(lines, "\n")
+	return sidebarLayout{
+		styledLines: lines,
+		plainLines:  plainLines,
+		width:       contentWidth,
+	}
 }
 
 func sidebarContentWidth(width int) int {
