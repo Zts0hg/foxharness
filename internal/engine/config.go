@@ -1,6 +1,9 @@
 package engine
 
-import "github.com/Zts0hg/foxharness/internal/checkpoint"
+import (
+	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/schema"
+)
 
 // Config controls the behavior of the AgentEngine.
 // It provides options for enabling the Thinking phase and setting
@@ -30,6 +33,13 @@ type Config struct {
 	// used by middleware wiring to associate later file edits with the same
 	// snapshot.
 	OnUserMessageID func(messageID string)
+
+	// OnToolCalled is invoked after every tool execution with the call and
+	// its result. The hook is intentionally synchronous so callers can
+	// inspect the call and reactively update external state — for example,
+	// the slash command system uses this to activate conditional skills
+	// whose path globs match a touched file. The hook must not block.
+	OnToolCalled func(call schema.ToolCall, result schema.ToolResult)
 }
 
 // DefaultConfig returns a Config with sensible defaults.

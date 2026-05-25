@@ -196,6 +196,9 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, tracer *tracing.Trac
 				started := time.Now()
 				result := e.registry.Execute(ctx, call)
 				durationMS := time.Since(started).Milliseconds()
+				if e.config.OnToolCalled != nil {
+					e.config.OnToolCalled(call, result)
+				}
 				results[idx] = indexedToolResult{
 					Index:      idx,
 					Call:       call,
@@ -233,6 +236,9 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, tracer *tracing.Trac
 		started := time.Now()
 		result := e.registry.Execute(ctx, call)
 		durationMS := time.Since(started).Milliseconds()
+		if e.config.OnToolCalled != nil {
+			e.config.OnToolCalled(call, result)
+		}
 		results[i] = indexedToolResult{
 			Index:      i,
 			Call:       call,

@@ -26,6 +26,8 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 	return tui.Run(ctx, runner, tui.Config{
 		Model:         cfg.Model,
 		InitialPrompt: cfg.Prompt,
+		Registry:      runner.SlashRegistry(),
+		Executor:      runner.SlashExecutor(),
 	})
 }
 

@@ -16,8 +16,19 @@ import (
 // Composer builds the full system prompt by layering base instructions,
 // project-level AGENTS.md, referenced skills, and session working memory.
 type Composer struct {
-	workDir    string
-	memoryPath string
+	workDir     string
+	memoryPath  string
+	skillListFn func() string
+}
+
+// WithSkillList registers a function that returns the formatted list of
+// model-invocable skills. When set, Compose appends the rendered list as a
+// dedicated section so the LLM can decide when to invoke the `skill` tool.
+// Pass nil to clear.
+func (c *Composer) WithSkillList(fn func() string) *Composer {
+	clone := *c
+	clone.skillListFn = fn
+	return &clone
 }
 
 // NewComposer creates a Composer rooted at the given workspace directory.
@@ -72,6 +83,12 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 	}
 	if memory != "" {
 		parts = append(parts, section("Session Working Memory", memory))
+	}
+
+	if c.skillListFn != nil {
+		if list := strings.TrimSpace(c.skillListFn()); list != "" {
+			parts = append(parts, section("Available Skills (invoke via the `skill` tool)", list))
+		}
 	}
 
 	return strings.Join(parts, "\n\n"), nil

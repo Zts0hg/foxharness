@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/slash"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
 	xansi "github.com/charmbracelet/x/ansi"
@@ -51,11 +53,24 @@ type Runner interface {
 type Config struct {
 	Model         string
 	InitialPrompt string
+
+	// Registry, when non-nil, attaches a file-based slash command registry
+	// to the TUI so that prompt commands from .foxharness/commands and
+	// .foxharness/skills appear alongside the built-ins.
+	Registry *slash.Registry
+
+	// Executor is the per-command pipeline used when a prompt command is
+	// invoked. May be nil; a default executor with no fork runner is used
+	// in that case.
+	Executor *slash.Executor
 }
 
 // Run starts the interactive chat TUI.
 func Run(ctx context.Context, runner Runner, cfg Config) error {
 	m := NewModel(ctx, runner, cfg)
+	if cfg.Registry != nil {
+		m = m.WithRegistry(cfg.Registry, cfg.Executor)
+	}
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx)).Run()
 	return err
 }
@@ -167,6 +182,9 @@ type Model struct {
 	sidebarFocusIndex    int
 	sidebarDocuments     []sidebarDocument
 	sidebarScrollOffsets [sidebarDocumentCount]int
+
+	slashRegistry *slash.Registry
+	slashExecutor *slash.Executor
 }
 
 func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
@@ -1471,6 +1489,9 @@ func (m Model) selectedFileMention() (fileMention, bool) {
 
 func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 	fields := strings.Fields(text)
+	if pc, args, ok := m.lookupPromptCommand(text); ok {
+		return m.executePromptCommand(pc, args)
+	}
 	cmd := strings.ToLower(fields[0])
 	switch cmd {
 	case "/help":
@@ -1591,6 +1612,76 @@ func (m Model) openRewindSelector() (tea.Model, tea.Cmd) {
 	m.rewindSelector = &model
 	m.status = "Rewind"
 	return m, nil
+}
+
+func (m Model) executePromptCommand(cmd *slash.Command, args string) (tea.Model, tea.Cmd) {
+	result, err := m.runPromptCommand(cmd, args)
+	if err != nil {
+		m.appendEntry("error", "command failed", err.Error(), true)
+		m.status = "Command failed"
+		return m, nil
+	}
+	if result.Fork {
+		// Fork-mode commands return a sub-agent report directly. Show it
+		// as an assistant entry rather than starting a new turn so the
+		// model is not asked to act on its own report.
+		body := strings.TrimSpace(result.Content)
+		if body == "" {
+			m.status = "Skill produced empty report"
+			return m, nil
+		}
+		m.appendEntry("assistant", "skill", body, false)
+		m.status = "Skill complete"
+		return m, nil
+	}
+	if strings.TrimSpace(result.Content) == "" {
+		m.status = "Command produced empty output"
+		return m, nil
+	}
+	return m.startPromptRestricted(result.Content, result.AllowedTools)
+}
+
+// startPromptRestricted starts a new run scoped to the supplied allowed
+// tools. When allowedTools is empty the path falls through to the
+// unrestricted startPrompt — preserving existing behavior for commands
+// without an `allowed-tools` frontmatter.
+func (m Model) startPromptRestricted(text string, allowedTools []string) (tea.Model, tea.Cmd) {
+	if len(allowedTools) == 0 {
+		return m.startPrompt(text)
+	}
+	rr, ok := m.runner.(restrictedRunner)
+	if !ok {
+		m.appendEntry("error", "command", "Runner does not support allowed-tools enforcement; aborting to avoid silent escape.", true)
+		m.status = "Restricted run unsupported"
+		return m, nil
+	}
+	m.scrollOffset = 0
+	m.running = true
+	m.runStartedAt = m.nowTime()
+	m.spinnerFrame = 0
+	m.status = "Running (restricted)"
+	m.appendEntry("user", "you", text, false)
+
+	runCtx, cancel := context.WithCancel(m.ctx)
+	m.cancelRun = cancel
+	allowedCopy := append([]string(nil), allowedTools...)
+	return m, runRestrictedPromptCmd(runCtx, rr, text, allowedCopy, m.events)
+}
+
+// restrictedRunner is the optional interface a Runner implements to
+// support per-prompt tool restrictions. The production *AgentRunner
+// satisfies it; test mocks may omit it and the TUI degrades gracefully
+// to a hard error so allowed-tools is never silently ignored.
+type restrictedRunner interface {
+	RunRestricted(ctx context.Context, prompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error)
+}
+
+func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, allowed []string, events chan<- tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		reporter := &channelReporter{events: events}
+		result, err := runner.RunRestricted(ctx, prompt, allowed, reporter)
+		return runFinishedMsg{result: result, err: err}
+	}
 }
 
 func (m Model) handleSelectorResult(msg selector.ResultMsg) (tea.Model, tea.Cmd) {
@@ -1723,13 +1814,54 @@ func (m Model) matchingSlashCommands() []slashCommand {
 	if !strings.HasPrefix(text, "/") || strings.ContainsAny(text, " \t\n") {
 		return nil
 	}
-	var matches []slashCommand
-	for _, command := range slashCommands {
-		if text == "/" || strings.HasPrefix(command.Name, text) {
-			matches = append(matches, command)
+	all := append([]slashCommand(nil), slashCommands...)
+	all = append(all, m.fileBasedSlashCommands()...)
+
+	if text == "/" {
+		return uniqueSlashCommands(all)
+	}
+	query := strings.TrimPrefix(text, "/")
+	var ranked []scoredSlash
+	for i, command := range all {
+		name := strings.TrimPrefix(command.Name, "/")
+		s := slash.Score(query, name, command.Description, nil)
+		if s > 0 {
+			ranked = append(ranked, scoredSlash{command, s, i})
 		}
 	}
-	return matches
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		return ranked[i].order < ranked[j].order
+	})
+	matches := make([]slashCommand, len(ranked))
+	for i, r := range ranked {
+		matches[i] = r.cmd
+	}
+	return uniqueSlashCommands(matches)
+}
+
+type scoredSlash struct {
+	cmd   slashCommand
+	score int
+	order int
+}
+
+func uniqueSlashCommands(in []slashCommand) []slashCommand {
+	if len(in) <= 1 {
+		return in
+	}
+	seen := make(map[string]bool, len(in))
+	out := make([]slashCommand, 0, len(in))
+	for _, c := range in {
+		if seen[c.Name] {
+			continue
+		}
+		seen[c.Name] = true
+		out = append(out, c)
+	}
+	return out
 }
 
 func (m Model) matchingFileMentions() []fileMention {
