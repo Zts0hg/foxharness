@@ -136,12 +136,16 @@ func (r *Registry) Lookup(name string) (*Command, bool) {
 	if cmd, ok := r.commands[name]; ok {
 		return cmd, true
 	}
+	var best *Command
 	for _, cmd := range r.commands {
-		if cmd.MatchesAlias(name) {
-			return cmd, true
+		if !cmd.MatchesAlias(name) {
+			continue
+		}
+		if best == nil || cmd.Source > best.Source || (cmd.Source == best.Source && cmd.Name < best.Name) {
+			best = cmd
 		}
 	}
-	return nil, false
+	return best, best != nil
 }
 
 // All returns every registered command, sorted by name. The returned slice

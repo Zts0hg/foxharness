@@ -60,6 +60,47 @@ func TestRegistry_LookupAlias(t *testing.T) {
 	}
 }
 
+func TestRegistry_LookupAliasHonorsPrecedence(t *testing.T) {
+	r := NewRegistry("")
+	builtin := newBuiltinCmd("builtin-review")
+	builtin.Aliases = []string{"r"}
+	user := newUserCmd("user-review")
+	user.Frontmatter.Aliases = []string{"r"}
+	project := newProjectCmd("project-review")
+	project.Frontmatter.Aliases = []string{"r"}
+
+	r.Register(builtin)
+	r.Register(project)
+	r.Register(user)
+
+	got, ok := r.Lookup("r")
+	if !ok {
+		t.Fatal("alias r not found")
+	}
+	if got.Name != "project-review" {
+		t.Errorf("alias r = %q, want project-review", got.Name)
+	}
+}
+
+func TestRegistry_LookupAliasTieBreaksDeterministically(t *testing.T) {
+	r := NewRegistry("")
+	b := newProjectCmd("b-review")
+	b.Frontmatter.Aliases = []string{"r"}
+	a := newProjectCmd("a-review")
+	a.Frontmatter.Aliases = []string{"r"}
+
+	r.Register(b)
+	r.Register(a)
+
+	got, ok := r.Lookup("r")
+	if !ok {
+		t.Fatal("alias r not found")
+	}
+	if got.Name != "a-review" {
+		t.Errorf("alias r = %q, want a-review", got.Name)
+	}
+}
+
 func TestRegistry_Precedence(t *testing.T) {
 	r := NewRegistry("")
 	r.Register(newBuiltinCmd("help"))
