@@ -513,3 +513,26 @@ REQ-010 is now restated in the spec to explicitly describe the per-turn reminder
 - Tests are updated to drive the two stages (`drivePromptCommand` helper). A new assertion test `TestModel_PromptCommand_PrepareStageIsAsync` verifies `runner.Run` has NOT been called between the Enter event and driving the prepare cmd — characterizing the central invariant.
 
 EC-016 in the spec codifies the requirement so future implementers cannot regress to the synchronous call shape.
+
+### R10: FilteredRegistry moved to internal/tools; allow-list threaded into fork mode
+
+**Why**: Phase 14 routed model-invoked restricted skills toward `context: fork` as the "safe" alternative to inline + `allowed-tools`. But the fork runner adapter (`subagentForkRunner.Run`) hard-coded `subagent.Request{ReadOnly: false}` without an allow-list, and `subagent.Manager.buildRegistry` registered read/bash/write/edit unconditionally. So fork mode — the supposedly secure escape hatch — silently ran the sub-agent with the FULL un-filtered registry. A skill declaring `allowed-tools: ["read_file"]` could still call `bash`, `write_file`, `edit_file` from inside the fork. P1 policy bypass: the spec's "use fork mode for restrictions" advice was a security hole.
+
+**Now**:
+- `FilteredRegistry` (formerly `internal/slash/filter.go`) is moved to `internal/tools/filter.go`. The concept — a tool-registry decorator with an allow-list — belongs at the tools layer, not the slash layer. `internal/slash/filter.go` becomes a thin shim that calls `tools.NewFilteredRegistry` so existing slash callers keep compiling. This also avoids creating a subagent → slash dependency that would invert the layering.
+- `slash.ForkRunner.Run` gains a `allowedTools []string` parameter. The slash executor copies `cmd.Frontmatter.AllowedTools` into that argument when dispatching fork mode.
+- `subagent.Request` gains an `AllowedTools []string` field. `subagent.Manager.buildRegistry(readOnly bool, allowedTools []string)` wraps its base registry in `tools.NewFilteredRegistry` whenever `allowedTools` is non-empty. The filter is applied after `ReadOnly` trimming, so the two safety nets compose: the surviving set is `(registered tools - write/edit if readOnly) ∩ allowedTools`.
+- `subagentForkRunner.Run` in `app/runner.go` threads the new parameter through to `subagent.Request.AllowedTools`.
+
+Tests at every layer cover the wiring: `TestExecutor_ForkMode_PassesAllowedToolsToRunner`, `TestExecutor_ForkMode_NoAllowedToolsPassesEmpty`, `TestManager_BuildRegistry_AllowedToolsFilters`, `TestManager_BuildRegistry_ReadOnlyPlusAllowedTools`, `TestManager_BuildRegistry_AllowedToolsExcludesEverything`. The spec records EC-017 to lock the plumbing in place.
+
+### R11: ExecuteEmbeddedShell honors caller cancellation
+
+**Why**: Phase 15 made TUI prompt-command execution async via `tea.Cmd`. The exec.Execute call ran in a goroutine with a `runCtx` derived from `m.ctx`; Ctrl+C cancelled `runCtx`. Inside, `ExecuteEmbeddedShell` ran each `!`cmd`` via `exec.CommandContext(context.Background(), ...)` — so even though the executor's ctx was canceled, the child shell ignored it and kept running until its own 30s embed timeout. The UI sat in the "Preparing skill" status, unresponsive to the cancel intent, for up to 30s per embed.
+
+**Now**:
+- `ExecuteEmbeddedShell(parent context.Context, content, workDir string, timeout time.Duration)` now takes the caller's ctx as the first argument.
+- `runShellOnce` derives the per-command `context.WithTimeout` from `parent` instead of `context.Background()`. Both `parent.Err() == context.Canceled` and `ctx.Err() == context.DeadlineExceeded` are surfaced as inline `[ERROR: ...]` markers so the prompt body stays valid.
+- `slash.Executor.Execute` passes its own `ctx` argument through. A nil parent is treated as background for defensive symmetry with tests that legitimately want unbounded cancellation behavior.
+
+The new test `TestExecuteEmbeddedShell_ParentCtxCancelKillsCommand` proves the wiring: it launches `ExecuteEmbeddedShell` against a `sleep 10` embed with a 30-second per-embed timeout, cancels the parent ctx after 50ms, and asserts the function returns in under 3 seconds with an `[ERROR:]` marker — orders of magnitude faster than the embed timeout would have allowed. EC-018 codifies the requirement.

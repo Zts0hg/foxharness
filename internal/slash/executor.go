@@ -10,10 +10,16 @@ import (
 // command execution to a sub-agent. The slash package keeps this interface
 // minimal so it does not pull in internal/subagent or internal/engine.
 //
-// Implementations should treat task as the fully-processed user prompt and
-// agentType as the optional agent identifier from the command's frontmatter.
+// Implementations should treat task as the fully-processed user prompt,
+// agentType as the optional agent identifier from the command's
+// frontmatter, and allowedTools as the per-call tool allow-list copied
+// from the command's `allowed-tools` frontmatter (nil/empty = no
+// restriction). The runner is expected to enforce the allow-list by
+// constructing the sub-agent's tool registry with the same filter the
+// TUI path uses; otherwise fork-mode skills with `allowed-tools` would
+// silently escape the restriction.
 type ForkRunner interface {
-	Run(ctx context.Context, task string, agentType string) (string, error)
+	Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error)
 }
 
 // Executor orchestrates the per-command pipeline: argument substitution,
@@ -127,7 +133,7 @@ func (e *Executor) Execute(ctx context.Context, cmd *Command, rawArgs, sessionID
 	processed := SubstituteArguments(cmd.Content, args, argNames)
 
 	shellWorkDir := e.workDir
-	processed, err := ExecuteEmbeddedShell(processed, shellWorkDir, e.shellTimeout)
+	processed, err := ExecuteEmbeddedShell(ctx, processed, shellWorkDir, e.shellTimeout)
 	if err != nil {
 		return ExecutionResult{}, err
 	}
@@ -144,7 +150,8 @@ func (e *Executor) Execute(ctx context.Context, cmd *Command, rawArgs, sessionID
 		if e.forkRunner == nil {
 			return ExecutionResult{}, errors.New("fork mode unavailable: no runner configured")
 		}
-		out, forkErr := e.forkRunner.Run(ctx, processed, cmd.Frontmatter.Agent)
+		allowedCopy := append([]string(nil), cmd.Frontmatter.AllowedTools...)
+		out, forkErr := e.forkRunner.Run(ctx, processed, cmd.Frontmatter.Agent, allowedCopy)
 		// Fork mode completes synchronously inside Execute, so the
 		// after-hook runs here — regardless of forkErr — to mirror
 		// "after the command's execution completes".

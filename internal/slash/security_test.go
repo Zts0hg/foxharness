@@ -24,7 +24,7 @@ body`)
 
 func TestSecurity_ShellEmbeddingHonorsWorkDir(t *testing.T) {
 	wd := t.TempDir()
-	out, err := ExecuteEmbeddedShell("dir="+"!`pwd`", wd, 5*time.Second)
+	out, err := ExecuteEmbeddedShell(context.Background(), "dir="+"!`pwd`", wd, 5*time.Second)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestSecurity_ShellEmbeddingHonorsWorkDir(t *testing.T) {
 
 func TestSecurity_ShellEmbeddingTimeoutPreventsHang(t *testing.T) {
 	start := time.Now()
-	out, err := ExecuteEmbeddedShell("x="+"!`sleep 10`", "", 200*time.Millisecond)
+	out, err := ExecuteEmbeddedShell(context.Background(), "x="+"!`sleep 10`", "", 200*time.Millisecond)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -67,6 +67,6 @@ func TestSecurity_FilteredRegistryBlocksDisallowed(t *testing.T) {
 	}
 }
 
-// Ensure the package surface does not accidentally expose unsafe defaults
-// for the executor or registry.
-var _ tools.Registry = (*filteredRegistry)(nil)
+// Ensure the package surface continues to expose a tools.Registry via
+// the shim. The concrete filtered type now lives in internal/tools.
+var _ tools.Registry = tools.NewFilteredRegistry(tools.NewRegistry(), nil)

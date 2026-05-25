@@ -9,17 +9,19 @@ import (
 )
 
 type fakeForkRunner struct {
-	called    bool
-	agentType string
-	task      string
-	result    string
-	err       error
+	called       bool
+	agentType    string
+	task         string
+	allowedTools []string
+	result       string
+	err          error
 }
 
-func (f *fakeForkRunner) Run(ctx context.Context, task string, agentType string) (string, error) {
+func (f *fakeForkRunner) Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error) {
 	f.called = true
 	f.task = task
 	f.agentType = agentType
+	f.allowedTools = append([]string(nil), allowedTools...)
 	if f.err != nil {
 		return "", f.err
 	}
@@ -287,5 +289,51 @@ func TestExecutor_ForkMode_OmitsAllowedTools(t *testing.T) {
 	}
 	if len(got.AllowedTools) != 0 {
 		t.Errorf("fork mode should not surface AllowedTools to caller, got %v", got.AllowedTools)
+	}
+}
+
+func TestExecutor_ForkMode_PassesAllowedToolsToRunner(t *testing.T) {
+	// Critical: when a fork-mode command declares allowed-tools, the
+	// executor must thread that allow-list down into the ForkRunner so
+	// the sub-agent's registry is filtered. Without this, fork mode (the
+	// recommended escape hatch for model-invoked restricted skills) is a
+	// silent policy bypass.
+	fork := &fakeForkRunner{result: "out"}
+	exec := NewExecutor(WithForkRunner(fork))
+	cmd := &Command{
+		Type: CommandPrompt,
+		Frontmatter: Frontmatter{
+			Context:      "fork",
+			Agent:        "general-purpose",
+			AllowedTools: []string{"read_file", "bash"},
+		},
+	}
+	_, err := exec.Execute(context.Background(), cmd, "", "")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(fork.allowedTools) != 2 {
+		t.Fatalf("ForkRunner received %v allowedTools, want [read_file bash]", fork.allowedTools)
+	}
+	if fork.allowedTools[0] != "read_file" || fork.allowedTools[1] != "bash" {
+		t.Errorf("ForkRunner allowedTools = %v, want [read_file bash]", fork.allowedTools)
+	}
+}
+
+func TestExecutor_ForkMode_NoAllowedToolsPassesEmpty(t *testing.T) {
+	fork := &fakeForkRunner{result: "out"}
+	exec := NewExecutor(WithForkRunner(fork))
+	cmd := &Command{
+		Type: CommandPrompt,
+		Frontmatter: Frontmatter{
+			Context: "fork",
+		},
+	}
+	_, err := exec.Execute(context.Background(), cmd, "", "")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(fork.allowedTools) != 0 {
+		t.Errorf("ForkRunner allowedTools should be empty when not declared, got %v", fork.allowedTools)
 	}
 }

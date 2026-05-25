@@ -22,6 +22,14 @@ type Request struct {
 	ParentSessionID string
 	Task            string
 	ReadOnly        bool
+
+	// AllowedTools, when non-empty, restricts the sub-agent's tool
+	// registry to exactly the named tools. The filter is applied on
+	// top of the base registry (after ReadOnly trims write/edit), so
+	// callers that pass an allow-list overlapping with read-only get
+	// the intersection. Used by slash fork-mode skills with
+	// `allowed-tools` to honor the constraint inside the sub-agent.
+	AllowedTools []string
 }
 
 // Result holds the subagent's session identifier and the final report text
@@ -44,7 +52,7 @@ func NewManager(p provider.LLMProvider, workDir string) *Manager {
 	return &Manager{provider: p, workDir: workDir}
 }
 
-func (m *Manager) buildRegistry(readOnly bool) tools.Registry {
+func (m *Manager) buildRegistry(readOnly bool, allowedTools []string) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(m.workDir))
 	registry.Register(tools.NewBashTool(m.workDir))
@@ -54,6 +62,9 @@ func (m *Manager) buildRegistry(readOnly bool) tools.Registry {
 		registry.Register(tools.NewEditFileTool(m.workDir))
 	}
 
+	if len(allowedTools) > 0 {
+		return tools.NewFilteredRegistry(registry, allowedTools)
+	}
 	return registry
 }
 
@@ -73,7 +84,7 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 		return nil, err
 	}
 
-	registry := m.buildRegistry(req.ReadOnly)
+	registry := m.buildRegistry(req.ReadOnly, req.AllowedTools)
 	composer := prompt.NewComposer(m.workDir).WithMemory(sess.MemoryPath())
 	eng := engine.NewAgentEngine(
 		m.provider,

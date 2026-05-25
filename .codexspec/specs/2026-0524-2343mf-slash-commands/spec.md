@@ -390,10 +390,10 @@ type SkillTool struct {
 
 When a skill declares `allowed-tools`, the enforcement model depends on `context`:
 
-- `context: fork` — the sub-agent is built with a `FilteredRegistry` wrapping its own tool set, so the restriction is enforced at the registry level inside the sub-agent. SkillTool accepts the invocation.
+- `context: fork` — the runtime MUST thread the allow-list down into the sub-agent's tool registry construction. Specifically, the fork runner adapter passes `cmd.Frontmatter.AllowedTools` into `subagent.Request.AllowedTools`, and `subagent.Manager.buildRegistry` wraps the base tools in `tools.NewFilteredRegistry(base, allowedTools)`. SkillTool accepts the invocation. Omitting this plumbing — even though SkillTool would still accept the call — silently bypasses the restriction inside the sub-agent and defeats the entire reason fork mode is the recommended escape hatch for restricted model-invoked skills.
 - `context: inline` — the engine has already announced the **un-filtered** tool set to the model for the current turn; mid-turn registry swaps would silently break subsequent tool calls without the model knowing. The SkillTool MUST refuse this combination with a descriptive error directing the skill author to switch to `context: fork`. The refusal happens after the `before` and `after` hooks have fired (symmetry).
 
-This rule applies only to model invocation. TUI invocation always operates between turns, so inline + `allowed-tools` is enforced there by wrapping the engine's registry in `FilteredRegistry` for the next run.
+This rule applies only to model invocation. TUI invocation always operates between turns, so inline + `allowed-tools` is enforced there by wrapping the engine's registry in `tools.NewFilteredRegistry` for the next run.
 
 **System prompt injection**: The `PromptComposer` includes a formatted list of model-invocable skills in the system prompt, respecting a character budget derived from the model's context window. Each skill entry shows: name, description, when_to_use (if present), argument_hint (if present).
 
@@ -714,6 +714,12 @@ A `.md` file that combines `context: inline` (default) with a non-empty `allowed
 
 ### EC-015: Failed tool calls do not activate conditional skills
 When `read_file`, `write_file`, or `edit_file` returns a `ToolResult` with `IsError == true`, the activation hook MUST skip the path check entirely. This applies to middleware denials, filesystem permission errors, missing paths, and any other failure mode. Activation requires a successful operation on a matching path, never just an attempt. This protects against (a) divergence from the REQ-010 phrasing ("operates on" implies success) and (b) accidental disclosure of skill metadata for paths the model was not permitted to touch.
+
+### EC-017: Fork-mode `allowed-tools` propagates into the sub-agent registry
+A `.md` file with `context: fork` and a non-empty `allowed-tools` MUST result in the sub-agent's tool registry being filtered to exactly the allow-list (intersected with whatever the sub-agent's `ReadOnly` flag already permits). The plumbing path is: `slash.ForkRunner.Run(ctx, task, agentType, allowedTools)` → `subagent.Request.AllowedTools` → `subagent.Manager.buildRegistry(readOnly, allowedTools)` → `tools.NewFilteredRegistry`. Any layer that silently drops the allow-list creates a policy bypass — particularly hazardous because fork mode is the documented escape hatch for restricted model-invoked skills (EC-014). When the allow-list names a tool the sub-agent does not register (e.g. `todo_read`), the filter simply yields fewer surviving tools; the sub-agent does not error out on unknown allow-list entries.
+
+### EC-018: Shell embedding honors caller cancellation
+`ExecuteEmbeddedShell` MUST accept a parent `context.Context` from its caller and derive each child shell's `exec.CommandContext` from it. Using `context.Background()` for the child context — which earlier implementations did — means that user cancellation (Ctrl+C, run timeout, TUI shutdown) cannot terminate in-flight embeddings; the UI sits in the prepare stage for up to the embed timeout (default 30s) instead of aborting promptly. Callers MUST pass the executor's own context (`Execute(ctx, ...)`), which the TUI derives from the cancellable run context. The per-embed timeout still caps unbounded shells, but cancellation must take precedence.
 
 ### EC-016: TUI fork-mode execution must not block the event loop
 TUI invocation of a prompt command (file-based slash command) MUST dispatch `slash.Executor.Execute` into a background goroutine via `tea.Cmd` rather than calling it synchronously from the key handler. `Execute` can block for many seconds (`hooks.before`, shell embeddings) or many minutes (fork-mode sub-agent), and any synchronous call from the Bubble Tea Update path freezes the entire UI, drops the spinner, and disables Ctrl+C cancellation. The required shape:

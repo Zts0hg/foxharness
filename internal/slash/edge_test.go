@@ -48,7 +48,7 @@ func TestEdge_SpecialCharactersInArguments(t *testing.T) {
 }
 
 func TestEdge_ShellEmbeddingNoOutput(t *testing.T) {
-	got, err := ExecuteEmbeddedShell("before"+"!`true`"+"after", "", 0)
+	got, err := ExecuteEmbeddedShell(context.Background(), "before"+"!`true`"+"after", "", 0)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

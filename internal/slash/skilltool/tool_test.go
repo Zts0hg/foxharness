@@ -20,9 +20,13 @@ func newRegistryWithSkill(t *testing.T, c *slash.Command) *slash.Registry {
 // forkRunnerStub is a no-op slash.ForkRunner used by tests that need a
 // fork-mode skill to flow through the executor without spinning up a
 // real subagent.Manager.
-type forkRunnerStub struct{ report string }
+type forkRunnerStub struct {
+	report       string
+	allowedTools []string
+}
 
-func (s forkRunnerStub) Run(ctx context.Context, task string, agentType string) (string, error) {
+func (s *forkRunnerStub) Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error) {
+	s.allowedTools = append([]string(nil), allowedTools...)
 	return s.report, nil
 }
 
@@ -161,7 +165,7 @@ func TestSkillTool_Execute_ForkAllowedToolsAccepted(t *testing.T) {
 	}
 	r := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
 	r.Register(cmd)
-	exec := slash.NewExecutor(slash.WithForkRunner(forkRunnerStub{report: "ok"}))
+	exec := slash.NewExecutor(slash.WithForkRunner(&forkRunnerStub{report: "ok"}))
 	tool := NewSkillTool(r, exec, func() string { return "" })
 	args, _ := json.Marshal(map[string]string{"name": "deploy", "arguments": ""})
 	got, err := tool.Execute(context.Background(), args)

@@ -559,7 +559,7 @@ type subagentForkRunner struct {
 	getSession func() string
 }
 
-func (s *subagentForkRunner) Run(ctx context.Context, task string, agentType string) (string, error) {
+func (s *subagentForkRunner) Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error) {
 	_ = agentType
 	mgr := s.getManager()
 	if mgr == nil {
@@ -569,6 +569,7 @@ func (s *subagentForkRunner) Run(ctx context.Context, task string, agentType str
 		ParentSessionID: s.getSession(),
 		Task:            task,
 		ReadOnly:        false,
+		AllowedTools:    allowedTools,
 	})
 	if err != nil {
 		return "", err

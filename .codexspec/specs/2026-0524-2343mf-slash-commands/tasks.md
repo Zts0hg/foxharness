@@ -3,11 +3,11 @@
 **Input**: `.codexspec/specs/2026-0524-2343mf-slash-commands/plan.md`
 **Related Spec**: `.codexspec/specs/2026-0524-2343mf-slash-commands/spec.md`
 **Created**: 2026-05-25
-**Status**: Complete with three rounds of post-review fixes (2026-05-25)
+**Status**: Complete with four rounds of post-review fixes (2026-05-25)
 
 ## Implementation Status
 
-All 12 phases complete, plus Phase 13 / 14 / 15 batches of post-review fixes (see end of file). Test results: `go test ./...` passes (88.6% coverage on `internal/slash`, 69.0% on `internal/slash/skilltool`). New code is in `internal/slash/`, `internal/slash/skilltool/`; integrations live in `internal/tui/slash_registry.go`, `internal/app/runner.go`, `internal/app/tui.go`, `internal/context/prompt.go`, `internal/engine/{config,loop}.go`. The `doublestar/v4` dependency was added for glob path matching.
+All 12 phases complete, plus Phase 13 / 14 / 15 / 16 batches of post-review fixes (see end of file). Test results: `go test ./...` passes (88.6% coverage on `internal/slash`, 69.0% on `internal/slash/skilltool`). New code is in `internal/slash/`, `internal/slash/skilltool/`; integrations live in `internal/tui/slash_registry.go`, `internal/app/runner.go`, `internal/app/tui.go`, `internal/context/prompt.go`, `internal/engine/{config,loop}.go`. The `doublestar/v4` dependency was added for glob path matching.
 
 ### Spec TC → Test Mapping
 
@@ -818,3 +818,43 @@ A third Codex review (after Phase 14) surfaced three orthogonal findings concent
 - EC-016 → `TestModel_PromptCommand_PrepareStageIsAsync`, plus the updated two-stage drive in `TestModel_FileBasedCommand_DispatchesThroughExecutor`, `TestModel_AllowedTools_RoutesToRunRestricted`, `TestModel_NoAllowedTools_UsesRegularRun`, `TestModel_AfterHook_FiresAfterRunCompletes`, `TestModel_AllowedTools_UnsupportedRunner_ErrorsOut`
 
 **Checkpoint**: `go test ./...` passes. `gofmt -l .` clean. After Phase 15 there are no remaining open Codex findings from any round.
+
+---
+
+## Phase 16: Fourth-round review fixes
+
+A fourth Codex review (after Phase 15) surfaced two further integration gaps: (a) a P1 policy bypass in fork mode where allow-lists were silently dropped, and (b) a P2 cancellation gap where shell embeddings ignored Ctrl+C during the prepare stage. Both are now closed. See `plan.md` Revisions R10/R11 and `spec.md` EC-017 / EC-018 plus the REQ-009 fork-mode enforcement clarification.
+
+### Task 16.1: Move FilteredRegistry to internal/tools
+
+- **Type**: Refactor
+- **Files**: `internal/tools/filter.go` (new), `internal/slash/filter.go` (shim), `internal/slash/security_test.go`
+- **Description**: The filtered registry decorator is a generic tools.Registry concept used by two callers (slash TUI path, subagent fork path) and is not slash-specific. Moves the implementation to `internal/tools/filter.go`. `internal/slash/filter.go` keeps a thin `NewFilteredRegistry` shim that delegates to `tools.NewFilteredRegistry` so existing slash imports continue to work. Avoids creating a subagent → slash dependency that would invert the layering.
+- **Related spec**: NFR-002 (clarified)
+- **Dependencies**: Task 6.4
+- **Est. Complexity**: Low
+
+### Task 16.2: Thread allowed-tools into fork mode
+
+- **Type**: Implementation + tests
+- **Files**: `internal/slash/executor.go`, `internal/slash/executor_test.go`, `internal/slash/skilltool/tool_test.go`, `internal/subagent/manager.go`, `internal/subagent/filter_test.go` (new), `internal/app/runner.go`, `internal/app/fork_runner_test.go`
+- **Description**: `slash.ForkRunner.Run` signature gains `allowedTools []string`. The slash executor copies `cmd.Frontmatter.AllowedTools` and passes it through. `subagent.Request` gains an `AllowedTools []string` field. `subagent.Manager.buildRegistry(readOnly, allowedTools)` wraps its base registry in `tools.NewFilteredRegistry` whenever the allow-list is non-empty. `subagentForkRunner.Run` in app/runner.go threads the parameter through to the Request. Test fakes (`fakeForkRunner`, `forkRunnerStub`, `TestSubagentForkRunner_UsesLiveGetters`) are updated for the new signature. New tests: `TestExecutor_ForkMode_PassesAllowedToolsToRunner`, `TestExecutor_ForkMode_NoAllowedToolsPassesEmpty`, `TestManager_BuildRegistry_AllowedToolsFilters`, `TestManager_BuildRegistry_ReadOnlyPlusAllowedTools`, `TestManager_BuildRegistry_AllowedToolsExcludesEverything`.
+- **Related spec**: REQ-009 (clarified), NFR-002 (clarified), EC-017 (new)
+- **Dependencies**: Task 16.1, Task 11.4, Task 14.2
+- **Est. Complexity**: Medium
+
+### Task 16.3: ExecuteEmbeddedShell honors parent cancellation
+
+- **Type**: Implementation + tests
+- **Files**: `internal/slash/shell.go`, `internal/slash/shell_test.go`, `internal/slash/edge_test.go`, `internal/slash/security_test.go`, `internal/slash/executor.go`
+- **Description**: `ExecuteEmbeddedShell` adds a `parent context.Context` first parameter. `runShellOnce` derives its `context.WithTimeout` from `parent`, surfaces both cancellation and timeout as inline `[ERROR: ...]` markers. The slash executor passes its own `ctx` through. Nil parent is treated as background for defensive symmetry. New test `TestExecuteEmbeddedShell_ParentCtxCancelKillsCommand` proves cancellation finishes in under 3 seconds against a `sleep 10` embed with a 30-second per-embed timeout. New test `TestExecuteEmbeddedShell_NilCtxStillWorks` characterizes the nil-safe path. Bulk-update existing shell/edge/security tests to pass `context.Background()` explicitly.
+- **Related spec**: EC-018 (new)
+- **Dependencies**: Task 5.2, Task 15.3
+- **Est. Complexity**: Low
+
+### Phase 16 TC additions
+
+- EC-017 → `TestExecutor_ForkMode_PassesAllowedToolsToRunner`, `TestExecutor_ForkMode_NoAllowedToolsPassesEmpty`, `TestManager_BuildRegistry_AllowedToolsFilters`, `TestManager_BuildRegistry_ReadOnlyPlusAllowedTools`, `TestManager_BuildRegistry_AllowedToolsExcludesEverything`
+- EC-018 → `TestExecuteEmbeddedShell_ParentCtxCancelKillsCommand`, `TestExecuteEmbeddedShell_NilCtxStillWorks`
+
+**Checkpoint**: `go test ./...` passes. `gofmt -l .` clean. After Phase 16 there are no remaining open Codex findings from any round, and the slash command system has been validated against four independent adversarial review passes.
