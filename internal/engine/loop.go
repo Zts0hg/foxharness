@@ -196,6 +196,9 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, tracer *tracing.Trac
 				started := time.Now()
 				result := e.registry.Execute(ctx, call)
 				durationMS := time.Since(started).Milliseconds()
+				if e.config.OnToolCalled != nil {
+					e.config.OnToolCalled(call, result)
+				}
 				results[idx] = indexedToolResult{
 					Index:      idx,
 					Call:       call,
@@ -233,6 +236,9 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, tracer *tracing.Trac
 		started := time.Now()
 		result := e.registry.Execute(ctx, call)
 		durationMS := time.Since(started).Milliseconds()
+		if e.config.OnToolCalled != nil {
+			e.config.OnToolCalled(call, result)
+		}
 		results[i] = indexedToolResult{
 			Index:      i,
 			Call:       call,
@@ -475,6 +481,27 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			tracer.Annotate(turnSpan.ID(), "system_reminder_injected", map[string]any{
 				"turn": turnCount,
 			})
+		}
+
+		if e.config.NextTurnReminders != nil {
+			for _, extra := range e.config.NextTurnReminders() {
+				if extra == "" {
+					continue
+				}
+				contextHistory = append(contextHistory, schema.Message{
+					Role:    schema.RoleUser,
+					Content: "[Runtime System Reminder]\n\n" + extra,
+				})
+				_ = transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
+					"turn":    turnCount,
+					"message": extra,
+					"source":  "next_turn_reminders",
+				})
+				tracer.Annotate(turnSpan.ID(), "system_reminder_injected", map[string]any{
+					"turn":   turnCount,
+					"source": "next_turn_reminders",
+				})
+			}
 		}
 
 		availableTools := e.registry.GetAvailableTools()

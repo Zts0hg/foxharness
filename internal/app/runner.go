@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -17,7 +18,10 @@ import (
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/slash"
+	"github.com/Zts0hg/foxharness/internal/slash/skilltool"
 	"github.com/Zts0hg/foxharness/internal/subagent"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
@@ -58,6 +62,11 @@ type AgentRunner struct {
 	llmProvider    provider.LLMProvider
 	currentSession *session.Session
 	checkpointer   checkpoint.Checkpointer
+	slashRegistry  *slash.Registry
+	slashExecutor  *slash.Executor
+
+	pendingMu          sync.Mutex
+	pendingActivations []string
 }
 
 func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
@@ -117,7 +126,12 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		providerProtocol = strings.ToLower(strings.TrimSpace(providerProtocol))
 	}
 
-	return &AgentRunner{
+	slashRegistry := slash.NewRegistry(workDir)
+	if err := slashRegistry.Load(); err != nil {
+		log.Printf("[slash] registry load failed: %v", err)
+	}
+
+	ar := &AgentRunner{
 		workDir:          workDir,
 		model:            cfg.Model,
 		providerProtocol: providerProtocol,
@@ -130,11 +144,120 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		llmProvider:      llmProvider,
 		currentSession:   sess,
 		checkpointer:     cp,
-	}, nil
+		slashRegistry:    slashRegistry,
+	}
+	ar.slashExecutor = slash.NewExecutor(
+		slash.WithWorkDir(workDir),
+		slash.WithForkRunner(&subagentForkRunner{
+			getManager: ar.currentSubagentManager,
+			getSession: ar.currentSessionIDLocked,
+		}),
+	)
+	slashRegistry.OnActivate(ar.recordSkillActivation)
+	return ar, nil
+}
+
+// recordSkillActivation queues an activation notice that the engine
+// drains via NextTurnReminders at the start of the next turn. This
+// closes the REQ-010 gap where a skill activated mid-run was previously
+// only visible to the model on subsequent runs because the system
+// prompt was composed once before the turn loop.
+func (r *AgentRunner) recordSkillActivation(cmd *slash.Command) {
+	if cmd == nil || !cmd.IsModelInvocable() {
+		return
+	}
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	r.pendingActivations = append(r.pendingActivations, formatActivationReminder(cmd))
+}
+
+func formatActivationReminder(cmd *slash.Command) string {
+	out := "A new skill became available for the rest of this session: `" + cmd.Name + "`"
+	if cmd.Description != "" {
+		out += "\n  Description: " + cmd.Description
+	}
+	if cmd.Frontmatter.WhenToUse != "" {
+		out += "\n  When to use: " + cmd.Frontmatter.WhenToUse
+	}
+	if cmd.Frontmatter.ArgumentHint != "" {
+		out += "\n  Arguments: " + cmd.Frontmatter.ArgumentHint
+	} else if cmd.Frontmatter.Arguments != "" {
+		out += "\n  Arguments: " + cmd.Frontmatter.Arguments
+	}
+	out += "\nInvoke it via the `skill` tool with name=\"" + cmd.Name + "\"."
+	return out
+}
+
+// drainPendingActivations returns and clears any activation notices
+// queued since the previous turn. Safe for concurrent access; the
+// engine calls it once per turn via NextTurnReminders.
+func (r *AgentRunner) drainPendingActivations() []string {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	if len(r.pendingActivations) == 0 {
+		return nil
+	}
+	out := r.pendingActivations
+	r.pendingActivations = nil
+	return out
+}
+
+// currentSubagentManager returns a freshly-built subagent.Manager bound to
+// the runner's current LLM provider. Built per-call so a /model switch is
+// immediately reflected in fork-mode skills without rebuilding the
+// executor or fork runner.
+func (r *AgentRunner) currentSubagentManager() *subagent.Manager {
+	r.mu.Lock()
+	p := r.llmProvider
+	wd := r.workDir
+	r.mu.Unlock()
+	return subagent.NewManager(p, wd)
+}
+
+// currentSessionIDLocked returns the current session id, or "" when no
+// session is attached. Read under the runner mutex so it stays consistent
+// across NewSession swaps.
+func (r *AgentRunner) currentSessionIDLocked() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.currentSession == nil {
+		return ""
+	}
+	return r.currentSession.ID
+}
+
+// SlashRegistry exposes the runner's slash command registry to callers
+// like the TUI that need to attach it to the model.
+func (r *AgentRunner) SlashRegistry() *slash.Registry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.slashRegistry
+}
+
+// SlashExecutor exposes the runner's slash executor, configured with the
+// work directory and any fork runner wired up at construction time.
+func (r *AgentRunner) SlashExecutor() *slash.Executor {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.slashExecutor
 }
 
 // Run executes one prompt as a new run in the current session.
 func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engine.Reporter) (*engine.RunResult, error) {
+	return r.runInternal(ctx, userPrompt, nil, reporter)
+}
+
+// RunRestricted executes one prompt with the tool registry filtered down
+// to allowedTools. Calls from prompt commands that declare an
+// `allowed-tools` frontmatter use this path so the per-turn restriction
+// is enforced at the registry level (NFR-002), not just advisory.
+//
+// allowedTools must be non-empty; pass nil/empty to Run instead.
+func (r *AgentRunner) RunRestricted(ctx context.Context, userPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
+	return r.runInternal(ctx, userPrompt, allowedTools, reporter)
+}
+
+func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
 	r.runMu.Lock()
 	defer r.runMu.Unlock()
 
@@ -169,7 +292,18 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 		}
 	}
 
+	r.mu.Lock()
+	registry := r.slashRegistry
+	r.mu.Unlock()
+
 	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
+	if registry != nil {
+		contextWindow := compaction.NewModelRegistry().Lookup(model)
+		tokens := contextWindow
+		composer = composer.WithSkillList(func() string {
+			return skilltool.FormatSkillsWithinBudget(registry.ModelInvocable(), tokens)
+		})
+	}
 	var messageIDMu sync.Mutex
 	currentMessageID := ""
 	setCurrentMessageID := func(messageID string) {
@@ -182,18 +316,27 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 		defer messageIDMu.Unlock()
 		return currentMessageID
 	}
+
+	toolRegistry := r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID)
+	if len(allowedTools) > 0 {
+		toolRegistry = slash.NewFilteredRegistry(toolRegistry, allowedTools)
+		log.Printf("[slash] restricting next run to allowed tools: %v", allowedTools)
+	}
+
 	eng := engine.NewAgentEngine(
 		llmProvider,
-		r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID),
+		toolRegistry,
 		r.workDir,
 		composer,
 		engine.Config{
-			EnableThinking:   enableThinking,
-			MaxTurns:         maxTurns,
-			ProviderProtocol: providerProtocol,
-			Model:            model,
-			Checkpointer:     cp,
-			OnUserMessageID:  setCurrentMessageID,
+			EnableThinking:    enableThinking,
+			MaxTurns:          maxTurns,
+			ProviderProtocol:  providerProtocol,
+			Model:             model,
+			Checkpointer:      cp,
+			OnUserMessageID:   setCurrentMessageID,
+			OnToolCalled:      r.conditionalActivationHook(),
+			NextTurnReminders: r.drainPendingActivations,
 		},
 	)
 	compCfg := compaction.DefaultCompactionConfig()
@@ -370,6 +513,83 @@ func (r *AgentRunner) SetPlanMode(enabled bool) {
 	r.enablePlanMode = enabled
 }
 
+// conditionalActivationHook returns an engine.OnToolCalled callback that
+// extracts a file path from read_file/write_file/edit_file tool calls and
+// notifies the slash registry so it can activate any conditional skills
+// whose `paths` globs match.
+func (r *AgentRunner) conditionalActivationHook() func(schema.ToolCall, schema.ToolResult) {
+	r.mu.Lock()
+	registry := r.slashRegistry
+	r.mu.Unlock()
+	if registry == nil {
+		return nil
+	}
+	return func(call schema.ToolCall, result schema.ToolResult) {
+		// A failed tool call did not actually operate on the file the
+		// model named (middleware denial, missing path, permission
+		// error, etc.). Activating conditional skills on a failed
+		// attempt would (a) violate REQ-010 ("operates on" implies
+		// success) and (b) leak skill metadata about paths the user
+		// never successfully touched. Gate on IsError.
+		if result.IsError {
+			return
+		}
+		switch call.Name {
+		case "read_file", "write_file", "edit_file":
+		default:
+			return
+		}
+		path := extractFilePath(call.Arguments)
+		if path == "" {
+			return
+		}
+		registry.CheckConditional(path)
+	}
+}
+
+// subagentForkRunner implements slash.ForkRunner by delegating to a
+// subagent.Manager built on demand. Both the manager and the parent
+// session id are read through getters so that /new (new session) and
+// /model (provider swap) are reflected immediately — keeping snapshots
+// here would leave fork-mode skills pinned to the original session and
+// model. The agentType parameter is currently advisory; the underlying
+// manager does not yet differentiate personas.
+type subagentForkRunner struct {
+	getManager func() *subagent.Manager
+	getSession func() string
+}
+
+func (s *subagentForkRunner) Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error) {
+	_ = agentType
+	mgr := s.getManager()
+	if mgr == nil {
+		return "", fmt.Errorf("fork runner: subagent manager unavailable")
+	}
+	res, err := mgr.Run(ctx, subagent.Request{
+		ParentSessionID: s.getSession(),
+		Task:            task,
+		ReadOnly:        false,
+		AllowedTools:    allowedTools,
+	})
+	if err != nil {
+		return "", err
+	}
+	if res == nil {
+		return "", nil
+	}
+	return res.Report, nil
+}
+
+func extractFilePath(raw []byte) string {
+	var args struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return ""
+	}
+	return args.Path
+}
+
 func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.LLMProvider, cp checkpoint.Checkpointer, getMessageID func() string) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Use(middleware.NewCheckpointMiddleware(cp, getMessageID, r.workDir))
@@ -382,6 +602,14 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 
 	subManager := subagent.NewManager(llmProvider, r.workDir)
 	registry.Register(subagent.NewTool(subManager, sess.ID))
+
+	r.mu.Lock()
+	slashReg := r.slashRegistry
+	slashExec := r.slashExecutor
+	r.mu.Unlock()
+	if slashReg != nil && slashExec != nil {
+		registry.Register(skilltool.NewSkillTool(slashReg, slashExec, func() string { return sess.ID }))
+	}
 	return registry
 }
 

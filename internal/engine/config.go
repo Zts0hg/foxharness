@@ -1,6 +1,9 @@
 package engine
 
-import "github.com/Zts0hg/foxharness/internal/checkpoint"
+import (
+	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/schema"
+)
 
 // Config controls the behavior of the AgentEngine.
 // It provides options for enabling the Thinking phase and setting
@@ -30,6 +33,23 @@ type Config struct {
 	// used by middleware wiring to associate later file edits with the same
 	// snapshot.
 	OnUserMessageID func(messageID string)
+
+	// OnToolCalled is invoked after every tool execution with the call and
+	// its result. The hook is intentionally synchronous so callers can
+	// inspect the call and reactively update external state — for example,
+	// the slash command system uses this to activate conditional skills
+	// whose path globs match a touched file. The hook must not block.
+	OnToolCalled func(call schema.ToolCall, result schema.ToolResult)
+
+	// NextTurnReminders, when set, is called at the start of every turn
+	// and may return one or more strings to inject into the conversation
+	// as system reminders. Returning nil/empty skips the injection for
+	// that turn. The slash command system uses this to surface
+	// conditionally-activated skills mid-run — by the time CheckConditional
+	// fires inside OnToolCalled, the system prompt has already been
+	// composed, so a per-turn drain is the only way to give the model
+	// access to the new skill within the run that activated it.
+	NextTurnReminders func() []string
 }
 
 // DefaultConfig returns a Config with sensible defaults.
