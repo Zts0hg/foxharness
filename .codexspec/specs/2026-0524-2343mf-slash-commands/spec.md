@@ -386,6 +386,15 @@ type SkillTool struct {
 4. If `context: "fork"`, delegate to sub-agent
 5. If `context: "inline"` (default), inject the processed content as a user message
 
+**Allowed-tools enforcement under model invocation**:
+
+When a skill declares `allowed-tools`, the enforcement model depends on `context`:
+
+- `context: fork` — the sub-agent is built with a `FilteredRegistry` wrapping its own tool set, so the restriction is enforced at the registry level inside the sub-agent. SkillTool accepts the invocation.
+- `context: inline` — the engine has already announced the **un-filtered** tool set to the model for the current turn; mid-turn registry swaps would silently break subsequent tool calls without the model knowing. The SkillTool MUST refuse this combination with a descriptive error directing the skill author to switch to `context: fork`. The refusal happens after the `before` and `after` hooks have fired (symmetry).
+
+This rule applies only to model invocation. TUI invocation always operates between turns, so inline + `allowed-tools` is enforced there by wrapping the engine's registry in `FilteredRegistry` for the next run.
+
 **System prompt injection**: The `PromptComposer` includes a formatted list of model-invocable skills in the system prompt, respecting a character budget derived from the model's context window. Each skill entry shows: name, description, when_to_use (if present), argument_hint (if present).
 
 **Token budget mechanism** (modeled after Claude Code):
@@ -447,9 +456,12 @@ hooks:
   after: "echo 'Review complete'"
 ```
 
-- `before` hook runs before the command content is processed
-- `after` hook runs after the command execution completes
-- Hook failures are logged but do not block command execution
+- `before` hook runs synchronously inside the executor after argument substitution, shell embedding, and variable replacement complete, but before dispatch. It runs regardless of execution mode (inline / fork) and regardless of whether the dispatch ultimately succeeds.
+- `after` hook runs after the command's execution **truly completes**. The completion point depends on mode and caller:
+  - **Fork mode (TUI or model)**: the sub-agent's run returns. The executor fires `after` synchronously before `Execute` returns. Fires even when the sub-agent itself errors.
+  - **Inline mode invoked by the user (TUI)**: the LLM agent run started from the processed prompt returns. The executor surfaces the after-hook back to the TUI via `ExecutionResult.AfterHook`; the TUI fires it from the `runPromptCmd`/`runRestrictedPromptCmd` closure once `runner.Run`/`runner.RunRestricted` returns. Deferring inside `Execute` would fire the hook before the model had touched the content and is forbidden.
+  - **Inline mode invoked by the model (SkillTool)**: there is no clean completion point — the engine continues the current turn using the tool result. The SkillTool fires `after` synchronously before returning, including when the SkillTool refuses the invocation (symmetry with `before`, which already ran inside `Execute`).
+- Hook failures are logged but never block command execution.
 
 ### REQ-013: Caching
 
@@ -693,6 +705,12 @@ If a conditional skill's name matches an already-active command (built-in or fil
 
 ### EC-012: Session or model swap during a session with fork-mode skills
 If the user switches session (`/new`) or model (`/model X`) after a fork-mode skill has been registered, subsequent fork-mode invocations MUST use the new session id as `ParentSessionID` and the new model as the sub-agent's provider. The fork runner MUST NOT cache the session id or sub-agent manager captured at runner construction.
+
+### EC-013: After-hook timing across modes
+A command's `after` hook MUST observe the post-execution state — that is, the state after the model (TUI) or sub-agent (fork) has finished acting on the processed prompt. Implementations MUST NOT fire `after` while the executor is still preparing the prompt: any approach that defers `after` inside the executor's `Execute` method violates this requirement for inline-mode commands because `Execute` returns before the TUI starts the model run. Surface the hook back to the caller via the execution result and fire it from the caller's post-run hook point. Fork mode keeps the synchronous-inside-`Execute` pattern because `Execute` blocks on the sub-agent.
+
+### EC-014: Model invocation of inline + allowed-tools
+A `.md` file that combines `context: inline` (default) with a non-empty `allowed-tools` and remains `model-invocable` (i.e., `disable-model-invocation: false`) MUST be refused by the SkillTool with an error explaining that fork mode is required. The author can resolve it by adding `context: fork` (and an appropriate `agent`) or by setting `disable-model-invocation: true` if the skill is intended for the TUI only. The refusal is rendered as a tool error result, not a panic.
 
 ## Output Examples
 

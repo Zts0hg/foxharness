@@ -1638,16 +1638,17 @@ func (m Model) executePromptCommand(cmd *slash.Command, args string) (tea.Model,
 		m.status = "Command produced empty output"
 		return m, nil
 	}
-	return m.startPromptRestricted(result.Content, result.AllowedTools)
+	return m.startPromptRestricted(result.Content, result.AllowedTools, result.AfterHook)
 }
 
 // startPromptRestricted starts a new run scoped to the supplied allowed
-// tools. When allowedTools is empty the path falls through to the
-// unrestricted startPrompt — preserving existing behavior for commands
-// without an `allowed-tools` frontmatter.
-func (m Model) startPromptRestricted(text string, allowedTools []string) (tea.Model, tea.Cmd) {
+// tools, and (optionally) registers an after-hook that fires once the
+// run completes. When allowedTools is empty the path falls through to a
+// hook-aware variant of startPrompt — preserving existing behavior for
+// commands without an `allowed-tools` frontmatter.
+func (m Model) startPromptRestricted(text string, allowedTools []string, afterHook func(context.Context)) (tea.Model, tea.Cmd) {
 	if len(allowedTools) == 0 {
-		return m.startPrompt(text)
+		return m.startPromptWithAfterHook(text, afterHook)
 	}
 	rr, ok := m.runner.(restrictedRunner)
 	if !ok {
@@ -1665,7 +1666,26 @@ func (m Model) startPromptRestricted(text string, allowedTools []string) (tea.Mo
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
 	allowedCopy := append([]string(nil), allowedTools...)
-	return m, runRestrictedPromptCmd(runCtx, rr, text, allowedCopy, m.events)
+	return m, runRestrictedPromptCmd(runCtx, rr, text, allowedCopy, afterHook, m.events)
+}
+
+// startPromptWithAfterHook is a thin wrapper over startPrompt that
+// schedules afterHook to fire once the run completes. When afterHook is
+// nil the call is equivalent to startPrompt.
+func (m Model) startPromptWithAfterHook(text string, afterHook func(context.Context)) (tea.Model, tea.Cmd) {
+	if afterHook == nil {
+		return m.startPrompt(text)
+	}
+	m.scrollOffset = 0
+	m.running = true
+	m.runStartedAt = m.nowTime()
+	m.spinnerFrame = 0
+	m.status = "Running"
+	m.appendEntry("user", "you", text, false)
+
+	runCtx, cancel := context.WithCancel(m.ctx)
+	m.cancelRun = cancel
+	return m, runPromptCmdWithAfter(runCtx, m.runner, text, afterHook, m.events)
 }
 
 // restrictedRunner is the optional interface a Runner implements to
@@ -1676,10 +1696,24 @@ type restrictedRunner interface {
 	RunRestricted(ctx context.Context, prompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error)
 }
 
-func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, allowed []string, events chan<- tea.Msg) tea.Cmd {
+func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, allowed []string, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
 		result, err := runner.RunRestricted(ctx, prompt, allowed, reporter)
+		if afterHook != nil {
+			afterHook(ctx)
+		}
+		return runFinishedMsg{result: result, err: err}
+	}
+}
+
+func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		reporter := &channelReporter{events: events}
+		result, err := runner.Run(ctx, prompt, reporter)
+		if afterHook != nil {
+			afterHook(ctx)
+		}
 		return runFinishedMsg{result: result, err: err}
 	}
 }

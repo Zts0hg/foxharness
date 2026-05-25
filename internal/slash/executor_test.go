@@ -3,6 +3,7 @@ package slash
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -197,6 +198,77 @@ func TestExecutor_InlineMode_SurfacesAllowedTools(t *testing.T) {
 	if len(got.AllowedTools) != 2 || got.AllowedTools[0] != "read_file" || got.AllowedTools[1] != "bash" {
 		t.Errorf("AllowedTools = %v", got.AllowedTools)
 	}
+}
+
+func TestExecutor_InlineMode_AfterHookDeferred(t *testing.T) {
+	wd := t.TempDir()
+	marker := wd + "/after.touched"
+	exec := NewExecutor(WithWorkDir(wd))
+	cmd := &Command{
+		Type:    CommandPrompt,
+		Content: "body",
+		Frontmatter: Frontmatter{
+			Hooks: &FrontmatterHooks{After: "touch " + marker},
+		},
+	}
+	res, err := exec.Execute(context.Background(), cmd, "", "")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res.AfterHook == nil {
+		t.Fatal("AfterHook must be set for inline + hooks.after")
+	}
+	// CRITICAL: marker must NOT exist yet — the hook must not have run
+	// just because Execute returned.
+	if fileExists(marker) {
+		t.Fatal("after-hook fired prematurely inside Execute (defer bug)")
+	}
+	// Caller fires it explicitly.
+	res.AfterHook(context.Background())
+	if !fileExists(marker) {
+		t.Errorf("after-hook closure did not run when caller invoked it")
+	}
+}
+
+func TestExecutor_ForkMode_AfterHookSynchronous(t *testing.T) {
+	wd := t.TempDir()
+	marker := wd + "/fork.after.touched"
+	fork := &fakeForkRunner{result: "report"}
+	exec := NewExecutor(WithWorkDir(wd), WithForkRunner(fork))
+	cmd := &Command{
+		Type: CommandPrompt,
+		Frontmatter: Frontmatter{
+			Context: "fork",
+			Hooks:   &FrontmatterHooks{After: "touch " + marker},
+		},
+	}
+	res, err := exec.Execute(context.Background(), cmd, "", "")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res.AfterHook != nil {
+		t.Error("fork-mode result must NOT carry AfterHook — Execute already fired it")
+	}
+	if !fileExists(marker) {
+		t.Error("fork-mode after-hook must run synchronously inside Execute")
+	}
+}
+
+func TestExecutor_InlineMode_NoAfterHookWhenNotDeclared(t *testing.T) {
+	exec := NewExecutor()
+	cmd := &Command{Type: CommandPrompt, Content: "body"}
+	res, err := exec.Execute(context.Background(), cmd, "", "")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res.AfterHook != nil {
+		t.Error("AfterHook must be nil when no after-hook declared")
+	}
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 func TestExecutor_ForkMode_OmitsAllowedTools(t *testing.T) {

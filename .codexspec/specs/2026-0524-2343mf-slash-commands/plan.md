@@ -457,3 +457,27 @@ A Codex review of the initial implementation surfaced three integration gaps tha
 **Now**: `subagentForkRunner` holds two callbacks — `getManager() *subagent.Manager` and `getSession() string` — that the runner provides as method references. `getManager` builds a fresh `subagent.NewManager(r.llmProvider, r.workDir)` on each call, so a `/model` swap is reflected immediately. `getSession` reads `r.currentSession.ID` under the runner mutex, so `/new` is reflected immediately.
 
 These revisions did not alter the public TUI behavior or any of the 32 acceptance test cases — they correct integration gaps between modules that were defined correctly in isolation.
+
+### R5: After-hook surfaced to caller (inline mode)
+
+**Why**: The first implementation fired `after` via `defer` inside `Executor.Execute`. For fork mode this was correct because `Execute` blocks on the sub-agent and the `defer` fires after the sub-agent returns. For **inline** mode `Execute` returns immediately after preparing the prompt — long before the TUI hands the prompt off to the engine — so `after` ran prematurely, in the wrong order with respect to the model's actual work. This violates REQ-012 ("after hook runs after the command execution completes").
+
+**Now**: `ExecutionResult` gains an `AfterHook func(ctx context.Context)` field, populated for inline mode and `nil` for fork mode. The executor no longer defers inline after-hooks; fork mode keeps running `after` synchronously inside `Execute` (since the sub-agent has completed by then). Callers fire `AfterHook` at the right moment:
+
+- TUI (`runPromptCmdWithAfter`, `runRestrictedPromptCmd`): inside the goroutine, after `runner.Run` / `runner.RunRestricted` returns and before emitting `runFinishedMsg`.
+- SkillTool: synchronously before returning, including on refusal (model invocation has no clean later completion point — the engine continues the turn using the result).
+
+The TUI test `TestModel_AfterHook_FiresAfterRunCompletes` asserts the marker file does not exist between Enter and driving the deferred run cmd, and exists after the cmd completes — directly characterizing the timing.
+
+### R6: SkillTool refuses inline + allowed-tools
+
+**Why**: Phase 13's `RunRestricted` enforces `allowed-tools` for TUI invocation by swapping the engine's registry between turns. The corresponding model-invocation path could not be patched the same way because the engine has already announced its tool set to the model for the current turn; switching the registry mid-turn would silently break subsequent tool calls without the model knowing. Leaving `allowed-tools` advisory under model invocation violates NFR-002 ("enforced at the tool registry level, not just advisory").
+
+**Now**: When SkillTool receives an `ExecutionResult` with `len(AllowedTools) > 0 && !Fork`, it returns a tool error that names the skill and instructs the author to switch the frontmatter to `context: fork`. Fork mode gets the constraint enforced inside the sub-agent's own filtered registry; inline mode + model invocation + restricted tools is unsupported by design.
+
+The skill author has three documented escape hatches:
+1. `context: fork` (recommended) — the sub-agent enforces the restriction in its own registry.
+2. `disable-model-invocation: true` — hide the skill from the model; restriction stays enforced for TUI invocation only.
+3. Remove `allowed-tools` — accept the full tool set under model invocation.
+
+Spec edge cases EC-013 (after-hook timing) and EC-014 (inline + allowed-tools refusal) document these rules.

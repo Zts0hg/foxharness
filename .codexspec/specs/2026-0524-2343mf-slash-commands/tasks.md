@@ -3,11 +3,11 @@
 **Input**: `.codexspec/specs/2026-0524-2343mf-slash-commands/plan.md`
 **Related Spec**: `.codexspec/specs/2026-0524-2343mf-slash-commands/spec.md`
 **Created**: 2026-05-25
-**Status**: Complete with post-review fixes (2026-05-25)
+**Status**: Complete with two rounds of post-review fixes (2026-05-25)
 
 ## Implementation Status
 
-All 12 phases complete, plus a Phase 13 batch of post-review fixes (see end of file). Test results: `go test ./...` passes (88.6% coverage on `internal/slash`, 69.0% on `internal/slash/skilltool`). New code is in `internal/slash/`, `internal/slash/skilltool/`; integrations live in `internal/tui/slash_registry.go`, `internal/app/runner.go`, `internal/app/tui.go`, `internal/context/prompt.go`, `internal/engine/{config,loop}.go`. The `doublestar/v4` dependency was added for glob path matching.
+All 12 phases complete, plus Phase 13 + Phase 14 batches of post-review fixes (see end of file). Test results: `go test ./...` passes (88.6% coverage on `internal/slash`, 69.0% on `internal/slash/skilltool`). New code is in `internal/slash/`, `internal/slash/skilltool/`; integrations live in `internal/tui/slash_registry.go`, `internal/app/runner.go`, `internal/app/tui.go`, `internal/context/prompt.go`, `internal/engine/{config,loop}.go`. The `doublestar/v4` dependency was added for glob path matching.
 
 ### Spec TC → Test Mapping
 
@@ -745,3 +745,34 @@ Added after a Codex review of the Phase 1–12 implementation surfaced three int
 - EC-012 → `TestSubagentForkRunner_UsesLiveGetters`
 
 **Checkpoint**: `go test ./...` passes (88.6% / 69.0% coverage holds; no other package's tests regressed). `gofmt -l .` is clean.
+
+---
+
+## Phase 14: Second-round review fixes
+
+A second Codex review (after Phase 13) surfaced two further integration gaps. Both relate to the new `ExecutionResult` plumbing introduced in Phase 13 — one was a latent bug the new structure exposed, the other was a regression Phase 13 itself created. See `plan.md` **Revisions** R5–R6 and `spec.md` EC-013 / EC-014.
+
+### Task 14.1: Move after-hook out of Execute's defer
+
+- **Type**: Implementation + tests
+- **Files**: `internal/slash/executor.go`, `internal/slash/executor_test.go`, `internal/slash/skilltool/tool.go`, `internal/slash/skilltool/tool_test.go`, `internal/tui/model.go`, `internal/tui/slash_registry_test.go`
+- **Description**: `ExecutionResult` gains `AfterHook func(ctx context.Context)`. Fork mode runs the after-hook synchronously inside `Execute` (since the sub-agent has already finished) and leaves `AfterHook = nil`. Inline mode does NOT defer the hook inside `Execute`; it populates `AfterHook` instead and the caller fires it: TUI inside the run-cmd goroutine after `runner.Run` returns, SkillTool synchronously before returning. Removes the prematurely-firing `defer` from `Execute`. New tests: `TestExecutor_InlineMode_AfterHookDeferred`, `TestExecutor_ForkMode_AfterHookSynchronous`, `TestExecutor_InlineMode_NoAfterHookWhenNotDeclared`, `TestSkillTool_Execute_AfterHookFiresOnSuccess`, `TestSkillTool_Execute_AfterHookFiresOnRefusal`, `TestModel_AfterHook_FiresAfterRunCompletes`.
+- **Related spec**: REQ-012 (clarified), EC-013 (new)
+- **Dependencies**: Task 13.3, Task 13.4
+- **Est. Complexity**: Medium
+
+### Task 14.2: SkillTool refuses inline + allowed-tools
+
+- **Type**: Implementation + tests
+- **Files**: `internal/slash/skilltool/tool.go`, `internal/slash/skilltool/tool_test.go`
+- **Description**: After `Executor.Execute` returns, SkillTool inspects the result. If `len(res.AllowedTools) > 0 && !res.Fork`, it returns a tool error stating the skill name and instructing the author to use `context: fork`. The after-hook still fires (symmetry with the before-hook that already ran inside `Execute`). Fork-mode invocations and inline-mode invocations without `allowed-tools` are unchanged. New tests: `TestSkillTool_Execute_InlineAllowedToolsRefused`, `TestSkillTool_Execute_ForkAllowedToolsAccepted`.
+- **Related spec**: REQ-009 (extended), NFR-002 (clarified), EC-014 (new)
+- **Dependencies**: Task 14.1
+- **Est. Complexity**: Low
+
+### Phase 14 TC additions
+
+- EC-013 → `TestExecutor_InlineMode_AfterHookDeferred`, `TestExecutor_ForkMode_AfterHookSynchronous`, `TestModel_AfterHook_FiresAfterRunCompletes`
+- EC-014 → `TestSkillTool_Execute_InlineAllowedToolsRefused`, `TestSkillTool_Execute_ForkAllowedToolsAccepted`
+
+**Checkpoint**: `go test ./...` passes. `gofmt -l .` clean. After Phase 14 there are no remaining open Codex findings.

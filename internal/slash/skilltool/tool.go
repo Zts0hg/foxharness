@@ -89,5 +89,28 @@ func (t *SkillTool) Execute(ctx context.Context, raw json.RawMessage) (string, e
 	if err != nil {
 		return "", err
 	}
+	// Fire the after-hook synchronously before returning. For
+	// model-invoked skills the SkillTool returning IS the completion
+	// point (the engine continues the turn with the result as a tool
+	// output), so this is the moment that maps to "after the command
+	// finished" in REQ-012. Always fire — symmetry with the before-hook
+	// that already ran inside Execute, and so cleanup hooks observe
+	// rejected invocations the same way they observe accepted ones.
+	if res.AfterHook != nil {
+		defer res.AfterHook(ctx)
+	}
+	// Model invocation cannot enforce inline-mode `allowed-tools`: the
+	// engine has already announced the full tool set for the current
+	// turn, and mid-turn registry swaps would silently break subsequent
+	// tool calls without the model knowing. Refuse the invocation and
+	// instruct the skill author to switch to context: fork — fork mode
+	// runs the skill in a sub-agent with its own isolated, filtered
+	// registry, which is the only place inline restrictions can be
+	// honored when the caller is the model.
+	if len(res.AllowedTools) > 0 && !res.Fork {
+		return "", fmt.Errorf("skill %q declares allowed-tools=%v but context=inline; "+
+			"model-side enforcement requires context: fork — change the skill's frontmatter or invoke from the TUI",
+			args.Name, res.AllowedTools)
+	}
 	return res.Content, nil
 }

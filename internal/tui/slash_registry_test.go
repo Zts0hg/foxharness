@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -194,6 +195,51 @@ func TestModel_NoAllowedTools_UsesRegularRun(t *testing.T) {
 	}
 	if len(runner.fakeRunner.runs) != 1 {
 		t.Errorf("expected unrestricted Run, got %v", runner.fakeRunner.runs)
+	}
+}
+
+func TestModel_AfterHook_FiresAfterRunCompletes(t *testing.T) {
+	// A command with hooks.after must have the hook fire AFTER the
+	// model run completes (runner.Run returns), not when the executor
+	// returned its ExecutionResult. The marker file is the witness.
+	wd := t.TempDir()
+	marker := wd + "/tui-after.marker"
+
+	runner := newFakeRunner()
+	runner.workDir = wd
+	r := slash.NewRegistry(wd).WithoutDiscovery()
+	r.Register(&slash.Command{
+		Type:        slash.CommandPrompt,
+		Name:        "review",
+		Description: "review",
+		Source:      slash.SourceProject,
+		Content:     "Review",
+		Frontmatter: slash.Frontmatter{
+			UserInvocable: true,
+			Hooks:         &slash.FrontmatterHooks{After: "touch " + marker},
+		},
+	})
+	exec := slash.NewExecutor(slash.WithWorkDir(wd))
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(r, exec)
+
+	m, _ = update(t, m, keyRunes("/review"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatal("submit cmd nil")
+	}
+
+	// Between Enter and driving the deferred cmd, the run has not yet
+	// fired — and the after-hook MUST NOT have fired either.
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("after-hook fired before runner.Run was driven (defer bug)")
+	}
+
+	// Drive the deferred run cmd; runner.Run completes, then after-hook
+	// fires inside the cmd closure.
+	_, _ = update(t, m, cmd())
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("after-hook did not fire after run completion: %v", err)
 	}
 }
 

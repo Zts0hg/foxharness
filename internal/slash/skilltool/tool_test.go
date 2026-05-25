@@ -3,6 +3,7 @@ package skilltool
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -15,6 +16,17 @@ func newRegistryWithSkill(t *testing.T, c *slash.Command) *slash.Registry {
 	r.Register(c)
 	return r
 }
+
+// forkRunnerStub is a no-op slash.ForkRunner used by tests that need a
+// fork-mode skill to flow through the executor without spinning up a
+// real subagent.Manager.
+type forkRunnerStub struct{ report string }
+
+func (s forkRunnerStub) Run(ctx context.Context, task string, agentType string) (string, error) {
+	return s.report, nil
+}
+
+func statFile(p string) (os.FileInfo, error) { return os.Stat(p) }
 
 func TestSkillTool_Name(t *testing.T) {
 	tool := NewSkillTool(slash.NewRegistry(t.TempDir()).WithoutDiscovery(), slash.NewExecutor(), func() string { return "" })
@@ -108,6 +120,111 @@ func TestSkillTool_Execute_UserInvocableFalseStillModelInvocable(t *testing.T) {
 	}
 	if !strings.Contains(got, "helper body") {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestSkillTool_Execute_InlineAllowedToolsRefused(t *testing.T) {
+	cmd := &slash.Command{
+		Type:    slash.CommandPrompt,
+		Name:    "scan",
+		Content: "Scan body",
+		Frontmatter: slash.Frontmatter{
+			UserInvocable: true,
+			AllowedTools:  []string{"read_file"},
+			// Context defaults to inline — and that's the unsafe combo.
+		},
+	}
+	tool := NewSkillTool(newRegistryWithSkill(t, cmd), slash.NewExecutor(), func() string { return "" })
+	args, _ := json.Marshal(map[string]string{"name": "scan", "arguments": ""})
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil {
+		t.Fatal("expected inline+allowed-tools to be refused for model invocation")
+	}
+	if !strings.Contains(err.Error(), "context: fork") {
+		t.Errorf("refusal must hint at fork mode: %v", err)
+	}
+}
+
+func TestSkillTool_Execute_ForkAllowedToolsAccepted(t *testing.T) {
+	// Fork-mode skills get enforced inside the sub-agent, so inline-mode
+	// refusal does NOT apply.
+	cmd := &slash.Command{
+		Type:    slash.CommandPrompt,
+		Name:    "deploy",
+		Content: "Deploy",
+		Frontmatter: slash.Frontmatter{
+			UserInvocable: true,
+			Context:       "fork",
+			Agent:         "general-purpose",
+			AllowedTools:  []string{"bash"},
+		},
+	}
+	r := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
+	r.Register(cmd)
+	exec := slash.NewExecutor(slash.WithForkRunner(forkRunnerStub{report: "ok"}))
+	tool := NewSkillTool(r, exec, func() string { return "" })
+	args, _ := json.Marshal(map[string]string{"name": "deploy", "arguments": ""})
+	got, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("fork-mode allowed-tools should be accepted: %v", err)
+	}
+	if got != "ok" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestSkillTool_Execute_AfterHookFiresOnSuccess(t *testing.T) {
+	wd := t.TempDir()
+	marker := wd + "/skill-after.touched"
+	cmd := &slash.Command{
+		Type:    slash.CommandPrompt,
+		Name:    "ping",
+		Content: "ping body",
+		Frontmatter: slash.Frontmatter{
+			UserInvocable: true,
+			Hooks:         &slash.FrontmatterHooks{After: "touch " + marker},
+		},
+	}
+	r := slash.NewRegistry(wd).WithoutDiscovery()
+	r.Register(cmd)
+	exec := slash.NewExecutor(slash.WithWorkDir(wd))
+	tool := NewSkillTool(r, exec, func() string { return "" })
+	args, _ := json.Marshal(map[string]string{"name": "ping", "arguments": ""})
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if _, err := statFile(marker); err != nil {
+		t.Errorf("after-hook did not fire on accepted model invocation: %v", err)
+	}
+}
+
+func TestSkillTool_Execute_AfterHookFiresOnRefusal(t *testing.T) {
+	// Symmetry with before-hook: if before ran (inside Execute), after
+	// should also fire even when the SkillTool ultimately refuses the
+	// invocation — otherwise pair'd cleanup hooks leak resources.
+	wd := t.TempDir()
+	marker := wd + "/refused-after.touched"
+	cmd := &slash.Command{
+		Type:    slash.CommandPrompt,
+		Name:    "refused",
+		Content: "x",
+		Frontmatter: slash.Frontmatter{
+			UserInvocable: true,
+			AllowedTools:  []string{"read_file"}, // triggers refusal
+			Hooks:         &slash.FrontmatterHooks{After: "touch " + marker},
+		},
+	}
+	r := slash.NewRegistry(wd).WithoutDiscovery()
+	r.Register(cmd)
+	exec := slash.NewExecutor(slash.WithWorkDir(wd))
+	tool := NewSkillTool(r, exec, func() string { return "" })
+	args, _ := json.Marshal(map[string]string{"name": "refused", "arguments": ""})
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil {
+		t.Fatal("expected refusal")
+	}
+	if _, err := statFile(marker); err != nil {
+		t.Errorf("after-hook must fire even on refusal (symmetry with before): %v", err)
 	}
 }
 

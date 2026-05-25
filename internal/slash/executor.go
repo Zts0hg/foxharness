@@ -90,6 +90,19 @@ type ExecutionResult struct {
 	// Callers can use it to decide how to display the result
 	// (e.g. as a tool report rather than a regular assistant reply).
 	Fork bool
+
+	// AfterHook is set for inline-mode commands that declare a
+	// frontmatter `hooks.after`. The caller is responsible for invoking
+	// AfterHook once the command's execution truly completes — i.e.,
+	// after the model has finished running on Content. Fork-mode
+	// commands set AfterHook to nil because Execute already fired the
+	// hook synchronously after the sub-agent returned.
+	//
+	// The closure is idempotent only in the sense that the underlying
+	// shell command can be invoked multiple times safely; the executor
+	// will not deduplicate calls. AfterHook is nil when no after-hook
+	// is declared.
+	AfterHook func(ctx context.Context)
 }
 
 // Execute processes cmd through the pipeline and returns an
@@ -126,23 +139,39 @@ func (e *Executor) Execute(ctx context.Context, cmd *Command, rawArgs, sessionID
 	processed = ReplaceVariables(processed, vars)
 
 	_ = ExecuteHooks(ctx, cmd.Frontmatter.Hooks, shellWorkDir, e.hookTimeout)
-	defer func() {
-		_ = ExecuteAfterHook(ctx, cmd.Frontmatter.Hooks, shellWorkDir, e.hookTimeout)
-	}()
 
 	if isForkMode(cmd) {
 		if e.forkRunner == nil {
 			return ExecutionResult{}, errors.New("fork mode unavailable: no runner configured")
 		}
-		out, err := e.forkRunner.Run(ctx, processed, cmd.Frontmatter.Agent)
-		if err != nil {
-			return ExecutionResult{}, err
+		out, forkErr := e.forkRunner.Run(ctx, processed, cmd.Frontmatter.Agent)
+		// Fork mode completes synchronously inside Execute, so the
+		// after-hook runs here — regardless of forkErr — to mirror
+		// "after the command's execution completes".
+		_ = ExecuteAfterHook(ctx, cmd.Frontmatter.Hooks, shellWorkDir, e.hookTimeout)
+		if forkErr != nil {
+			return ExecutionResult{}, forkErr
 		}
 		return ExecutionResult{Content: out, Fork: true}, nil
+	}
+
+	// Inline mode does NOT defer the after-hook here. The caller (TUI or
+	// SkillTool) starts the actual agent run on the returned prompt and
+	// is responsible for invoking AfterHook when that run completes.
+	// Deferring inside Execute would fire the hook before the model has
+	// touched the content, defeating REQ-012.
+	hooks := cmd.Frontmatter.Hooks
+	timeout := e.hookTimeout
+	var afterHook func(context.Context)
+	if hooks != nil && hooks.After != "" {
+		afterHook = func(finishCtx context.Context) {
+			_ = ExecuteAfterHook(finishCtx, hooks, shellWorkDir, timeout)
+		}
 	}
 	return ExecutionResult{
 		Content:      processed,
 		AllowedTools: append([]string(nil), cmd.Frontmatter.AllowedTools...),
+		AfterHook:    afterHook,
 	}, nil
 }
 
