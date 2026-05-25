@@ -1261,6 +1261,30 @@ func TestModelFileMentionSuggestionsAndTabCompletion(t *testing.T) {
 	}
 }
 
+func TestModelFileMentionCompletionUsesTokenAtCursor(t *testing.T) {
+	workDir := t.TempDir()
+	writeTestFile(t, workDir, "internal/tui/model.go", "package tui\n")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+	m.input = []rune("inspect @internal/tzz later")
+	m.inputCursor = len([]rune("inspect @internal/t"))
+	m.updateCompletions()
+
+	if !m.hasFileMentionMenu() {
+		t.Fatalf("model should have file mention menu at cursor token")
+	}
+
+	m, _ = update(t, m, keyTab())
+	if got := string(m.input); got != "inspect @internal/tui/model.go later" {
+		t.Fatalf("input after file mention completion at cursor = %q", got)
+	}
+	if got := m.inputCursor; got != len([]rune("inspect @internal/tui/model.go")) {
+		t.Fatalf("cursor after file mention completion = %d", got)
+	}
+}
+
 func TestModelFileMentionSelectionWithArrowKeys(t *testing.T) {
 	workDir := t.TempDir()
 	writeTestFile(t, workDir, "a.go", "package main\n")
@@ -1485,6 +1509,7 @@ func TestModelInputHistoryRestoresDraft(t *testing.T) {
 
 	m, _ = update(t, m, keyRunes("draft"))
 	m, _ = update(t, m, keyUp())
+	m, _ = update(t, m, keyUp())
 	if got := string(m.input); got != "saved task" {
 		t.Fatalf("history recall = %q, want saved task", got)
 	}
@@ -1492,6 +1517,224 @@ func TestModelInputHistoryRestoresDraft(t *testing.T) {
 	m, _ = update(t, m, keyDown())
 	if got := string(m.input); got != "draft" {
 		t.Fatalf("restored draft = %q, want draft", got)
+	}
+}
+
+func TestModelUpMovesWithinMultilineInputBeforeHistory(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.inputHistory = []string{"history"}
+
+	m, _ = update(t, m, keyRunes("abcde"))
+	m, _ = update(t, m, keyShiftEnter())
+	m, _ = update(t, m, keyRunes("12345"))
+	m, _ = update(t, m, keyUp())
+	m, _ = update(t, m, keyRunes("X"))
+
+	if got := string(m.input); got != "abcdeX\n12345" {
+		t.Fatalf("input after moving up and typing = %q, want insertion on first line", got)
+	}
+}
+
+func TestModelUpAtFirstVisibleLineJumpsHomeBeforeHistory(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.inputHistory = []string{"history"}
+	m.input = []rune("abcdef")
+	m.inputCursor = 3
+
+	m, _ = update(t, m, keyUp())
+	if got := m.inputCursor; got != 0 {
+		t.Fatalf("cursor after first up = %d, want 0", got)
+	}
+	if got := string(m.input); got != "abcdef" {
+		t.Fatalf("input after first up = %q, want unchanged draft", got)
+	}
+
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != "history" {
+		t.Fatalf("input after second up = %q, want history", got)
+	}
+	if got := m.inputCursor; got != len([]rune("history")) {
+		t.Fatalf("cursor after history recall = %d, want end", got)
+	}
+}
+
+func TestModelDownAtLastVisibleLineJumpsEndBeforeHistory(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.inputHistory = []string{"history"}
+	m.input = []rune("abcdef")
+	m.inputCursor = 3
+
+	m, _ = update(t, m, keyDown())
+	if got := m.inputCursor; got != len(m.input) {
+		t.Fatalf("cursor after first down = %d, want end", got)
+	}
+	if got := string(m.input); got != "abcdef" {
+		t.Fatalf("input after first down = %q, want unchanged draft", got)
+	}
+
+	m.recallPreviousInput()
+	m, _ = update(t, m, keyDown())
+	if got := string(m.input); got != "abcdef" {
+		t.Fatalf("input after history down = %q, want restored draft", got)
+	}
+	if got := m.inputCursor; got != 3 {
+		t.Fatalf("cursor after draft restore = %d, want original draft cursor", got)
+	}
+}
+
+func TestModelLongInputUpDownNavigateVisibleWrapBeforeHistory(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = minWidth
+	m.inputHistory = []string{"history"}
+	m.input = []rune(strings.Repeat("abcdefghij", 7))
+	m.inputCursor = len(m.input)
+
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != strings.Repeat("abcdefghij", 7) {
+		t.Fatalf("input after wrap up = %q, want unchanged draft", got)
+	}
+	if m.inputCursor <= 0 || m.inputCursor >= len(m.input) {
+		t.Fatalf("cursor after wrap up = %d, want inside input", m.inputCursor)
+	}
+
+	m, _ = update(t, m, keyDown())
+	if got := m.inputCursor; got != len(m.input) {
+		t.Fatalf("cursor after wrap down = %d, want end", got)
+	}
+}
+
+func TestModelUpKeepsRenderedCursorColumnAcrossWrappedInput(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = minWidth
+	m.input = []rune("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda")
+	m.inputCursor = len(m.input)
+
+	_, beforeCol, ok := renderedInputCursorPosition(m)
+	if !ok {
+		t.Fatalf("rendered input missing cursor before move:\n%s", m.renderInput(m.innerWidth()))
+	}
+
+	m, _ = update(t, m, keyUp())
+	_, afterCol, ok := renderedInputCursorPosition(m)
+	if !ok {
+		t.Fatalf("rendered input missing cursor after move:\n%s", m.renderInput(m.innerWidth()))
+	}
+	if afterCol != beforeCol {
+		t.Fatalf("cursor rendered column after up = %d, want %d\n%s", afterCol, beforeCol, stripANSI(m.renderInput(m.innerWidth())))
+	}
+}
+
+func TestModelRenderInputHeightDoesNotChangeWhenCursorBlinks(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = minWidth
+	m.input = []rune("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda")
+	m.inputCursor = len([]rune("alpha beta gamma delta epsilon zeta eta"))
+	m.spinnerFrame = 0
+	visibleHeight := lipgloss.Height(m.renderInput(m.innerWidth()))
+
+	m.spinnerFrame = 1
+	hiddenHeight := lipgloss.Height(m.renderInput(m.innerWidth()))
+	if hiddenHeight != visibleHeight {
+		t.Fatalf("input height changed across cursor blink: visible=%d hidden=%d\nvisible:\n%s\nhidden:\n%s", visibleHeight, hiddenHeight, stripANSI(m.renderInput(m.innerWidth())), stripANSI(m.renderInput(m.innerWidth())))
+	}
+}
+
+func TestModelCursorEditingKeysModifyAtCursor(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.input = []rune("abcd")
+	m.inputCursor = 2
+
+	m, _ = update(t, m, keyRunes("X"))
+	if got := string(m.input); got != "abXcd" {
+		t.Fatalf("input after insert = %q, want abXcd", got)
+	}
+
+	m, _ = update(t, m, keyLeft())
+	m, _ = update(t, m, keyDelete())
+	if got := string(m.input); got != "abcd" {
+		t.Fatalf("input after delete = %q, want abcd", got)
+	}
+
+	m, _ = update(t, m, keyBackspace())
+	if got := string(m.input); got != "acd" {
+		t.Fatalf("input after backspace = %q, want acd", got)
+	}
+
+	m, _ = update(t, m, keyRight())
+	m, _ = update(t, m, keyRunes("Y"))
+	m, _ = update(t, m, keyHome())
+	m, _ = update(t, m, keyRunes(">"))
+	m, _ = update(t, m, keyEnd())
+	m, _ = update(t, m, keyRunes("<"))
+	if got := string(m.input); got != ">acYd<" {
+		t.Fatalf("input after home/end insertions = %q, want >acYd<", got)
+	}
+}
+
+func TestModelInputHistoryRestoresDraftCursor(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.inputHistory = []string{"saved task"}
+	m.input = []rune("draft")
+	m.inputCursor = 2
+
+	m, _ = update(t, m, keyUp())
+	m, _ = update(t, m, keyUp())
+	m, _ = update(t, m, keyDown())
+	if got := string(m.input); got != "draft" {
+		t.Fatalf("restored draft = %q, want draft", got)
+	}
+	if got := m.inputCursor; got != 2 {
+		t.Fatalf("restored draft cursor = %d, want 2", got)
+	}
+}
+
+func TestModelViewRendersCursorAtInputCursor(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.input = []rune("abc")
+	m.inputCursor = 1
+
+	view := m.View()
+	plainView := stripANSI(view)
+	if !strings.Contains(plainView, "abc") {
+		t.Fatalf("view missing cursor at middle position:\n%s", view)
+	}
+	if strings.Contains(plainView, "a▌c") || strings.Contains(plainView, "a▌bc") || strings.Contains(plainView, "abc▌") {
+		t.Fatalf("view replaced text with cursor glyph:\n%s", view)
+	}
+}
+
+func TestModelCursorOverlaysNextRuneWithoutChangingBackspaceSemantics(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.input = []rune("abcd")
+	m.inputCursor = len(m.input)
+
+	endView := stripANSI(m.renderInput(m.innerWidth()))
+	if !strings.Contains(endView, "abcd▌") {
+		t.Fatalf("cursor at end should render after final rune:\n%s", endView)
+	}
+
+	m, _ = update(t, m, keyLeft())
+	middleView := stripANSI(m.renderInput(m.innerWidth()))
+	if !strings.Contains(middleView, "abcd") {
+		t.Fatalf("cursor after left should keep d visible:\n%s", middleView)
+	}
+	if strings.Contains(middleView, "abc▌") || strings.Contains(middleView, "abc▌d") {
+		t.Fatalf("cursor after left replaced or shifted d instead of highlighting it:\n%s", middleView)
+	}
+
+	m, _ = update(t, m, keyBackspace())
+	if got := string(m.input); got != "abd" {
+		t.Fatalf("input after backspace = %q, want abd", got)
 	}
 }
 
@@ -2655,6 +2898,22 @@ func keyDown() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyDown}
 }
 
+func keyLeft() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyLeft}
+}
+
+func keyRight() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRight}
+}
+
+func keyBackspace() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyBackspace}
+}
+
+func keyDelete() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyDelete}
+}
+
 func keyPgUp() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyPgUp}
 }
@@ -2673,6 +2932,26 @@ func keyEnd() tea.KeyMsg {
 
 func keySpace() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeySpace}
+}
+
+func renderedInputCursorPosition(m Model) (int, int, bool) {
+	lines := strings.Split(stripANSI(m.renderInput(m.innerWidth())), "\n")
+	for row, line := range lines {
+		if col := strings.IndexRune(line, '▌'); col >= 0 {
+			return row, lipgloss.Width(line[:col]), true
+		}
+	}
+	m.clampInputCursor()
+	points := m.inputCursorPoints()
+	if m.inputCursor >= len(points) {
+		return 0, 0, false
+	}
+	point := points[m.inputCursor]
+	prefixWidth := lipgloss.Width("> ")
+	if point.row > 0 {
+		prefixWidth = lipgloss.Width("  ")
+	}
+	return point.row + 1, prefixWidth + point.col, true
 }
 
 func assertQuitCommand(t *testing.T, cmd tea.Cmd) {

@@ -163,7 +163,7 @@ Inside the TUI:
 
 - `Enter`: send the current message.
 - `Shift+Tab`: toggle Plan Mode for future runs.
-- `Up` / `Down`: reuse previous input history.
+- `Up` / `Down`: navigate within multiline input; at the beginning or end, switch through input history.
 - `PgUp` / `PgDown` or mouse wheel: scroll the conversation.
 - Drag over transcript text: copy the selection to the macOS clipboard.
 - `Ctrl+F`: focus the right sidebar, then use `Tab`, `Up` / `Down`, `PgUp` / `PgDown`, `Home`, and `End` to browse its boxes.
