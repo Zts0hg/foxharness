@@ -154,6 +154,22 @@ func TestModel_BuiltinCommandsUnaffectedByRegistry(t *testing.T) {
 	}
 }
 
+func TestModel_BuiltinCommandWinsOverFileBasedNameCollision(t *testing.T) {
+	runner := newFakeRunner()
+	registry := newRegistryWithPromptCommand(t, "help", "project help body")
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, slash.NewExecutor())
+
+	m, _ = update(t, m, keyRunes("/help"))
+	m, _ = update(t, m, keyEnter())
+
+	if len(runner.runs) != 0 {
+		t.Fatalf("/help collision should dispatch built-in command, got runner runs %v", runner.runs)
+	}
+	if !entriesContain(m.entries, "command", "/session") {
+		t.Fatalf("/help collision did not render built-in help, entries=%+v", m.entries)
+	}
+}
+
 func TestModel_FuzzyAutocomplete(t *testing.T) {
 	runner := newFakeRunner()
 	registry := newRegistryWithPromptCommand(t, "review", "Review: $ARGUMENTS")

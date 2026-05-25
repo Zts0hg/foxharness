@@ -1492,9 +1492,6 @@ func (m Model) selectedFileMention() (fileMention, bool) {
 
 func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 	fields := strings.Fields(text)
-	if pc, args, ok := m.lookupPromptCommand(text); ok {
-		return m.executePromptCommand(pc, args)
-	}
 	cmd := strings.ToLower(fields[0])
 	switch cmd {
 	case "/help":
@@ -1589,6 +1586,9 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 	case "/exit", "/quit":
 		return m, tea.Quit
 	default:
+		if pc, args, ok := m.lookupPromptCommand(text); ok {
+			return m.executePromptCommand(pc, args)
+		}
 		m.appendEntry("error", "unknown command", fmt.Sprintf("Unknown command: %s", cmd), true)
 		m.status = "Unknown command"
 		return m, nil

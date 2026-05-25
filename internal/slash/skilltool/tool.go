@@ -82,6 +82,11 @@ func (t *SkillTool) Execute(ctx context.Context, raw json.RawMessage) (string, e
 	if !cmd.IsModelInvocable() {
 		return "", fmt.Errorf("skill %q is not model-invocable", args.Name)
 	}
+	if len(cmd.Frontmatter.AllowedTools) > 0 && cmd.Frontmatter.Context != "fork" {
+		return "", fmt.Errorf("skill %q declares allowed-tools=%v but context=inline; "+
+			"model-side enforcement requires context: fork — change the skill's frontmatter or invoke from the TUI",
+			args.Name, cmd.Frontmatter.AllowedTools)
+	}
 	if t.executor == nil {
 		return "", fmt.Errorf("skill executor not configured")
 	}
@@ -98,19 +103,6 @@ func (t *SkillTool) Execute(ctx context.Context, raw json.RawMessage) (string, e
 	// rejected invocations the same way they observe accepted ones.
 	if res.AfterHook != nil {
 		defer res.AfterHook(ctx)
-	}
-	// Model invocation cannot enforce inline-mode `allowed-tools`: the
-	// engine has already announced the full tool set for the current
-	// turn, and mid-turn registry swaps would silently break subsequent
-	// tool calls without the model knowing. Refuse the invocation and
-	// instruct the skill author to switch to context: fork — fork mode
-	// runs the skill in a sub-agent with its own isolated, filtered
-	// registry, which is the only place inline restrictions can be
-	// honored when the caller is the model.
-	if len(res.AllowedTools) > 0 && !res.Fork {
-		return "", fmt.Errorf("skill %q declares allowed-tools=%v but context=inline; "+
-			"model-side enforcement requires context: fork — change the skill's frontmatter or invoke from the TUI",
-			args.Name, res.AllowedTools)
 	}
 	return res.Content, nil
 }
