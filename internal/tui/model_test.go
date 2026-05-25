@@ -2404,6 +2404,56 @@ func TestModelViewDoesNotRenderPipeCursor(t *testing.T) {
 	}
 }
 
+func TestModelViewHidesInputCursorWhenSidebarFocused(t *testing.T) {
+	workDir := t.TempDir()
+	sessionDir := t.TempDir()
+	writeTestFile(t, workDir, "MEMORY.md", "memory")
+	writeTestFile(t, sessionDir, "PLAN.md", "plan")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	runner.sessionDir = sessionDir
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+	m, _ = update(t, m, keyRunes("hello"))
+
+	m, _ = update(t, m, keyCtrlF())
+	view := m.View()
+	if strings.Contains(view, "hello"+renderCursor()) {
+		t.Fatalf("focused sidebar view rendered input cursor:\n%s", view)
+	}
+	if !strings.Contains(view, "hello") {
+		t.Fatalf("focused sidebar view missing typed input:\n%s", view)
+	}
+
+	m, _ = update(t, m, keyEsc())
+	view = m.View()
+	if !strings.Contains(view, "hello"+renderCursor()) {
+		t.Fatalf("input cursor did not return after sidebar focus closed:\n%s", view)
+	}
+}
+
+func TestModelViewHidesInputCursorWhenTerminalBlurred(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, keyRunes("hello"))
+
+	m, _ = update(t, m, tea.BlurMsg{})
+	view := m.View()
+	if strings.Contains(view, "hello"+renderCursor()) {
+		t.Fatalf("blurred terminal view rendered input cursor:\n%s", view)
+	}
+	if !strings.Contains(view, "hello") {
+		t.Fatalf("blurred terminal view missing typed input:\n%s", view)
+	}
+
+	m, _ = update(t, m, tea.FocusMsg{})
+	view = m.View()
+	if !strings.Contains(view, "hello"+renderCursor()) {
+		t.Fatalf("input cursor did not return after terminal focus:\n%s", view)
+	}
+}
+
 func TestModelViewShowsRunningNoticeAboveInput(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})

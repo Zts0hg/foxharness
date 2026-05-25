@@ -831,17 +831,29 @@ func isToolResultPair(prev entry, current entry) bool {
 func (m Model) renderInput(width int) string {
 	prompt := lipgloss.NewStyle().Foreground(cAccentHi).Render("> ")
 	value := string(m.input)
+	cursor := ""
+	if m.inputCanAcceptTyping() {
+		cursor = m.renderCursor()
+	}
 	if value == "" {
 		placeholder := "ask anything, or /help for commands"
 		if m.running {
 			placeholder = "message will be queued, or /cancel"
 		}
-		value = m.renderCursor() + " " + placeholderStyle.Render(placeholder)
+		if cursor != "" {
+			value = cursor + " " + placeholderStyle.Render(placeholder)
+		} else {
+			value = placeholderStyle.Render(placeholder)
+		}
 	} else {
 		value = strings.ReplaceAll(value, "\n", "\n  ")
-		value = lipgloss.NewStyle().Foreground(cTextPri).Render(value) + m.renderCursor()
+		value = lipgloss.NewStyle().Foreground(cTextPri).Render(value) + cursor
 	}
 	return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(prompt + value)
+}
+
+func (m Model) inputCanAcceptTyping() bool {
+	return m.terminalFocused && !m.sidebarFocused
 }
 
 func (m Model) renderRunningNotice(width int) string {

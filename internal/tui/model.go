@@ -71,7 +71,7 @@ func Run(ctx context.Context, runner Runner, cfg Config) error {
 	if cfg.Registry != nil {
 		m = m.WithRegistry(cfg.Registry, cfg.Executor)
 	}
-	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx)).Run()
+	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(), tea.WithContext(ctx)).Run()
 	return err
 }
 
@@ -179,6 +179,7 @@ type Model struct {
 
 	sidebarVisible       bool
 	sidebarFocused       bool
+	terminalFocused      bool
 	sidebarFocusIndex    int
 	sidebarDocuments     []sidebarDocument
 	sidebarScrollOffsets [sidebarDocumentCount]int
@@ -220,6 +221,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		checkpointer:      runner.Checkpointer(),
 		entries:           entries,
 		sidebarVisible:    true,
+		terminalFocused:   true,
 		sidebarFocusIndex: -1,
 		sidebarDocuments:  loadSidebarDocuments(runner.WorkDir(), runner.SessionDir()),
 	}
@@ -239,6 +241,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.shouldRenderSidebar() {
 			m.sidebarFocused = false
 		}
+		return m, nil
+
+	case tea.FocusMsg:
+		m.terminalFocused = true
+		return m, nil
+
+	case tea.BlurMsg:
+		m.terminalFocused = false
 		return m, nil
 
 	case runEventMsg:
