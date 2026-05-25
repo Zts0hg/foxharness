@@ -277,6 +277,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case selector.ResultMsg:
 		return m.handleSelectorResult(msg)
 
+	case promptCommandReadyMsg:
+		return m.handlePromptCommandReady(msg)
+
 	case newSessionFinishedMsg:
 		m.running = false
 		m.runStartedAt = time.Time{}
@@ -1614,18 +1617,67 @@ func (m Model) openRewindSelector() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// executePromptCommand kicks off file-based prompt command execution.
+//
+// The actual exec.Execute call — which may block for many seconds (shell
+// embedding, before-hook) or many minutes (fork-mode sub-agent) — is
+// dispatched into a tea.Cmd goroutine so it does not freeze the Bubble
+// Tea event loop. The model is marked `running` immediately and the
+// cancel function is wired up so Ctrl+C aborts the prepare stage as
+// well as the eventual run.
 func (m Model) executePromptCommand(cmd *slash.Command, args string) (tea.Model, tea.Cmd) {
-	result, err := m.runPromptCommand(cmd, args)
-	if err != nil {
-		m.appendEntry("error", "command failed", err.Error(), true)
+	exec := m.slashExecutor
+	if exec == nil {
+		exec = slash.NewExecutor()
+	}
+	m.scrollOffset = 0
+	m.running = true
+	m.runStartedAt = m.nowTime()
+	m.spinnerFrame = 0
+	m.status = "Preparing skill " + cmd.Name
+	runCtx, cancel := context.WithCancel(m.ctx)
+	m.cancelRun = cancel
+	sessionID := m.runner.SessionID()
+	return m, executePromptCommandCmd(runCtx, exec, cmd, args, sessionID)
+}
+
+// promptCommandReadyMsg is emitted by the executor goroutine once
+// exec.Execute has produced an ExecutionResult (or an error). The
+// Update loop dispatches this to handlePromptCommandReady which decides
+// whether to start an inline run, render a fork report, or surface an
+// error.
+type promptCommandReadyMsg struct {
+	cmdName string
+	result  slash.ExecutionResult
+	err     error
+}
+
+func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *slash.Command, args, sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		res, err := exec.Execute(ctx, cmd, args, sessionID)
+		return promptCommandReadyMsg{cmdName: cmd.Name, result: res, err: err}
+	}
+}
+
+func (m Model) handlePromptCommandReady(msg promptCommandReadyMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.running = false
+		m.runStartedAt = time.Time{}
+		m.cancelRun = nil
+		m.appendEntry("error", "command failed", msg.err.Error(), true)
 		m.status = "Command failed"
 		return m, nil
 	}
-	if result.Fork {
-		// Fork-mode commands return a sub-agent report directly. Show it
-		// as an assistant entry rather than starting a new turn so the
-		// model is not asked to act on its own report.
-		body := strings.TrimSpace(result.Content)
+	if msg.result.Fork {
+		// Fork-mode commands return a sub-agent report directly. Show
+		// it as an assistant entry rather than starting a new turn so
+		// the model is not asked to act on its own report. The exec
+		// goroutine already ran before/after hooks synchronously, so
+		// nothing more to drive.
+		m.running = false
+		m.runStartedAt = time.Time{}
+		m.cancelRun = nil
+		body := strings.TrimSpace(msg.result.Content)
 		if body == "" {
 			m.status = "Skill produced empty report"
 			return m, nil
@@ -1634,58 +1686,42 @@ func (m Model) executePromptCommand(cmd *slash.Command, args string) (tea.Model,
 		m.status = "Skill complete"
 		return m, nil
 	}
-	if strings.TrimSpace(result.Content) == "" {
+	if strings.TrimSpace(msg.result.Content) == "" {
+		m.running = false
+		m.runStartedAt = time.Time{}
+		m.cancelRun = nil
 		m.status = "Command produced empty output"
 		return m, nil
 	}
-	return m.startPromptRestricted(result.Content, result.AllowedTools, result.AfterHook)
+	// Inline mode: transition from prepare stage to actual run stage.
+	// The prepare-stage runCtx is no longer relevant — derive a fresh
+	// run context so Ctrl+C cancellation maps to the run, not to the
+	// already-finished prepare phase.
+	return m.runInlinePromptCommand(msg.result)
 }
 
-// startPromptRestricted starts a new run scoped to the supplied allowed
-// tools, and (optionally) registers an after-hook that fires once the
-// run completes. When allowedTools is empty the path falls through to a
-// hook-aware variant of startPrompt — preserving existing behavior for
-// commands without an `allowed-tools` frontmatter.
-func (m Model) startPromptRestricted(text string, allowedTools []string, afterHook func(context.Context)) (tea.Model, tea.Cmd) {
-	if len(allowedTools) == 0 {
-		return m.startPromptWithAfterHook(text, afterHook)
-	}
-	rr, ok := m.runner.(restrictedRunner)
-	if !ok {
-		m.appendEntry("error", "command", "Runner does not support allowed-tools enforcement; aborting to avoid silent escape.", true)
-		m.status = "Restricted run unsupported"
-		return m, nil
-	}
-	m.scrollOffset = 0
-	m.running = true
-	m.runStartedAt = m.nowTime()
-	m.spinnerFrame = 0
-	m.status = "Running (restricted)"
-	m.appendEntry("user", "you", text, false)
-
+func (m Model) runInlinePromptCommand(result slash.ExecutionResult) (tea.Model, tea.Cmd) {
+	text := result.Content
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
-	allowedCopy := append([]string(nil), allowedTools...)
-	return m, runRestrictedPromptCmd(runCtx, rr, text, allowedCopy, afterHook, m.events)
-}
+	m.appendEntry("user", "you", text, false)
 
-// startPromptWithAfterHook is a thin wrapper over startPrompt that
-// schedules afterHook to fire once the run completes. When afterHook is
-// nil the call is equivalent to startPrompt.
-func (m Model) startPromptWithAfterHook(text string, afterHook func(context.Context)) (tea.Model, tea.Cmd) {
-	if afterHook == nil {
-		return m.startPrompt(text)
+	if len(result.AllowedTools) > 0 {
+		rr, ok := m.runner.(restrictedRunner)
+		if !ok {
+			m.running = false
+			m.runStartedAt = time.Time{}
+			m.cancelRun = nil
+			m.appendEntry("error", "command", "Runner does not support allowed-tools enforcement; aborting to avoid silent escape.", true)
+			m.status = "Restricted run unsupported"
+			return m, nil
+		}
+		m.status = "Running (restricted)"
+		allowedCopy := append([]string(nil), result.AllowedTools...)
+		return m, runRestrictedPromptCmd(runCtx, rr, text, allowedCopy, result.AfterHook, m.events)
 	}
-	m.scrollOffset = 0
-	m.running = true
-	m.runStartedAt = m.nowTime()
-	m.spinnerFrame = 0
 	m.status = "Running"
-	m.appendEntry("user", "you", text, false)
-
-	runCtx, cancel := context.WithCancel(m.ctx)
-	m.cancelRun = cancel
-	return m, runPromptCmdWithAfter(runCtx, m.runner, text, afterHook, m.events)
+	return m, runPromptCmdWithAfter(runCtx, m.runner, text, result.AfterHook, m.events)
 }
 
 // restrictedRunner is the optional interface a Runner implements to

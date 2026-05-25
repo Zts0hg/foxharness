@@ -64,6 +64,9 @@ type AgentRunner struct {
 	checkpointer   checkpoint.Checkpointer
 	slashRegistry  *slash.Registry
 	slashExecutor  *slash.Executor
+
+	pendingMu          sync.Mutex
+	pendingActivations []string
 }
 
 func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
@@ -150,7 +153,53 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 			getSession: ar.currentSessionIDLocked,
 		}),
 	)
+	slashRegistry.OnActivate(ar.recordSkillActivation)
 	return ar, nil
+}
+
+// recordSkillActivation queues an activation notice that the engine
+// drains via NextTurnReminders at the start of the next turn. This
+// closes the REQ-010 gap where a skill activated mid-run was previously
+// only visible to the model on subsequent runs because the system
+// prompt was composed once before the turn loop.
+func (r *AgentRunner) recordSkillActivation(cmd *slash.Command) {
+	if cmd == nil {
+		return
+	}
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	r.pendingActivations = append(r.pendingActivations, formatActivationReminder(cmd))
+}
+
+func formatActivationReminder(cmd *slash.Command) string {
+	out := "A new skill became available for the rest of this session: `" + cmd.Name + "`"
+	if cmd.Description != "" {
+		out += "\n  Description: " + cmd.Description
+	}
+	if cmd.Frontmatter.WhenToUse != "" {
+		out += "\n  When to use: " + cmd.Frontmatter.WhenToUse
+	}
+	if cmd.Frontmatter.ArgumentHint != "" {
+		out += "\n  Arguments: " + cmd.Frontmatter.ArgumentHint
+	} else if cmd.Frontmatter.Arguments != "" {
+		out += "\n  Arguments: " + cmd.Frontmatter.Arguments
+	}
+	out += "\nInvoke it via the `skill` tool with name=\"" + cmd.Name + "\"."
+	return out
+}
+
+// drainPendingActivations returns and clears any activation notices
+// queued since the previous turn. Safe for concurrent access; the
+// engine calls it once per turn via NextTurnReminders.
+func (r *AgentRunner) drainPendingActivations() []string {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	if len(r.pendingActivations) == 0 {
+		return nil
+	}
+	out := r.pendingActivations
+	r.pendingActivations = nil
+	return out
 }
 
 // currentSubagentManager returns a freshly-built subagent.Manager bound to
@@ -280,13 +329,14 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, allowe
 		r.workDir,
 		composer,
 		engine.Config{
-			EnableThinking:   enableThinking,
-			MaxTurns:         maxTurns,
-			ProviderProtocol: providerProtocol,
-			Model:            model,
-			Checkpointer:     cp,
-			OnUserMessageID:  setCurrentMessageID,
-			OnToolCalled:     r.conditionalActivationHook(),
+			EnableThinking:    enableThinking,
+			MaxTurns:          maxTurns,
+			ProviderProtocol:  providerProtocol,
+			Model:             model,
+			Checkpointer:      cp,
+			OnUserMessageID:   setCurrentMessageID,
+			OnToolCalled:      r.conditionalActivationHook(),
+			NextTurnReminders: r.drainPendingActivations,
 		},
 	)
 	compCfg := compaction.DefaultCompactionConfig()
@@ -474,7 +524,16 @@ func (r *AgentRunner) conditionalActivationHook() func(schema.ToolCall, schema.T
 	if registry == nil {
 		return nil
 	}
-	return func(call schema.ToolCall, _ schema.ToolResult) {
+	return func(call schema.ToolCall, result schema.ToolResult) {
+		// A failed tool call did not actually operate on the file the
+		// model named (middleware denial, missing path, permission
+		// error, etc.). Activating conditional skills on a failed
+		// attempt would (a) violate REQ-010 ("operates on" implies
+		// success) and (b) leak skill metadata about paths the user
+		// never successfully touched. Gate on IsError.
+		if result.IsError {
+			return
+		}
 		switch call.Name {
 		case "read_file", "write_file", "edit_file":
 		default:

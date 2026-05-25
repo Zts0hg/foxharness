@@ -424,10 +424,10 @@ Skills with a non-empty `paths` frontmatter field are conditionally activated:
 - They are stored in a separate map: `conditionalSkills map[string]*ConditionalSkill`
 
 **Activation trigger**:
-- When the engine executes `read_file` or `write_file`, the operated file path is checked against all conditional skills' `paths` globs
-- On match, the skill is moved to the active command set
-- The model's skill list in the system prompt is updated
-- The skill remains active for the rest of the session
+- When the engine executes `read_file`, `write_file`, or `edit_file` **successfully** (`schema.ToolResult.IsError == false`), the operated file path is checked against all conditional skills' `paths` globs. Failed tool calls — middleware denials, missing files, permission errors — MUST NOT trigger activation; they didn't actually operate on the file and activation would leak skill metadata about paths the model could not access.
+- On match, the skill moves to the active command set under the same source-precedence rules used at load time (project > user > builtin). A lower-precedence conditional cannot displace a higher-precedence active command (EC-011).
+- The model's view of available skills is updated **for the rest of the current run** by injecting a "Runtime System Reminder" at the start of the next turn that describes the newly activated skill (name, description, `when_to_use`, `argument-hint`). The system prompt itself is composed once before the turn loop and cannot be retroactively rewritten; the per-turn reminder is the mechanism that satisfies "update the skill list" inside the run that triggered activation.
+- The skill remains active for the rest of the session.
 
 **Glob matching**:
 - Uses `filepath.Match` or a glob library supporting `**`
@@ -711,6 +711,18 @@ A command's `after` hook MUST observe the post-execution state — that is, the 
 
 ### EC-014: Model invocation of inline + allowed-tools
 A `.md` file that combines `context: inline` (default) with a non-empty `allowed-tools` and remains `model-invocable` (i.e., `disable-model-invocation: false`) MUST be refused by the SkillTool with an error explaining that fork mode is required. The author can resolve it by adding `context: fork` (and an appropriate `agent`) or by setting `disable-model-invocation: true` if the skill is intended for the TUI only. The refusal is rendered as a tool error result, not a panic.
+
+### EC-015: Failed tool calls do not activate conditional skills
+When `read_file`, `write_file`, or `edit_file` returns a `ToolResult` with `IsError == true`, the activation hook MUST skip the path check entirely. This applies to middleware denials, filesystem permission errors, missing paths, and any other failure mode. Activation requires a successful operation on a matching path, never just an attempt. This protects against (a) divergence from the REQ-010 phrasing ("operates on" implies success) and (b) accidental disclosure of skill metadata for paths the model was not permitted to touch.
+
+### EC-016: TUI fork-mode execution must not block the event loop
+TUI invocation of a prompt command (file-based slash command) MUST dispatch `slash.Executor.Execute` into a background goroutine via `tea.Cmd` rather than calling it synchronously from the key handler. `Execute` can block for many seconds (`hooks.before`, shell embeddings) or many minutes (fork-mode sub-agent), and any synchronous call from the Bubble Tea Update path freezes the entire UI, drops the spinner, and disables Ctrl+C cancellation. The required shape:
+
+1. The key handler marks the model `running`, wires a `cancelRun` derived from the TUI context, and returns a tea.Cmd that runs `Execute` in a goroutine.
+2. The goroutine emits a `promptCommandReadyMsg{result, err}`.
+3. The Update loop dispatches the message: fork results render as an assistant entry; inline results re-derive a fresh run context and emit a second tea.Cmd that drives `runner.Run` / `runner.RunRestricted`.
+
+The two-stage cancellation contract guarantees Ctrl+C aborts whichever stage is active.
 
 ## Output Examples
 

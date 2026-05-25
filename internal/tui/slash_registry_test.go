@@ -73,24 +73,71 @@ func TestModel_FileBasedCommandAppearsInAutocomplete(t *testing.T) {
 	}
 }
 
+// drivePromptCommand runs the two-stage async pipeline: stage 1
+// (exec.Execute via tea.Cmd) emits promptCommandReadyMsg, stage 2
+// (runner.Run via tea.Cmd) emits runFinishedMsg. The helper drives both
+// stages and returns the final Model. The cancellation contract is
+// preserved end-to-end because each stage re-derives the runCtx from
+// m.ctx and stores its cancel func on the model.
+func drivePromptCommand(t *testing.T, m Model) Model {
+	t.Helper()
+	m, execCmd := update(t, m, keyEnter())
+	if execCmd == nil {
+		t.Fatal("submit returned nil cmd")
+	}
+	readyMsg := execCmd()
+	if readyMsg == nil {
+		t.Fatal("exec cmd produced nil msg")
+	}
+	m, runCmd := update(t, m, readyMsg)
+	if runCmd == nil {
+		// Inline+empty / fork / error paths legitimately return no cmd.
+		return m
+	}
+	finishMsg := runCmd()
+	m, _ = update(t, m, finishMsg)
+	return m
+}
+
 func TestModel_FileBasedCommand_DispatchesThroughExecutor(t *testing.T) {
 	runner := newFakeRunner()
 	registry := newRegistryWithPromptCommand(t, "review", "Review: $ARGUMENTS")
 	m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, slash.NewExecutor())
 
 	m, _ = update(t, m, keyRunes("/review pr-9"))
-	m, cmd := update(t, m, keyEnter())
-	if cmd == nil {
-		t.Fatal("submit cmd nil")
-	}
-	// Drive the deferred runner.Run via the returned command.
-	_, _ = update(t, m, cmd())
+	m = drivePromptCommand(t, m)
 
 	if len(runner.runs) == 0 {
 		t.Fatal("runner.Run was never called for /review pr-9")
 	}
 	if !strings.Contains(runner.runs[0], "Review: pr-9") {
 		t.Errorf("runner received %q, want substring 'Review: pr-9'", runner.runs[0])
+	}
+}
+
+func TestModel_PromptCommand_PrepareStageIsAsync(t *testing.T) {
+	// While the exec.Execute closure is pending (we have not yet
+	// invoked its tea.Cmd), runner.Run must NOT have fired and the
+	// model must report "running" with a cancel func wired up. This
+	// is the central guarantee of the async refactor: the key handler
+	// returns control to Bubble Tea immediately.
+	runner := newFakeRunner()
+	registry := newRegistryWithPromptCommand(t, "review", "Review: $ARGUMENTS")
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, slash.NewExecutor())
+
+	m, _ = update(t, m, keyRunes("/review"))
+	m, execCmd := update(t, m, keyEnter())
+	if execCmd == nil {
+		t.Fatal("submit returned nil cmd")
+	}
+	if !m.running {
+		t.Error("model must mark running=true before exec stage starts")
+	}
+	if m.cancelRun == nil {
+		t.Error("cancelRun must be wired before exec stage starts")
+	}
+	if len(runner.runs) != 0 {
+		t.Errorf("runner.Run must not be called before the exec stage completes, got %v", runner.runs)
 	}
 }
 
@@ -152,11 +199,7 @@ func TestModel_AllowedTools_RoutesToRunRestricted(t *testing.T) {
 	m := NewModel(context.Background(), runner, Config{}).WithRegistry(r, slash.NewExecutor())
 
 	m, _ = update(t, m, keyRunes("/scan"))
-	m, cmd := update(t, m, keyEnter())
-	if cmd == nil {
-		t.Fatal("submit cmd nil")
-	}
-	_, _ = update(t, m, cmd())
+	m = drivePromptCommand(t, m)
 
 	if len(runner.restrictedRuns) != 1 {
 		t.Fatalf("expected RunRestricted to be called once, got %d", len(runner.restrictedRuns))
@@ -187,8 +230,7 @@ func TestModel_NoAllowedTools_UsesRegularRun(t *testing.T) {
 	m := NewModel(context.Background(), runner, Config{}).WithRegistry(r, slash.NewExecutor())
 
 	m, _ = update(t, m, keyRunes("/plain"))
-	m, cmd := update(t, m, keyEnter())
-	_, _ = update(t, m, cmd())
+	m = drivePromptCommand(t, m)
 
 	if len(runner.restrictedRuns) != 0 {
 		t.Errorf("RunRestricted should not be used when no allowed-tools: %v", runner.restrictedRuns)
@@ -223,20 +265,28 @@ func TestModel_AfterHook_FiresAfterRunCompletes(t *testing.T) {
 	m := NewModel(context.Background(), runner, Config{}).WithRegistry(r, exec)
 
 	m, _ = update(t, m, keyRunes("/review"))
-	m, cmd := update(t, m, keyEnter())
-	if cmd == nil {
-		t.Fatal("submit cmd nil")
+	m, execCmd := update(t, m, keyEnter())
+	if execCmd == nil {
+		t.Fatal("submit returned nil cmd")
 	}
-
-	// Between Enter and driving the deferred cmd, the run has not yet
-	// fired — and the after-hook MUST NOT have fired either.
+	// Before the prepare stage runs, the marker cannot exist.
 	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("after-hook fired before runner.Run was driven (defer bug)")
+		t.Fatal("after-hook fired before exec stage ran")
 	}
-
-	// Drive the deferred run cmd; runner.Run completes, then after-hook
-	// fires inside the cmd closure.
-	_, _ = update(t, m, cmd())
+	// Drive the prepare stage. The after-hook still must not have fired
+	// because the run stage hasn't started yet (only the executor's
+	// pipeline ran — substitution/shell/variables/before-hook).
+	readyMsg := execCmd()
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("after-hook fired between prepare and run stages (deferred-inside-Execute regression)")
+	}
+	// Drive the run stage; runner.Run completes inside the cmd closure
+	// and the after-hook fires before runFinishedMsg is returned.
+	m, runCmd := update(t, m, readyMsg)
+	if runCmd == nil {
+		t.Fatal("inline result should produce a run cmd")
+	}
+	_, _ = update(t, m, runCmd())
 
 	if _, err := os.Stat(marker); err != nil {
 		t.Errorf("after-hook did not fire after run completion: %v", err)
@@ -263,7 +313,7 @@ func TestModel_AllowedTools_UnsupportedRunner_ErrorsOut(t *testing.T) {
 	m := NewModel(context.Background(), runner, Config{}).WithRegistry(r, slash.NewExecutor())
 
 	m, _ = update(t, m, keyRunes("/scan"))
-	m, _ = update(t, m, keyEnter())
+	m = drivePromptCommand(t, m)
 
 	if len(runner.runs) != 0 {
 		t.Errorf("Runner.Run should not be called when restriction can't be enforced: %v", runner.runs)

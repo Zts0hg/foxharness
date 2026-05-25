@@ -481,3 +481,35 @@ The skill author has three documented escape hatches:
 3. Remove `allowed-tools` — accept the full tool set under model invocation.
 
 Spec edge cases EC-013 (after-hook timing) and EC-014 (inline + allowed-tools refusal) document these rules.
+
+### R7: Conditional activation gated on success
+
+**Why**: The Phase 13 `conditionalActivationHook` ignored `schema.ToolResult.IsError`, so a denied or failed `read_file`/`write_file`/`edit_file` still activated path-conditional skills. That diverged from REQ-010's "operates on" wording and leaked skill metadata for paths the model could not actually touch (e.g. when a middleware denied the access).
+
+**Now**: The hook bails out early when `result.IsError` is true. Only a tool call that returned a non-error result reaches the path check. Codified as EC-015.
+
+### R8: Activation reminder injected per-turn via NextTurnReminders
+
+**Why**: The Phase 13 implementation only mutated the registry on conditional activation. The engine composes the system prompt once before the turn loop (`engine/loop.go:362`); a registry mutation that happens mid-run is invisible to the model until the **next** run. That contradicted REQ-010's "The model's skill list in the system prompt is updated" — activation was effectively a no-op for the run that triggered it.
+
+**Now**:
+- `engine.Config` gains an optional `NextTurnReminders func() []string` drain. The engine turn loop calls it once per turn (next to the existing `reminder.MaybeBuild`) and appends any returned strings as `[Runtime System Reminder]` user messages, identical in shape to the existing reminder pipeline. Returning nil/empty skips.
+- `AgentRunner` owns a `pendingActivations []string` queue protected by `pendingMu`. `slashRegistry.OnActivate(r.recordSkillActivation)` is wired during runner construction; the callback formats the activated command (name, description, `when_to_use`, `argument-hint`) into a reminder string and pushes it onto the queue. `drainPendingActivations()` returns and clears the queue.
+- The engine's `Config.NextTurnReminders` is set to `r.drainPendingActivations`, so activation reminders surface on the very next turn within the same run.
+
+The reminder format is deliberately verbose — name + description + when-to-use + arg hint — because the model has no other channel to learn the freshly-activated skill exists. After activation the registry's `ModelInvocable()` includes the skill, so subsequent `composer.WithSkillList` rebuilds (which happen on subsequent runs) also include it.
+
+REQ-010 is now restated in the spec to explicitly describe the per-turn reminder mechanism, since "updated" was the original ambiguity.
+
+### R9: TUI prompt-command execution dispatched through tea.Cmd
+
+**Why**: `executePromptCommand` previously called `slash.Executor.Execute` synchronously from the Bubble Tea key handler. For inline commands without shell embeds the call is sub-millisecond — fine. For commands with `hooks.before`, shell embeds (each up to 30s), or `context: fork` (multi-turn sub-agent, possibly minutes), the call blocks the Update goroutine: the spinner stops animating, `cancelRun` is never wired up so Ctrl+C cannot abort the work, and the screen freezes. This regression was harmless in the round-1 reviews because no test exercised a long-running prepare stage.
+
+**Now**:
+- `executePromptCommand` is split into a tea.Cmd dispatch (`executePromptCommandCmd`) and a result handler (`handlePromptCommandReady`).
+- The key handler marks the model `running`, derives `runCtx`/`cancel` from `m.ctx`, stores `cancel` on `m.cancelRun`, and returns a `tea.Cmd` that runs `slash.Executor.Execute(runCtx, ...)` in a goroutine. The status string is "Preparing skill X" to distinguish this stage from "Running".
+- The goroutine emits `promptCommandReadyMsg{cmdName, result, err}`.
+- The Update loop dispatches the message via a new `case promptCommandReadyMsg:` branch alongside the existing `runEventMsg`/`runFinishedMsg`/`newSessionFinishedMsg` cases. The handler branches on `err`, `result.Fork`, empty `result.Content`, and finally inline mode — which re-derives a fresh `runCtx` (replacing `m.cancelRun`) and emits the second-stage tea.Cmd (`runPromptCmdWithAfter` / `runRestrictedPromptCmd`).
+- Tests are updated to drive the two stages (`drivePromptCommand` helper). A new assertion test `TestModel_PromptCommand_PrepareStageIsAsync` verifies `runner.Run` has NOT been called between the Enter event and driving the prepare cmd — characterizing the central invariant.
+
+EC-016 in the spec codifies the requirement so future implementers cannot regress to the synchronous call shape.

@@ -483,6 +483,27 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			})
 		}
 
+		if e.config.NextTurnReminders != nil {
+			for _, extra := range e.config.NextTurnReminders() {
+				if extra == "" {
+					continue
+				}
+				contextHistory = append(contextHistory, schema.Message{
+					Role:    schema.RoleUser,
+					Content: "[Runtime System Reminder]\n\n" + extra,
+				})
+				_ = transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
+					"turn":    turnCount,
+					"message": extra,
+					"source":  "next_turn_reminders",
+				})
+				tracer.Annotate(turnSpan.ID(), "system_reminder_injected", map[string]any{
+					"turn":   turnCount,
+					"source": "next_turn_reminders",
+				})
+			}
+		}
+
 		availableTools := e.registry.GetAvailableTools()
 		if e.config.EnableThinking {
 			log.Println("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")

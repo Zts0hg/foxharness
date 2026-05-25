@@ -3,11 +3,11 @@
 **Input**: `.codexspec/specs/2026-0524-2343mf-slash-commands/plan.md`
 **Related Spec**: `.codexspec/specs/2026-0524-2343mf-slash-commands/spec.md`
 **Created**: 2026-05-25
-**Status**: Complete with two rounds of post-review fixes (2026-05-25)
+**Status**: Complete with three rounds of post-review fixes (2026-05-25)
 
 ## Implementation Status
 
-All 12 phases complete, plus Phase 13 + Phase 14 batches of post-review fixes (see end of file). Test results: `go test ./...` passes (88.6% coverage on `internal/slash`, 69.0% on `internal/slash/skilltool`). New code is in `internal/slash/`, `internal/slash/skilltool/`; integrations live in `internal/tui/slash_registry.go`, `internal/app/runner.go`, `internal/app/tui.go`, `internal/context/prompt.go`, `internal/engine/{config,loop}.go`. The `doublestar/v4` dependency was added for glob path matching.
+All 12 phases complete, plus Phase 13 / 14 / 15 batches of post-review fixes (see end of file). Test results: `go test ./...` passes (88.6% coverage on `internal/slash`, 69.0% on `internal/slash/skilltool`). New code is in `internal/slash/`, `internal/slash/skilltool/`; integrations live in `internal/tui/slash_registry.go`, `internal/app/runner.go`, `internal/app/tui.go`, `internal/context/prompt.go`, `internal/engine/{config,loop}.go`. The `doublestar/v4` dependency was added for glob path matching.
 
 ### Spec TC → Test Mapping
 
@@ -776,3 +776,45 @@ A second Codex review (after Phase 13) surfaced two further integration gaps. Bo
 - EC-014 → `TestSkillTool_Execute_InlineAllowedToolsRefused`, `TestSkillTool_Execute_ForkAllowedToolsAccepted`
 
 **Checkpoint**: `go test ./...` passes. `gofmt -l .` clean. After Phase 14 there are no remaining open Codex findings.
+
+---
+
+## Phase 15: Third-round review fixes
+
+A third Codex review (after Phase 14) surfaced three orthogonal findings concentrated in the activation / async-execution areas the earlier rounds did not exercise: (a) activation fires on failed tool calls, (b) the skill list is not refreshed inside the run that activated it, (c) TUI fork-mode execution blocks the event loop. All three are now closed. See `plan.md` **Revisions** R7–R9 and `spec.md` EC-015 / EC-016 plus the rewritten REQ-010 activation-trigger bullets.
+
+### Task 15.1: Gate conditional activation on tool success
+
+- **Type**: Implementation + tests
+- **Files**: `internal/app/runner.go`, `internal/app/conditional_hook_test.go`
+- **Description**: `conditionalActivationHook` now checks `schema.ToolResult.IsError` before any other work. Failed `read_file`/`write_file`/`edit_file` calls — middleware denials, missing paths, permission errors — no longer activate path-conditional skills. New tests: `TestConditionalActivationHook_SuccessActivates`, `TestConditionalActivationHook_FailureSuppresses`, `TestConditionalActivationHook_IgnoresUnrelatedTools`.
+- **Related spec**: REQ-010 (clarified), EC-015 (new)
+- **Dependencies**: Task 10.4
+- **Est. Complexity**: Low
+
+### Task 15.2: Inject activation reminder via NextTurnReminders
+
+- **Type**: Implementation + tests
+- **Files**: `internal/engine/config.go`, `internal/engine/loop.go`, `internal/app/runner.go`, `internal/app/conditional_hook_test.go`
+- **Description**: `engine.Config` gains a `NextTurnReminders func() []string` drain. The engine turn loop calls it once per turn and appends any returned strings as `[Runtime System Reminder]` user messages (mirrors existing `reminder.MaybeBuild` plumbing). `AgentRunner` owns a `pendingActivations []string` queue, wires `slashRegistry.OnActivate(r.recordSkillActivation)` at construction, and sets `Config.NextTurnReminders = r.drainPendingActivations`. The reminder format includes the activated skill's name, description, `when_to_use`, and `argument-hint`. New tests: `TestRecordSkillActivation_QueuesReminder`, `TestRecordSkillActivation_NilCommandIgnored`, `TestConditionalActivationHook_QueuesReminderOnSuccess`.
+- **Related spec**: REQ-010 (clarified)
+- **Dependencies**: Task 15.1
+- **Est. Complexity**: Medium
+
+### Task 15.3: Async TUI prompt-command execution
+
+- **Type**: Implementation + tests
+- **Files**: `internal/tui/model.go`, `internal/tui/slash_registry_test.go`
+- **Description**: Splits `executePromptCommand` into a tea.Cmd dispatch (`executePromptCommandCmd`) and a result handler (`handlePromptCommandReady`). The Update loop gains a `case promptCommandReadyMsg` branch. The key handler returns immediately after marking `m.running=true` and wiring `m.cancelRun`, so Ctrl+C aborts whichever stage is active. Inline results then re-derive a fresh `runCtx` and emit the second-stage `runPromptCmdWithAfter` / `runRestrictedPromptCmd` cmd. Fork results render as an assistant entry without starting a new run. Tests are updated to drive both stages via a new `drivePromptCommand` helper. New invariant test: `TestModel_PromptCommand_PrepareStageIsAsync` asserts `runner.Run` has not been called between the Enter event and driving the prepare cmd.
+- **Related spec**: EC-016 (new)
+- **Dependencies**: Task 13.3, Task 14.1
+- **Est. Complexity**: Medium
+
+### Phase 15 TC additions
+
+- REQ-010 (success requirement) → `TestConditionalActivationHook_SuccessActivates` / `_FailureSuppresses`
+- REQ-010 (per-turn reminder) → `TestRecordSkillActivation_QueuesReminder`, `TestConditionalActivationHook_QueuesReminderOnSuccess`
+- EC-015 → `TestConditionalActivationHook_FailureSuppresses`
+- EC-016 → `TestModel_PromptCommand_PrepareStageIsAsync`, plus the updated two-stage drive in `TestModel_FileBasedCommand_DispatchesThroughExecutor`, `TestModel_AllowedTools_RoutesToRunRestricted`, `TestModel_NoAllowedTools_UsesRegularRun`, `TestModel_AfterHook_FiresAfterRunCompletes`, `TestModel_AllowedTools_UnsupportedRunner_ErrorsOut`
+
+**Checkpoint**: `go test ./...` passes. `gofmt -l .` clean. After Phase 15 there are no remaining open Codex findings from any round.
