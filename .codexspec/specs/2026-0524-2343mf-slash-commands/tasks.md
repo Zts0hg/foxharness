@@ -3,11 +3,11 @@
 **Input**: `.codexspec/specs/2026-0524-2343mf-slash-commands/plan.md`
 **Related Spec**: `.codexspec/specs/2026-0524-2343mf-slash-commands/spec.md`
 **Created**: 2026-05-25
-**Status**: Complete with four rounds of post-review fixes (2026-05-25)
+**Status**: Complete with five rounds of post-review fixes (2026-05-25)
 
 ## Implementation Status
 
-All 12 phases complete, plus Phase 13 / 14 / 15 / 16 batches of post-review fixes (see end of file). Test results: `go test ./...` passes (88.6% coverage on `internal/slash`, 69.0% on `internal/slash/skilltool`). New code is in `internal/slash/`, `internal/slash/skilltool/`; integrations live in `internal/tui/slash_registry.go`, `internal/app/runner.go`, `internal/app/tui.go`, `internal/context/prompt.go`, `internal/engine/{config,loop}.go`. The `doublestar/v4` dependency was added for glob path matching.
+All 12 phases complete, plus Phase 13 / 14 / 15 / 16 / 17 batches of post-review fixes (see end of file). Test results: `go test ./...` passes (88.6% coverage on `internal/slash`, 69.0% on `internal/slash/skilltool`). New code is in `internal/slash/`, `internal/slash/skilltool/`; integrations live in `internal/tui/slash_registry.go`, `internal/app/runner.go`, `internal/app/tui.go`, `internal/context/prompt.go`, `internal/engine/{config,loop}.go`. The `doublestar/v4` dependency was added for glob path matching.
 
 ### Spec TC → Test Mapping
 
@@ -40,6 +40,7 @@ All 12 phases complete, plus Phase 13 / 14 / 15 / 16 batches of post-review fixe
 - TC-027 → `TestParseFrontmatter_InvalidYAML`
 - TC-028 → `TestEdge_NoFoxharnessDirectory`
 - TC-029 → `TestRegistry_LookupAlias`
+- TC-029A → `TestRegistry_LookupAliasHonorsPrecedence`, `TestRegistry_LookupAliasTieBreaksDeterministically`
 - TC-030 → `TestConditionalSkills_MultiplePatternsOR`
 - TC-031 → `TestIntegration_RefreshPicksUpNewFiles`
 - TC-032 → `TestRegistry_All_CacheReused`
@@ -858,3 +859,24 @@ A fourth Codex review (after Phase 15) surfaced two further integration gaps: (a
 - EC-018 → `TestExecuteEmbeddedShell_ParentCtxCancelKillsCommand`, `TestExecuteEmbeddedShell_NilCtxStillWorks`
 
 **Checkpoint**: `go test ./...` passes. `gofmt -l .` clean. After Phase 16 there are no remaining open Codex findings from any round, and the slash command system has been validated against four independent adversarial review passes.
+
+---
+
+## Phase 17: Fifth-round review fix
+
+A fifth Codex review surfaced a P2 alias resolution gap: command name collisions honored registry precedence, but alias collisions fell back to Go map iteration order. If a user-level command and a project-level command declared the same alias under different command names, `Lookup(alias)` could select the lower-precedence command nondeterministically. This is now closed. See `plan.md` Revisions R12 and `spec.md` TC-029A plus the REQ-004 alias precedence clarification.
+
+### Task 17.1: Alias lookup honors registry precedence
+
+- **Type**: Implementation + tests
+- **Files**: `internal/slash/registry.go`, `internal/slash/registry_test.go`
+- **Description**: `Registry.Lookup` still resolves exact command names first. For alias fallback, it now scans all alias matches and selects the highest-precedence source (`SourceProject > SourceUser > SourceBuiltin`). Same-source alias collisions resolve by command name so the result is deterministic and independent of Go map iteration order. New tests: `TestRegistry_LookupAliasHonorsPrecedence`, `TestRegistry_LookupAliasTieBreaksDeterministically`.
+- **Related spec**: REQ-004 (clarified), TC-029A (new)
+- **Dependencies**: Task 3.4
+- **Est. Complexity**: Low
+
+### Phase 17 TC additions
+
+- TC-029A → `TestRegistry_LookupAliasHonorsPrecedence`, `TestRegistry_LookupAliasTieBreaksDeterministically`
+
+**Checkpoint**: `go test ./...` passes. `gofmt -l .` clean. After Phase 17 there are no remaining open Codex findings from any round, and the slash command system has been validated against five independent adversarial review passes.

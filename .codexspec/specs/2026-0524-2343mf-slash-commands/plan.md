@@ -536,3 +536,11 @@ Tests at every layer cover the wiring: `TestExecutor_ForkMode_PassesAllowedTools
 - `slash.Executor.Execute` passes its own `ctx` argument through. A nil parent is treated as background for defensive symmetry with tests that legitimately want unbounded cancellation behavior.
 
 The new test `TestExecuteEmbeddedShell_ParentCtxCancelKillsCommand` proves the wiring: it launches `ExecuteEmbeddedShell` against a `sleep 10` embed with a 30-second per-embed timeout, cancels the parent ctx after 50ms, and asserts the function returns in under 3 seconds with an `[ERROR:]` marker — orders of magnitude faster than the embed timeout would have allowed. EC-018 codifies the requirement.
+
+### R12: Alias lookup honors registry precedence
+
+**Why**: Name registration already enforced project > user > builtin precedence, but alias resolution did not. `Registry.Lookup` checked exact names first, then iterated the active command map and returned the first command whose aliases matched. When two commands with different names declared the same alias, Go map iteration order could select a lower-precedence user command over a project command. The same nondeterminism affected model-side `skill(name=...)` calls because SkillTool uses the same registry lookup path.
+
+**Now**: Alias fallback scans every alias match and selects the command with the highest `CommandSource`. If matching commands have the same source priority, the registry resolves by command name so the result is deterministic and no longer depends on map iteration order. Exact command-name lookup remains unchanged and still wins before alias fallback.
+
+The regression tests `TestRegistry_LookupAliasHonorsPrecedence` and `TestRegistry_LookupAliasTieBreaksDeterministically` lock the behavior down. REQ-004 and TC-029A document the alias collision rule.

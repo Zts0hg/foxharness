@@ -287,6 +287,8 @@ type CommandRegistry struct {
 
 When a higher-priority command shares a name with a lower-priority one, the higher-priority version replaces it and a warning is logged. For example, a file-based `/help` command overrides the built-in `/help`.
 
+Alias lookup MUST honor the same precedence ordering. If two active commands have different names but declare the same alias, `Lookup(alias)` selects the highest-priority source (project > user > builtin). If multiple matching aliases have the same source priority, lookup must resolve deterministically rather than depending on Go map iteration order.
+
 **Built-in command migration**: The existing 10 hardcoded commands (`/help`, `/clear`, `/model`, etc.) are registered as `CommandBuiltin` type with their handler functions. The `handleSlashCommand()` switch statement is replaced by registry lookups.
 
 ### REQ-005: Argument Substitution
@@ -652,6 +654,11 @@ hooks:
 **Given** a command `review` with `aliases: ["r", "rev"]`
 **When** `/r` is typed in the TUI
 **Then** `review` is matched and can be invoked
+
+### TC-029A: Alias collision precedence
+**Given** built-in, user-level, and project-level commands all declare alias `r`
+**When** `/r` is typed in the TUI or the model calls `skill(name="r")`
+**Then** the project-level command is selected deterministically
 
 ### TC-030: Multiple paths conditional activation
 **Given** a skill with `paths: ["*_test.go", "Makefile"]`
