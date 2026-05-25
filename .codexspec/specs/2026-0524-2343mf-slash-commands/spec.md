@@ -475,7 +475,7 @@ hooks:
 - Shell command embedding is only executed for project-level commands, not user-level commands from remote sources
 - Shell commands run with the user's current permissions (no privilege escalation)
 - Shell execution timeout prevents indefinite hangs
-- `allowed-tools` restriction is enforced at the tool registry level, not just advisory
+- `allowed-tools` restriction is enforced at the tool registry level, not just advisory. The runtime MUST wrap the engine's tool registry in `FilteredRegistry` for the turn in which a restricted command is invoked. Both the per-call tool definitions returned to the model (`GetAvailableTools`) and the dispatch (`Execute`) MUST honor the allow-list. If the runtime cannot enforce this (e.g. a test mock without the restricted path), it MUST refuse to run the command rather than silently falling back to an unrestricted run.
 - Frontmatter parsing must not execute arbitrary code
 - File paths in `.md` content are validated to prevent path traversal
 
@@ -687,6 +687,12 @@ If an embedded shell command succeeds but produces no stdout, replace with empty
 
 ### EC-010: Missing named argument
 If frontmatter defines `arguments: "file message"` but user provides only one argument, `$message` should be replaced with empty string.
+
+### EC-011: Conditional skill name collides with an active command
+If a conditional skill's name matches an already-active command (built-in or file-based) and is then triggered by a path match, the registry MUST apply the same precedence rules used at load time (project > user > builtin). A lower-precedence conditional skill MUST NOT overwrite a higher-precedence active command on activation; it is suppressed and logged. Two conditional skills with the same name follow the same rule inside `ConditionalSkills.Add` itself.
+
+### EC-012: Session or model swap during a session with fork-mode skills
+If the user switches session (`/new`) or model (`/model X`) after a fork-mode skill has been registered, subsequent fork-mode invocations MUST use the new session id as `ParentSessionID` and the new model as the sub-agent's provider. The fork runner MUST NOT cache the session id or sub-agent manager captured at runner construction.
 
 ## Output Examples
 

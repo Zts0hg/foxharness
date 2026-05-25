@@ -427,3 +427,33 @@ internal/slash/
 | Shell embedding security (command injection) | Medium | High | Timeout enforced; NFR-002 restricts user-level commands |
 | Fork mode complexity with subagent coupling | Medium | Medium | Fork mode is optional; inline mode works without subagent dependency |
 | TUI autocomplete performance with many commands | Low | Low | Fuzzy search is O(n) with simple string ops; caching helps |
+
+## Revisions (post-implementation review)
+
+A Codex review of the initial implementation surfaced three integration gaps that this plan did not call out clearly enough. The architecture has been amended as follows:
+
+### R1: `Executor.Execute` returns `ExecutionResult`, not `string`
+
+**Why**: The original signature returned only the processed prompt, leaving no channel for the executor to communicate per-turn restrictions (`allowed-tools`) back to the caller. This made it impossible for the TUI to enforce REQ-011 / NFR-002 without an out-of-band mechanism.
+
+**Now**: `Execute` returns `ExecutionResult{Content, AllowedTools, Fork}`. Fork-mode results carry `Fork: true` (and empty `AllowedTools`, since the sub-agent enforces its own constraints). Inline-mode results surface the command's frontmatter `AllowedTools` verbatim. SkillTool keeps returning just the content string for backwards compatibility with the `tools.BaseTool` contract.
+
+### R2: TUI `restrictedRunner` optional interface
+
+**Why**: Plumbing per-turn tool restrictions through the existing `Runner` interface would require updating every test mock. Adding it as an optional interface keeps the existing surface stable while still enforcing the restriction in production.
+
+**Now**: `tui` defines `restrictedRunner { RunRestricted(ctx, prompt, allowed, reporter) }`. `*AgentRunner` implements it; test mocks may omit it. When a prompt command carries `allowed-tools`, the TUI type-asserts the runner; if the assertion fails it emits a hard error rather than silently downgrading to an unrestricted `Run` — closing the "filter never applied" gap. `AgentRunner.RunRestricted` wraps the engine's tool registry in `slash.NewFilteredRegistry(base, allowed)` for that single run.
+
+### R3: Conditional activation honors precedence
+
+**Why**: The first implementation wrote `r.commands[name] = cmd` directly from `CheckConditional`, bypassing the precedence check in `registerLocked`. A user-level conditional skill could overwrite an active project command on path match. The same problem existed inside `ConditionalSkills.Add` itself, where same-name entries silently overwrote each other.
+
+**Now**: `Registry.registerLocked` delegates to a shared helper `activateLocked(cmd) bool` that both the load-time path and the conditional-activation path call. `ConditionalSkills.Add` performs an identical precedence check (project > user > builtin) before storing. Activation that would otherwise demote a higher-precedence active command is suppressed and logged.
+
+### R4: Fork runner reads live session / provider through getters
+
+**Why**: The original `subagentForkRunner` snapshotted both the parent session id and a `*subagent.Manager` (which itself holds the LLM provider) at `NewAgentRunner` time. After `/new` or `/model`, every subsequent fork-mode skill used the stale session id and old provider.
+
+**Now**: `subagentForkRunner` holds two callbacks — `getManager() *subagent.Manager` and `getSession() string` — that the runner provides as method references. `getManager` builds a fresh `subagent.NewManager(r.llmProvider, r.workDir)` on each call, so a `/model` swap is reflected immediately. `getSession` reads `r.currentSession.ID` under the runner mutex, so `/new` is reflected immediately.
+
+These revisions did not alter the public TUI behavior or any of the 32 acceptance test cases — they correct integration gaps between modules that were defined correctly in isolation.

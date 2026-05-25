@@ -3,11 +3,11 @@
 **Input**: `.codexspec/specs/2026-0524-2343mf-slash-commands/plan.md`
 **Related Spec**: `.codexspec/specs/2026-0524-2343mf-slash-commands/spec.md`
 **Created**: 2026-05-25
-**Status**: Complete (2026-05-25)
+**Status**: Complete with post-review fixes (2026-05-25)
 
 ## Implementation Status
 
-All 12 phases complete. Test results: `go test ./...` passes (88.6% coverage on `internal/slash`, 69.0% on `internal/slash/skilltool`). New code is in `internal/slash/`, `internal/slash/skilltool/`; integrations live in `internal/tui/slash_registry.go`, `internal/app/runner.go`, `internal/app/tui.go`, `internal/context/prompt.go`, `internal/engine/{config,loop}.go`. The `doublestar/v4` dependency was added for glob path matching.
+All 12 phases complete, plus a Phase 13 batch of post-review fixes (see end of file). Test results: `go test ./...` passes (88.6% coverage on `internal/slash`, 69.0% on `internal/slash/skilltool`). New code is in `internal/slash/`, `internal/slash/skilltool/`; integrations live in `internal/tui/slash_registry.go`, `internal/app/runner.go`, `internal/app/tui.go`, `internal/context/prompt.go`, `internal/engine/{config,loop}.go`. The `doublestar/v4` dependency was added for glob path matching.
 
 ### Spec TC → Test Mapping
 
@@ -695,3 +695,53 @@ Phase 12: ┌─ 12.1 (needs 11.4 + 10.4)                           │
 - Commit after each task or logical group
 - Stop at any checkpoint to validate independently
 - Run `go test ./internal/slash/...` frequently during development
+
+---
+
+## Phase 13: Post-review fixes
+
+Added after a Codex review of the Phase 1–12 implementation surfaced three integration gaps (one P1 + two P2) plus one related issue. All four are tracked under `plan.md` **Revisions (post-implementation review)** — R1–R4. Each fix follows the same TDD cycle as the original phases.
+
+### Task 13.1: Honor precedence in conditional activation
+
+- **Type**: Implementation + tests
+- **Files**: `internal/slash/conditional.go`, `internal/slash/registry.go`, `internal/slash/conditional_test.go`
+- **Description**: `ConditionalSkills.Add` now performs `existing.Source > cmd.Source` precedence checks before storing; same-precedence overwrites log a warning. `Registry` factors out a shared `activateLocked(cmd) bool` helper used by both `registerLocked` and `CheckConditional`. Adds tests `TestConditionalSkills_Add_HigherPrecedenceWins`, `TestConditionalSkills_Add_LowerPrecedenceIgnored`, `TestRegistry_CheckConditional_PrecedenceProtectsActive`.
+- **Related spec**: EC-011 (new)
+- **Dependencies**: Task 10.3
+- **Est. Complexity**: Low
+
+### Task 13.2: Fork runner reads live session and provider
+
+- **Type**: Implementation + test
+- **Files**: `internal/app/runner.go`, `internal/app/fork_runner_test.go`
+- **Description**: `subagentForkRunner` replaces the snapshot fields with `getManager func() *subagent.Manager` and `getSession func() string` callbacks. `AgentRunner` exposes `currentSubagentManager()` (builds a fresh manager bound to the current `llmProvider`) and `currentSessionIDLocked()` (returns the live session id). Construction of `slashExecutor` is moved to after the `AgentRunner` struct is allocated so the methods can be taken as values. Adds `TestSubagentForkRunner_UsesLiveGetters`.
+- **Related spec**: EC-012 (new)
+- **Dependencies**: Task 11.4
+- **Est. Complexity**: Low
+
+### Task 13.3: Enforce allowed-tools at the tool registry
+
+- **Type**: Implementation + tests
+- **Files**: `internal/slash/executor.go`, `internal/slash/executor_test.go`, `internal/slash/integration_test.go`, `internal/slash/edge_test.go`, `internal/slash/skilltool/tool.go`, `internal/tui/model.go`, `internal/tui/slash_registry.go`, `internal/tui/slash_registry_test.go`, `internal/app/runner.go`
+- **Description**: `Executor.Execute` now returns `ExecutionResult{Content, AllowedTools, Fork}` instead of a plain string. The TUI's `executePromptCommand` routes results through a new `startPromptRestricted(text, allowedTools)` helper. When `allowedTools` is non-empty the TUI type-asserts the runner to an optional `restrictedRunner { RunRestricted(...) }` interface; `*AgentRunner` implements it and wraps the engine registry in `slash.NewFilteredRegistry(base, allowed)` for that single run. If the runner cannot enforce the restriction, the command is refused with an error entry. Tests: `TestExecutor_InlineMode_SurfacesAllowedTools`, `TestExecutor_ForkMode_OmitsAllowedTools`, `TestModel_AllowedTools_RoutesToRunRestricted`, `TestModel_NoAllowedTools_UsesRegularRun`, `TestModel_AllowedTools_UnsupportedRunner_ErrorsOut`.
+- **Related spec**: REQ-011, NFR-002 (clarified)
+- **Dependencies**: Task 8.6, Task 6.4, Task 6.6
+- **Est. Complexity**: High
+
+### Task 13.4: Show fork-mode results as assistant entries
+
+- **Type**: Implementation
+- **Files**: `internal/tui/model.go`
+- **Description**: When `ExecutionResult.Fork` is true the TUI shows the sub-agent report as an assistant entry rather than starting a new turn — sending the report back as a user prompt would otherwise cause the model to act on its own output. Light behavioral correction surfaced while adapting the TUI to the new `ExecutionResult` shape.
+- **Related spec**: REQ-011 (fork mode result handling)
+- **Dependencies**: Task 13.3
+- **Est. Complexity**: Low
+
+### Phase 13 TC additions
+
+- TC-021 → `TestModel_AllowedTools_RoutesToRunRestricted`, `TestModel_AllowedTools_UnsupportedRunner_ErrorsOut` (replaces the prior in-isolation `TestFilteredRegistry_*` mapping — those tests still exist but did not validate the integration)
+- EC-011 → `TestConditionalSkills_Add_HigherPrecedenceWins`, `TestConditionalSkills_Add_LowerPrecedenceIgnored`, `TestRegistry_CheckConditional_PrecedenceProtectsActive`
+- EC-012 → `TestSubagentForkRunner_UsesLiveGetters`
+
+**Checkpoint**: `go test ./...` passes (88.6% / 69.0% coverage holds; no other package's tests regressed). `gofmt -l .` is clean.
