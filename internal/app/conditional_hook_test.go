@@ -61,6 +61,7 @@ func TestConditionalActivationHook_FailureSuppresses(t *testing.T) {
 func TestRecordSkillActivation_QueuesReminder(t *testing.T) {
 	r := &AgentRunner{}
 	cmd := &slash.Command{
+		Type:        slash.CommandPrompt,
 		Name:        "go-test",
 		Description: "Run Go tests",
 		Frontmatter: slash.Frontmatter{
@@ -116,6 +117,34 @@ func TestConditionalActivationHook_QueuesReminderOnSuccess(t *testing.T) {
 	}
 	if !containsAll(got[0], "go-test") {
 		t.Errorf("reminder doesn't mention go-test: %q", got[0])
+	}
+}
+
+func TestConditionalActivationHook_SkipsReminderForNonInvocableSkill(t *testing.T) {
+	reg := slash.NewRegistry("").WithoutDiscovery()
+	r := &AgentRunner{slashRegistry: reg}
+	reg.OnActivate(r.recordSkillActivation)
+	reg.Register(&slash.Command{
+		Type:        slash.CommandPrompt,
+		Name:        "go-test",
+		Description: "tests",
+		Frontmatter: slash.Frontmatter{
+			UserInvocable:          true,
+			DisableModelInvocation: true,
+			Paths:                  []string{"*_test.go"},
+		},
+	})
+	hook := r.conditionalActivationHook()
+	args, _ := json.Marshal(map[string]string{"path": "loop_test.go"})
+	hook(
+		schema.ToolCall{Name: "read_file", Arguments: args},
+		schema.ToolResult{IsError: false},
+	)
+	if _, ok := reg.Lookup("go-test"); !ok {
+		t.Fatal("non-invocable conditional skill should still activate")
+	}
+	if got := r.drainPendingActivations(); len(got) != 0 {
+		t.Fatalf("non-invocable skill should not queue invocation reminder, got %v", got)
 	}
 }
 

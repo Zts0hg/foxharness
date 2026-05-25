@@ -116,6 +116,26 @@ func TestDiscoverCommands_MissingDirectories(t *testing.T) {
 	}
 }
 
+func TestDiscoverCommands_GitFileStopsProjectSearch(t *testing.T) {
+	parent := t.TempDir()
+	userHome := t.TempDir()
+	workDir := filepath.Join(parent, "worktree", "subdir")
+
+	writeFile(t, filepath.Join(parent, ".foxharness", "commands", "parent.md"), "parent")
+	writeFile(t, filepath.Join(parent, "worktree", ".git"), "gitdir: ../.git/worktrees/worktree")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+
+	_, project, err := DiscoverCommands(workDir, userHome)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(project) != 0 {
+		t.Fatalf("gitfile boundary should block parent project commands, got %+v", project)
+	}
+}
+
 func TestDiscoverCommands_LooseSkillFileIgnored(t *testing.T) {
 	workDir := t.TempDir()
 	userHome := t.TempDir()

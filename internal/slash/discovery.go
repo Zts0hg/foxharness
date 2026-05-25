@@ -69,7 +69,7 @@ func findProjectFoxharness(workDir string) string {
 		}
 		// Stop at the git root if encountered without a .foxharness directory.
 		gitDir := filepath.Join(dir, ".git")
-		if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
+		if _, err := os.Stat(gitDir); err == nil {
 			return ""
 		}
 		parent := filepath.Dir(dir)

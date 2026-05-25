@@ -163,7 +163,7 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 // only visible to the model on subsequent runs because the system
 // prompt was composed once before the turn loop.
 func (r *AgentRunner) recordSkillActivation(cmd *slash.Command) {
-	if cmd == nil {
+	if cmd == nil || !cmd.IsModelInvocable() {
 		return
 	}
 	r.pendingMu.Lock()
