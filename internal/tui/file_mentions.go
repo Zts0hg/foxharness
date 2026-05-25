@@ -91,17 +91,27 @@ func (m Model) activeFileMention() (start int, end int, query string, ok bool) {
 		return 0, 0, "", false
 	}
 
-	end = len(m.input)
-	start = end
+	cursor := m.inputCursor
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor > len(m.input) {
+		cursor = len(m.input)
+	}
+	start = cursor
 	for start > 0 && !unicode.IsSpace(m.input[start-1]) {
 		start--
+	}
+	end = cursor
+	for end < len(m.input) && !unicode.IsSpace(m.input[end]) {
+		end++
 	}
 	token := m.input[start:end]
 	if len(token) == 0 || token[0] != '@' {
 		return 0, 0, "", false
 	}
 
-	query = strings.TrimPrefix(string(token[1:]), "./")
+	query = strings.TrimPrefix(string(m.input[start+1:cursor]), "./")
 	return start, end, query, true
 }
 

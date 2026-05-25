@@ -142,14 +142,16 @@ type Model struct {
 	width  int
 	height int
 
-	input          []rune
-	inputHistory   []string
-	historyIndex   int
-	historyDraft   []rune
-	slashSelection int
-	fileSelection  int
-	fileMentions   []fileMention
-	queuedPrompts  []string
+	input              []rune
+	inputCursor        int
+	inputHistory       []string
+	historyIndex       int
+	historyDraft       []rune
+	historyDraftCursor int
+	slashSelection     int
+	fileSelection      int
+	fileMentions       []fileMention
+	queuedPrompts      []string
 
 	entries       []entry
 	status        string
@@ -207,6 +209,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		width:             96,
 		height:            28,
 		input:             []rune(cfg.InitialPrompt),
+		inputCursor:       len([]rune(cfg.InitialPrompt)),
 		inputHistory:      inputHistory,
 		historyIndex:      -1,
 		slashSelection:    -1,
@@ -820,21 +823,38 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "backspace", "ctrl+h":
-		if len(m.input) > 0 {
+		if m.inputCursor > 0 {
 			m.resetHistoryNavigation()
-			m.input = m.input[:len(m.input)-1]
+			m.input = append(m.input[:m.inputCursor-1], m.input[m.inputCursor:]...)
+			m.inputCursor--
+			m.updateCompletions()
+		}
+		return m, nil
+	case "delete":
+		if m.inputCursor < len(m.input) {
+			m.resetHistoryNavigation()
+			m.input = append(m.input[:m.inputCursor], m.input[m.inputCursor+1:]...)
 			m.updateCompletions()
 		}
 		return m, nil
 	case " ":
 		m.resetHistoryNavigation()
-		m.input = append(m.input, ' ')
+		m.insertInputRunes([]rune{' '})
 		m.updateCompletions()
 		return m, nil
 	case "ctrl+u":
 		m.input = nil
+		m.inputCursor = 0
 		m.resetHistoryNavigation()
 		m.resetCompletions()
+		return m, nil
+	case "left":
+		m.moveInputCursorLeft()
+		m.updateCompletions()
+		return m, nil
+	case "right":
+		m.moveInputCursorRight()
+		m.updateCompletions()
 		return m, nil
 	case "up":
 		if m.hasSlashMenu() {
@@ -843,6 +863,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.hasFileMentionMenu() {
 			m.moveFileSelection(-1)
+			return m, nil
+		}
+		if m.historyIndex == -1 && m.moveInputCursorUp() {
+			m.updateCompletions()
 			return m, nil
 		}
 		m.recallPreviousInput()
@@ -854,6 +878,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.hasFileMentionMenu() {
 			m.moveFileSelection(1)
+			return m, nil
+		}
+		if m.historyIndex == -1 && m.moveInputCursorDown() {
+			m.updateCompletions()
 			return m, nil
 		}
 		m.recallNextInput()
@@ -868,7 +896,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "end":
-		m.scrollOffset = 0
+		if len(m.input) > 0 {
+			m.moveInputCursorLineEnd()
+			m.updateCompletions()
+		} else {
+			m.scrollOffset = 0
+		}
+		return m, nil
+	case "home":
+		m.moveInputCursorLineStart()
+		m.updateCompletions()
 		return m, nil
 	}
 
@@ -880,7 +917,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) insertInputNewline() {
 	m.resetHistoryNavigation()
-	m.input = append(m.input, '\n')
+	m.insertInputRunes([]rune{'\n'})
 	m.resetCompletions()
 }
 
@@ -908,6 +945,7 @@ func (m Model) applyEscKey() (tea.Model, tea.Cmd) {
 		if action == escActionClear {
 			m.addInputHistory(string(m.input))
 			m.input = nil
+			m.inputCursor = 0
 			m.resetHistoryNavigation()
 			m.resetCompletions()
 			m.status = "Input cleared"
@@ -926,11 +964,21 @@ func (m Model) applyEscKey() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) appendInputRunes(runes []rune) {
+	m.insertInputRunes(runes)
+}
+
+func (m *Model) insertInputRunes(runes []rune) {
 	if len(runes) == 0 {
 		return
 	}
 	m.resetHistoryNavigation()
-	m.input = append(m.input, runes...)
+	m.clampInputCursor()
+	next := make([]rune, 0, len(m.input)+len(runes))
+	next = append(next, m.input[:m.inputCursor]...)
+	next = append(next, runes...)
+	next = append(next, m.input[m.inputCursor:]...)
+	m.input = next
+	m.inputCursor += len(runes)
 	m.updateCompletions()
 }
 
@@ -1263,6 +1311,7 @@ func (m *Model) completeSlashCommand() {
 		return
 	}
 	m.input = []rune(command.Name)
+	m.inputCursor = len(m.input)
 	m.updateCompletions()
 }
 
@@ -1276,15 +1325,20 @@ func (m *Model) completeFileMention() {
 		return
 	}
 	replacement := []rune("@" + mention.Path)
+	wasAtEnd := end == len(m.input)
 	next := make([]rune, 0, len(m.input)-end+start+len(replacement)+1)
 	next = append(next, m.input[:start]...)
 	next = append(next, replacement...)
-	if end == len(m.input) {
+	if wasAtEnd {
 		next = append(next, ' ')
 	} else {
 		next = append(next, m.input[end:]...)
 	}
 	m.input = next
+	m.inputCursor = start + len(replacement)
+	if wasAtEnd {
+		m.inputCursor++
+	}
 	m.updateCompletions()
 }
 
@@ -1298,6 +1352,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			text = command.Name
 		}
 		m.input = nil
+		m.inputCursor = 0
 		m.resetHistoryNavigation()
 		m.resetCompletions()
 		if m.running && isQueuedModelCommand(text) {
@@ -1311,6 +1366,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	if m.running {
 		m.addInputHistory(text)
 		m.input = nil
+		m.inputCursor = 0
 		m.resetHistoryNavigation()
 		m.resetCompletions()
 		m.queuedPrompts = append(m.queuedPrompts, text)
@@ -1320,6 +1376,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 
 	m.addInputHistory(text)
 	m.input = nil
+	m.inputCursor = 0
 	m.resetHistoryNavigation()
 	m.resetCompletions()
 	return m.startPrompt(text)
@@ -1373,17 +1430,210 @@ func (m *Model) addInputHistory(text string) {
 	m.inputHistory = append(m.inputHistory, text)
 }
 
+func (m *Model) clampInputCursor() {
+	if m.inputCursor < 0 {
+		m.inputCursor = 0
+	}
+	if m.inputCursor > len(m.input) {
+		m.inputCursor = len(m.input)
+	}
+}
+
+func (m *Model) moveInputCursorLeft() {
+	m.clampInputCursor()
+	if m.inputCursor > 0 {
+		m.inputCursor--
+	}
+}
+
+func (m *Model) moveInputCursorRight() {
+	m.clampInputCursor()
+	if m.inputCursor < len(m.input) {
+		m.inputCursor++
+	}
+}
+
+func (m *Model) moveInputCursorUp() bool {
+	return m.moveInputCursorVertical(-1)
+}
+
+func (m *Model) moveInputCursorDown() bool {
+	return m.moveInputCursorVertical(1)
+}
+
+func (m *Model) moveInputCursorVertical(delta int) bool {
+	m.clampInputCursor()
+	points := m.inputCursorPoints()
+	if len(points) == 0 {
+		return false
+	}
+	current := points[m.inputCursor]
+	targetRow := current.row + delta
+	if targetRow < 0 {
+		if m.inputCursor > 0 {
+			m.captureHistoryDraftCursor()
+			m.inputCursor = 0
+			return true
+		}
+		return false
+	}
+	lastRow := points[len(points)-1].row
+	if targetRow > lastRow {
+		if m.inputCursor < len(m.input) {
+			m.captureHistoryDraftCursor()
+			m.inputCursor = len(m.input)
+			return true
+		}
+		return false
+	}
+	next := closestInputCursorOnRow(points, targetRow, current.col)
+	if next == m.inputCursor {
+		return false
+	}
+	m.inputCursor = next
+	return true
+}
+
+func (m *Model) moveInputCursorLineStart() {
+	m.clampInputCursor()
+	points := m.inputCursorPoints()
+	if len(points) == 0 {
+		return
+	}
+	row := points[m.inputCursor].row
+	for i, point := range points {
+		if point.row == row {
+			m.inputCursor = i
+			return
+		}
+	}
+}
+
+func (m *Model) moveInputCursorLineEnd() {
+	m.clampInputCursor()
+	points := m.inputCursorPoints()
+	if len(points) == 0 {
+		return
+	}
+	row := points[m.inputCursor].row
+	end := m.inputCursor
+	for i, point := range points {
+		if point.row == row {
+			end = i
+		}
+	}
+	m.inputCursor = end
+}
+
+type inputCursorPoint struct {
+	row int
+	col int
+}
+
+type inputRenderRow struct {
+	start int
+	end   int
+}
+
+func (m Model) inputCursorPoints() []inputCursorPoint {
+	rows := m.inputRenderRows()
+	points := make([]inputCursorPoint, len(m.input)+1)
+	for rowIndex, row := range rows {
+		col := 0
+		for i := row.start; i <= row.end; i++ {
+			if i >= len(points) {
+				break
+			}
+			points[i] = inputCursorPoint{row: rowIndex, col: col}
+			if i < row.end {
+				col += inputRuneWidth(m.input[i])
+			}
+		}
+		if row.end < len(m.input) && m.input[row.end] == '\n' {
+			points[row.end] = inputCursorPoint{row: rowIndex, col: col}
+		}
+	}
+	return points
+}
+
+func (m Model) inputRenderRows() []inputRenderRow {
+	width := m.inputTextWidth()
+	rows := make([]inputRenderRow, 0, 1)
+	start, col := 0, 0
+	for i, r := range m.input {
+		if r == '\n' {
+			rows = append(rows, inputRenderRow{start: start, end: i})
+			start = i + 1
+			col = 0
+			continue
+		}
+		runeWidth := inputRuneWidth(r)
+		if col > 0 && col+runeWidth > width {
+			rows = append(rows, inputRenderRow{start: start, end: i})
+			start = i
+			col = 0
+		}
+		col += runeWidth
+		if col >= width {
+			rows = append(rows, inputRenderRow{start: start, end: i + 1})
+			start = i + 1
+			col = 0
+		}
+	}
+	rows = append(rows, inputRenderRow{start: start, end: len(m.input)})
+	return rows
+}
+
+func inputRuneWidth(r rune) int {
+	width := xansi.StringWidth(string(r))
+	if width < 1 {
+		return 1
+	}
+	return width
+}
+
+func (m Model) inputTextWidth() int {
+	width := m.innerWidth() - inputStyle.GetHorizontalFrameSize() - xansi.StringWidth("> ") - 1
+	if width < 1 {
+		return 1
+	}
+	return width
+}
+
+func closestInputCursorOnRow(points []inputCursorPoint, row int, col int) int {
+	best := -1
+	bestDistance := 0
+	for i, point := range points {
+		if point.row != row {
+			continue
+		}
+		distance := point.col - col
+		if distance < 0 {
+			distance = -distance
+		}
+		if best == -1 || distance < bestDistance || (distance == bestDistance && point.col <= col) {
+			best = i
+			bestDistance = distance
+		}
+	}
+	if best == -1 {
+		return 0
+	}
+	return best
+}
+
 func (m *Model) recallPreviousInput() {
 	if len(m.inputHistory) == 0 {
 		return
 	}
 	if m.historyIndex == -1 {
-		m.historyDraft = append([]rune(nil), m.input...)
+		m.captureHistoryDraftCursor()
 		m.historyIndex = len(m.inputHistory) - 1
 	} else if m.historyIndex > 0 {
 		m.historyIndex--
 	}
 	m.input = []rune(m.inputHistory[m.historyIndex])
+	m.inputCursor = len(m.input)
 }
 
 func (m *Model) recallNextInput() {
@@ -1393,16 +1643,29 @@ func (m *Model) recallNextInput() {
 	if m.historyIndex < len(m.inputHistory)-1 {
 		m.historyIndex++
 		m.input = []rune(m.inputHistory[m.historyIndex])
+		m.inputCursor = len(m.input)
 		return
 	}
 	m.historyIndex = -1
 	m.input = append([]rune(nil), m.historyDraft...)
+	m.inputCursor = m.historyDraftCursor
+	m.clampInputCursor()
 	m.historyDraft = nil
+	m.historyDraftCursor = 0
 }
 
 func (m *Model) resetHistoryNavigation() {
 	m.historyIndex = -1
 	m.historyDraft = nil
+	m.historyDraftCursor = 0
+}
+
+func (m *Model) captureHistoryDraftCursor() {
+	if m.historyDraft != nil {
+		return
+	}
+	m.historyDraft = append([]rune(nil), m.input...)
+	m.historyDraftCursor = m.inputCursor
 }
 
 func (m *Model) updateSlashSelection() {
@@ -1843,6 +2106,7 @@ func (m *Model) restoreConversation(seq int64, content string) error {
 	}
 	m.inputHistory = inputHistoryFromMessageHistory(records)
 	m.input = []rune(content)
+	m.inputCursor = len(m.input)
 	m.resetHistoryNavigation()
 	m.resetCompletions()
 	m.scrollOffset = 0

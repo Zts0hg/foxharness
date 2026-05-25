@@ -846,10 +846,40 @@ func (m Model) renderInput(width int) string {
 			value = placeholderStyle.Render(placeholder)
 		}
 	} else {
-		value = strings.ReplaceAll(value, "\n", "\n  ")
-		value = lipgloss.NewStyle().Foreground(cTextPri).Render(value) + cursor
+		m.clampInputCursor()
+		return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(m.renderInputRows(prompt, cursor))
 	}
 	return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(prompt + value)
+}
+
+func (m Model) renderInputRows(prompt string, cursor string) string {
+	rows := m.inputRenderRows()
+	lines := make([]string, 0, len(rows))
+	textStyle := lipgloss.NewStyle().Foreground(cTextPri)
+	for i, row := range rows {
+		prefix := "  "
+		if i == 0 {
+			prefix = prompt
+		}
+		hasCursor := cursor != "" && cursor != " " && m.inputCursor >= row.start && m.inputCursor <= row.end
+		if hasCursor && i+1 < len(rows) && m.inputCursor == row.end && rows[i+1].start == m.inputCursor {
+			hasCursor = false
+		}
+		if hasCursor {
+			before := string(m.input[row.start:m.inputCursor])
+			cursorCell := cursor
+			afterStart := m.inputCursor
+			if cursor != " " && afterStart < row.end {
+				cursorCell = renderCursorOverRune(m.input[afterStart])
+				afterStart++
+			}
+			after := string(m.input[afterStart:row.end])
+			lines = append(lines, prefix+textStyle.Render(before)+cursorCell+textStyle.Render(after))
+		} else {
+			lines = append(lines, prefix+textStyle.Render(string(m.input[row.start:row.end])))
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) inputCanAcceptTyping() bool {
@@ -992,6 +1022,13 @@ func fileMentionSuggestionPlainLine(mention fileMention, pointer string) string 
 
 func renderCursor() string {
 	return cursorStyle.Render("▌")
+}
+
+func renderCursorOverRune(r rune) string {
+	return lipgloss.NewStyle().
+		Foreground(cBg).
+		Background(cAccentHi).
+		Render(string(r))
 }
 
 func (m Model) renderCursor() string {
