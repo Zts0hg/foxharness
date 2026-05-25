@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -361,6 +362,107 @@ func TestAgentRunnerMessageHistory(t *testing.T) {
 	}
 }
 
+func TestAgentRunnerProjectInputHistoryFiltersAndOrdersProjectPrompts(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+
+	current, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create(current) error = %v", err)
+	}
+	other, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create(other) error = %v", err)
+	}
+	feishu, err := manager.Create(session.CreateOptions{Source: session.SOURCEFeishu, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create(feishu) error = %v", err)
+	}
+	subagent, err := manager.Create(session.CreateOptions{Source: session.SOURCESubagent, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create(subagent) error = %v", err)
+	}
+
+	base := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	writeProjectHistoryRecords(t, current, []session.MessageRecord{
+		projectHistoryRecord(0, base.Add(10*time.Minute), schema.Message{Role: schema.RoleUser, Content: "current older"}),
+		projectHistoryRecord(1, base.Add(11*time.Minute), schema.Message{Role: schema.RoleUser, Content: "   "}),
+		projectHistoryRecord(2, base.Add(12*time.Minute), schema.Message{Role: schema.RoleUser, ToolCallID: "call-1", Content: "tool result"}),
+		projectHistoryRecord(3, base.Add(13*time.Minute), schema.Message{Role: schema.RoleUser, Content: "## Compacted Context Summary\n\nsummary"}),
+		projectHistoryRecord(4, base.Add(14*time.Minute), schema.Message{Role: schema.RoleUser, Content: "current newest"}),
+	})
+	writeProjectHistoryRecords(t, other, []session.MessageRecord{
+		projectHistoryRecord(0, base.Add(1*time.Minute), schema.Message{Role: schema.RoleUser, Content: "other older"}),
+		projectHistoryRecord(1, base.Add(2*time.Minute), schema.Message{Role: schema.RoleAssistant, Content: "assistant ignored"}),
+		projectHistoryRecord(2, base.Add(3*time.Minute), schema.Message{Role: schema.RoleUser, Content: "other newest"}),
+	})
+	writeProjectHistoryRecords(t, feishu, []session.MessageRecord{
+		projectHistoryRecord(0, base.Add(20*time.Minute), schema.Message{Role: schema.RoleUser, Content: "feishu ignored"}),
+	})
+	writeProjectHistoryRecords(t, subagent, []session.MessageRecord{
+		projectHistoryRecord(0, base.Add(21*time.Minute), schema.Message{Role: schema.RoleUser, Content: "subagent ignored"}),
+	})
+
+	runner := &AgentRunner{
+		manager:        manager,
+		currentSession: current,
+	}
+	history, err := runner.ProjectInputHistory(100)
+	if err != nil {
+		t.Fatalf("ProjectInputHistory() error = %v", err)
+	}
+	want := []string{"other older", "other newest", "current older", "current newest"}
+	if strings.Join(history, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("ProjectInputHistory() = %#v, want %#v", history, want)
+	}
+}
+
+func TestAgentRunnerProjectInputHistoryCapsAtLimit(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	current, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create(current) error = %v", err)
+	}
+	other, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create(other) error = %v", err)
+	}
+
+	base := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	var records []session.MessageRecord
+	for i := 0; i < 105; i++ {
+		records = append(records, projectHistoryRecord(int64(i), base.Add(time.Duration(i)*time.Minute), schema.Message{
+			Role:    schema.RoleUser,
+			Content: fmt.Sprintf("prompt-%03d", i),
+		}))
+	}
+	writeProjectHistoryRecords(t, other, records)
+	writeProjectHistoryRecords(t, current, []session.MessageRecord{
+		projectHistoryRecord(200, base.Add(200*time.Minute), schema.Message{Role: schema.RoleUser, Content: "current latest"}),
+	})
+
+	runner := &AgentRunner{
+		manager:        manager,
+		currentSession: current,
+	}
+	history, err := runner.ProjectInputHistory(100)
+	if err != nil {
+		t.Fatalf("ProjectInputHistory() error = %v", err)
+	}
+	if len(history) != 100 {
+		t.Fatalf("len(ProjectInputHistory()) = %d, want 100", len(history))
+	}
+	if history[len(history)-1] != "current latest" {
+		t.Fatalf("last history = %q, want current latest for first Up recall", history[len(history)-1])
+	}
+	for _, got := range history {
+		if got == "prompt-000" || got == "prompt-001" || got == "prompt-002" || got == "prompt-003" || got == "prompt-004" || got == "prompt-005" {
+			t.Fatalf("history includes capped old prompt %q: %#v", got, history[:8])
+		}
+	}
+}
+
 func TestAgentRunnerRestoresSessionStateBeforeMessage(t *testing.T) {
 	workDir := t.TempDir()
 	sessionDir := t.TempDir()
@@ -406,6 +508,34 @@ func TestAgentRunnerRegistryIncludesTodoTools(t *testing.T) {
 		if !names[name] {
 			t.Fatalf("registry missing %s", name)
 		}
+	}
+}
+
+func writeProjectHistoryRecords(t *testing.T, sess *session.Session, records []session.MessageRecord) {
+	t.Helper()
+	f, err := os.OpenFile(sess.MessagesPath(), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("OpenFile(messages) error = %v", err)
+	}
+	defer f.Close()
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatalf("Marshal(record) error = %v", err)
+		}
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			t.Fatalf("Write(record) error = %v", err)
+		}
+	}
+}
+
+func projectHistoryRecord(seq int64, when time.Time, msg schema.Message) session.MessageRecord {
+	return session.MessageRecord{
+		Seq:     seq,
+		RunID:   fmt.Sprintf("run-%d", seq),
+		Time:    when,
+		Kind:    session.MessageKindNormal,
+		Message: msg,
 	}
 }
 

@@ -45,6 +45,22 @@ type fakeRunner struct {
 	checkpointer    checkpoint.Checkpointer
 }
 
+type projectHistoryRunner struct {
+	*fakeRunner
+	projectHistory    []string
+	projectHistoryErr error
+}
+
+func (r *projectHistoryRunner) ProjectInputHistory(limit int) ([]string, error) {
+	if r.projectHistoryErr != nil {
+		return nil, r.projectHistoryErr
+	}
+	if limit > 0 && len(r.projectHistory) > limit {
+		return append([]string(nil), r.projectHistory[len(r.projectHistory)-limit:]...), nil
+	}
+	return append([]string(nil), r.projectHistory...), nil
+}
+
 func (r *fakeRunner) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
 	r.runs = append(r.runs, prompt)
 	r.nextRunID++
@@ -498,8 +514,8 @@ func TestModelShowsHistoryLoadError(t *testing.T) {
 	}
 }
 
-func TestNewSessionClearsRestoredHistory(t *testing.T) {
-	runner := newFakeRunner()
+func TestNewSessionClearsTranscriptAndRefreshesProjectHistory(t *testing.T) {
+	runner := &projectHistoryRunner{fakeRunner: newFakeRunner(), projectHistory: []string{"previous session prompt"}}
 	runner.history = []session.MessageRecord{
 		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "old prompt"}),
 		historyRecord(1, "run-1", schema.Message{Role: schema.RoleAssistant, Content: "old answer"}),
@@ -516,11 +532,12 @@ func TestNewSessionClearsRestoredHistory(t *testing.T) {
 	if entriesContain(m.entries, "user", "old prompt") || entriesContain(m.entries, "assistant", "old answer") {
 		t.Fatalf("/new should clear restored transcript entries: %#v", m.entries)
 	}
-	if len(m.inputHistory) != 0 {
-		t.Fatalf("/new inputHistory = %#v, want empty", m.inputHistory)
-	}
 	if !entriesContain(m.entries, "command", "ID       sess-new") {
 		t.Fatalf("/new did not render new session details: %#v", m.entries)
+	}
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != "previous session prompt" {
+		t.Fatalf("Up after /new restored %q, want previous session prompt", got)
 	}
 }
 

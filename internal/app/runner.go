@@ -8,8 +8,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/compaction"
@@ -468,6 +470,93 @@ func (r *AgentRunner) MessageHistory() ([]session.MessageRecord, error) {
 	return session.NewMessageLog(sess).LoadRecords()
 }
 
+// ProjectInputHistory returns recent real user prompts from CLI sessions in
+// this runner's project, ordered for the TUI's chronological history storage.
+func (r *AgentRunner) ProjectInputHistory(limit int) ([]string, error) {
+	r.mu.Lock()
+	manager := r.manager
+	current := r.currentSession
+	r.mu.Unlock()
+	if manager == nil || current == nil {
+		return nil, nil
+	}
+
+	sessions, err := manager.List(session.LookupOptions{Source: session.SOURCECLI})
+	if errors.Is(err, session.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	type promptRecord struct {
+		text      string
+		when      time.Time
+		seq       int64
+		sessionID string
+		current   bool
+	}
+	var prompts []promptRecord
+	for _, sess := range sessions {
+		records, err := session.NewMessageLog(sess).LoadRecords()
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range records {
+			msg := record.Message
+			if msg.Role != schema.RoleUser || msg.ToolCallID != "" {
+				continue
+			}
+			text := strings.TrimSpace(msg.Content)
+			if text == "" || isCompactionSummaryPrompt(text) {
+				continue
+			}
+			prompts = append(prompts, promptRecord{
+				text:      text,
+				when:      record.Time,
+				seq:       record.Seq,
+				sessionID: sess.ID,
+				current:   sess.ID == current.ID,
+			})
+		}
+	}
+
+	sort.SliceStable(prompts, func(i, j int) bool {
+		if !prompts[i].when.Equal(prompts[j].when) {
+			return prompts[i].when.After(prompts[j].when)
+		}
+		if prompts[i].sessionID != prompts[j].sessionID {
+			return prompts[i].sessionID > prompts[j].sessionID
+		}
+		return prompts[i].seq > prompts[j].seq
+	})
+	if limit > 0 && len(prompts) > limit {
+		prompts = prompts[:limit]
+	}
+
+	sort.SliceStable(prompts, func(i, j int) bool {
+		if prompts[i].current != prompts[j].current {
+			return !prompts[i].current
+		}
+		if !prompts[i].when.Equal(prompts[j].when) {
+			return prompts[i].when.Before(prompts[j].when)
+		}
+		if prompts[i].sessionID != prompts[j].sessionID {
+			return prompts[i].sessionID < prompts[j].sessionID
+		}
+		return prompts[i].seq < prompts[j].seq
+	})
+
+	history := make([]string, 0, len(prompts))
+	for _, prompt := range prompts {
+		if len(history) > 0 && history[len(history)-1] == prompt.text {
+			continue
+		}
+		history = append(history, prompt.text)
+	}
+	return history, nil
+}
+
 func (r *AgentRunner) TruncateMessageHistory(seq int64) error {
 	r.mu.Lock()
 	sess := r.currentSession
@@ -476,6 +565,10 @@ func (r *AgentRunner) TruncateMessageHistory(seq int64) error {
 		return nil
 	}
 	return session.NewMessageLog(sess).TruncateBeforeSeq(seq)
+}
+
+func isCompactionSummaryPrompt(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), "## Compacted Context Summary")
 }
 
 func (r *AgentRunner) RestoreSessionStateBeforeMessage(seq int64) (bool, error) {

@@ -28,6 +28,7 @@ const (
 	runningTickEvery  = 500 * time.Millisecond
 	pendingEscDelay   = 50 * time.Millisecond
 	mouseTailDelay    = 150 * time.Millisecond
+	inputHistoryLimit = 100
 )
 
 // Runner is the app-facing runtime required by the TUI. It is intentionally
@@ -305,7 +306,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampSidebarScrollOffsets()
 		m.status = "New session ready"
 		m.entries = nil
-		m.inputHistory = nil
+		m.inputHistory = projectInputHistoryOrFallback(m.runner, m.inputHistory)
 		m.queuedPrompts = nil
 		m.resetHistoryNavigation()
 		m.scrollOffset = 0
@@ -1742,6 +1743,10 @@ type restrictedRunner interface {
 	RunRestricted(ctx context.Context, prompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error)
 }
 
+type projectInputHistoryRunner interface {
+	ProjectInputHistory(limit int) ([]string, error)
+}
+
 func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, allowed []string, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
@@ -2008,10 +2013,23 @@ func initialSessionState(runner Runner) ([]entry, []string, string) {
 	}
 
 	entries := entriesFromMessageHistory(records)
+	inputHistory := projectInputHistoryOrFallback(runner, inputHistoryFromMessageHistory(records))
 	if len(entries) == 0 {
-		return []entry{sessionStartedEntry()}, nil, "Ready"
+		return []entry{sessionStartedEntry()}, inputHistory, "Ready"
 	}
-	return entries, inputHistoryFromMessageHistory(records), "Resumed session: " + runner.SessionID()
+	return entries, inputHistory, "Resumed session: " + runner.SessionID()
+}
+
+func projectInputHistoryOrFallback(runner Runner, fallback []string) []string {
+	phr, ok := runner.(projectInputHistoryRunner)
+	if !ok {
+		return fallback
+	}
+	history, err := phr.ProjectInputHistory(inputHistoryLimit)
+	if err != nil {
+		return fallback
+	}
+	return history
 }
 
 func sessionStartedEntry() entry {

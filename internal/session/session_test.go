@@ -248,6 +248,35 @@ func TestManagerOpenAndLatest(t *testing.T) {
 	}
 }
 
+func TestManagerListFiltersBySource(t *testing.T) {
+	workDir := t.TempDir()
+	manager := NewManagerWithHome(workDir, t.TempDir())
+
+	cli, err := manager.Create(CreateOptions{
+		Source:  SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create(cli) error = %v", err)
+	}
+	if _, err := manager.Create(CreateOptions{
+		Source:  SOURCEFeishu,
+		WorkDir: workDir,
+		UserID:  "u1",
+		ChatID:  "c1",
+	}); err != nil {
+		t.Fatalf("Create(feishu) error = %v", err)
+	}
+
+	sessions, err := manager.List(LookupOptions{Source: SOURCECLI})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != cli.ID {
+		t.Fatalf("List(SourceCLI) = %#v, want only %s", sessions, cli.ID)
+	}
+}
+
 func TestManagerDoesNotReadLegacyProjectLocalSessions(t *testing.T) {
 	workDir := t.TempDir()
 	homeDir := t.TempDir()

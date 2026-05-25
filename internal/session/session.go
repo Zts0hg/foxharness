@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -268,6 +269,18 @@ func (m *Manager) Open(id string) (*Session, error) {
 
 // Latest returns the most recently created session matching opts.
 func (m *Manager) Latest(opts LookupOptions) (*Session, error) {
+	sessions, err := m.List(opts)
+	if err != nil {
+		return nil, err
+	}
+	if len(sessions) == 0 {
+		return nil, ErrNotFound
+	}
+	return sessions[0], nil
+}
+
+// List returns sessions matching opts, newest session first.
+func (m *Manager) List(opts LookupOptions) ([]*Session, error) {
 	entries, err := os.ReadDir(m.baseDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -276,7 +289,7 @@ func (m *Manager) Latest(opts LookupOptions) (*Session, error) {
 		return nil, fmt.Errorf("读取 Session 目录失败: %w", err)
 	}
 
-	var latest *Session
+	var sessions []*Session
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -288,14 +301,12 @@ func (m *Manager) Latest(opts LookupOptions) (*Session, error) {
 		if !matchesLookup(s, opts) {
 			continue
 		}
-		if latest == nil || s.CreatedAt.After(latest.CreatedAt) {
-			latest = s
-		}
+		sessions = append(sessions, s)
 	}
-	if latest == nil {
-		return nil, ErrNotFound
-	}
-	return latest, nil
+	sort.SliceStable(sessions, func(i, j int) bool {
+		return sessions[i].CreatedAt.After(sessions[j].CreatedAt)
+	})
+	return sessions, nil
 }
 
 func matchesLookup(s *Session, opts LookupOptions) bool {
