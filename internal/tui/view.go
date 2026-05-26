@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	maxQueuedNoticeItems = 3
-	minTranscriptHeight  = 6
+	maxQueuedNoticeItems        = 3
+	minTranscriptHeight         = 6
+	maxCollapsedToolOutputLines = 3
 
 	viewPaddingTop      = 1
 	viewPaddingRight    = 2
@@ -156,6 +157,7 @@ func (m Model) View() string {
 	notice := m.renderRunningNotice(width)
 	if notice != "" {
 		parts = append(parts, notice)
+		parts = append(parts, "")
 	}
 	parts = append(parts, m.renderInput(width))
 	if suggestions := m.renderSuggestions(width); suggestions != "" {
@@ -183,7 +185,7 @@ func (m Model) contentDimensions() (int, int) {
 		lipgloss.Height(m.renderStatusBar(innerWidth)) +
 		lipgloss.Height(m.renderKeybinds(innerWidth))
 	if notice := m.renderRunningNotice(innerWidth); notice != "" {
-		chrome += lipgloss.Height(notice)
+		chrome += lipgloss.Height(notice) + 1
 	}
 	if suggestions := m.renderSuggestions(innerWidth); suggestions != "" {
 		chrome += lipgloss.Height(suggestions)
@@ -732,19 +734,23 @@ func (m Model) renderEntries(width int) string {
 				out.WriteString("\n\n")
 			}
 		}
-		out.WriteString(renderEntry(e, width))
+		out.WriteString(renderEntryWithOptions(e, width, m.toolOutputExpanded))
 	}
 	return out.String()
 }
 
 func renderEntry(e entry, width int) string {
+	return renderEntryWithOptions(e, width, true)
+}
+
+func renderEntryWithOptions(e entry, width int, toolOutputExpanded bool) string {
 	switch {
 	case e.role == "user":
 		return renderUserEntry(e, width)
 	case e.role == "tool" && strings.HasPrefix(e.title, "call "):
 		return renderToolCall(e, width)
 	case e.role == "tool" && strings.HasPrefix(e.title, "result "):
-		return renderToolResult(e, width)
+		return renderToolResult(e, width, toolOutputExpanded)
 	case e.role == "assistant":
 		return renderAssistantEntry(e, width)
 	case e.role == "command":
@@ -800,7 +806,7 @@ func renderToolCall(e entry, width int) string {
 	return fitLine(line, width)
 }
 
-func renderToolResult(e entry, width int) string {
+func renderToolResult(e entry, width int, expanded bool) string {
 	output := strings.TrimSpace(e.body)
 	if output == "" {
 		output = "(no output)"
@@ -809,6 +815,10 @@ func renderToolResult(e entry, width int) string {
 	bodyWidth := max(width-lipgloss.Width(prefix), 20)
 	wrapped := wrapText(output, bodyWidth)
 	lines := strings.Split(wrapped, "\n")
+	if !expanded && len(lines) > maxCollapsedToolOutputLines {
+		hidden := len(lines) - maxCollapsedToolOutputLines
+		lines = append(lines[:maxCollapsedToolOutputLines], fmt.Sprintf("+%d lines (ctrl+o to expand)", hidden))
+	}
 	for i := range lines {
 		if i == 0 {
 			lines[i] = prefix + lines[i]
@@ -961,7 +971,7 @@ func (m Model) maxVisibleInputRows() int {
 		lipgloss.Height(m.renderKeybinds(innerWidth)) +
 		m.minTranscriptHeightForWindow()
 	if notice := m.renderRunningNotice(innerWidth); notice != "" {
-		chrome += lipgloss.Height(notice)
+		chrome += lipgloss.Height(notice) + 1
 	}
 	if suggestions := m.renderSuggestions(innerWidth); suggestions != "" {
 		chrome += lipgloss.Height(suggestions)
@@ -983,7 +993,7 @@ func (m Model) minTranscriptHeightForWindow() int {
 		lipgloss.Height(m.renderStatusBar(innerWidth)) +
 		lipgloss.Height(m.renderKeybinds(innerWidth))
 	if notice := m.renderRunningNotice(innerWidth); notice != "" {
-		chromeWithOneInputRow += lipgloss.Height(notice)
+		chromeWithOneInputRow += lipgloss.Height(notice) + 1
 	}
 	if suggestions := m.renderSuggestions(innerWidth); suggestions != "" {
 		chromeWithOneInputRow += lipgloss.Height(suggestions)
@@ -1004,7 +1014,7 @@ func (m Model) renderRunningNotice(width int) string {
 		return ""
 	}
 	tag := planModeStyle.Bold(true).Render("[ WORKING ]")
-	elapsed := mutedStyle.Render(fmt.Sprintf("elapsed %02ds", int(m.runningElapsed().Seconds())))
+	elapsed := mutedStyle.Render("elapsed " + formatDuration(m.runningElapsed()))
 	hint := mutedStyle.Render("esc to interrupt")
 	prefix := lipgloss.JoinHorizontal(lipgloss.Top, tag, " ", elapsed, " ")
 	barWidth := width - lipgloss.Width(prefix) - lipgloss.Width(hint) - 1
@@ -1298,12 +1308,16 @@ func formatDuration(d time.Duration) string {
 	if total < 0 {
 		total = 0
 	}
-	if total < 60 {
-		return fmt.Sprintf("%ds", total)
-	}
-	minutes := total / 60
+	hours := total / 3600
+	minutes := (total % 3600) / 60
 	seconds := total % 60
-	return fmt.Sprintf("%dm%02ds", minutes, seconds)
+	if hours > 0 {
+		return fmt.Sprintf("%dh%02dm%02ds", hours, minutes, seconds)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm%02ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
 }
 
 func shortValue(s string, limit int) string {

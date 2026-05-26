@@ -160,22 +160,23 @@ type Model struct {
 	fileMentions       []fileMention
 	queuedPrompts      []string
 
-	entries       []entry
-	status        string
-	running       bool
-	runStartedAt  time.Time
-	spinnerFrame  int
-	scrollOffset  int
-	cancelRun     context.CancelFunc
-	lastCtrlC     time.Time
-	lastEsc       time.Time
-	lastEscAction escAction
-	pendingEsc    time.Time
-	pendingEscID  uint64
-	mouseTail     []rune
-	mouseTailEsc  bool
-	mouseTailID   uint64
-	selection     selectionState
+	entries            []entry
+	status             string
+	running            bool
+	runStartedAt       time.Time
+	spinnerFrame       int
+	scrollOffset       int
+	toolOutputExpanded bool
+	cancelRun          context.CancelFunc
+	lastCtrlC          time.Time
+	lastEsc            time.Time
+	lastEscAction      escAction
+	pendingEsc         time.Time
+	pendingEscID       uint64
+	mouseTail          []rune
+	mouseTailEsc       bool
+	mouseTailID        uint64
+	selection          selectionState
 
 	sessionID    string
 	modelName    string
@@ -806,6 +807,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "ctrl+f":
 		return m.toggleSidebarFocus(), nil
+	case "ctrl+o":
+		m.toolOutputExpanded = !m.toolOutputExpanded
+		if m.toolOutputExpanded {
+			m.status = "Tool output expanded"
+		} else {
+			m.status = "Tool output collapsed"
+		}
+		return m, nil
 	}
 
 	if m.sidebarFocused {

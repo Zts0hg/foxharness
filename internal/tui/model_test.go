@@ -324,6 +324,53 @@ func TestToolResultRenderingShowsEmptyOutputFallback(t *testing.T) {
 	}
 }
 
+func TestToolResultRenderingCollapsesLongOutput(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = []entry{{
+		role:  "tool",
+		title: "result bash",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5",
+	}}
+
+	plain := stripANSI(m.View())
+	for _, want := range []string{"└─ line 1", "   line 2", "   line 3", "+2 lines (ctrl+o to expand)"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("collapsed tool result missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "line 4") || strings.Contains(plain, "line 5") {
+		t.Fatalf("collapsed tool result should hide lines after third:\n%s", plain)
+	}
+}
+
+func TestCtrlOTogglesLongToolOutputExpansion(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = []entry{{
+		role:  "tool",
+		title: "result bash",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5",
+	}}
+
+	m, _ = update(t, m, keyCtrlO())
+	expanded := stripANSI(m.View())
+	if strings.Contains(expanded, "ctrl+o to expand") {
+		t.Fatalf("expanded output still shows collapse hint:\n%s", expanded)
+	}
+	for _, want := range []string{"line 4", "line 5"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded tool result missing %q:\n%s", want, expanded)
+		}
+	}
+
+	m, _ = update(t, m, keyCtrlO())
+	collapsed := stripANSI(m.View())
+	if !strings.Contains(collapsed, "+2 lines (ctrl+o to expand)") || strings.Contains(collapsed, "line 5") {
+		t.Fatalf("second ctrl+o should collapse output again:\n%s", collapsed)
+	}
+}
+
 func TestAssistantMessagesRenderMarkdown(t *testing.T) {
 	rendered := renderAssistantEntry(entry{
 		role:  "assistant",
@@ -2178,7 +2225,7 @@ func TestModelRunningNoticeShowsQueuedPromptPreviews(t *testing.T) {
 	notice := stripANSI(m.renderRunningNotice(72))
 	for _, want := range []string{
 		"[ WORKING ]",
-		"elapsed 05s",
+		"elapsed 5s",
 		"1. second task",
 		"2. third task with newline",
 		"3. long long",
@@ -3059,13 +3106,13 @@ func TestModelViewHidesInputCursorWhenTerminalBlurred(t *testing.T) {
 func TestModelViewShowsRunningNoticeAboveInput(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
-	current := time.Date(2026, 5, 17, 12, 0, 58, 0, time.UTC)
+	current := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
 	m.now = func() time.Time { return current }
 	m.running = true
-	m.runStartedAt = current.Add(-58 * time.Second)
+	m.runStartedAt = current.Add(-(2*time.Hour + 3*time.Minute + 4*time.Second))
 
 	view := m.View()
-	if !strings.Contains(view, "[ WORKING ]") || !strings.Contains(view, "elapsed 58s") || !strings.Contains(view, "esc to interrupt") {
+	if !strings.Contains(view, "[ WORKING ]") || !strings.Contains(view, "elapsed 2h03m04s") || !strings.Contains(view, "esc to interrupt") {
 		t.Fatalf("view missing running notice:\n%s", view)
 	}
 	if strings.Contains(view, "› [ WORKING ]") {
@@ -3079,6 +3126,18 @@ func TestModelViewShowsRunningNoticeAboveInput(t *testing.T) {
 	}
 	if noticeIndex > inputIndex {
 		t.Fatalf("running notice should render above input:\n%s", view)
+	}
+
+	between := stripANSI(view[noticeIndex:inputIndex])
+	hasBlankLine := false
+	for _, line := range strings.Split(between, "\n") {
+		if strings.TrimSpace(line) == "" {
+			hasBlankLine = true
+			break
+		}
+	}
+	if !hasBlankLine {
+		t.Fatalf("running notice should have a blank line before input:\n%s", view)
 	}
 }
 
@@ -3226,6 +3285,10 @@ func keyCtrlC() tea.KeyMsg {
 
 func keyCtrlF() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyCtrlF}
+}
+
+func keyCtrlO() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyCtrlO}
 }
 
 func keyTab() tea.KeyMsg {
