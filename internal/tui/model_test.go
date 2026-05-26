@@ -262,7 +262,7 @@ func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 	}
 	for _, want := range []string{
 		"hello, what's the day today?",
-		"◆ Bash (date)",
+		"⬢ Bash (date)",
 		"└─ 2026年 5月17日",
 		"answer: hello, what's the day today?",
 	} {
@@ -278,11 +278,11 @@ func TestToolCallRenderingUsesReferenceStyleLabels(t *testing.T) {
 		body string
 		want string
 	}{
-		{name: "read", body: formatToolInvocation("read_file", `{"path":"internal/foo.go"}`), want: "◆ Read (internal/foo.go)"},
-		{name: "write", body: formatToolInvocation("write_file", `{"path":"cmd/app.go"}`), want: "◆ Write (cmd/app.go)"},
-		{name: "edit", body: formatToolInvocation("edit_file", `{"path":"internal/app.go"}`), want: "◆ Edit (internal/app.go)"},
-		{name: "read todo", body: formatToolInvocation("read_todo", `{}`), want: "◆ Read TODO"},
-		{name: "update todo", body: formatToolInvocation("update_todo", `{"content":"# TODO"}`), want: "◆ Update TODO"},
+		{name: "read", body: formatToolInvocation("read_file", `{"path":"internal/foo.go"}`), want: "⬢ Read (internal/foo.go)"},
+		{name: "write", body: formatToolInvocation("write_file", `{"path":"cmd/app.go"}`), want: "⬢ Write (cmd/app.go)"},
+		{name: "edit", body: formatToolInvocation("edit_file", `{"path":"internal/app.go"}`), want: "⬢ Edit (internal/app.go)"},
+		{name: "read todo", body: formatToolInvocation("read_todo", `{}`), want: "⬢ Read TODO"},
+		{name: "update todo", body: formatToolInvocation("update_todo", `{"content":"# TODO"}`), want: "⬢ Update TODO"},
 	}
 
 	for _, tt := range tests {
@@ -2224,8 +2224,7 @@ func TestModelRunningNoticeShowsQueuedPromptPreviews(t *testing.T) {
 
 	notice := stripANSI(m.renderRunningNotice(72))
 	for _, want := range []string{
-		"[ WORKING ]",
-		"elapsed 5s",
+		"[ WORKING ] 5s • esc to interrupt",
 		"1. second task",
 		"2. third task with newline",
 		"3. long long",
@@ -2237,6 +2236,9 @@ func TestModelRunningNoticeShowsQueuedPromptPreviews(t *testing.T) {
 	}
 	if strings.Contains(notice, "4. fourth task") {
 		t.Fatalf("notice should cap visible queued prompts:\n%s", notice)
+	}
+	if strings.Contains(notice, "elapsed") {
+		t.Fatalf("notice should not include elapsed label:\n%s", notice)
 	}
 }
 
@@ -3193,32 +3195,36 @@ func TestModelViewShowsRunningNoticeAboveInput(t *testing.T) {
 	m.runStartedAt = current.Add(-(2*time.Hour + 3*time.Minute + 4*time.Second))
 
 	view := m.View()
-	if !strings.Contains(view, "[ WORKING ]") || !strings.Contains(view, "elapsed 2h03m04s") || !strings.Contains(view, "esc to interrupt") {
+	if !strings.Contains(view, "[ WORKING ] 2h3m4s • esc to interrupt") {
 		t.Fatalf("view missing running notice:\n%s", view)
 	}
 	if strings.Contains(view, "› [ WORKING ]") {
 		t.Fatalf("running notice rendered inside input:\n%s", view)
 	}
 
-	noticeIndex := strings.Index(view, "[ WORKING ]")
-	inputIndex := strings.Index(view, "message will be queued, or /cancel")
-	if inputIndex < 0 {
+	lines := strings.Split(stripANSI(view), "\n")
+	noticeLine := lineContaining(stripANSI(view), "[ WORKING ]")
+	inputLine := lineContaining(stripANSI(view), "message will be queued, or /cancel")
+	if inputLine < 0 {
 		t.Fatalf("view missing queue placeholder text:\n%s", view)
 	}
-	if noticeIndex > inputIndex {
+	if noticeLine > inputLine {
 		t.Fatalf("running notice should render above input:\n%s", view)
 	}
-
-	between := stripANSI(view[noticeIndex:inputIndex])
-	hasBlankLine := false
-	for _, line := range strings.Split(between, "\n") {
+	for _, line := range lines[noticeLine+1 : inputLine] {
 		if strings.TrimSpace(line) == "" {
-			hasBlankLine = true
-			break
+			t.Fatalf("running notice should not have a blank line before input:\n%s", view)
 		}
 	}
-	if !hasBlankLine {
-		t.Fatalf("running notice should have a blank line before input:\n%s", view)
+	if noticeLine == 0 || strings.TrimSpace(lines[noticeLine-1]) != "" {
+		t.Fatalf("running notice should have a blank line above it:\n%s", view)
+	}
+}
+
+func TestFormatDurationDoesNotPadSingleDigitUnits(t *testing.T) {
+	got := formatDuration(time.Minute + 4*time.Second)
+	if got != "1m4s" {
+		t.Fatalf("formatDuration(1m4s) = %q, want 1m4s", got)
 	}
 }
 

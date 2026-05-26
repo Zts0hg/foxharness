@@ -13,6 +13,7 @@ const (
 	maxQueuedNoticeItems        = 3
 	minTranscriptHeight         = 6
 	maxCollapsedToolOutputLines = 3
+	toolCallGlyph               = "⬢"
 
 	viewPaddingTop      = 1
 	viewPaddingRight    = 2
@@ -156,8 +157,8 @@ func (m Model) View() string {
 	}
 	notice := m.renderRunningNotice(width)
 	if notice != "" {
-		parts = append(parts, notice)
 		parts = append(parts, "")
+		parts = append(parts, notice)
 	}
 	parts = append(parts, m.renderInput(width))
 	if suggestions := m.renderSuggestions(width); suggestions != "" {
@@ -820,7 +821,7 @@ func renderToolCall(e entry, width int) string {
 	if label == "" {
 		label = strings.TrimPrefix(strings.TrimSpace(e.title), "call ")
 	}
-	line := toolLabelStyle.Render("◆ " + label)
+	line := toolLabelStyle.Render(toolCallGlyph + " " + label)
 	return fitLine(line, width)
 }
 
@@ -1032,20 +1033,14 @@ func (m Model) renderRunningNotice(width int) string {
 		return ""
 	}
 	tag := planModeStyle.Bold(true).Render("[ WORKING ]")
-	elapsed := mutedStyle.Render("elapsed " + formatDuration(m.runningElapsed()))
-	hint := mutedStyle.Render("esc to interrupt")
-	prefix := lipgloss.JoinHorizontal(lipgloss.Top, tag, " ", elapsed, " ")
-	barWidth := width - lipgloss.Width(prefix) - lipgloss.Width(hint) - 1
+	hint := mutedStyle.Render(formatDuration(m.runningElapsed()) + " • esc to interrupt")
+	prefix := lipgloss.JoinHorizontal(lipgloss.Top, tag, " ", hint, " ")
+	barWidth := width - lipgloss.Width(prefix)
 	if barWidth < 1 {
 		barWidth = 1
 	}
 	bar := renderWorkingBar(m.spinnerFrame, barWidth)
-	left := prefix + bar
-	pad := width - lipgloss.Width(left) - lipgloss.Width(hint)
-	if pad < 1 {
-		pad = 1
-	}
-	lines := []string{left + strings.Repeat(" ", pad) + hint}
+	lines := []string{prefix + bar}
 	lines = append(lines, queuedPromptNoticeLines(m.queuedPrompts, width)...)
 	return runningNoticeStyle.Width(width - runningNoticeStyle.GetHorizontalFrameSize()).Render(strings.Join(lines, "\n"))
 }
@@ -1330,10 +1325,10 @@ func formatDuration(d time.Duration) string {
 	minutes := (total % 3600) / 60
 	seconds := total % 60
 	if hours > 0 {
-		return fmt.Sprintf("%dh%02dm%02ds", hours, minutes, seconds)
+		return fmt.Sprintf("%dh%dm%ds", hours, minutes, seconds)
 	}
 	if minutes > 0 {
-		return fmt.Sprintf("%dm%02ds", minutes, seconds)
+		return fmt.Sprintf("%dm%ds", minutes, seconds)
 	}
 	return fmt.Sprintf("%ds", seconds)
 }
