@@ -3247,6 +3247,12 @@ func TestModelRunningTickAdvancesSpinner(t *testing.T) {
 	}
 }
 
+func TestRunningTickInterval(t *testing.T) {
+	if runningTickEvery != 250*time.Millisecond {
+		t.Fatalf("runningTickEvery = %s, want 250ms", runningTickEvery)
+	}
+}
+
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{
 		sessionID:    "sess-1",

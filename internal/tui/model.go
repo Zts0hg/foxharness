@@ -25,7 +25,7 @@ const (
 	minHeight = 20
 
 	quitConfirmWindow = 2 * time.Second
-	runningTickEvery  = 500 * time.Millisecond
+	runningTickEvery  = 250 * time.Millisecond
 	pendingEscDelay   = 50 * time.Millisecond
 	mouseTailDelay    = 150 * time.Millisecond
 	inputHistoryLimit = 100
