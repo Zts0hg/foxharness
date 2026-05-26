@@ -2,14 +2,12 @@ package slash
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 )
 
 // maxCommandFileSize is the maximum byte length of a .md file that the
@@ -258,30 +256,35 @@ func dedupCommands(in []*Command) []*Command {
 	if len(in) <= 1 {
 		return in
 	}
-	seenInodes := make(map[string]bool)
+	seenFiles := make([]os.FileInfo, 0, len(in))
 	out := make([]*Command, 0, len(in))
 	for _, cmd := range in {
-		key := inodeKey(cmd.FilePath)
-		if key != "" {
-			if seenInodes[key] {
+		if info, ok := commandFileInfo(cmd.FilePath); ok {
+			if seenSameFile(seenFiles, info) {
 				continue
 			}
-			seenInodes[key] = true
+			seenFiles = append(seenFiles, info)
 		}
 		out = append(out, cmd)
 	}
 	return out
 }
 
-func inodeKey(path string) string {
+func commandFileInfo(path string) (os.FileInfo, bool) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return ""
+		return nil, false
 	}
-	if sys, ok := info.Sys().(*syscall.Stat_t); ok {
-		return fmt.Sprintf("%d:%d", sys.Dev, sys.Ino)
+	return info, true
+}
+
+func seenSameFile(seen []os.FileInfo, info os.FileInfo) bool {
+	for _, existing := range seen {
+		if os.SameFile(existing, info) {
+			return true
+		}
 	}
-	return ""
+	return false
 }
 
 func sortCommands(cmds []*Command) {
