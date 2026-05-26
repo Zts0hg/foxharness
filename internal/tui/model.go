@@ -132,6 +132,11 @@ type selectionState struct {
 	area     selectionArea
 }
 
+type inputPastePreview struct {
+	id        int
+	lineCount int
+}
+
 type Model struct {
 	ctx           context.Context
 	runner        Runner
@@ -144,6 +149,8 @@ type Model struct {
 
 	input              []rune
 	inputCursor        int
+	inputPastePreview  *inputPastePreview
+	pastePreviewSeq    int
 	inputHistory       []string
 	historyIndex       int
 	historyDraft       []rune
@@ -239,7 +246,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = max(msg.Width, minWidth)
-		m.height = max(msg.Height, minHeight)
+		m.height = max(msg.Height, 1)
 		m.clearSelection()
 		m.clampSidebarScrollOffsets()
 		if !m.shouldRenderSidebar() {
@@ -825,6 +832,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "backspace", "ctrl+h":
 		if m.inputCursor > 0 {
 			m.resetHistoryNavigation()
+			m.clearInputPastePreview()
 			m.input = append(m.input[:m.inputCursor-1], m.input[m.inputCursor:]...)
 			m.inputCursor--
 			m.updateCompletions()
@@ -833,6 +841,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "delete":
 		if m.inputCursor < len(m.input) {
 			m.resetHistoryNavigation()
+			m.clearInputPastePreview()
 			m.input = append(m.input[:m.inputCursor], m.input[m.inputCursor+1:]...)
 			m.updateCompletions()
 		}
@@ -845,6 +854,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+u":
 		m.input = nil
 		m.inputCursor = 0
+		m.clearInputPastePreview()
 		m.resetHistoryNavigation()
 		m.resetCompletions()
 		return m, nil
@@ -910,7 +920,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.Type == tea.KeyRunes {
-		m.appendInputRunes(msg.Runes)
+		pastedInput := msg.Paste || isMultilinePasteRunes(msg.Runes)
+		runes := msg.Runes
+		if pastedInput {
+			runes = normalizeInputLineEndings(runes)
+		}
+		m.appendInputRunes(runes)
+		if pastedInput {
+			m.setInputPastePreview(runes)
+		}
 	}
 	return m, nil
 }
@@ -946,6 +964,7 @@ func (m Model) applyEscKey() (tea.Model, tea.Cmd) {
 			m.addInputHistory(string(m.input))
 			m.input = nil
 			m.inputCursor = 0
+			m.clearInputPastePreview()
 			m.resetHistoryNavigation()
 			m.resetCompletions()
 			m.status = "Input cleared"
@@ -972,6 +991,7 @@ func (m *Model) insertInputRunes(runes []rune) {
 		return
 	}
 	m.resetHistoryNavigation()
+	m.clearInputPastePreview()
 	m.clampInputCursor()
 	next := make([]rune, 0, len(m.input)+len(runes))
 	next = append(next, m.input[:m.inputCursor]...)
@@ -980,6 +1000,63 @@ func (m *Model) insertInputRunes(runes []rune) {
 	m.input = next
 	m.inputCursor += len(runes)
 	m.updateCompletions()
+}
+
+func isMultilinePasteRunes(runes []rune) bool {
+	for _, r := range runes {
+		if r == '\n' || r == '\r' {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) setInputPastePreview(pasted []rune) {
+	lineCount := pastePreviewLineCount(pasted)
+	if lineCount <= 1 {
+		m.clearInputPastePreview()
+		return
+	}
+	m.pastePreviewSeq++
+	m.inputPastePreview = &inputPastePreview{
+		id:        m.pastePreviewSeq,
+		lineCount: lineCount,
+	}
+}
+
+func (m *Model) clearInputPastePreview() {
+	m.inputPastePreview = nil
+}
+
+func pastePreviewLineCount(pasted []rune) int {
+	normalized := strings.ReplaceAll(string(pasted), "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	return strings.Count(normalized, "\n") + 1
+}
+
+func normalizeInputLineEndings(runes []rune) []rune {
+	if len(runes) == 0 {
+		return nil
+	}
+	out := make([]rune, 0, len(runes))
+	for i := 0; i < len(runes); i++ {
+		if runes[i] != '\r' {
+			out = append(out, runes[i])
+			continue
+		}
+		out = append(out, '\n')
+		if i+1 < len(runes) && runes[i+1] == '\n' {
+			i++
+		}
+	}
+	return out
+}
+
+func (m Model) inputPastePreviewLabel() string {
+	if m.inputPastePreview == nil {
+		return ""
+	}
+	return fmt.Sprintf("[pasted text #%d +%d lines]", m.inputPastePreview.id, max(m.inputPastePreview.lineCount-1, 0))
 }
 
 func (m Model) handleFragmentedMouseTail(runes []rune) (tea.Model, tea.Cmd, bool) {
@@ -1310,6 +1387,7 @@ func (m *Model) completeSlashCommand() {
 	if !ok {
 		return
 	}
+	m.clearInputPastePreview()
 	m.input = []rune(command.Name)
 	m.inputCursor = len(m.input)
 	m.updateCompletions()
@@ -1334,6 +1412,7 @@ func (m *Model) completeFileMention() {
 	} else {
 		next = append(next, m.input[end:]...)
 	}
+	m.clearInputPastePreview()
 	m.input = next
 	m.inputCursor = start + len(replacement)
 	if wasAtEnd {
@@ -1353,6 +1432,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		}
 		m.input = nil
 		m.inputCursor = 0
+		m.clearInputPastePreview()
 		m.resetHistoryNavigation()
 		m.resetCompletions()
 		if m.running && isQueuedModelCommand(text) {
@@ -1367,6 +1447,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		m.addInputHistory(text)
 		m.input = nil
 		m.inputCursor = 0
+		m.clearInputPastePreview()
 		m.resetHistoryNavigation()
 		m.resetCompletions()
 		m.queuedPrompts = append(m.queuedPrompts, text)
@@ -1377,6 +1458,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	m.addInputHistory(text)
 	m.input = nil
 	m.inputCursor = 0
+	m.clearInputPastePreview()
 	m.resetHistoryNavigation()
 	m.resetCompletions()
 	return m.startPrompt(text)
@@ -1634,6 +1716,7 @@ func (m *Model) recallPreviousInput() {
 	}
 	m.input = []rune(m.inputHistory[m.historyIndex])
 	m.inputCursor = len(m.input)
+	m.clearInputPastePreview()
 }
 
 func (m *Model) recallNextInput() {
@@ -1644,6 +1727,7 @@ func (m *Model) recallNextInput() {
 		m.historyIndex++
 		m.input = []rune(m.inputHistory[m.historyIndex])
 		m.inputCursor = len(m.input)
+		m.clearInputPastePreview()
 		return
 	}
 	m.historyIndex = -1
@@ -1652,6 +1736,7 @@ func (m *Model) recallNextInput() {
 	m.clampInputCursor()
 	m.historyDraft = nil
 	m.historyDraftCursor = 0
+	m.clearInputPastePreview()
 }
 
 func (m *Model) resetHistoryNavigation() {
@@ -2107,6 +2192,7 @@ func (m *Model) restoreConversation(seq int64, content string) error {
 	m.inputHistory = inputHistoryFromMessageHistory(records)
 	m.input = []rune(content)
 	m.inputCursor = len(m.input)
+	m.clearInputPastePreview()
 	m.resetHistoryNavigation()
 	m.resetCompletions()
 	m.scrollOffset = 0

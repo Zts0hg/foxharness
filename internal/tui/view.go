@@ -11,6 +11,7 @@ import (
 
 const (
 	maxQueuedNoticeItems = 3
+	minTranscriptHeight  = 6
 
 	viewPaddingTop      = 1
 	viewPaddingRight    = 2
@@ -169,7 +170,7 @@ func (m Model) View() string {
 }
 
 func (m Model) contentDimensions() (int, int) {
-	height := max(m.height, minHeight)
+	height := max(m.height, 1)
 	contentWidth := m.chatWidth()
 	if m.shouldRenderSidebar() {
 		contentWidth = m.chatWidth()
@@ -188,15 +189,16 @@ func (m Model) contentDimensions() (int, int) {
 		chrome += lipgloss.Height(suggestions)
 	}
 	bodyHeight := height - chrome
-	if bodyHeight < 6 {
-		bodyHeight = 6
+	minBodyHeight := m.minTranscriptHeightForWindow()
+	if bodyHeight < minBodyHeight {
+		bodyHeight = minBodyHeight
 	}
 	return contentWidth, bodyHeight
 }
 
 func (m Model) innerWidth() int {
 	width := max(m.width, minWidth)
-	inner := width - outerStyle.GetHorizontalFrameSize()
+	inner := width - outerStyle.GetHorizontalFrameSize() - 1
 	if inner < 10 {
 		return 10
 	}
@@ -765,7 +767,7 @@ func renderEntry(e entry, width int) string {
 
 func renderUserEntry(e entry, width int) string {
 	bodyWidth := max(width-1, 20)
-	body := wrapText(e.body, max(bodyWidth-2, 20))
+	body := renderPlainBlock(e.body, max(bodyWidth-2, 20))
 	if body == "" {
 		body = " "
 	}
@@ -846,6 +848,9 @@ func (m Model) renderInput(width int) string {
 			value = placeholderStyle.Render(placeholder)
 		}
 	} else {
+		if label := m.inputPastePreviewLabel(); label != "" && len(m.input) > 0 {
+			return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(prompt + lipgloss.NewStyle().Foreground(cTextPri).Render(label) + cursor)
+		}
 		m.clampInputCursor()
 		return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(m.renderInputRows(prompt, cursor))
 	}
@@ -854,15 +859,21 @@ func (m Model) renderInput(width int) string {
 
 func (m Model) renderInputRows(prompt string, cursor string) string {
 	rows := m.inputRenderRows()
-	lines := make([]string, 0, len(rows))
+	displayRows := m.inputDisplayRows(rows)
+	lines := make([]string, 0, len(displayRows))
 	textStyle := lipgloss.NewStyle().Foreground(cTextPri)
-	for i, row := range rows {
+	for i, displayRow := range displayRows {
 		prefix := "  "
 		if i == 0 {
 			prefix = prompt
 		}
+		if displayRow.marker != "" {
+			lines = append(lines, prefix+mutedStyle.Render(displayRow.marker))
+			continue
+		}
+		row := displayRow.row
 		hasCursor := cursor != "" && cursor != " " && m.inputCursor >= row.start && m.inputCursor <= row.end
-		if hasCursor && i+1 < len(rows) && m.inputCursor == row.end && rows[i+1].start == m.inputCursor {
+		if hasCursor && displayRow.index+1 < len(rows) && m.inputCursor == row.end && rows[displayRow.index+1].start == m.inputCursor {
 			hasCursor = false
 		}
 		if hasCursor {
@@ -880,6 +891,108 @@ func (m Model) renderInputRows(prompt string, cursor string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+type inputDisplayRow struct {
+	row    inputRenderRow
+	index  int
+	marker string
+}
+
+func (m Model) inputDisplayRows(rows []inputRenderRow) []inputDisplayRow {
+	maxRows := m.maxVisibleInputRows()
+	if len(rows) <= maxRows {
+		out := make([]inputDisplayRow, 0, len(rows))
+		for i, row := range rows {
+			out = append(out, inputDisplayRow{row: row, index: i})
+		}
+		return out
+	}
+	if maxRows <= 1 {
+		return []inputDisplayRow{{row: rows[len(rows)-1], index: len(rows) - 1}}
+	}
+	if maxRows == 2 {
+		return []inputDisplayRow{
+			{marker: inputHiddenRowsLabel(len(rows) - 1)},
+			{row: rows[len(rows)-1], index: len(rows) - 1},
+		}
+	}
+
+	headCount := max(1, (maxRows-1)/2)
+	tailCount := maxRows - headCount - 1
+	if tailCount < 1 {
+		tailCount = 1
+		headCount = maxRows - tailCount - 1
+	}
+	tailStart := len(rows) - tailCount
+	if tailStart <= headCount {
+		out := make([]inputDisplayRow, 0, maxRows)
+		for i, row := range rows[:maxRows] {
+			out = append(out, inputDisplayRow{row: row, index: i})
+		}
+		return out
+	}
+
+	out := make([]inputDisplayRow, 0, maxRows)
+	for i, row := range rows[:headCount] {
+		out = append(out, inputDisplayRow{row: row, index: i})
+	}
+	out = append(out, inputDisplayRow{marker: inputHiddenRowsLabel(tailStart - headCount)})
+	for i, row := range rows[tailStart:] {
+		out = append(out, inputDisplayRow{row: row, index: tailStart + i})
+	}
+	return out
+}
+
+func inputHiddenRowsLabel(count int) string {
+	if count == 1 {
+		return "[... 1 line hidden ...]"
+	}
+	return fmt.Sprintf("[... %d lines hidden ...]", count)
+}
+
+func (m Model) maxVisibleInputRows() int {
+	height := max(m.height, 1)
+	innerWidth := m.innerWidth()
+	chrome := outerStyle.GetVerticalFrameSize() +
+		inputStyle.GetVerticalFrameSize() +
+		1 /* footer gap */ +
+		lipgloss.Height(m.renderStatusBar(innerWidth)) +
+		lipgloss.Height(m.renderKeybinds(innerWidth)) +
+		m.minTranscriptHeightForWindow()
+	if notice := m.renderRunningNotice(innerWidth); notice != "" {
+		chrome += lipgloss.Height(notice)
+	}
+	if suggestions := m.renderSuggestions(innerWidth); suggestions != "" {
+		chrome += lipgloss.Height(suggestions)
+	}
+	available := height - chrome
+	if available < 1 {
+		return 1
+	}
+	return available
+}
+
+func (m Model) minTranscriptHeightForWindow() int {
+	height := max(m.height, 1)
+	innerWidth := m.innerWidth()
+	chromeWithOneInputRow := outerStyle.GetVerticalFrameSize() +
+		inputStyle.GetVerticalFrameSize() +
+		1 /* visible input row */ +
+		1 /* footer gap */ +
+		lipgloss.Height(m.renderStatusBar(innerWidth)) +
+		lipgloss.Height(m.renderKeybinds(innerWidth))
+	if notice := m.renderRunningNotice(innerWidth); notice != "" {
+		chromeWithOneInputRow += lipgloss.Height(notice)
+	}
+	if suggestions := m.renderSuggestions(innerWidth); suggestions != "" {
+		chromeWithOneInputRow += lipgloss.Height(suggestions)
+	}
+	available := height - chromeWithOneInputRow
+	if available < 1 {
+		return 1
+	}
+	return min(minTranscriptHeight, available)
 }
 
 func (m Model) inputCanAcceptTyping() bool {
@@ -1032,9 +1145,6 @@ func renderCursorOverRune(r rune) string {
 }
 
 func (m Model) renderCursor() string {
-	if m.spinnerFrame%2 == 1 {
-		return " "
-	}
 	return renderCursor()
 }
 

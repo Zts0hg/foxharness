@@ -375,6 +375,26 @@ func TestUserEntryRendersOnlyHighlightedBody(t *testing.T) {
 	}
 }
 
+func TestUserEntryRenderingPreservesPastedLineStructure(t *testing.T) {
+	rendered := stripANSI(renderUserEntry(entry{
+		role: "user",
+		body: "• Ran go test ./internal/tui -count=1\n  └ ok github.com/Zts0hg/foxharness/internal/tui 1.835s\n\n• Explored",
+	}, 90))
+
+	for _, want := range []string{
+		"• Ran go test ./internal/tui -count=1",
+		"  └ ok github.com/Zts0hg/foxharness/internal/tui 1.835s",
+		"• Explored",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered user entry missing preserved line %q:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "1.835s • Explored") {
+		t.Fatalf("rendered user entry collapsed pasted lines:\n%s", rendered)
+	}
+}
+
 func TestModelAcceptsSpaces(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
@@ -1645,6 +1665,328 @@ func TestModelRenderInputHeightDoesNotChangeWhenCursorBlinks(t *testing.T) {
 	}
 }
 
+func TestModelRenderInputSummarizesLongInputWithHeadAndTail(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = 80
+	m.height = 20
+	m.input = []rune(longPastedInputSample())
+	m.inputCursor = len(m.input)
+
+	rows := m.inputRenderRows()
+	rendered := stripANSI(m.renderInput(m.innerWidth()))
+	renderedRows := renderedInputContentRows(m)
+	if got, total := len(renderedRows), len(rows); got >= total {
+		t.Fatalf("rendered input rows = %d, want summarized below full row count %d\n%s", got, total, rendered)
+	}
+	if !strings.Contains(rendered, "Intro paragraph") || !strings.Contains(rendered, "final line") {
+		t.Fatalf("summarized input should show both head and tail:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "hidden") {
+		t.Fatalf("summarized input missing hidden-line marker:\n%s", rendered)
+	}
+}
+
+func TestModelPastePreviewKeepsShortWindowViewWithinHeight(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 14})
+	m, _ = update(t, m, keyPaste(numberedLines("line", 30)))
+
+	if got := lipgloss.Height(m.View()); got > 14 {
+		t.Fatalf("paste preview view height = %d, want <= actual window height 14", got)
+	}
+}
+
+func TestModelViewKeepsLongInputWithinWindowWidth(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = 80
+	m.height = 20
+	m.input = []rune(longPastedInputSample())
+	m.inputCursor = len(m.input)
+
+	for i, line := range strings.Split(stripANSI(m.View()), "\n") {
+		if got := lipgloss.Width(line); got > m.width {
+			t.Fatalf("view line %d width = %d, want <= window width %d\n%q", i, got, m.width, line)
+		}
+	}
+}
+
+func TestModelViewWrapsReportedLongPastedInputWithinWindowWidth(t *testing.T) {
+	for _, width := range []int{60, 80, 96, 120, 160, 220} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			runner := newFakeRunner()
+			m := NewModel(context.Background(), runner, Config{})
+			m.width = width
+			m.height = 20
+			m, _ = update(t, m, keyPaste(reportedLongPastedInputSample()))
+
+			assertViewFitsTerminal(t, m)
+		})
+	}
+}
+
+func TestModelViewWrapsReportedLongPastedInputWithSidebarWithinWindowWidth(t *testing.T) {
+	for _, width := range []int{120, 160, 220} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			runner := newFakeRunner()
+			m := NewModel(context.Background(), runner, Config{})
+			m.width = width
+			m.height = 20
+			m.sidebarVisible = true
+			m.sidebarDocuments = []sidebarDocument{
+				{Title: "plan", Content: strings.Repeat("sidebar content ", 20)},
+			}
+			m, _ = update(t, m, keyPaste(reportedLongPastedInputSample()))
+
+			assertViewFitsTerminal(t, m)
+		})
+	}
+}
+
+func TestModelLongPastedInputDoesNotRenderControlCharacters(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = 80
+	m.height = 20
+	m.input = []rune("first line\r\n\tindented with tab\r\nlast line")
+	m.inputCursor = len(m.input)
+
+	view := stripANSI(m.View())
+	if strings.ContainsRune(view, '\r') {
+		t.Fatalf("view rendered carriage return control character:\n%q", view)
+	}
+	if strings.ContainsRune(view, '\t') {
+		t.Fatalf("view rendered tab control character:\n%q", view)
+	}
+}
+
+func TestModelLongInputSummaryPreservesFormattedHeadAndTail(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = 72
+	m.height = 20
+	m.input = []rune(longPastedInputSample())
+	m.inputCursor = len(m.input)
+	m.spinnerFrame = 1
+
+	rows := m.inputRenderRows()
+	renderedRows := renderedInputContentRows(m)
+	if len(renderedRows) >= len(rows) {
+		t.Fatalf("long input rendered %d rows, want summarized below full %d rows", len(renderedRows), len(rows))
+	}
+	rendered := stripANSI(m.renderInput(m.innerWidth()))
+	for _, want := range []string{
+		"Intro paragraph",
+		"final line",
+		"hidden",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("summarized input missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestModelHistoryRecallLongInputViewFitsAndShowsHeadAndTail(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
+	m.inputHistory = []string{numberedLines("line", 30)}
+
+	m, _ = update(t, m, keyUp())
+
+	view := stripANSI(m.View())
+	if got := lipgloss.Height(view); got > m.height {
+		t.Fatalf("view height = %d, want <= window height %d\n%s", got, m.height, view)
+	}
+	if !strings.Contains(view, "line 01") || !strings.Contains(view, "line 30") {
+		t.Fatalf("history recall should show both head and tail:\n%s", view)
+	}
+	if !strings.Contains(view, "hidden") {
+		t.Fatalf("history recall missing hidden-line marker:\n%s", view)
+	}
+}
+
+func TestModelLongInputHeightDoesNotChangeWhenCursorBlinks(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = 80
+	m.height = 20
+	m.input = []rune(numberedLines("line", 30))
+	m.inputCursor = len(m.input)
+	m.spinnerFrame = 0
+	visibleHeight := lipgloss.Height(m.renderInput(m.innerWidth()))
+
+	m.spinnerFrame = 1
+	hiddenHeight := lipgloss.Height(m.renderInput(m.innerWidth()))
+	if hiddenHeight != visibleHeight {
+		t.Fatalf("long input height changed across cursor blink: visible=%d hidden=%d", visibleHeight, hiddenHeight)
+	}
+}
+
+func TestModelMultilinePasteRendersPreviewButKeepsFullInput(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyPaste("a\nb\nc"))
+
+	if got := string(m.input); got != "a\nb\nc" {
+		t.Fatalf("input = %q, want full pasted text", got)
+	}
+	rendered := stripANSI(m.renderInput(m.innerWidth()))
+	if !strings.Contains(rendered, "[pasted text #1 +2 lines]") {
+		t.Fatalf("rendered input missing paste preview:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "a\n") || strings.Contains(rendered, "\nb") || strings.Contains(rendered, "\nc") {
+		t.Fatalf("rendered input expanded pasted text:\n%s", rendered)
+	}
+}
+
+func TestModelPasteWithCarriageReturnsRendersPreview(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyPaste("a\rb\rc"))
+
+	if got := string(m.input); got != "a\nb\nc" {
+		t.Fatalf("input = %q, want normalized pasted text", got)
+	}
+	rendered := stripANSI(m.renderInput(m.innerWidth()))
+	if !strings.Contains(rendered, "[pasted text #1 +2 lines]") {
+		t.Fatalf("rendered input missing paste preview for CR paste:\n%s", rendered)
+	}
+}
+
+func TestModelSubmittingCarriageReturnPasteRendersUserEntryWithLineBreaks(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyPaste("first\rsecond\rthird"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatalf("enter did not submit CR paste input")
+	}
+
+	rendered := stripANSI(renderEntry(m.entries[len(m.entries)-1], m.innerWidth()))
+	lines := strings.Split(rendered, "\n")
+	for _, want := range []string{"first", "second", "third"} {
+		if !lineContainsAll(lines, want) {
+			t.Fatalf("submitted CR paste missing rendered line %q:\n%q", want, rendered)
+		}
+	}
+	if strings.ContainsRune(rendered, '\r') {
+		t.Fatalf("submitted CR paste rendered carriage return control character:\n%q", rendered)
+	}
+}
+
+func TestModelSubmittingPastePreviewSendsFullText(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyPaste("a\nb\nc"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatalf("enter did not submit paste preview input")
+	}
+	m, _ = update(t, m, cmd())
+
+	if len(runner.runs) != 1 || runner.runs[0] != "a\nb\nc" {
+		t.Fatalf("runs = %#v, want full pasted text", runner.runs)
+	}
+	if got := string(m.input); got != "" {
+		t.Fatalf("input after submit = %q, want cleared", got)
+	}
+}
+
+func TestModelEditingAfterPastePreviewRestoresNormalRendering(t *testing.T) {
+	t.Run("ordinary character", func(t *testing.T) {
+		runner := newFakeRunner()
+		m := NewModel(context.Background(), runner, Config{})
+
+		m, _ = update(t, m, keyPaste("a\nb\nc"))
+		m, _ = update(t, m, keyRunes("d"))
+
+		rendered := stripANSI(m.renderInput(m.innerWidth()))
+		if strings.Contains(rendered, "[pasted text") {
+			t.Fatalf("rendered input kept paste preview after edit:\n%s", rendered)
+		}
+		if !strings.Contains(rendered, "a") || !strings.Contains(rendered, "b") || !strings.Contains(rendered, "cd") {
+			t.Fatalf("rendered input missing normal edited text:\n%s", rendered)
+		}
+	})
+
+	t.Run("backspace", func(t *testing.T) {
+		runner := newFakeRunner()
+		m := NewModel(context.Background(), runner, Config{})
+
+		m, _ = update(t, m, keyPaste("a\nb\nc"))
+		m, _ = update(t, m, keyBackspace())
+
+		rendered := stripANSI(m.renderInput(m.innerWidth()))
+		if strings.Contains(rendered, "[pasted text") {
+			t.Fatalf("rendered input kept paste preview after backspace:\n%s", rendered)
+		}
+		if got := string(m.input); got != "a\nb\n" {
+			t.Fatalf("input after backspace = %q, want edited full text", got)
+		}
+	})
+}
+
+func TestModelHistoryRecallDoesNotUsePastePreview(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = 80
+	m.height = 20
+	m.inputHistory = []string{numberedLines("line", 30)}
+
+	m, _ = update(t, m, keyUp())
+
+	rendered := stripANSI(m.renderInput(m.innerWidth()))
+	if strings.Contains(rendered, "[pasted text") {
+		t.Fatalf("history recall rendered paste preview:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "line 01") || !strings.Contains(rendered, "line 30") {
+		t.Fatalf("history recall missing summarized multiline head/tail:\n%s", rendered)
+	}
+}
+
+func TestModelPastePreviewLineFitsWindowWidth(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = minWidth
+
+	m, _ = update(t, m, keyPaste(numberedLines("line", 30)))
+
+	rendered := stripANSI(m.renderInput(m.innerWidth()))
+	if !strings.Contains(rendered, "[pasted text #1 +29 lines]") {
+		t.Fatalf("rendered input missing paste preview:\n%s", rendered)
+	}
+	for i, line := range strings.Split(rendered, "\n") {
+		if got := lipgloss.Width(line); got > m.innerWidth() {
+			t.Fatalf("rendered input line %d width = %d, want <= inner width %d\n%q", i, got, m.innerWidth(), line)
+		}
+	}
+}
+
+func TestModelInputCursorRemainsVisibleAcrossSpinnerFrames(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = 80
+	m.input = []rune("abc")
+	m.inputCursor = len(m.input)
+
+	m.spinnerFrame = 0
+	if !strings.Contains(stripANSI(m.renderInput(m.innerWidth())), "abc▌") {
+		t.Fatalf("cursor missing on even frame:\n%s", m.renderInput(m.innerWidth()))
+	}
+
+	m.spinnerFrame = 1
+	if !strings.Contains(stripANSI(m.renderInput(m.innerWidth())), "abc▌") {
+		t.Fatalf("cursor should remain visible on odd frame:\n%s", m.renderInput(m.innerWidth()))
+	}
+}
+
 func TestModelCursorEditingKeysModifyAtCursor(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
@@ -2862,6 +3204,10 @@ func keyRunes(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
+func keyPaste(s string) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s), Paste: true}
+}
+
 func keyEnter() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyEnter}
 }
@@ -2952,6 +3298,84 @@ func renderedInputCursorPosition(m Model) (int, int, bool) {
 		prefixWidth = lipgloss.Width("  ")
 	}
 	return point.row + 1, prefixWidth + point.col, true
+}
+
+func renderedInputContentRows(m Model) []string {
+	lines := strings.Split(stripANSI(m.renderInput(m.innerWidth())), "\n")
+	rows := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, " ")
+		if trimmed == "" {
+			rows = append(rows, "")
+			continue
+		}
+		trimmed = strings.ReplaceAll(trimmed, "▌", "")
+		if strings.Trim(trimmed, "─") == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "> ") {
+			rows = append(rows, strings.TrimPrefix(trimmed, "> "))
+			continue
+		}
+		if strings.HasPrefix(trimmed, "  ") {
+			rows = append(rows, strings.TrimPrefix(trimmed, "  "))
+		}
+	}
+	return rows
+}
+
+func longPastedInputSample() string {
+	return strings.Join([]string{
+		"Intro paragraph with enough words to soft wrap in a narrow terminal viewport.",
+		"",
+		"  indented command --flag=value --json '{\"alpha\":1,\"beta\":[\"one\",\"two\",\"three\"]}'",
+		"中文内容应该按行保留，并且不会因为 viewport 被截断而乱序。",
+		"- bullet one keeps its marker",
+		"- bullet two includes a longer sentence that wraps across the available input width",
+		`{"nested":{"path":["one","two","three"],"enabled":true},"message":"long json should stay ordered"}`,
+		"final line",
+	}, "\n")
+}
+
+func reportedLongPastedInputSample() string {
+	return strings.Join([]string{
+		"• 你说得对。真正漏掉的是这个路径：WindowSizeMsg 里把高度强制抬到了 minHeight=20，所以真实终端如果只有 14/16/18 行，TUI 仍然渲染 20 行，终端自然只显示底部，和原问题一致。",
+		"",
+		"  我已经修了：",
+		"",
+		"  - internal/tui/model.go:242：窗口高度不再 clamp 到 20，改为使用真实高度。",
+		"  - internal/tui/view.go:170：布局按真实高度算。",
+		"  - internal/tui/view.go:917：短窗口下 transcript 最小保留高度会动态下降，避免和输入框一起撑爆总高度。",
+		"  - internal/tui/model_test.go:1661：新增复现测试，真实窗口 14 行时长输入渲染不能超过 14 行。这个测试在修复前失败：view height = 20, want <= actual window height 14。",
+		"",
+		"  也保留了之前的：",
+		"",
+		"  - 长输入 viewport 跟随光标",
+		"  - 光标常亮",
+		"  - 行宽不超过窗口",
+		"  - 混合内容不乱序",
+		"",
+		"  验证已跑：",
+		"",
+		"  go test ./internal/tui -count=1",
+		"  go test ./...",
+		"",
+		"  都通过。",
+	}, "\n")
+}
+
+func assertViewFitsTerminal(t *testing.T, m Model) {
+	t.Helper()
+	view := stripANSI(m.View())
+	if got := lipgloss.Height(view); got > m.height {
+		t.Fatalf("view height = %d, want <= window height %d", got, m.height)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		maxWidth := max(m.width-1, 1)
+		if got := lipgloss.Width(line); got > maxWidth {
+			t.Fatalf("view line %d width = %d, want <= safe window width %d\n%q", i, got, maxWidth, line)
+		}
+	}
 }
 
 func assertQuitCommand(t *testing.T, cmd tea.Cmd) {
