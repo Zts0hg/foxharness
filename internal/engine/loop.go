@@ -403,6 +403,8 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 
 	turnCount := 0
 	final := ""
+	todoUpdated := false
+	todoGateReminderSent := false
 
 	for {
 		turnCount++
@@ -572,6 +574,31 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		}
 
 		if len(actionResponse.ToolCalls) == 0 {
+			if reminder := e.todoCompletionReminder(sess); reminder != "" && !todoUpdated {
+				if todoGateReminderSent {
+					wrapped := fmt.Errorf("TODO.md still has incomplete checklist items after TODO completion reminder")
+					finishTurn("error", map[string]any{"error": wrapped.Error()})
+					markRunError(wrapped)
+					return nil, wrapped
+				}
+				todoGateReminderSent = true
+				contextHistory = append(contextHistory, schema.Message{
+					Role:    schema.RoleUser,
+					Content: todoCompletionReminderMessage(reminder),
+				})
+				_ = transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
+					"turn":    turnCount,
+					"message": reminder,
+					"source":  "todo_completion_gate",
+				})
+				log.Printf("[TODO] Final response blocked until TODO.md is updated")
+				finishTurn("ok", map[string]any{
+					"tool_calls": 0,
+					"final":      false,
+					"blocked_by": "todo_completion_gate",
+				})
+				continue
+			}
 			log.Printf("[Engine] 模型不再需要调用工具，宣告任务完成！")
 			_ = recorder.Append(aggregator.Summary(sess.ID))
 			summaryWritten = true
@@ -617,6 +644,9 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				log.Printf("  -> ❌ 工具执行报错: %s, 输出：%s\n", item.Call.Name, item.Result.Output)
 			} else {
 				log.Printf("  -> ✅ 工具执行成功: %s（返回 %d 字节）\n", item.Call.Name, len(item.Result.Output))
+				if item.Call.Name == "update_todo" {
+					todoUpdated = true
+				}
 			}
 
 			_ = recorder.Append(metrics.ToolCall{

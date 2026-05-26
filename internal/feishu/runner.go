@@ -95,16 +95,7 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("继续使用 Session: %s", sess.ID))
 	}
 
-	approver := approval.NewFeishuApprover(task.ChatID, r.messenger, r.approvalStore)
-	subManager := subagent.NewManager(r.provider, r.workDir)
-
-	registry := tools.NewRegistry()
-	registry.Register(tools.NewReadFileTool(r.workDir))
-	registry.Register(tools.NewWriteFileTool(r.workDir))
-	registry.Register(tools.NewEditFileTool(r.workDir))
-	registry.Register(tools.NewBashTool(r.workDir))
-	registry.Register(subagent.NewTool(subManager, sess.ID))
-	registry.Use(middleware.NewDangerMiddleware(approver))
+	registry := r.buildRegistry(sess, task.ChatID)
 
 	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
 	eng := engine.NewAgentEngine(
@@ -147,6 +138,22 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	}
 
 	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("任务 %s 已完成，Session: %s，Run: %s", task.TaskID, sess.ID, result.RunID))
+}
+
+func (r *Runner) buildRegistry(sess *session.Session, chatID string) tools.Registry {
+	approver := approval.NewFeishuApprover(chatID, r.messenger, r.approvalStore)
+	subManager := subagent.NewManager(r.provider, r.workDir)
+
+	registry := tools.NewRegistry()
+	registry.Register(tools.NewReadFileTool(r.workDir))
+	registry.Register(tools.NewWriteFileTool(r.workDir))
+	registry.Register(tools.NewEditFileTool(r.workDir))
+	registry.Register(tools.NewBashTool(r.workDir))
+	registry.Register(tools.NewReadTodoTool(sess.RootDir))
+	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
+	registry.Register(subagent.NewTool(subManager, sess.ID))
+	registry.Use(middleware.NewDangerMiddleware(approver))
+	return registry
 }
 
 func (r *Runner) resolveSession(forceNew bool, task Task) (*session.Session, bool, error) {

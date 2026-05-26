@@ -35,9 +35,11 @@ func (t *bigOutputTool) Execute(ctx context.Context, args json.RawMessage) (stri
 type sequencedProvider struct {
 	responses []*provider.GenerateResponse
 	call      int
+	seen      [][]schema.Message
 }
 
 func (p *sequencedProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	p.seen = append(p.seen, append([]schema.Message(nil), messages...))
 	idx := p.call
 	if idx >= len(p.responses) {
 		idx = len(p.responses) - 1
@@ -102,6 +104,70 @@ func TestCallModelUsesGenerateResponse(t *testing.T) {
 	}
 	if assistant.Usage.InputTokens != 1234 || assistant.Usage.OutputTokens != 56 {
 		t.Fatalf("assistant.Usage = %#v, want {InputTokens:1234, OutputTokens:56}", assistant.Usage)
+	}
+}
+
+func TestEngineRequiresTodoUpdateBeforeFinalResponse(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	todoPath := filepath.Join(sess.RootDir, "TODO.md")
+	if err := os.WriteFile(todoPath, []byte("# TODO\n\n- [ ] Finish report\n"), 0644); err != nil {
+		t.Fatalf("seed TODO.md: %v", err)
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
+	p := &sequencedProvider{responses: []*provider.GenerateResponse{
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "analysis complete"}},
+		{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID:        "call_update_todo",
+				Name:      "update_todo",
+				Arguments: json.RawMessage(`{"content":"# TODO\n\n- [x] Finish report\n"}`),
+			}},
+		}},
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+	}}
+
+	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 5})
+	result, err := eng.RunWithReporter(context.Background(), sess, "finish report", nil)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if result.FinalMessage != "done" {
+		t.Fatalf("FinalMessage = %q, want done", result.FinalMessage)
+	}
+	if p.call != 3 {
+		t.Fatalf("provider calls = %d, want 3", p.call)
+	}
+	data, err := os.ReadFile(todoPath)
+	if err != nil {
+		t.Fatalf("read TODO.md: %v", err)
+	}
+	if strings.Contains(string(data), "- [ ] Finish report") || !strings.Contains(string(data), "- [x] Finish report") {
+		t.Fatalf("TODO.md was not marked complete:\n%s", data)
+	}
+
+	var foundReminder bool
+	if len(p.seen) < 2 {
+		t.Fatalf("provider saw %d calls, want at least 2", len(p.seen))
+	}
+	for _, msg := range p.seen[1] {
+		if strings.Contains(msg.Content, "TODO.md still has incomplete checklist items") {
+			foundReminder = true
+			break
+		}
+	}
+	if !foundReminder {
+		t.Fatalf("second model call missing TODO completion reminder: %#v", p.seen[1])
 	}
 }
 
