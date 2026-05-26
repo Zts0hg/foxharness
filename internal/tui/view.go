@@ -550,11 +550,7 @@ func renderSidebarBoxWithFocus(doc sidebarDocument, width int, height int, offse
 		boxStyle = sidebarFocusedBoxStyle
 	}
 	title := strings.ToUpper(doc.Title)
-	text := doc.Content
-	if doc.Error != "" {
-		text = doc.Content + "\n" + doc.Error
-	}
-	lines := sidebarDocumentLines(text, bodyWidth)
+	lines := sidebarDocumentLines(sidebarDisplayContent(doc), bodyWidth)
 	availableBodyLines := max(contentHeight-2, 0)
 	offset = clampSidebarOffset(offset, len(lines), availableBodyLines)
 	if len(lines) > availableBodyLines {
@@ -601,13 +597,35 @@ func maxSidebarScrollOffset(doc sidebarDocument, width int, height int) int {
 	contentHeight := max(height-sidebarBoxStyle.GetVerticalFrameSize(), 1)
 	bodyWidth := contentWidth
 
-	text := doc.Content
-	if doc.Error != "" {
-		text = doc.Content + "\n" + doc.Error
-	}
-	lines := sidebarDocumentLines(text, bodyWidth)
+	lines := sidebarDocumentLines(sidebarDisplayContent(doc), bodyWidth)
 	availableBodyLines := max(contentHeight-2, 0)
 	return clampSidebarOffset(len(lines), len(lines), availableBodyLines)
+}
+
+func sidebarDisplayContent(doc sidebarDocument) string {
+	content := trimSidebarRedundantHeading(doc.Title, doc.Content)
+	if doc.Error != "" {
+		return content + "\n" + doc.Error
+	}
+	return content
+}
+
+func trimSidebarRedundantHeading(title string, content string) string {
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 || !isSidebarRedundantHeading(title, lines[0]) {
+		return content
+	}
+
+	start := 1
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	return strings.Join(lines[start:], "\n")
+}
+
+func isSidebarRedundantHeading(title string, line string) bool {
+	heading := strings.TrimSpace(line)
+	return heading == "# "+strings.TrimSpace(title) || heading == "# "+strings.ToUpper(strings.TrimSpace(title))
 }
 
 func sidebarDocumentLines(text string, width int) []string {

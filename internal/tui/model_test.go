@@ -2908,6 +2908,87 @@ func TestSidebarBottomDoesNotReplaceContentWithEllipsis(t *testing.T) {
 	}
 }
 
+func TestSidebarBoxHidesMatchingRedundantDocumentHeading(t *testing.T) {
+	tests := []struct {
+		name    string
+		title   string
+		content string
+		hidden  string
+		wants   []string
+	}{
+		{
+			name:  "memory uppercase",
+			title: "Memory",
+			content: strings.Join([]string{
+				"# MEMORY",
+				"",
+				"## Goal",
+				"Remember the repo conventions.",
+			}, "\n"),
+			hidden: "# MEMORY",
+			wants:  []string{"MEMORY", "## Goal", "Remember the repo"},
+		},
+		{
+			name:  "plan title case",
+			title: "Plan",
+			content: strings.Join([]string{
+				"# Plan",
+				"",
+				"## Strategy",
+				"- Keep markdown lists readable",
+			}, "\n"),
+			hidden: "# Plan",
+			wants:  []string{"PLAN", "## Strategy", "• Keep markdown lists"},
+		},
+		{
+			name:  "todo uppercase",
+			title: "Todo",
+			content: strings.Join([]string{
+				"# TODO",
+				"",
+				"- [ ] Add focused sidebar tests",
+				"- [x] Keep completed tasks readable",
+			}, "\n"),
+			hidden: "# TODO",
+			wants:  []string{"TODO", "[ ] Add focused", "[✓] Keep completed"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := sidebarDocument{Title: tt.title, Content: tt.content}
+			box := stripANSI(renderSidebarBox(doc, sidebarWidth, 14, 0))
+			lines := strings.Split(box, "\n")
+
+			if lineContainsAll(lines, tt.hidden) {
+				t.Fatalf("sidebar body should hide redundant heading %q:\n%s", tt.hidden, box)
+			}
+			for _, want := range tt.wants {
+				if !lineContainsAll(lines, want) {
+					t.Fatalf("sidebar box missing %q:\n%s", want, box)
+				}
+			}
+		})
+	}
+}
+
+func TestSidebarBoxKeepsNonMatchingDocumentHeading(t *testing.T) {
+	doc := sidebarDocument{
+		Title: "Plan",
+		Content: strings.Join([]string{
+			"# Memory",
+			"",
+			"Plan content starts here.",
+		}, "\n"),
+	}
+
+	box := stripANSI(renderSidebarBox(doc, sidebarWidth, 12, 0))
+	lines := strings.Split(box, "\n")
+	if !lineContainsAll(lines, "# Memory") {
+		t.Fatalf("sidebar should keep non-matching document heading:\n%s", box)
+	}
+}
+
 func TestSidebarMarkdownListsKeepMarkersWithText(t *testing.T) {
 	doc := sidebarDocument{
 		Title: "Plan",
