@@ -3,9 +3,10 @@
 //
 // The TUI keeps a hand-curated set of 10 built-in commands in the global
 // `slashCommands` slice; this file adds a layer on top so that prompt-style
-// commands discovered from .foxharness/commands/ and .foxharness/skills/
-// appear in the same autocomplete menu and dispatch through the same entry
-// point. Built-in behavior is unchanged when no registry is attached.
+// commands discovered from .foxharness/ or Claude-compatible .claude/
+// directories appear in the same autocomplete menu and dispatch through the
+// same entry point. Built-in behavior is unchanged when no registry is
+// attached.
 package tui
 
 import (

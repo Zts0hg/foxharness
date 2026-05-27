@@ -103,6 +103,90 @@ func TestDiscoverCommands_UserVsProject(t *testing.T) {
 	}
 }
 
+func TestDiscoverCommands_ClaudeCommandsLoadedByDefault(t *testing.T) {
+	workDir := t.TempDir()
+	userHome := t.TempDir()
+	writeFile(t, filepath.Join(userHome, ".claude", "commands", "global.md"), "global claude")
+	writeFile(t, filepath.Join(workDir, ".claude", "commands", "codexspec", "generate-spec.md"), "project claude")
+
+	user, project, err := DiscoverCommands(workDir, userHome)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(user) != 1 || user[0].Name != "global" || user[0].Source != SourceClaudeUser {
+		t.Fatalf("user claude command not loaded as SourceClaudeUser: %+v", user)
+	}
+	if len(project) != 1 || project[0].Name != "codexspec:generate-spec" || project[0].Source != SourceClaudeProject {
+		t.Fatalf("project claude command not loaded as SourceClaudeProject: %+v", project)
+	}
+}
+
+func TestDiscoverCommands_ClaudeSkillDirectoryLoadedByDefault(t *testing.T) {
+	workDir := t.TempDir()
+	userHome := t.TempDir()
+	writeFile(t, filepath.Join(workDir, ".claude", "skills", "review", "SKILL.md"), "Review with Claude skill")
+
+	_, project, err := DiscoverCommands(workDir, userHome)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(project) != 1 || project[0].Name != "review" {
+		t.Fatalf("project claude skill not loaded: %+v", project)
+	}
+	if project[0].SkillDir == "" {
+		t.Fatal("SkillDir should be populated for Claude SKILL.md")
+	}
+}
+
+func TestDiscoverCommands_FoxOverridesClaudeAtSameScope(t *testing.T) {
+	workDir := t.TempDir()
+	userHome := t.TempDir()
+	writeFile(t, filepath.Join(userHome, ".claude", "commands", "same.md"), "claude user")
+	writeFile(t, filepath.Join(userHome, ".foxharness", "commands", "same.md"), "fox user")
+	writeFile(t, filepath.Join(workDir, ".claude", "commands", "local.md"), "claude project")
+	writeFile(t, filepath.Join(workDir, ".foxharness", "commands", "local.md"), "fox project")
+
+	r := NewRegistry(workDir).WithUserHome(userHome)
+	if err := r.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	same, ok := r.Lookup("same")
+	if !ok {
+		t.Fatal("same not loaded")
+	}
+	if same.Source != SourceFoxUser || !strings.Contains(same.Content, "fox user") {
+		t.Fatalf("same = source %v content %q", same.Source, same.Content)
+	}
+	local, ok := r.Lookup("local")
+	if !ok {
+		t.Fatal("local not loaded")
+	}
+	if local.Source != SourceFoxProject || !strings.Contains(local.Content, "fox project") {
+		t.Fatalf("local = source %v content %q", local.Source, local.Content)
+	}
+}
+
+func TestDiscoverCommands_ProjectClaudeOverridesUserFox(t *testing.T) {
+	workDir := t.TempDir()
+	userHome := t.TempDir()
+	writeFile(t, filepath.Join(userHome, ".foxharness", "commands", "same.md"), "fox user")
+	writeFile(t, filepath.Join(workDir, ".claude", "commands", "same.md"), "claude project")
+
+	r := NewRegistry(workDir).WithUserHome(userHome)
+	if err := r.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	cmd, ok := r.Lookup("same")
+	if !ok {
+		t.Fatal("same not loaded")
+	}
+	if cmd.Source != SourceClaudeProject || !strings.Contains(cmd.Content, "claude project") {
+		t.Fatalf("same = source %v content %q", cmd.Source, cmd.Content)
+	}
+}
+
 func TestDiscoverCommands_MissingDirectories(t *testing.T) {
 	workDir := t.TempDir()
 	userHome := t.TempDir()

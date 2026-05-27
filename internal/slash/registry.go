@@ -14,9 +14,10 @@ const (
 )
 
 // Registry is the unified store of slash commands. It merges in-process
-// built-ins with .md files discovered on disk under .foxharness/, enforcing
-// precedence (project > user > builtin) and providing cached views for the
-// hot autocomplete path.
+// built-ins with .md files discovered on disk under .foxharness/ and
+// Claude-compatible .claude/ directories, enforcing precedence
+// (project > user > builtin) and providing cached views for the hot
+// autocomplete path.
 //
 // Registry is safe for concurrent reads but mutation should be serialized;
 // in practice the TUI mutates the registry only at startup, during /refresh,
@@ -200,8 +201,8 @@ func (r *Registry) ModelInvocable() []*Command {
 }
 
 // Load performs initial discovery and registers every .md command found
-// under the user-level and project-level .foxharness/ directories. Built-in
-// commands previously registered are preserved.
+// under the user-level and project-level .foxharness/ and .claude/
+// directories. Built-in commands previously registered are preserved.
 func (r *Registry) Load() error {
 	r.mu.Lock()
 	r.builtinOnRefresh = r.snapshotBuiltinLocked()

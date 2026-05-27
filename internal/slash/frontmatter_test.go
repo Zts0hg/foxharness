@@ -84,6 +84,26 @@ Second line.`)
 	}
 }
 
+func TestParseFrontmatter_AllowedToolsString(t *testing.T) {
+	input := []byte(`---
+description: "Review code"
+allowed-tools: Read, Grep, Bash(git status:*), Bash(git diff:*)
+---
+Body`)
+
+	fm, body, err := ParseFrontmatter(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"read_file", "grep", "bash"}
+	if !sliceEqual(fm.AllowedTools, want) {
+		t.Fatalf("AllowedTools = %v, want %v", fm.AllowedTools, want)
+	}
+	if strings.TrimSpace(body) != "Body" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
 func TestParseFrontmatter_NoFrontmatter(t *testing.T) {
 	input := []byte("Just body content\nwith no frontmatter")
 	fm, body, err := ParseFrontmatter(input)

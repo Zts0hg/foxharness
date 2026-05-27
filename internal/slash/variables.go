@@ -5,8 +5,10 @@ import "strings"
 // Built-in variable names that the executor populates by default before
 // invoking ReplaceVariables. Skills may rely on these always being defined.
 const (
-	VarSkillDir  = "FOXHARNESS_SKILL_DIR"
-	VarSessionID = "FOXHARNESS_SESSION_ID"
+	VarSkillDir        = "FOXHARNESS_SKILL_DIR"
+	VarSessionID       = "FOXHARNESS_SESSION_ID"
+	VarClaudeSkillDir  = "CLAUDE_SKILL_DIR"
+	VarClaudeSessionID = "CLAUDE_SESSION_ID"
 )
 
 // ReplaceVariables substitutes ${NAME} occurrences in content with the

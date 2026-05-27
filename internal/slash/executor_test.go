@@ -99,6 +99,22 @@ func TestExecutor_VariableReplacement(t *testing.T) {
 	}
 }
 
+func TestExecutor_ClaudeVariableAliases(t *testing.T) {
+	exec := NewExecutor()
+	cmd := &Command{
+		Type:     CommandPrompt,
+		Content:  "skill=${CLAUDE_SKILL_DIR},sess=${CLAUDE_SESSION_ID}",
+		SkillDir: "/abs/skill",
+	}
+	got, err := exec.Execute(context.Background(), cmd, "", "sess-1")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got.Content != "skill=/abs/skill,sess=sess-1" {
+		t.Errorf("content = %q", got.Content)
+	}
+}
+
 func TestExecutor_ForkMode_CallsRunner(t *testing.T) {
 	fork := &fakeForkRunner{result: "fork-output"}
 	exec := NewExecutor(WithForkRunner(fork))
