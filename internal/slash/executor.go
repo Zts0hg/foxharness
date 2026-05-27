@@ -139,8 +139,10 @@ func (e *Executor) Execute(ctx context.Context, cmd *Command, rawArgs, sessionID
 	}
 
 	vars := map[string]string{
-		VarSkillDir:  cmd.SkillDir,
-		VarSessionID: sessionID,
+		VarSkillDir:        cmd.SkillDir,
+		VarSessionID:       sessionID,
+		VarClaudeSkillDir:  cmd.SkillDir,
+		VarClaudeSessionID: sessionID,
 	}
 	processed = ReplaceVariables(processed, vars)
 

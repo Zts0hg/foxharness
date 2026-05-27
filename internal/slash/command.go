@@ -17,19 +17,33 @@ const (
 )
 
 // CommandSource identifies where a command was loaded from. Lower values
-// represent lower precedence: a project-level command overrides a user-level
-// command with the same name, which in turn overrides a built-in.
+// represent lower precedence: a foxharness command overrides a Claude command
+// at the same scope, and project-level commands override user-level commands.
 type CommandSource int
 
 const (
 	// SourceBuiltin marks commands compiled into the binary.
 	SourceBuiltin CommandSource = iota
 
-	// SourceUser marks commands loaded from ~/.foxharness/.
-	SourceUser
+	// SourceClaudeUser marks commands loaded from ~/.claude/.
+	SourceClaudeUser
 
-	// SourceProject marks commands loaded from the project's .foxharness/.
-	SourceProject
+	// SourceFoxUser marks commands loaded from ~/.foxharness/.
+	SourceFoxUser
+
+	// SourceClaudeProject marks commands loaded from the project's .claude/.
+	SourceClaudeProject
+
+	// SourceFoxProject marks commands loaded from the project's .foxharness/.
+	SourceFoxProject
+)
+
+const (
+	// SourceUser is retained as the foxharness user-level source alias.
+	SourceUser = SourceFoxUser
+
+	// SourceProject is retained as the foxharness project-level source alias.
+	SourceProject = SourceFoxProject
 )
 
 // Frontmatter holds parsed YAML frontmatter from a .md command file.

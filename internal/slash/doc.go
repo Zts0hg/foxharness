@@ -1,11 +1,12 @@
 // Package slash provides the file-based slash command system for foxharness.
 //
-// Commands and skills are discovered from .foxharness/commands/ and
-// .foxharness/skills/ directories at both user-level (~/.foxharness/) and
-// project-level (search from cwd up to the git root). Each .md file becomes a
-// command whose body is sent as a user prompt, with optional YAML frontmatter
-// controlling metadata, argument substitution, allowed tools, model overrides,
-// conditional activation, and fork-mode execution.
+// Commands and skills are discovered from .foxharness/commands/,
+// .foxharness/skills/, and Claude Code-compatible .claude/commands/ and
+// .claude/skills/ directories at both user-level and project-level (search
+// from cwd up to the git root). Each .md file becomes a command whose body is
+// sent as a user prompt, with optional YAML frontmatter controlling metadata,
+// argument substitution, allowed tools, model overrides, conditional
+// activation, and fork-mode execution.
 //
 // Key Components:
 //   - Command, CommandType, CommandSource, Frontmatter: core data types

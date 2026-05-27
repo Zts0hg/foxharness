@@ -15,9 +15,14 @@ import (
 // a warning log to prevent runaway resource use.
 const maxCommandFileSize = 1024 * 1024
 
-// foxharnessDir is the directory name searched at both user-level and
-// project-level for command and skill files.
-const foxharnessDir = ".foxharness"
+const (
+	// foxharnessDir is the native directory name searched at both user-level
+	// and project-level for command and skill files.
+	foxharnessDir = ".foxharness"
+
+	// claudeDir is searched for compatibility with Claude Code slash commands.
+	claudeDir = ".claude"
+)
 
 const (
 	commandsSubdir = "commands"
@@ -37,10 +42,14 @@ const (
 // File system errors during traversal are logged and the offending file is
 // skipped — discovery never returns a fatal error to its caller.
 func DiscoverCommands(workDir, userHome string) (userCmds []*Command, projectCmds []*Command, err error) {
-	userCmds = loadCommandsFromRoot(userHome, SourceUser)
-	projectRoot := findProjectFoxharness(workDir)
-	if projectRoot != "" {
-		projectCmds = loadCommandsFromRoot(projectRoot, SourceProject)
+	userCmds = append(userCmds, loadCommandsFromRoot(userHome, claudeDir, SourceClaudeUser)...)
+	userCmds = append(userCmds, loadCommandsFromRoot(userHome, foxharnessDir, SourceFoxUser)...)
+
+	if projectRoot := findProjectConfigRoot(workDir, claudeDir); projectRoot != "" {
+		projectCmds = append(projectCmds, loadCommandsFromRoot(projectRoot, claudeDir, SourceClaudeProject)...)
+	}
+	if projectRoot := findProjectConfigRoot(workDir, foxharnessDir); projectRoot != "" {
+		projectCmds = append(projectCmds, loadCommandsFromRoot(projectRoot, foxharnessDir, SourceFoxProject)...)
 	}
 
 	userCmds = dedupCommands(userCmds)
@@ -53,6 +62,10 @@ func DiscoverCommands(workDir, userHome string) (userCmds []*Command, projectCmd
 }
 
 func findProjectFoxharness(workDir string) string {
+	return findProjectConfigRoot(workDir, foxharnessDir)
+}
+
+func findProjectConfigRoot(workDir, configDir string) string {
 	if workDir == "" {
 		return ""
 	}
@@ -61,7 +74,7 @@ func findProjectFoxharness(workDir string) string {
 		return ""
 	}
 	for dir := abs; ; {
-		candidate := filepath.Join(dir, foxharnessDir)
+		candidate := filepath.Join(dir, configDir)
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			return dir
 		}
@@ -78,11 +91,11 @@ func findProjectFoxharness(workDir string) string {
 	}
 }
 
-func loadCommandsFromRoot(root string, source CommandSource) []*Command {
+func loadCommandsFromRoot(root, configDir string, source CommandSource) []*Command {
 	if root == "" {
 		return nil
 	}
-	base := filepath.Join(root, foxharnessDir)
+	base := filepath.Join(root, configDir)
 	if info, err := os.Stat(base); err != nil || !info.IsDir() {
 		return nil
 	}

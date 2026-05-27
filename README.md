@@ -10,7 +10,7 @@ The default binary command is `fox`.
 - One-shot CLI mode: run a single task with `fox exec` or `fox -p`.
 - Session continuity: multiple runs can share one session and one raw message history.
 - Project instructions: automatically loads `AGENTS.md` from the current workspace.
-- Skills: loads `.foxharness/skills/<name>/SKILL.md` when the prompt mentions `$name`.
+- Skills and slash commands: loads foxharness files under `.foxharness/` and Claude Code-compatible files under `.claude/`.
 - Plan mode: can generate and use `PLAN.md`, `TODO.md`, and `MEMORY.md`.
 - Tool execution: file reading, file writing, fuzzy edit, bash, and delegated subagent tasks.
 - Local trace data: stores transcripts, metrics, traces, and run metadata under `~/.foxharness`.
@@ -241,13 +241,24 @@ Example:
 - Prefer focused edits over whole-file rewrites.
 ```
 
-## Skills
+## Slash Commands and Skills
 
-Skills live under the current project:
+foxharness loads project and user slash commands from both native foxharness
+directories and Claude Code-compatible directories:
 
 ```text
+.foxharness/commands/<command>.md
 .foxharness/skills/<skill-name>/SKILL.md
+.claude/commands/<command>.md
+.claude/skills/<skill-name>/SKILL.md
+~/.foxharness/commands/<command>.md
+~/.foxharness/skills/<skill-name>/SKILL.md
+~/.claude/commands/<command>.md
+~/.claude/skills/<skill-name>/SKILL.md
 ```
+
+Project-level commands override user-level commands. At the same level,
+`.foxharness` commands override `.claude` commands with the same name.
 
 Reference a skill in your prompt with `$skill-name`:
 

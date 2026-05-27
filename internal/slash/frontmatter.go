@@ -84,7 +84,7 @@ func unmarshalFrontmatter(yamlBlock string) (Frontmatter, error) {
 	fm := defaultFrontmatter()
 
 	// First decode into a generic map to detect whether user-invocable was
-	// explicitly present, then decode again into the typed struct.
+	// explicitly present and to tolerate Claude-style scalar allowed-tools.
 	var raw map[string]any
 	if err := yaml.Unmarshal([]byte(yamlBlock), &raw); err != nil {
 		return defaultFrontmatter(), err
@@ -92,7 +92,10 @@ func unmarshalFrontmatter(yamlBlock string) (Frontmatter, error) {
 	explicitInvocable, hasExplicit := raw["user-invocable"]
 
 	if err := yaml.Unmarshal([]byte(yamlBlock), &fm); err != nil {
-		return defaultFrontmatter(), err
+		if _, ok := raw["allowed-tools"].(string); !ok {
+			return defaultFrontmatter(), err
+		}
+		fm = frontmatterFromRaw(raw)
 	}
 
 	if hasExplicit {
@@ -103,6 +106,149 @@ func unmarshalFrontmatter(yamlBlock string) (Frontmatter, error) {
 	} else {
 		fm.UserInvocable = true
 	}
+	fm.AllowedTools = parseAllowedTools(fm.AllowedTools)
 
 	return fm, nil
+}
+
+func frontmatterFromRaw(raw map[string]any) Frontmatter {
+	fm := defaultFrontmatter()
+	fm.Description = rawString(raw, "description")
+	fm.Arguments = rawString(raw, "arguments")
+	fm.ArgumentHint = rawString(raw, "argument-hint")
+	fm.AllowedTools = parseAllowedTools(raw["allowed-tools"])
+	fm.Model = rawString(raw, "model")
+	fm.Effort = rawString(raw, "effort")
+	fm.DisableModelInvocation = rawBool(raw, "disable-model-invocation")
+	fm.WhenToUse = rawString(raw, "when_to_use")
+	fm.Context = rawString(raw, "context")
+	fm.Agent = rawString(raw, "agent")
+	fm.Paths = rawStringSlice(raw["paths"])
+	fm.Aliases = rawStringSlice(raw["aliases"])
+	fm.Version = rawString(raw, "version")
+	if hooks, ok := raw["hooks"].(map[string]any); ok {
+		fm.Hooks = &FrontmatterHooks{
+			Before: rawString(hooks, "before"),
+			After:  rawString(hooks, "after"),
+		}
+	}
+	return fm
+}
+
+func rawString(raw map[string]any, key string) string {
+	if v, ok := raw[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func rawBool(raw map[string]any, key string) bool {
+	if v, ok := raw[key].(bool); ok {
+		return v
+	}
+	return false
+}
+
+func rawStringSlice(v any) []string {
+	switch typed := v.(type) {
+	case []string:
+		return append([]string(nil), typed...)
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		return []string{typed}
+	default:
+		return nil
+	}
+}
+
+func parseAllowedTools(v any) []string {
+	var rawTools []string
+	switch typed := v.(type) {
+	case string:
+		rawTools = splitAllowedToolsString(typed)
+	default:
+		rawTools = rawStringSlice(v)
+	}
+	if len(rawTools) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(rawTools))
+	out := make([]string, 0, len(rawTools))
+	for _, tool := range rawTools {
+		normalized := normalizeAllowedTool(tool)
+		if normalized == "" || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func splitAllowedToolsString(s string) []string {
+	var (
+		out   []string
+		part  strings.Builder
+		depth int
+	)
+	flush := func() {
+		item := strings.TrimSpace(part.String())
+		if item != "" {
+			out = append(out, item)
+		}
+		part.Reset()
+	}
+	for _, r := range s {
+		switch r {
+		case '(':
+			depth++
+			part.WriteRune(r)
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			part.WriteRune(r)
+		case ',':
+			if depth == 0 {
+				flush()
+				continue
+			}
+			part.WriteRune(r)
+		default:
+			part.WriteRune(r)
+		}
+	}
+	flush()
+	return out
+}
+
+func normalizeAllowedTool(tool string) string {
+	tool = strings.TrimSpace(tool)
+	if tool == "" {
+		return ""
+	}
+	if idx := strings.Index(tool, "("); idx >= 0 {
+		tool = tool[:idx]
+	}
+	tool = strings.TrimSpace(tool)
+	lower := strings.ToLower(strings.ReplaceAll(tool, "-", "_"))
+	switch lower {
+	case "read":
+		return "read_file"
+	case "write":
+		return "write_file"
+	case "edit", "multiedit":
+		return "edit_file"
+	case "bash":
+		return "bash"
+	default:
+		return lower
+	}
 }

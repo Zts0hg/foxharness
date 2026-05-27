@@ -56,8 +56,8 @@ type Config struct {
 	InitialPrompt string
 
 	// Registry, when non-nil, attaches a file-based slash command registry
-	// to the TUI so that prompt commands from .foxharness/commands and
-	// .foxharness/skills appear alongside the built-ins.
+	// to the TUI so that prompt commands from .foxharness/ and .claude/
+	// command and skill directories appear alongside the built-ins.
 	Registry *slash.Registry
 
 	// Executor is the per-command pipeline used when a prompt command is
