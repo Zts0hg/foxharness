@@ -42,14 +42,20 @@ func (r *restrictedFakeRunner) RunRestricted(ctx context.Context, prompt string,
 
 func newRegistryWithPromptCommand(t *testing.T, name, body string) *slash.Registry {
 	t.Helper()
+	return newRegistryWithPromptCommandFrontmatter(t, name, body, slash.Frontmatter{UserInvocable: true})
+}
+
+func newRegistryWithPromptCommandFrontmatter(t *testing.T, name, body string, frontmatter slash.Frontmatter) *slash.Registry {
+	t.Helper()
 	r := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
+	frontmatter.UserInvocable = true
 	r.Register(&slash.Command{
 		Type:        slash.CommandPrompt,
 		Name:        name,
 		Description: "test " + name,
 		Source:      slash.SourceProject,
 		Content:     body,
-		Frontmatter: slash.Frontmatter{UserInvocable: true},
+		Frontmatter: frontmatter,
 	})
 	return r
 }
@@ -202,6 +208,84 @@ func TestModel_FuzzyAutocomplete(t *testing.T) {
 	}
 	if matches[0].Name != "/review" {
 		t.Errorf("expected /review first, got %q", matches[0].Name)
+	}
+}
+
+func TestModel_FileBasedCommandWithArguments_TabCompletesToHintableInput(t *testing.T) {
+	runner := newFakeRunner()
+	registry := newRegistryWithPromptCommandFrontmatter(t, "review", "Review: $ARGUMENTS", slash.Frontmatter{
+		Arguments: "scope note",
+	})
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, slash.NewExecutor())
+
+	m, _ = update(t, m, keyRunes("/rev"))
+	m, _ = update(t, m, keyTab())
+
+	if got := string(m.input); got != "/review " {
+		t.Fatalf("input after tab = %q, want /review with trailing space", got)
+	}
+	if got := m.inputCursor; got != len([]rune("/review ")) {
+		t.Fatalf("cursor after tab = %d, want end of completed command", got)
+	}
+	if m.hasSlashMenu() {
+		t.Fatalf("slash menu should close after completing argument command")
+	}
+	rendered := stripANSI(m.renderInput(m.innerWidth()))
+	if !strings.Contains(rendered, "/review ▌[scope] [note]") {
+		t.Fatalf("rendered input missing argument hint:\n%s", rendered)
+	}
+}
+
+func TestModel_FileBasedCommandArgumentHint_ProgressesAsArgsAreTyped(t *testing.T) {
+	runner := newFakeRunner()
+	registry := newRegistryWithPromptCommandFrontmatter(t, "review", "Review: $ARGUMENTS", slash.Frontmatter{
+		Arguments: "scope note",
+	})
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, slash.NewExecutor())
+
+	m, _ = update(t, m, keyRunes("/review internal/tui"))
+	rendered := stripANSI(m.renderInput(m.innerWidth()))
+	if !strings.Contains(rendered, "/review internal/tui▌[note]") {
+		t.Fatalf("rendered input missing remaining argument hint:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "[scope]") {
+		t.Fatalf("rendered input still shows filled argument hint:\n%s", rendered)
+	}
+
+	m, _ = update(t, m, keyRunes(" add-tests"))
+	rendered = stripANSI(m.renderInput(m.innerWidth()))
+	if strings.Contains(rendered, "[scope]") || strings.Contains(rendered, "[note]") {
+		t.Fatalf("rendered input should hide hint after all declared args are filled:\n%s", rendered)
+	}
+}
+
+func TestModel_FileBasedCommandCustomArgumentHint_RendersCustomHint(t *testing.T) {
+	runner := newFakeRunner()
+	registry := newRegistryWithPromptCommandFrontmatter(t, "ask", "Ask: $ARGUMENTS", slash.Frontmatter{
+		ArgumentHint: "[target] [instructions]",
+	})
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, slash.NewExecutor())
+
+	m, _ = update(t, m, keyRunes("/ask "))
+
+	rendered := stripANSI(m.renderInput(m.innerWidth()))
+	if !strings.Contains(rendered, "/ask ▌[target] [instructions]") {
+		t.Fatalf("rendered input missing custom argument hint:\n%s", rendered)
+	}
+}
+
+func TestModel_BuiltinTabCompletionDoesNotAddArgumentSpace(t *testing.T) {
+	runner := newFakeRunner()
+	registry := newRegistryWithPromptCommandFrontmatter(t, "review", "Review: $ARGUMENTS", slash.Frontmatter{
+		Arguments: "scope note",
+	})
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, slash.NewExecutor())
+
+	m, _ = update(t, m, keyRunes("/"))
+	m, _ = update(t, m, keyTab())
+
+	if got := string(m.input); got != "/session" {
+		t.Fatalf("builtin input after tab = %q, want /session without trailing space", got)
 	}
 }
 

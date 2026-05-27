@@ -85,8 +85,14 @@ type entry struct {
 }
 
 type slashCommand struct {
-	Name        string
-	Description string
+	Name         string
+	Description  string
+	Arguments    string
+	ArgumentHint string
+}
+
+func (c slashCommand) hasArgumentHint() bool {
+	return c.Arguments != "" || c.ArgumentHint != ""
 }
 
 type escAction string
@@ -1397,7 +1403,11 @@ func (m *Model) completeSlashCommand() {
 		return
 	}
 	m.clearInputPastePreview()
-	m.input = []rune(command.Name)
+	completed := command.Name
+	if command.hasArgumentHint() {
+		completed += " "
+	}
+	m.input = []rune(completed)
 	m.inputCursor = len(m.input)
 	m.updateCompletions()
 }
@@ -2278,7 +2288,7 @@ func isQueuedModelCommand(text string) bool {
 }
 
 func (m Model) matchingSlashCommands() []slashCommand {
-	text := strings.TrimSpace(string(m.input))
+	text := string(m.input)
 	if !strings.HasPrefix(text, "/") || strings.ContainsAny(text, " \t\n") {
 		return nil
 	}

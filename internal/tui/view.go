@@ -891,6 +891,7 @@ func (m Model) renderInputRows(prompt string, cursor string) string {
 	displayRows := m.inputDisplayRows(rows)
 	lines := make([]string, 0, len(displayRows))
 	textStyle := lipgloss.NewStyle().Foreground(cTextPri)
+	argHint := m.activeSlashArgumentHint()
 	for i, displayRow := range displayRows {
 		prefix := "  "
 		if i == 0 {
@@ -914,7 +915,14 @@ func (m Model) renderInputRows(prompt string, cursor string) string {
 				afterStart++
 			}
 			after := string(m.input[afterStart:row.end])
-			lines = append(lines, prefix+textStyle.Render(before)+cursorCell+textStyle.Render(after))
+			hint := ""
+			if argHint != "" && m.inputCursor == len(m.input) && after == "" {
+				remaining := m.inputTextWidth() - xansi.StringWidth(before) - xansi.StringWidth(xansi.Strip(cursorCell))
+				if remaining > 0 {
+					hint = hintStyle.Render(xansi.Truncate(argHint, remaining, ""))
+				}
+			}
+			lines = append(lines, prefix+textStyle.Render(before)+cursorCell+hint+textStyle.Render(after))
 		} else {
 			lines = append(lines, prefix+textStyle.Render(string(m.input[row.start:row.end])))
 		}

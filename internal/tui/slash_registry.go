@@ -46,7 +46,12 @@ func (m Model) fileBasedSlashCommands() []slashCommand {
 			continue
 		}
 		name := "/" + cmd.Name
-		out = append(out, slashCommand{Name: name, Description: cmd.Description})
+		out = append(out, slashCommand{
+			Name:         name,
+			Description:  cmd.Description,
+			Arguments:    cmd.Frontmatter.Arguments,
+			ArgumentHint: cmd.Frontmatter.ArgumentHint,
+		})
 	}
 	return out
 }
@@ -74,6 +79,29 @@ func (m Model) lookupPromptCommand(text string) (*slash.Command, string, bool) {
 		return nil, "", false
 	}
 	return cmd, args, true
+}
+
+func (m Model) activeSlashArgumentHint() string {
+	if m.inputCursor != len(m.input) {
+		return ""
+	}
+	text := string(m.input)
+	if !strings.HasPrefix(text, "/") || !strings.ContainsAny(text, " \t\n") {
+		return ""
+	}
+	cmd, args, ok := m.lookupPromptCommand(text)
+	if !ok {
+		return ""
+	}
+	if cmd.Frontmatter.Arguments == "" && cmd.Frontmatter.ArgumentHint == "" {
+		return ""
+	}
+	filledCount := len(slash.ParseArguments(args))
+	return slash.ProgressiveHint(
+		slash.SplitArgumentNames(cmd.Frontmatter.Arguments),
+		filledCount,
+		cmd.Frontmatter.ArgumentHint,
+	)
 }
 
 // runPromptCommand processes a prompt command through the executor and
