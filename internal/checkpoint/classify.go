@@ -49,7 +49,7 @@ func SelectableMessages(records []session.MessageRecord) []SelectableMessage {
 		if rec.IsMeta || rec.IsCompactSummary || rec.IsVisibleInTranscriptOnly {
 			continue
 		}
-		content := strings.TrimSpace(msg.Content)
+		content := strings.TrimSpace(rec.HumanContent())
 		if content == "" || isCompactionSummaryContent(content) {
 			continue
 		}

@@ -29,6 +29,11 @@ type Config struct {
 	// Checkpointer receives user-message snapshot hooks when configured.
 	Checkpointer checkpoint.Checkpointer
 
+	// DisplayPrompt is optional user-facing text for the initial user message.
+	// When set, the model still receives the RunWithReporter userPrompt, while
+	// transcripts and UI restore paths can render this human-authored form.
+	DisplayPrompt string
+
 	// OnUserMessageID is called with the persisted user message sequence. It is
 	// used by middleware wiring to associate later file edits with the same
 	// snapshot.

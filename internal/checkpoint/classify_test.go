@@ -53,6 +53,21 @@ func TestSelectableMessages(t *testing.T) {
 	}
 }
 
+func TestSelectableMessagesUsesDisplayContent(t *testing.T) {
+	now := time.Now()
+	records := []session.MessageRecord{{
+		Seq:            1,
+		Time:           now,
+		DisplayContent: "/review pr-9",
+		Message:        schema.Message{Role: schema.RoleUser, Content: "Review: pr-9"},
+	}}
+
+	got := SelectableMessages(records)
+	if len(got) != 1 || got[0].Seq != 1 || got[0].Content != "/review pr-9" {
+		t.Fatalf("SelectableMessages() = %#v, want original command", got)
+	}
+}
+
 func TestMessagesAfterAreOnlySynthetic(t *testing.T) {
 	records := []session.MessageRecord{
 		{Message: schema.Message{Role: schema.RoleUser, Content: "prompt"}},

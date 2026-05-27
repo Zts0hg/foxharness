@@ -246,7 +246,13 @@ func (r *AgentRunner) SlashExecutor() *slash.Executor {
 
 // Run executes one prompt as a new run in the current session.
 func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, nil, reporter)
+	return r.runInternal(ctx, userPrompt, "", nil, reporter)
+}
+
+// RunWithDisplay executes one prompt while storing a separate human-facing
+// prompt for transcript and history views.
+func (r *AgentRunner) RunWithDisplay(ctx context.Context, userPrompt string, displayPrompt string, reporter engine.Reporter) (*engine.RunResult, error) {
+	return r.runInternal(ctx, userPrompt, displayPrompt, nil, reporter)
 }
 
 // RunRestricted executes one prompt with the tool registry filtered down
@@ -256,10 +262,15 @@ func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engin
 //
 // allowedTools must be non-empty; pass nil/empty to Run instead.
 func (r *AgentRunner) RunRestricted(ctx context.Context, userPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, allowedTools, reporter)
+	return r.runInternal(ctx, userPrompt, "", allowedTools, reporter)
 }
 
-func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
+// RunRestrictedWithDisplay is the restricted variant of RunWithDisplay.
+func (r *AgentRunner) RunRestrictedWithDisplay(ctx context.Context, userPrompt string, displayPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
+	return r.runInternal(ctx, userPrompt, displayPrompt, allowedTools, reporter)
+}
+
+func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displayPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
 	r.runMu.Lock()
 	defer r.runMu.Unlock()
 
@@ -336,6 +347,7 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, allowe
 			ProviderProtocol:  providerProtocol,
 			Model:             model,
 			Checkpointer:      cp,
+			DisplayPrompt:     displayPrompt,
 			OnUserMessageID:   setCurrentMessageID,
 			OnToolCalled:      r.conditionalActivationHook(),
 			NextTurnReminders: r.drainPendingActivations,
@@ -507,7 +519,7 @@ func (r *AgentRunner) ProjectInputHistory(limit int) ([]string, error) {
 			if msg.Role != schema.RoleUser || msg.ToolCallID != "" {
 				continue
 			}
-			text := strings.TrimSpace(msg.Content)
+			text := strings.TrimSpace(record.HumanContent())
 			if text == "" || isCompactionSummaryPrompt(text) {
 				continue
 			}

@@ -1955,7 +1955,7 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	default:
 		if pc, args, ok := m.lookupPromptCommand(text); ok {
-			return m.executePromptCommand(pc, args)
+			return m.executePromptCommand(pc, args, text)
 		}
 		m.appendEntry("error", "unknown command", fmt.Sprintf("Unknown command: %s", cmd), true)
 		m.status = "Unknown command"
@@ -1993,7 +1993,7 @@ func (m Model) openRewindSelector() (tea.Model, tea.Cmd) {
 // Tea event loop. The model is marked `running` immediately and the
 // cancel function is wired up so Ctrl+C aborts the prepare stage as
 // well as the eventual run.
-func (m Model) executePromptCommand(cmd *slash.Command, args string) (tea.Model, tea.Cmd) {
+func (m Model) executePromptCommand(cmd *slash.Command, args string, displayPrompt string) (tea.Model, tea.Cmd) {
 	exec := m.slashExecutor
 	if exec == nil {
 		exec = slash.NewExecutor()
@@ -2006,7 +2006,7 @@ func (m Model) executePromptCommand(cmd *slash.Command, args string) (tea.Model,
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
 	sessionID := m.runner.SessionID()
-	return m, executePromptCommandCmd(runCtx, exec, cmd, args, sessionID)
+	return m, executePromptCommandCmd(runCtx, exec, cmd, args, sessionID, displayPrompt)
 }
 
 // promptCommandReadyMsg is emitted by the executor goroutine once
@@ -2015,15 +2015,16 @@ func (m Model) executePromptCommand(cmd *slash.Command, args string) (tea.Model,
 // whether to start an inline run, render a fork report, or surface an
 // error.
 type promptCommandReadyMsg struct {
-	cmdName string
-	result  slash.ExecutionResult
-	err     error
+	cmdName       string
+	displayPrompt string
+	result        slash.ExecutionResult
+	err           error
 }
 
-func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *slash.Command, args, sessionID string) tea.Cmd {
+func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *slash.Command, args, sessionID, displayPrompt string) tea.Cmd {
 	return func() tea.Msg {
 		res, err := exec.Execute(ctx, cmd, args, sessionID)
-		return promptCommandReadyMsg{cmdName: cmd.Name, result: res, err: err}
+		return promptCommandReadyMsg{cmdName: cmd.Name, displayPrompt: displayPrompt, result: res, err: err}
 	}
 }
 
@@ -2065,14 +2066,17 @@ func (m Model) handlePromptCommandReady(msg promptCommandReadyMsg) (tea.Model, t
 	// The prepare-stage runCtx is no longer relevant — derive a fresh
 	// run context so Ctrl+C cancellation maps to the run, not to the
 	// already-finished prepare phase.
-	return m.runInlinePromptCommand(msg.result)
+	return m.runInlinePromptCommand(msg.result, msg.displayPrompt)
 }
 
-func (m Model) runInlinePromptCommand(result slash.ExecutionResult) (tea.Model, tea.Cmd) {
+func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPrompt string) (tea.Model, tea.Cmd) {
 	text := result.Content
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
-	m.appendEntry("user", "you", text, false)
+	if strings.TrimSpace(displayPrompt) == "" {
+		displayPrompt = text
+	}
+	m.appendEntry("user", "you", displayPrompt, false)
 
 	if len(result.AllowedTools) > 0 {
 		rr, ok := m.runner.(restrictedRunner)
@@ -2086,10 +2090,10 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult) (tea.Model, 
 		}
 		m.status = "Running (restricted)"
 		allowedCopy := append([]string(nil), result.AllowedTools...)
-		return m, runRestrictedPromptCmd(runCtx, rr, text, allowedCopy, result.AfterHook, m.events)
+		return m, runRestrictedPromptCmd(runCtx, rr, text, displayPrompt, allowedCopy, result.AfterHook, m.events)
 	}
 	m.status = "Running"
-	return m, runPromptCmdWithAfter(runCtx, m.runner, text, result.AfterHook, m.events)
+	return m, runPromptCmdWithAfter(runCtx, m.runner, text, displayPrompt, result.AfterHook, m.events)
 }
 
 // restrictedRunner is the optional interface a Runner implements to
@@ -2100,14 +2104,28 @@ type restrictedRunner interface {
 	RunRestricted(ctx context.Context, prompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error)
 }
 
+type displayRunner interface {
+	RunWithDisplay(ctx context.Context, prompt string, displayPrompt string, reporter engine.Reporter) (*engine.RunResult, error)
+}
+
+type restrictedDisplayRunner interface {
+	RunRestrictedWithDisplay(ctx context.Context, prompt string, displayPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error)
+}
+
 type projectInputHistoryRunner interface {
 	ProjectInputHistory(limit int) ([]string, error)
 }
 
-func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, allowed []string, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, displayPrompt string, allowed []string, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
-		result, err := runner.RunRestricted(ctx, prompt, allowed, reporter)
+		var result *engine.RunResult
+		var err error
+		if displayRunner, ok := runner.(restrictedDisplayRunner); ok && strings.TrimSpace(displayPrompt) != "" {
+			result, err = displayRunner.RunRestrictedWithDisplay(ctx, prompt, displayPrompt, allowed, reporter)
+		} else {
+			result, err = runner.RunRestricted(ctx, prompt, allowed, reporter)
+		}
 		if afterHook != nil {
 			afterHook(ctx)
 		}
@@ -2115,10 +2133,16 @@ func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt
 	}
 }
 
-func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, displayPrompt string, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
-		result, err := runner.Run(ctx, prompt, reporter)
+		var result *engine.RunResult
+		var err error
+		if displayRunner, ok := runner.(displayRunner); ok && strings.TrimSpace(displayPrompt) != "" {
+			result, err = displayRunner.RunWithDisplay(ctx, prompt, displayPrompt, reporter)
+		} else {
+			result, err = runner.Run(ctx, prompt, reporter)
+		}
 		if afterHook != nil {
 			afterHook(ctx)
 		}
@@ -2211,7 +2235,7 @@ func (m *Model) restoreConversation(seq int64, content string) error {
 func messageContentBySeq(records []session.MessageRecord, seq int64) string {
 	for _, record := range records {
 		if record.Seq == seq {
-			return strings.TrimSpace(record.Message.Content)
+			return strings.TrimSpace(record.HumanContent())
 		}
 	}
 	return ""
@@ -2408,13 +2432,14 @@ func entriesFromMessageHistory(records []session.MessageRecord) []entry {
 		when := historyEntryTime(record.Time)
 		switch {
 		case msg.Role == schema.RoleUser && msg.ToolCallID == "":
-			if !isRenderableHistoryContent(msg.Content) {
+			content := record.HumanContent()
+			if !isRenderableHistoryContent(content) {
 				continue
 			}
 			entries = append(entries, entry{
 				role:  "user",
 				title: "you",
-				body:  msg.Content,
+				body:  content,
 				time:  when,
 			})
 		case msg.Role == schema.RoleAssistant:
@@ -2455,10 +2480,11 @@ func inputHistoryFromMessageHistory(records []session.MessageRecord) []string {
 	history := make([]string, 0, len(records))
 	for _, record := range records {
 		msg := record.Message
-		if msg.Role != schema.RoleUser || msg.ToolCallID != "" || !isRenderableHistoryContent(msg.Content) {
+		content := record.HumanContent()
+		if msg.Role != schema.RoleUser || msg.ToolCallID != "" || !isRenderableHistoryContent(content) {
 			continue
 		}
-		text := strings.TrimSpace(msg.Content)
+		text := strings.TrimSpace(content)
 		if len(history) > 0 && history[len(history)-1] == text {
 			continue
 		}
