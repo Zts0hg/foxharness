@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,15 +21,26 @@ const (
 // MessageRecord is one line in messages.jsonl. It stores raw model-visible
 // messages at session scope so future runs can continue from original context.
 type MessageRecord struct {
-	Seq     int64          `json:"seq"`
-	RunID   string         `json:"run_id"`
-	Time    time.Time      `json:"time"`
-	Kind    string         `json:"kind,omitempty"`
-	Message schema.Message `json:"message"`
+	Seq            int64          `json:"seq"`
+	RunID          string         `json:"run_id"`
+	Time           time.Time      `json:"time"`
+	Kind           string         `json:"kind,omitempty"`
+	Message        schema.Message `json:"message"`
+	DisplayContent string         `json:"display_content,omitempty"`
 
 	IsMeta                    bool `json:"is_meta,omitempty"`
 	IsCompactSummary          bool `json:"is_compact_summary,omitempty"`
 	IsVisibleInTranscriptOnly bool `json:"is_visible_in_transcript_only,omitempty"`
+}
+
+// HumanContent returns the user-facing text for this record. It preserves the
+// model-visible message content for old records and for messages that do not
+// need a separate display form.
+func (r MessageRecord) HumanContent() string {
+	if strings.TrimSpace(r.DisplayContent) != "" {
+		return r.DisplayContent
+	}
+	return r.Message.Content
 }
 
 // MessageLog manages a session's raw model-visible message history.
@@ -50,9 +62,19 @@ func (l *MessageLog) Append(runID string, msg schema.Message) (int64, error) {
 	return l.AppendKind(runID, MessageKindNormal, msg)
 }
 
+// AppendWithDisplay records a normal model-visible message with an optional
+// human-facing display form.
+func (l *MessageLog) AppendWithDisplay(runID string, msg schema.Message, displayContent string) (int64, error) {
+	return l.appendRecord(runID, MessageKindNormal, msg, displayContent)
+}
+
 // AppendKind records a model-visible message with a specific kind and returns
 // its assigned sequence number.
 func (l *MessageLog) AppendKind(runID, kind string, msg schema.Message) (int64, error) {
+	return l.appendRecord(runID, kind, msg, "")
+}
+
+func (l *MessageLog) appendRecord(runID, kind string, msg schema.Message, displayContent string) (int64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -70,11 +92,12 @@ func (l *MessageLog) AppendKind(runID, kind string, msg schema.Message) (int64, 
 	defer f.Close()
 
 	line, err := json.Marshal(MessageRecord{
-		Seq:     seq,
-		RunID:   runID,
-		Time:    time.Now(),
-		Kind:    kind,
-		Message: msg,
+		Seq:            seq,
+		RunID:          runID,
+		Time:           time.Now(),
+		Kind:           kind,
+		Message:        msg,
+		DisplayContent: strings.TrimSpace(displayContent),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("序列化消息日志失败: %w", err)

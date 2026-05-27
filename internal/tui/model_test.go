@@ -523,6 +523,32 @@ func TestModelRestoresVisibleHistoryAndInputHistory(t *testing.T) {
 	}
 }
 
+func TestModelRestoresDisplayContentForPromptCommands(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		{
+			Seq:            0,
+			RunID:          "run-1",
+			DisplayContent: "/review pr-9",
+			Message:        schema.Message{Role: schema.RoleUser, Content: "Review: pr-9"},
+		},
+		historyRecord(1, "run-1", schema.Message{Role: schema.RoleAssistant, Content: "done"}),
+	}
+
+	m := NewModel(context.Background(), runner, Config{})
+	if !entriesContain(m.entries, "user", "/review pr-9") {
+		t.Fatalf("restored entries missing display content: %#v", m.entries)
+	}
+	if entriesContain(m.entries, "user", "Review: pr-9") {
+		t.Fatalf("restored entries rendered model content: %#v", m.entries)
+	}
+
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != "/review pr-9" {
+		t.Fatalf("restored input history = %q, want original command", got)
+	}
+}
+
 func TestModelRestoresToolHistoryWhenAvailable(t *testing.T) {
 	runner := newFakeRunner()
 	runner.history = []session.MessageRecord{

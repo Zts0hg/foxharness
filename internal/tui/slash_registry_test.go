@@ -115,6 +115,25 @@ func TestModel_FileBasedCommand_DispatchesThroughExecutor(t *testing.T) {
 	}
 }
 
+func TestModel_FileBasedCommand_RendersOriginalInput(t *testing.T) {
+	runner := newFakeRunner()
+	registry := newRegistryWithPromptCommand(t, "review", "Review: $ARGUMENTS")
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, slash.NewExecutor())
+
+	m, _ = update(t, m, keyRunes("/review pr-9"))
+	m = drivePromptCommand(t, m)
+
+	if len(runner.runs) != 1 || runner.runs[0] != "Review: pr-9" {
+		t.Fatalf("runner.runs = %#v, want expanded prompt", runner.runs)
+	}
+	if !entriesContain(m.entries, "user", "/review pr-9") {
+		t.Fatalf("entries missing original command: %#v", m.entries)
+	}
+	if entriesContain(m.entries, "user", "Review: pr-9") {
+		t.Fatalf("entries rendered expanded prompt instead of original command: %#v", m.entries)
+	}
+}
+
 func TestModel_PromptCommand_PrepareStageIsAsync(t *testing.T) {
 	// While the exec.Execute closure is pending (we have not yet
 	// invoked its tea.Cmd), runner.Run must NOT have fired and the

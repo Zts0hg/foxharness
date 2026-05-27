@@ -362,6 +362,82 @@ func TestAgentRunnerMessageHistory(t *testing.T) {
 	}
 }
 
+func TestAgentRunnerRunWithDisplayPersistsHumanPrompt(t *testing.T) {
+	ctx := context.Background()
+	workDir := t.TempDir()
+	store := memory.NewStore(workDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	provider := &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})}
+	runner := &AgentRunner{
+		workDir:        workDir,
+		model:          "fake-model",
+		enableThinking: false,
+		enablePlanMode: false,
+		maxTurns:       3,
+		store:          store,
+		manager:        manager,
+		llmProvider:    provider,
+		currentSession: sess,
+	}
+
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := runner.RunWithDisplay(ctx, "Review: pr-9", "/review pr-9", nil)
+		runDone <- err
+	}()
+	select {
+	case <-provider.entered:
+	case <-time.After(time.Second):
+		t.Fatal("RunWithDisplay did not reach model call")
+	}
+	close(provider.release)
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("RunWithDisplay() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunWithDisplay did not finish")
+	}
+
+	records, err := runner.MessageHistory()
+	if err != nil {
+		t.Fatalf("MessageHistory() error = %v", err)
+	}
+	if len(records) < 1 {
+		t.Fatalf("MessageHistory() = %#v, want user record", records)
+	}
+	if got := records[0].Message.Content; got != "Review: pr-9" {
+		t.Fatalf("model content = %q, want expanded prompt", got)
+	}
+	if got := records[0].DisplayContent; got != "/review pr-9" {
+		t.Fatalf("display content = %q, want original command", got)
+	}
+	if messages, err := session.NewMessageLog(sess).LoadMessages(); err != nil {
+		t.Fatalf("LoadMessages() error = %v", err)
+	} else if len(messages) < 1 || messages[0].Content != "Review: pr-9" {
+		t.Fatalf("LoadMessages() = %#v, want model-visible expanded prompt", messages)
+	}
+	transcript, err := os.ReadFile(sess.TranscriptPath())
+	if err != nil {
+		t.Fatalf("ReadFile(transcript) error = %v", err)
+	}
+	if !strings.Contains(string(transcript), `"prompt":"/review pr-9"`) ||
+		!strings.Contains(string(transcript), `"model_prompt":"Review: pr-9"`) {
+		t.Fatalf("transcript missing display/model prompt split: %s", transcript)
+	}
+}
+
 func TestAgentRunnerProjectInputHistoryFiltersAndOrdersProjectPrompts(t *testing.T) {
 	workDir := t.TempDir()
 	manager := session.NewManagerWithHome(workDir, t.TempDir())
@@ -394,7 +470,12 @@ func TestAgentRunnerProjectInputHistoryFiltersAndOrdersProjectPrompts(t *testing
 	writeProjectHistoryRecords(t, other, []session.MessageRecord{
 		projectHistoryRecord(0, base.Add(1*time.Minute), schema.Message{Role: schema.RoleUser, Content: "other older"}),
 		projectHistoryRecord(1, base.Add(2*time.Minute), schema.Message{Role: schema.RoleAssistant, Content: "assistant ignored"}),
-		projectHistoryRecord(2, base.Add(3*time.Minute), schema.Message{Role: schema.RoleUser, Content: "other newest"}),
+		{
+			Seq:            2,
+			Time:           base.Add(3 * time.Minute),
+			DisplayContent: "/review pr-9",
+			Message:        schema.Message{Role: schema.RoleUser, Content: "Review: pr-9"},
+		},
 	})
 	writeProjectHistoryRecords(t, feishu, []session.MessageRecord{
 		projectHistoryRecord(0, base.Add(20*time.Minute), schema.Message{Role: schema.RoleUser, Content: "feishu ignored"}),
@@ -411,7 +492,7 @@ func TestAgentRunnerProjectInputHistoryFiltersAndOrdersProjectPrompts(t *testing
 	if err != nil {
 		t.Fatalf("ProjectInputHistory() error = %v", err)
 	}
-	want := []string{"other older", "other newest", "current older", "current newest"}
+	want := []string{"other older", "/review pr-9", "current older", "current newest"}
 	if strings.Join(history, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("ProjectInputHistory() = %#v, want %#v", history, want)
 	}

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"sync"
@@ -357,7 +358,15 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		markRunError(wrapped)
 		return nil, wrapped
 	}
-	_ = transcript.AppendRun(run.ID, "user_prompt", map[string]string{"prompt": userPrompt})
+	displayPrompt := strings.TrimSpace(e.config.DisplayPrompt)
+	if displayPrompt == "" {
+		displayPrompt = userPrompt
+	}
+	promptPayload := map[string]string{"prompt": displayPrompt}
+	if displayPrompt != userPrompt {
+		promptPayload["model_prompt"] = userPrompt
+	}
+	_ = transcript.AppendRun(run.ID, "user_prompt", promptPayload)
 
 	systemPrompt, err := e.composer.Compose(userPrompt)
 	if err != nil {
@@ -370,7 +379,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		Role:    schema.RoleUser,
 		Content: userPrompt,
 	}
-	userSeq, err := messageLog.Append(run.ID, userMessage)
+	userSeq, err := messageLog.AppendWithDisplay(run.ID, userMessage, e.config.DisplayPrompt)
 	if err != nil {
 		wrapped := fmt.Errorf("写入 Session 用户消息失败: %w", err)
 		markRunError(wrapped)
