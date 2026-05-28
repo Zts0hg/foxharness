@@ -984,8 +984,8 @@ func TestModelMouseWheelScrollsTranscript(t *testing.T) {
 	m := NewModel(context.Background(), runner, Config{})
 
 	m, _ = update(t, m, tea.MouseMsg{Button: tea.MouseButtonWheelUp})
-	if m.scrollOffset != 1 {
-		t.Fatalf("scrollOffset after wheel up = %d, want 1", m.scrollOffset)
+	if m.scrollOffset != 3 {
+		t.Fatalf("scrollOffset after wheel up = %d, want 3", m.scrollOffset)
 	}
 
 	m, _ = update(t, m, tea.MouseMsg{Button: tea.MouseButtonWheelDown})
@@ -1166,8 +1166,8 @@ func TestFragmentedSGRMousePayloadScrollsTranscript(t *testing.T) {
 	m := NewModel(context.Background(), runner, Config{})
 
 	m, _ = update(t, m, keyRunes("[<64;57;23M"))
-	if m.scrollOffset != 1 {
-		t.Fatalf("scrollOffset after fragmented wheel up = %d, want 1", m.scrollOffset)
+	if m.scrollOffset != 3 {
+		t.Fatalf("scrollOffset after fragmented wheel up = %d, want 3", m.scrollOffset)
 	}
 
 	m, _ = update(t, m, keyRunes("[<65;72;19M"))
@@ -1176,8 +1176,8 @@ func TestFragmentedSGRMousePayloadScrollsTranscript(t *testing.T) {
 	}
 
 	m, _ = update(t, m, keyRunes("[<80;57;23M"))
-	if m.scrollOffset != 1 {
-		t.Fatalf("scrollOffset after modified wheel up = %d, want 1", m.scrollOffset)
+	if m.scrollOffset != 9 {
+		t.Fatalf("scrollOffset after modified wheel up = %d, want 9", m.scrollOffset)
 	}
 }
 
@@ -1187,8 +1187,8 @@ func TestFragmentedSGRMousePayloadHandlesBatchedTails(t *testing.T) {
 
 	m, _ = update(t, m, keyRunes("[<64;57;23M[<64;58;23M"))
 
-	if m.scrollOffset != 2 {
-		t.Fatalf("scrollOffset after batched wheel tails = %d, want 2", m.scrollOffset)
+	if m.scrollOffset != 9 {
+		t.Fatalf("scrollOffset after batched wheel tails = %d, want 9", m.scrollOffset)
 	}
 	if got := string(m.input); got != "" {
 		t.Fatalf("input after batched mouse tails = %q, want empty", got)
@@ -1208,8 +1208,8 @@ func TestSplitFragmentedSGRMousePayloadDoesNotEnterInput(t *testing.T) {
 	if got := string(m.input); got != "draft" {
 		t.Fatalf("input after split mouse payload = %q, want draft", got)
 	}
-	if m.scrollOffset != 1 {
-		t.Fatalf("scrollOffset after split wheel up = %d, want 1", m.scrollOffset)
+	if m.scrollOffset != 3 {
+		t.Fatalf("scrollOffset after split wheel up = %d, want 3", m.scrollOffset)
 	}
 	if strings.Contains(m.status, "Esc again") || strings.Contains(m.status, "Press Esc again") {
 		t.Fatalf("status = %q, want no esc prompt", m.status)
@@ -1249,8 +1249,8 @@ func TestPartialMouseTailWithoutEscCompletesOrFlushes(t *testing.T) {
 	if got := string(m.input); got != "" {
 		t.Fatalf("input after completed partial mouse tail = %q, want empty", got)
 	}
-	if m.scrollOffset != 1 {
-		t.Fatalf("scrollOffset after completed partial wheel up = %d, want 1", m.scrollOffset)
+	if m.scrollOffset != 3 {
+		t.Fatalf("scrollOffset after completed partial wheel up = %d, want 3", m.scrollOffset)
 	}
 
 	m, cmd = update(t, m, keyRunes("["))
@@ -2635,8 +2635,8 @@ func TestModelMouseWheelScrollsSidebarPlan(t *testing.T) {
 
 	x, y := sidebarPoint(t, m, 1)
 	m, _ = update(t, m, tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonWheelDown})
-	if m.sidebarScrollOffsets[1] != 1 {
-		t.Fatalf("plan sidebar offset after wheel down = %d, want 1", m.sidebarScrollOffsets[1])
+	if m.sidebarScrollOffsets[1] != 3 {
+		t.Fatalf("plan sidebar offset after wheel down = %d, want 3", m.sidebarScrollOffsets[1])
 	}
 	if m.sidebarScrollOffsets[0] != 0 || m.sidebarScrollOffsets[2] != 0 {
 		t.Fatalf("scrolling plan should not affect other sidebar offsets: %#v", m.sidebarScrollOffsets)
@@ -2646,7 +2646,7 @@ func TestModelMouseWheelScrollsSidebarPlan(t *testing.T) {
 	if strings.Contains(plainView, "plan line 01") {
 		t.Fatalf("scrolled sidebar plan should hide the first line:\n%s", plainView)
 	}
-	if !strings.Contains(plainView, "plan line 03") {
+	if !strings.Contains(plainView, "plan line 04") {
 		t.Fatalf("scrolled sidebar plan should show later content:\n%s", plainView)
 	}
 }
@@ -2723,8 +2723,8 @@ func TestFragmentedMousePayloadScrollsSidebarPlan(t *testing.T) {
 	payload := fmt.Sprintf("[<65;%d;%dM", x+1, y+1)
 	m, _ = update(t, m, keyRunes(payload))
 
-	if m.sidebarScrollOffsets[1] != 1 {
-		t.Fatalf("plan sidebar offset after fragmented wheel down = %d, want 1", m.sidebarScrollOffsets[1])
+	if m.sidebarScrollOffsets[1] != 3 {
+		t.Fatalf("plan sidebar offset after fragmented wheel down = %d, want 3", m.sidebarScrollOffsets[1])
 	}
 	if got := string(m.input); got != "" {
 		t.Fatalf("input after fragmented sidebar wheel = %q, want empty", got)
@@ -2898,8 +2898,8 @@ func TestModelMouseWheelLeftSideStillScrollsTranscript(t *testing.T) {
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 
 	m, _ = update(t, m, tea.MouseMsg{X: 0, Y: 0, Button: tea.MouseButtonWheelUp})
-	if m.scrollOffset != 1 {
-		t.Fatalf("left-side wheel should scroll transcript offset = %d, want 1", m.scrollOffset)
+	if m.scrollOffset != 3 {
+		t.Fatalf("left-side wheel should scroll transcript offset = %d, want 3", m.scrollOffset)
 	}
 	if m.sidebarScrollOffsets != [sidebarDocumentCount]int{} {
 		t.Fatalf("left-side wheel should not scroll sidebar offsets: %#v", m.sidebarScrollOffsets)
@@ -3090,6 +3090,7 @@ func TestModelRunningTickRefreshesSidebarDocuments(t *testing.T) {
 	}
 
 	writeTestFile(t, sessionDir, "PLAN.md", "new plan from disk")
+	m.spinnerFrame = 3 // next tick increments to 4, triggering sidebar reload
 	m, cmd := update(t, m, runningTickMsg{})
 	if cmd == nil {
 		t.Fatalf("running tick did not schedule another tick")
@@ -3119,6 +3120,7 @@ func TestModelRunningTickClampsShortenedSidebarDocument(t *testing.T) {
 	}
 
 	writeTestFile(t, sessionDir, "PLAN.md", "short plan")
+	m.spinnerFrame = 3 // next tick increments to 4, triggering sidebar reload
 	m, _ = update(t, m, runningTickMsg{})
 	if m.sidebarScrollOffsets[1] != 0 {
 		t.Fatalf("shortened plan offset = %d, want clamped 0", m.sidebarScrollOffsets[1])

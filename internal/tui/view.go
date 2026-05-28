@@ -302,7 +302,19 @@ func contextUsageStyle(percent int) lipgloss.Style {
 }
 
 func (m Model) renderBody(width int, height int) string {
-	layout := m.transcriptLayout(width, height)
+	var layout transcriptLayout
+	if m.cachedLayout != nil {
+		layout = *m.cachedLayout
+		visible := max(height-bodyStyle.GetVerticalFrameSize(), 1)
+		start := len(layout.styledLines) - visible - m.scrollOffset
+		if start < 0 {
+			start = 0
+		}
+		layout.visibleStart = start
+		layout.visibleEnd = min(start+visible, len(layout.styledLines))
+	} else {
+		layout = m.transcriptLayout(width, height)
+	}
 	lines := append([]string(nil), layout.styledLines[layout.visibleStart:layout.visibleEnd]...)
 	m.applySelectionHighlight(lines, layout.visibleStart, selectionAreaTranscript)
 	view := strings.Join(lines, "\n")

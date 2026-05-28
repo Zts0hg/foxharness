@@ -173,16 +173,21 @@ type Model struct {
 	spinnerFrame       int
 	scrollOffset       int
 	toolOutputExpanded bool
-	cancelRun          context.CancelFunc
-	lastCtrlC          time.Time
-	lastEsc            time.Time
-	lastEscAction      escAction
-	pendingEsc         time.Time
-	pendingEscID       uint64
-	mouseTail          []rune
-	mouseTailEsc       bool
-	mouseTailID        uint64
-	selection          selectionState
+
+	cachedLayout  *transcriptLayout
+	lastWheelTime time.Time
+	wheelSpeed    int
+
+	cancelRun     context.CancelFunc
+	lastCtrlC     time.Time
+	lastEsc       time.Time
+	lastEscAction escAction
+	pendingEsc    time.Time
+	pendingEscID  uint64
+	mouseTail     []rune
+	mouseTailEsc  bool
+	mouseTailID   uint64
+	selection     selectionState
 
 	sessionID    string
 	modelName    string
@@ -323,6 +328,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampSidebarScrollOffsets()
 		m.status = "New session ready"
 		m.entries = nil
+		m.cachedLayout = nil
 		m.inputHistory = projectInputHistoryOrFallback(m.runner, m.inputHistory)
 		m.queuedPrompts = nil
 		m.resetHistoryNavigation()
@@ -337,7 +343,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case runningTickMsg:
 		m.spinnerFrame++
-		m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
+		if m.spinnerFrame%4 == 0 {
+			m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
+		}
 		m.clampSidebarScrollOffsets()
 		return m, runningTickCmd()
 
@@ -365,6 +373,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.cachedLayout == nil {
+		_, bodyHeight := m.contentDimensions()
+		layout := m.transcriptLayout(m.chatWidth(), bodyHeight)
+		m.cachedLayout = &layout
+	}
 	if m.selection.dragging && !isWheelMouse(msg) {
 		if m.selection.area == selectionAreaSidebar {
 			next, _ := m.handleSidebarSelectionMouse(msg)
@@ -375,11 +388,13 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if sidebarIndex, ok := m.sidebarIndexAt(msg.X, msg.Y); ok {
+		var delta int
+		m, delta = m.wheelScrollDelta()
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
-			m.sidebarScrollOffsets[sidebarIndex] -= scrollDelta("wheelup")
+			m.sidebarScrollOffsets[sidebarIndex] -= delta
 		case tea.MouseButtonWheelDown:
-			m.sidebarScrollOffsets[sidebarIndex] += scrollDelta("wheeldown")
+			m.sidebarScrollOffsets[sidebarIndex] += delta
 		}
 		m.clampSidebarScrollOffsets()
 		if next, ok := m.handleSidebarSelectionMouse(msg); ok {
@@ -392,13 +407,17 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return next, nil
 	}
 
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		m.scrollOffset += scrollDelta("wheelup")
-	case tea.MouseButtonWheelDown:
-		m.scrollOffset -= scrollDelta("wheeldown")
-		if m.scrollOffset < 0 {
-			m.scrollOffset = 0
+	{
+		var delta int
+		m, delta = m.wheelScrollDelta()
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.scrollOffset += delta
+		case tea.MouseButtonWheelDown:
+			m.scrollOffset -= delta
+			if m.scrollOffset < 0 {
+				m.scrollOffset = 0
+			}
 		}
 	}
 	return m, nil
@@ -516,7 +535,19 @@ func (m Model) handleSidebarSelectionMouse(msg tea.MouseMsg) (Model, bool) {
 
 func (m Model) transcriptPointAt(x int, y int, clamp bool) (selectionPoint, bool) {
 	_, bodyHeight := m.contentDimensions()
-	layout := m.transcriptLayout(m.chatWidth(), bodyHeight)
+	var layout transcriptLayout
+	if m.cachedLayout != nil {
+		layout = *m.cachedLayout
+		visible := max(bodyHeight-bodyStyle.GetVerticalFrameSize(), 1)
+		start := len(layout.styledLines) - visible - m.scrollOffset
+		if start < 0 {
+			start = 0
+		}
+		layout.visibleStart = start
+		layout.visibleEnd = min(start+visible, len(layout.styledLines))
+	} else {
+		layout = m.transcriptLayout(m.chatWidth(), bodyHeight)
+	}
 	if len(layout.plainLines) == 0 || layout.visibleEnd <= layout.visibleStart {
 		return selectionPoint{}, false
 	}
@@ -815,6 +846,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toggleSidebarFocus(), nil
 	case "ctrl+o":
 		m.toolOutputExpanded = !m.toolOutputExpanded
+		m.cachedLayout = nil
 		if m.toolOutputExpanded {
 			m.status = "Tool output expanded"
 		} else {
@@ -1887,6 +1919,7 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "/clear":
 		m.entries = nil
+		m.cachedLayout = nil
 		m.status = "Transcript cleared"
 		m.scrollOffset = 0
 		return m, nil
@@ -2229,6 +2262,7 @@ func (m *Model) restoreConversation(seq int64, content string) error {
 		return err
 	}
 	m.entries = entriesFromMessageHistory(records)
+	m.cachedLayout = nil
 	if len(m.entries) == 0 {
 		m.entries = []entry{sessionStartedEntry()}
 	}
@@ -2534,6 +2568,7 @@ func (m *Model) appendEntry(role, title, body string, isError bool) {
 		err:   isError,
 		time:  time.Now(),
 	})
+	m.cachedLayout = nil
 }
 
 func (m *Model) appendCommandEntry(title, body string) {
@@ -2584,6 +2619,18 @@ func (m Model) runningElapsed() time.Duration {
 		return 0
 	}
 	return elapsed
+}
+
+func (m Model) wheelScrollDelta() (Model, int) {
+	now := m.now()
+	const base = 3
+	if m.wheelSpeed > 0 && now.Sub(m.lastWheelTime) < 100*time.Millisecond {
+		m.wheelSpeed = min(m.wheelSpeed+1, 6)
+	} else {
+		m.wheelSpeed = 1
+	}
+	m.lastWheelTime = now
+	return m, base * m.wheelSpeed
 }
 
 func scrollDelta(key string) int {
