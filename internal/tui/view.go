@@ -1333,10 +1333,10 @@ func formatDuration(d time.Duration) string {
 	minutes := (total % 3600) / 60
 	seconds := total % 60
 	if hours > 0 {
-		return fmt.Sprintf("%dh%dm%ds", hours, minutes, seconds)
+		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
 	}
 	if minutes > 0 {
-		return fmt.Sprintf("%dm%ds", minutes, seconds)
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
 	}
 	return fmt.Sprintf("%ds", seconds)
 }

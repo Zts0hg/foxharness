@@ -3221,7 +3221,7 @@ func TestModelViewShowsRunningNoticeAboveInput(t *testing.T) {
 	m.runStartedAt = current.Add(-(2*time.Hour + 3*time.Minute + 4*time.Second))
 
 	view := m.View()
-	if !strings.Contains(view, "[ WORKING ] 2h3m4s • esc to interrupt") {
+	if !strings.Contains(view, "[ WORKING ] 2h 3m 4s • esc to interrupt") {
 		t.Fatalf("view missing running notice:\n%s", view)
 	}
 	if strings.Contains(view, "› [ WORKING ]") {
@@ -3249,8 +3249,8 @@ func TestModelViewShowsRunningNoticeAboveInput(t *testing.T) {
 
 func TestFormatDurationDoesNotPadSingleDigitUnits(t *testing.T) {
 	got := formatDuration(time.Minute + 4*time.Second)
-	if got != "1m4s" {
-		t.Fatalf("formatDuration(1m4s) = %q, want 1m4s", got)
+	if got != "1m 4s" {
+		t.Fatalf("formatDuration(1m4s) = %q, want 1m 4s", got)
 	}
 }
 
