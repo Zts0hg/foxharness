@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
@@ -69,6 +70,9 @@ type AgentRunner struct {
 
 	pendingMu          sync.Mutex
 	pendingActivations []string
+
+	contextUsedTokens   int64
+	contextWindowTokens int64
 }
 
 func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
@@ -351,6 +355,10 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 			OnUserMessageID:   setCurrentMessageID,
 			OnToolCalled:      r.conditionalActivationHook(),
 			NextTurnReminders: r.drainPendingActivations,
+			OnContextEstimate: func(usedTokens, contextWindow int) {
+				atomic.StoreInt64(&r.contextUsedTokens, int64(usedTokens))
+				atomic.StoreInt64(&r.contextWindowTokens, int64(contextWindow))
+			},
 		},
 	)
 	compCfg := compaction.DefaultCompactionConfig()
@@ -455,21 +463,30 @@ func (r *AgentRunner) SetModel(model string) error {
 }
 
 func (r *AgentRunner) ContextUsage() string {
+	used := atomic.LoadInt64(&r.contextUsedTokens)
+	window := atomic.LoadInt64(&r.contextWindowTokens)
+	if used > 0 && window > 0 {
+		return formatContextUsage(int(used), int(window))
+	}
+
 	r.mu.Lock()
 	sess := r.currentSession
+	model := r.model
 	r.mu.Unlock()
 	if sess == nil {
 		return "unknown"
 	}
 
-	messages, err := session.NewMessageLog(sess).LoadMessages()
+	contextWindow := compaction.NewModelRegistry().Lookup(model)
+	records, err := session.NewMessageLog(sess).LoadRecords()
 	if err != nil {
 		log.Printf("[Runner] 读取 Session 上下文使用量失败: %v", err)
 		return "unknown"
 	}
-	used := compaction.ImprovedRoughEstimator{}.Estimate(messages)
-	contextWindow := compaction.NewModelRegistry().Lookup(r.model)
-	return formatContextUsage(used, contextWindow)
+	state, _ := session.LoadCompactState(sess)
+	estimator := compaction.NewHybridEstimator(compaction.ImprovedRoughEstimator{})
+	messages := projectedMessages(state, records)
+	return formatContextUsage(estimator.Estimate(messages), contextWindow)
 }
 
 func (r *AgentRunner) MessageHistory() ([]session.MessageRecord, error) {
@@ -725,6 +742,38 @@ func checkpointDisabledFromEnv() bool {
 	default:
 		return false
 	}
+}
+
+// projectedMessages reconstructs the message list the engine would see after
+// applying the persisted CompactState. Messages covered by the compaction are
+// replaced with the stored summary, matching the projection in
+// engine.projectedContext.
+func projectedMessages(state *session.CompactState, records []session.MessageRecord) []schema.Message {
+	coveredUntil := int64(-1)
+	hasSummary := false
+	if state != nil && state.Summary != "" {
+		coveredUntil = state.CoveredUntilSeq
+		hasSummary = true
+	}
+
+	var active []session.MessageRecord
+	for _, rec := range records {
+		if rec.Seq > coveredUntil {
+			active = append(active, rec)
+		}
+	}
+
+	messages := make([]schema.Message, 0, len(active)+1)
+	if hasSummary {
+		messages = append(messages, schema.Message{
+			Role:    schema.RoleUser,
+			Content: state.Summary,
+		})
+	}
+	for _, rec := range active {
+		messages = append(messages, rec.Message)
+	}
+	return messages
 }
 
 func formatContextUsage(used int, maxTokens int) string {

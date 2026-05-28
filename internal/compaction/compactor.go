@@ -202,6 +202,18 @@ func (c *Compactor) RecentKeep() int {
 	return c.config.RecentKeep
 }
 
+// ContextWindow returns the raw context window size in tokens before any
+// threshold buffers are applied.
+func (c *Compactor) ContextWindow() int {
+	return c.thresholds.ContextWindow
+}
+
+// BlockingThreshold returns the token count above which the engine must
+// refuse to send a request to the provider without compacting first.
+func (c *Compactor) BlockingThreshold() int {
+	return c.thresholds.Blocking()
+}
+
 // Summarize produces a high-density summary for messages. The full message
 // history is used only to detect the summary language; the actual content
 // summarized is the supplied messages slice.
@@ -306,6 +318,7 @@ func (c *Compactor) MaybeCompact(ctx context.Context, messages []schema.Message)
 	compacted = append(compacted, BoundaryMessage(boundary))
 	compacted = append(compacted, summaryMessage)
 	compacted = append(compacted, recent...)
+	clearStaleUsage(compacted)
 	c.runPostCompactCleanup(used, len(old), compacted)
 	return compacted, nil
 }
@@ -316,6 +329,22 @@ func (c *Compactor) runPostCompactCleanup(preTokens, summarized int, compacted [
 	postTokens := c.Estimate(compacted)
 	log.Printf("[Compactor] summarized %d messages (pre-tokens=%d post-tokens=%d delta=%d)",
 		summarized, preTokens, postTokens, preTokens-postTokens)
+}
+
+// clearStaleUsage nils out the Usage pointer on assistant messages in the
+// compacted output. After compaction the surviving assistant messages still
+// carry Usage data from the pre-compaction API call — those InputTokens
+// reflect the full, uncompacted context. If left in place, HybridEstimator
+// treats them as the "exact" token count and overcounts, causing repeated
+// compaction attempts that can never reduce the estimate. Clearing the
+// pointer forces HybridEstimator to fall back to rough estimation, which
+// correctly reflects the now-smaller message list.
+func clearStaleUsage(messages []schema.Message) {
+	for i := range messages {
+		if messages[i].Role == schema.RoleAssistant && messages[i].Usage != nil {
+			messages[i].Usage = nil
+		}
+	}
 }
 
 func moveSplitToProtocolBoundary(messages []schema.Message, split int, min int) int {

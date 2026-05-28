@@ -362,3 +362,75 @@ func TestEngine_ToolResultPersistence(t *testing.T) {
 		t.Fatalf("preview should be smaller than full output: got %d, full %d", len(toolMsg.Content), len(largeOutput))
 	}
 }
+
+func TestRun_BlocksWhenContextExceedsBlockingThreshold(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("session.Create: %v", err)
+	}
+
+	prov := &usageReportingProvider{content: "done"}
+	reg := tools.NewRegistry()
+	eng := NewAgentEngine(prov, reg, workDir, staticComposer{}, DefaultConfig())
+
+	cfg := compaction.DefaultCompactionConfig()
+	cfg.Model = "test"
+	cfg.ContextWindow = 100
+	cfg.Estimator = compaction.ImprovedRoughEstimator{}
+	c, err := compaction.NewCompactor(prov, cfg)
+	if err != nil {
+		t.Fatalf("NewCompactor: %v", err)
+	}
+	eng.WithCompactor(c)
+
+	longPrompt := strings.Repeat("x", 2000)
+	_, runErr := eng.Run(context.Background(), sess, longPrompt)
+	if runErr == nil {
+		t.Fatalf("expected error when context exceeds blocking threshold")
+	}
+	if !strings.Contains(runErr.Error(), "阻塞阈值") {
+		t.Fatalf("unexpected error message: %v", runErr)
+	}
+}
+
+func TestRun_ReportsContextEstimate(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("session.Create: %v", err)
+	}
+
+	prov := &usageReportingProvider{content: "done"}
+	reg := tools.NewRegistry()
+
+	var gotUsed, gotWindow int
+	cfg := DefaultConfig()
+	cfg.OnContextEstimate = func(usedTokens, contextWindow int) {
+		gotUsed = usedTokens
+		gotWindow = contextWindow
+	}
+
+	eng := NewAgentEngine(prov, reg, workDir, staticComposer{}, cfg)
+	compCfg := compaction.DefaultCompactionConfig()
+	compCfg.Model = "test"
+	compCfg.ContextWindow = 200000
+	c, err := compaction.NewCompactor(prov, compCfg)
+	if err != nil {
+		t.Fatalf("NewCompactor: %v", err)
+	}
+	eng.WithCompactor(c)
+
+	_, runErr := eng.Run(context.Background(), sess, "hello")
+	if runErr != nil {
+		t.Fatalf("Run: %v", runErr)
+	}
+	if gotUsed == 0 {
+		t.Fatalf("OnContextEstimate was not called; gotUsed = 0")
+	}
+	if gotWindow != 200000 {
+		t.Fatalf("OnContextEstimate got contextWindow = %d, want 200000", gotWindow)
+	}
+}

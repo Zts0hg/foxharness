@@ -443,6 +443,48 @@ func (p *capturingProvider) Generate(ctx context.Context, messages []schema.Mess
 	}, nil
 }
 
+func TestMaybeCompact_ClearsStaleUsageOnRecentMessages(t *testing.T) {
+	t.Setenv("FOXHARNESS_DISABLE_COMPACT", "")
+	t.Setenv("FOXHARNESS_DISABLE_AUTO_COMPACT", "")
+	p := &stubProvider{
+		response: &provider.GenerateResponse{
+			Message: &schema.Message{Role: schema.RoleAssistant, Content: "<summary>ok</summary>"},
+		},
+	}
+	c := newTestCompactor(t, p, func(cfg *CompactionConfig) {
+		cfg.RecentKeep = 2
+	})
+
+	messages := []schema.Message{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleUser, Content: "anchor"},
+		{Role: schema.RoleAssistant, Content: "old work", Usage: &schema.Usage{InputTokens: 80000, OutputTokens: 2000}},
+		{Role: schema.RoleUser, Content: "more work"},
+		{Role: schema.RoleAssistant, Content: "recent reply", Usage: &schema.Usage{InputTokens: 90000, OutputTokens: 3000}},
+		{Role: schema.RoleUser, Content: "latest"},
+	}
+	out, err := c.MaybeCompact(context.Background(), messages)
+	if err != nil {
+		t.Fatalf("MaybeCompact: %v", err)
+	}
+
+	for i, msg := range out {
+		if msg.Role == schema.RoleAssistant && msg.Usage != nil {
+			t.Fatalf("compacted message[%d] (role=%s) still has stale Usage data; "+
+				"HybridEstimator would overcount on the next turn", i, msg.Role)
+		}
+	}
+
+	// After clearing Usage, HybridEstimator should fall back to rough
+	// estimation, producing a much lower count than the stale 93000.
+	est := NewHybridEstimator(ImprovedRoughEstimator{})
+	postTokens := est.Estimate(out)
+	staleCount := 90000 + 3000
+	if postTokens >= staleCount {
+		t.Fatalf("post-compaction estimate %d >= stale usage %d; Usage was not cleared", postTokens, staleCount)
+	}
+}
+
 func TestMaybeCompact_SummaryFailureReturnsOriginal(t *testing.T) {
 	t.Setenv("FOXHARNESS_DISABLE_COMPACT", "")
 	t.Setenv("FOXHARNESS_DISABLE_AUTO_COMPACT", "")

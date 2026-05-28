@@ -55,6 +55,13 @@ type Config struct {
 	// composed, so a per-turn drain is the only way to give the model
 	// access to the new skill within the run that activated it.
 	NextTurnReminders func() []string
+
+	// OnContextEstimate is called at the start of each turn with the
+	// estimated token usage and context window size. The TUI uses this
+	// to display accurate context utilization during a run, since the
+	// in-memory context (which may have been compacted) diverges from
+	// the persisted message log.
+	OnContextEstimate func(usedTokens, contextWindow int)
 }
 
 // DefaultConfig returns a Config with sensible defaults.

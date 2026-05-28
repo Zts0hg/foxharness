@@ -455,6 +455,10 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 					reporter.OnCompaction(ctx, "turn_context")
 				}
 			}
+			if e.config.OnContextEstimate != nil {
+				used := e.compactor.Estimate(contextHistory)
+				e.config.OnContextEstimate(used, e.compactor.ContextWindow())
+			}
 		}
 		if e.recovery.ShouldInject() {
 			recoveryPrompt := e.recovery.BuildPrompt()
@@ -546,6 +550,22 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				contextHistory = append(contextHistory, *thinkingResponse)
 			}
 
+		}
+		if e.compactor != nil {
+			used := e.compactor.Estimate(contextHistory)
+			blocking := e.compactor.BlockingThreshold()
+			if used >= blocking {
+				wrapped := fmt.Errorf("上下文 token 数 (%d) 超过阻塞阈值 (%d)，无法继续发送请求", used, blocking)
+				finishTurn("error", map[string]any{"error": wrapped.Error()})
+				markRunError(wrapped)
+				return &RunResult{
+					FinalMessage: final,
+					SessionID:    sess.ID,
+					RunID:        run.ID,
+					MetricsPath:  run.MetricsPath(),
+					TracePath:    run.TracePath(),
+				}, wrapped
+			}
 		}
 		log.Println("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...")
 		actionResponse, err := e.callModel(
