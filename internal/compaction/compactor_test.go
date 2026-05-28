@@ -485,6 +485,80 @@ func TestMaybeCompact_ClearsStaleUsageOnRecentMessages(t *testing.T) {
 	}
 }
 
+func TestCompactor_ToolOverheadReducesThresholds(t *testing.T) {
+	t.Setenv("FOXHARNESS_DISABLE_COMPACT", "")
+	t.Setenv("FOXHARNESS_DISABLE_AUTO_COMPACT", "")
+	p := &stubProvider{}
+	cfg := DefaultCompactionConfig()
+	cfg.Model = "test"
+	cfg.ContextWindow = 128000
+	c, err := NewCompactor(p, cfg)
+	if err != nil {
+		t.Fatalf("NewCompactor: %v", err)
+	}
+
+	baseThreshold := c.Threshold()
+	baseBlocking := c.BlockingThreshold()
+
+	c.SetToolOverhead(50000)
+
+	if got := c.Threshold(); got != baseThreshold-50000 {
+		t.Fatalf("Threshold after SetToolOverhead(50000) = %d, want %d", got, baseThreshold-50000)
+	}
+	if got := c.BlockingThreshold(); got != baseBlocking-50000 {
+		t.Fatalf("BlockingThreshold after SetToolOverhead(50000) = %d, want %d", got, baseBlocking-50000)
+	}
+}
+
+func TestMaybeCompact_TriggersEarlierWithToolOverhead(t *testing.T) {
+	t.Setenv("FOXHARNESS_DISABLE_COMPACT", "")
+	t.Setenv("FOXHARNESS_DISABLE_AUTO_COMPACT", "")
+	p := &stubProvider{
+		response: &provider.GenerateResponse{
+			Message: &schema.Message{Role: schema.RoleAssistant, Content: "<summary>ok</summary>"},
+		},
+	}
+
+	cfg := DefaultCompactionConfig()
+	cfg.Model = "test"
+	cfg.ContextWindow = 128000
+	cfg.RecentKeep = 1
+	c, err := NewCompactor(p, cfg)
+	if err != nil {
+		t.Fatalf("NewCompactor: %v", err)
+	}
+
+	body := strings.Repeat("x", 200000)
+	messages := []schema.Message{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleUser, Content: "anchor"},
+		{Role: schema.RoleAssistant, Content: body},
+		{Role: schema.RoleUser, Content: "recent"},
+	}
+
+	// Without tool overhead: estimate < threshold → no compaction
+	out, err := c.MaybeCompact(context.Background(), messages)
+	if err != nil {
+		t.Fatalf("MaybeCompact: %v", err)
+	}
+	noOverheadCompacted := len(out) != len(messages)
+
+	// With large tool overhead: threshold drops → compaction triggers
+	c.SetToolOverhead(60000)
+	out2, err := c.MaybeCompact(context.Background(), messages)
+	if err != nil {
+		t.Fatalf("MaybeCompact with overhead: %v", err)
+	}
+	withOverheadCompacted := len(out2) != len(messages)
+
+	if noOverheadCompacted {
+		t.Fatalf("expected no compaction without tool overhead")
+	}
+	if !withOverheadCompacted {
+		t.Fatalf("expected compaction WITH tool overhead, but it did not trigger")
+	}
+}
+
 func TestMaybeCompact_SummaryFailureReturnsOriginal(t *testing.T) {
 	t.Setenv("FOXHARNESS_DISABLE_COMPACT", "")
 	t.Setenv("FOXHARNESS_DISABLE_AUTO_COMPACT", "")
