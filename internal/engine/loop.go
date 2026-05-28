@@ -441,7 +441,11 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			turnSpan.End(status, attrs)
 		}
 
+		availableTools := e.registry.GetAvailableTools()
+		toolTokens := estimateToolTokens(estimator, availableTools)
+
 		if e.compactor != nil {
+			e.compactor.SetToolOverhead(toolTokens)
 			compacted, err := e.compactor.MaybeCompact(ctx, contextHistory)
 			if err != nil {
 				log.Printf("[Compactor] 压缩失败，将继续使用原始上下文: %v", err)
@@ -456,7 +460,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				}
 			}
 			if e.config.OnContextEstimate != nil {
-				used := e.compactor.Estimate(contextHistory)
+				used := e.compactor.Estimate(contextHistory) + toolTokens
 				e.config.OnContextEstimate(used, e.compactor.ContextWindow())
 			}
 		}
@@ -519,7 +523,6 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			}
 		}
 
-		availableTools := e.registry.GetAvailableTools()
 		if e.config.EnableThinking {
 			log.Println("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...")
 			if reporter != nil {
@@ -770,6 +773,10 @@ func sameMessages(a, b []schema.Message) bool {
 		return false
 	}
 	return &a[0] == &b[0]
+}
+
+func estimateToolTokens(est metrics.TokenEstimator, tools []schema.ToolDefinition) int {
+	return metrics.EstimateToolDefinitions(est, tools)
 }
 
 func truncateReporterOutput(s string, limit int) string {

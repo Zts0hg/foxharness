@@ -117,8 +117,9 @@ type Compactor struct {
 	disabled     bool
 	autoDisabled bool
 
-	mu         sync.Mutex
-	compacting bool
+	mu           sync.Mutex
+	compacting   bool
+	toolOverhead int
 }
 
 // NewCompactor constructs a Compactor with the supplied provider and
@@ -186,14 +187,31 @@ func (c *Compactor) Estimate(messages []schema.Message) int {
 	return c.estimator.Estimate(messages)
 }
 
+// SetToolOverhead records the estimated token cost of tool definitions so
+// that threshold calculations account for the full prompt size. Tool
+// definitions are sent alongside messages in every API call but are not
+// part of the message history, so the message-based estimator cannot see
+// them. Call this before MaybeCompact each turn with the current tool set.
+func (c *Compactor) SetToolOverhead(tokens int) {
+	c.mu.Lock()
+	c.toolOverhead = tokens
+	c.mu.Unlock()
+}
+
 // Threshold returns the soft token threshold that triggers compaction.
 // When CompactionConfig.AutoCompactThreshold is set (non-zero), that value
 // takes precedence; otherwise the ThresholdConfig-derived value is used.
+// The tool overhead is subtracted so that the message-only estimate is
+// compared against the budget remaining after tool definitions.
 func (c *Compactor) Threshold() int {
+	c.mu.Lock()
+	overhead := c.toolOverhead
+	c.mu.Unlock()
+	base := c.thresholds.AutoCompact()
 	if c.autoCompactThreshold > 0 {
-		return c.autoCompactThreshold
+		base = c.autoCompactThreshold
 	}
-	return c.thresholds.AutoCompact()
+	return base - overhead
 }
 
 // RecentKeep returns the number of recent messages preserved during
@@ -210,8 +228,12 @@ func (c *Compactor) ContextWindow() int {
 
 // BlockingThreshold returns the token count above which the engine must
 // refuse to send a request to the provider without compacting first.
+// Like Threshold, this is reduced by the tool overhead.
 func (c *Compactor) BlockingThreshold() int {
-	return c.thresholds.Blocking()
+	c.mu.Lock()
+	overhead := c.toolOverhead
+	c.mu.Unlock()
+	return c.thresholds.Blocking() - overhead
 }
 
 // Summarize produces a high-density summary for messages. The full message
