@@ -444,6 +444,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		availableTools := e.registry.GetAvailableTools()
 		toolTokens := estimateToolTokens(estimator, availableTools)
 
+		justCompacted := false
 		if e.compactor != nil {
 			e.compactor.SetToolOverhead(toolTokens)
 			compacted, err := e.compactor.MaybeCompact(ctx, contextHistory)
@@ -452,6 +453,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			} else if !sameMessages(compacted, contextHistory) {
 				log.Printf("[Compactor] 上下文已压缩: %d -> %d 条消息（含 boundary + summary）", len(contextHistory), len(compacted))
 				contextHistory = compacted
+				justCompacted = true
 				_ = transcript.AppendRun(run.ID, "context_compacted", map[string]any{
 					"turn": turnCount,
 				})
@@ -554,7 +556,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			}
 
 		}
-		if e.compactor != nil {
+		if e.compactor != nil && !justCompacted {
 			used := e.compactor.Estimate(contextHistory)
 			blocking := e.compactor.BlockingThreshold()
 			if used >= blocking {
@@ -584,11 +586,35 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			contextHistory,
 			availableTools,
 		)
+		if err != nil && e.compactor != nil && provider.IsPromptTooLong(err) {
+			log.Printf("[Engine] API 拒绝请求（prompt 过长），尝试响应式压缩后重试...")
+			reactiveCompacted, compactErr := e.compactor.ForceCompact(ctx, contextHistory)
+			if compactErr != nil {
+				log.Printf("[Compactor] 响应式压缩失败: %v", compactErr)
+			} else if !sameMessages(reactiveCompacted, contextHistory) {
+				contextHistory = reactiveCompacted
+				_ = transcript.AppendRun(run.ID, "context_compacted", map[string]any{
+					"turn":   turnCount,
+					"source": "reactive",
+				})
+				if reporter != nil {
+					reporter.OnCompaction(ctx, "reactive")
+				}
+				actionResponse, err = e.callModel(
+					ctx, sess, recorder, aggregator, estimator, tracer,
+					turnSpan.ID(), turnCount, "action",
+					contextHistory, availableTools,
+				)
+			}
+		}
 		if err != nil {
 			wrapped := fmt.Errorf("模型生成失败: %w", err)
 			finishTurn("error", map[string]any{"error": wrapped.Error()})
 			markRunError(wrapped)
 			return nil, wrapped
+		}
+		if e.compactor != nil && actionResponse.Usage != nil {
+			e.compactor.ResetCircuitBreaker()
 		}
 		contextHistory = append(contextHistory, *actionResponse)
 		if _, err := messageLog.Append(run.ID, *actionResponse); err != nil {

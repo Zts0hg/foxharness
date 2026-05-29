@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -43,6 +44,9 @@ type fakeRunner struct {
 	restoreStateOK  bool
 	restoreStateErr error
 	checkpointer    checkpoint.Checkpointer
+	compactResult   *compaction.CompactResult
+	compactErr      error
+	compactInstr    string
 }
 
 type projectHistoryRunner struct {
@@ -170,6 +174,21 @@ func (r *fakeRunner) PlanMode() bool {
 
 func (r *fakeRunner) SetPlanMode(enabled bool) {
 	r.planMode = enabled
+}
+
+func (r *fakeRunner) CompactNow(ctx context.Context, customInstructions string) (*compaction.CompactResult, error) {
+	r.compactInstr = customInstructions
+	if r.compactErr != nil {
+		return nil, r.compactErr
+	}
+	if r.compactResult != nil {
+		return r.compactResult, nil
+	}
+	return &compaction.CompactResult{
+		PreTokens:          1000,
+		PostTokens:         200,
+		MessagesSummarized: 15,
+	}, nil
 }
 
 type tuiCheckpointer struct {
@@ -672,6 +691,82 @@ func TestModelSlashCommands(t *testing.T) {
 	}
 	if !entriesContain(m.entries, "command", "ID       sess-new") {
 		t.Fatalf("/new did not render switch message: %#v", m.entries)
+	}
+}
+
+func TestModelSlashCommandCompact(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/compact"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatalf("/compact should return a command")
+	}
+	if !m.running {
+		t.Fatalf("model should be in running state during compact")
+	}
+
+	m, _ = update(t, m, cmd())
+	if m.running {
+		t.Fatalf("model should not be running after compact finishes")
+	}
+	if !entriesContain(m.entries, "command", "Summarized 15 messages") {
+		t.Fatalf("/compact did not render result: %#v", m.entries)
+	}
+	if m.status != "Context compacted" {
+		t.Fatalf("status = %q, want 'Context compacted'", m.status)
+	}
+}
+
+func TestModelSlashCommandCompactWithInstructions(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/compact focus on migration"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatalf("/compact should return a command")
+	}
+
+	_ = cmd()
+	if runner.compactInstr != "focus on migration" {
+		t.Fatalf("compactInstr = %q, want 'focus on migration'", runner.compactInstr)
+	}
+}
+
+func TestModelSlashCommandCompactWhileRunning(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.running = true
+
+	m, _ = update(t, m, keyRunes("/compact"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/compact while running should not dispatch a command")
+	}
+	if m.status != "Cannot compact while a run is active" {
+		t.Fatalf("status = %q, want busy message", m.status)
+	}
+}
+
+func TestModelSlashCommandCompactError(t *testing.T) {
+	runner := newFakeRunner()
+	runner.compactErr = errors.New("boom")
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/compact"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatalf("/compact should return a command")
+	}
+
+	m, _ = update(t, m, cmd())
+	if !entriesContain(m.entries, "error", "boom") {
+		t.Fatalf("/compact error not rendered: %#v", m.entries)
+	}
+	if m.status != "Compact failed" {
+		t.Fatalf("status = %q, want 'Compact failed'", m.status)
 	}
 }
 

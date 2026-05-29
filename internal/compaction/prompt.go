@@ -46,12 +46,18 @@ func DetectSummaryLanguage(messages []schema.Message) string {
 // BuildCompactPrompt constructs the structured 9-section summary prompt for
 // the supplied messages and target language. The prompt always includes
 // NoToolsPreamble and NoToolsTrailer so the LLM cannot escape the no-tool
-// constraint at the protocol level.
-func BuildCompactPrompt(messages []schema.Message, language string) string {
+// constraint at the protocol level. When customInstructions is non-empty, an
+// "Additional Instructions" section is appended to guide the summarization.
+func BuildCompactPrompt(messages []schema.Message, language string, customInstructions string) string {
 	body := renderMessagesForSummary(messages)
 	languageName := "English"
 	if language == LanguageChinese {
 		languageName = "Chinese (中文)"
+	}
+
+	var instructionBlock string
+	if strings.TrimSpace(customInstructions) != "" {
+		instructionBlock = fmt.Sprintf("\n\nAdditional Instructions:\n%s", strings.TrimSpace(customInstructions))
 	}
 
 	template := `%s
@@ -74,7 +80,7 @@ discarded — only the <summary> block is preserved.]
 7. Pending Tasks: [Incomplete items from the user's request]
 8. Current Work: [Precise description of what was being done last]
 9. Optional Next Step: [Recommended next action with rationale]
-</summary>
+</summary>%s
 
 Conversation history follows:
 
@@ -82,7 +88,7 @@ Conversation history follows:
 
 %s
 `
-	return fmt.Sprintf(template, NoToolsPreamble, languageName, body, NoToolsTrailer)
+	return fmt.Sprintf(template, NoToolsPreamble, languageName, instructionBlock, body, NoToolsTrailer)
 }
 
 // FormatSummary strips the <analysis> draft block and extracts the content of

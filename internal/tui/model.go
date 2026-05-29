@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -48,6 +49,7 @@ type Runner interface {
 	Checkpointer() checkpoint.Checkpointer
 	PlanMode() bool
 	SetPlanMode(enabled bool)
+	CompactNow(ctx context.Context, customInstructions string) (*compaction.CompactResult, error)
 }
 
 // Config controls the initial TUI presentation.
@@ -110,6 +112,7 @@ var slashCommands = []slashCommand{
 	{Name: "/checkpoint", Description: "alias for /rewind"},
 	{Name: "/new", Description: "start a fresh session"},
 	{Name: "/model", Description: "show or switch the active model"},
+	{Name: "/compact", Description: "compact context", ArgumentHint: "<optional custom instructions>"},
 	{Name: "/cancel", Description: "cancel the active run"},
 	{Name: "/sidebar", Description: "show or hide right sidebar"},
 	{Name: "/help", Description: "show available commands"},
@@ -312,6 +315,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case promptCommandReadyMsg:
 		return m.handlePromptCommandReady(msg)
+
+	case compactFinishedMsg:
+		m.running = false
+		m.runStartedAt = time.Time{}
+		m.cancelRun = nil
+		if msg.err != nil {
+			m.status = "Compact failed"
+			m.appendEntry("error", "compact failed", msg.err.Error(), true)
+			return m, nil
+		}
+		body := fmt.Sprintf(
+			"Summarized %d messages.\nTokens: %d → %d (saved %d)",
+			msg.result.MessagesSummarized,
+			msg.result.PreTokens,
+			msg.result.PostTokens,
+			msg.result.PreTokens-msg.result.PostTokens,
+		)
+		m.appendCommandEntry("Compact", body)
+		m.refreshRuntimeInfo()
+		m.status = "Context compacted"
+		return m, nil
 
 	case newSessionFinishedMsg:
 		m.running = false
@@ -1975,6 +1999,20 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		}
 		m.clampSidebarScrollOffsets()
 		return m, nil
+	case "/compact":
+		if m.running {
+			m.status = "Cannot compact while a run is active"
+			return m, nil
+		}
+		customInstructions := ""
+		if len(fields) > 1 {
+			customInstructions = strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
+		}
+		m.running = true
+		m.runStartedAt = m.nowTime()
+		m.spinnerFrame = 0
+		m.status = "Compacting context"
+		return m, compactNowCmd(m.ctx, m.runner, customInstructions)
 	case "/new":
 		if m.running {
 			m.status = "Cannot create a new session while a run is active"
@@ -2704,6 +2742,11 @@ type newSessionFinishedMsg struct {
 	err       error
 }
 
+type compactFinishedMsg struct {
+	result *compaction.CompactResult
+	err    error
+}
+
 func runPromptCmd(ctx context.Context, runner Runner, prompt string, events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
@@ -2716,5 +2759,12 @@ func newSessionCmd(ctx context.Context, runner Runner) tea.Cmd {
 	return func() tea.Msg {
 		sessionID, err := runner.NewSession(ctx)
 		return newSessionFinishedMsg{sessionID: sessionID, err: err}
+	}
+}
+
+func compactNowCmd(ctx context.Context, runner Runner, customInstructions string) tea.Cmd {
+	return func() tea.Msg {
+		result, err := runner.CompactNow(ctx, customInstructions)
+		return compactFinishedMsg{result: result, err: err}
 	}
 }

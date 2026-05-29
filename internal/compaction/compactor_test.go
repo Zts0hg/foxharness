@@ -443,7 +443,7 @@ func (p *capturingProvider) Generate(ctx context.Context, messages []schema.Mess
 	}, nil
 }
 
-func TestMaybeCompact_ClearsStaleUsageOnRecentMessages(t *testing.T) {
+func TestMaybeCompact_PreservesStaleUsageForSafeOvercount(t *testing.T) {
 	t.Setenv("FOXHARNESS_DISABLE_COMPACT", "")
 	t.Setenv("FOXHARNESS_DISABLE_AUTO_COMPACT", "")
 	p := &stubProvider{
@@ -468,20 +468,151 @@ func TestMaybeCompact_ClearsStaleUsageOnRecentMessages(t *testing.T) {
 		t.Fatalf("MaybeCompact: %v", err)
 	}
 
-	for i, msg := range out {
+	hasUsage := false
+	for _, msg := range out {
 		if msg.Role == schema.RoleAssistant && msg.Usage != nil {
-			t.Fatalf("compacted message[%d] (role=%s) still has stale Usage data; "+
-				"HybridEstimator would overcount on the next turn", i, msg.Role)
+			hasUsage = true
+			break
+		}
+	}
+	if !hasUsage {
+		t.Fatalf("expected stale Usage to be PRESERVED on kept assistant messages for safe over-counting")
+	}
+}
+
+func TestMaybeCompact_CircuitBreakerTripsAfterConsecutiveFailures(t *testing.T) {
+	t.Setenv("FOXHARNESS_DISABLE_COMPACT", "")
+	t.Setenv("FOXHARNESS_DISABLE_AUTO_COMPACT", "")
+	p := &stubProvider{}
+	c := newTestCompactor(t, p, func(cfg *CompactionConfig) {
+		cfg.RecentKeep = 10
+	})
+
+	messages := []schema.Message{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleUser, Content: "u1"},
+		{Role: schema.RoleAssistant, Content: "a1"},
+	}
+
+	for i := 0; i < maxConsecutiveCompactFailures; i++ {
+		out, err := c.MaybeCompact(context.Background(), messages)
+		if err != nil {
+			t.Fatalf("attempt %d: unexpected error: %v", i, err)
+		}
+		if len(out) != len(messages) {
+			t.Fatalf("attempt %d: expected no-op compaction", i)
 		}
 	}
 
-	// After clearing Usage, HybridEstimator should fall back to rough
-	// estimation, producing a much lower count than the stale 93000.
-	est := NewHybridEstimator(ImprovedRoughEstimator{})
-	postTokens := est.Estimate(out)
-	staleCount := 90000 + 3000
-	if postTokens >= staleCount {
-		t.Fatalf("post-compaction estimate %d >= stale usage %d; Usage was not cleared", postTokens, staleCount)
+	if p.calls != 0 {
+		t.Fatalf("provider should not have been called (too few messages to compact)")
+	}
+
+	out, err := c.MaybeCompact(context.Background(), messages)
+	if err != nil {
+		t.Fatalf("after circuit break: unexpected error: %v", err)
+	}
+	if len(out) != len(messages) {
+		t.Fatalf("after circuit break: expected short-circuit to return original")
+	}
+}
+
+func TestCompactor_CircuitBreakerResetsAfterSuccess(t *testing.T) {
+	t.Setenv("FOXHARNESS_DISABLE_COMPACT", "")
+	t.Setenv("FOXHARNESS_DISABLE_AUTO_COMPACT", "")
+	p := &stubProvider{
+		response: &provider.GenerateResponse{
+			Message: &schema.Message{Role: schema.RoleAssistant, Content: "<summary>ok</summary>"},
+		},
+	}
+	c := newTestCompactor(t, p, func(cfg *CompactionConfig) {
+		cfg.RecentKeep = 1
+	})
+
+	tooFew := []schema.Message{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleUser, Content: "u1"},
+	}
+	for i := 0; i < maxConsecutiveCompactFailures-1; i++ {
+		c.MaybeCompact(context.Background(), tooFew)
+	}
+
+	c.ResetCircuitBreaker()
+
+	enough := []schema.Message{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleUser, Content: "anchor"},
+		{Role: schema.RoleAssistant, Content: "a1"},
+		{Role: schema.RoleAssistant, Content: "a2"},
+		{Role: schema.RoleAssistant, Content: "a3"},
+		{Role: schema.RoleUser, Content: "recent"},
+	}
+	out, err := c.MaybeCompact(context.Background(), enough)
+	if err != nil {
+		t.Fatalf("after reset: %v", err)
+	}
+	hasSummary := false
+	for _, m := range out {
+		if strings.Contains(m.Content, "ok") && m.Role == schema.RoleUser {
+			hasSummary = true
+		}
+	}
+	if !hasSummary {
+		t.Fatalf("after reset: expected compaction to produce summary message")
+	}
+}
+
+func TestForceCompact_CompactsEvenBelowThreshold(t *testing.T) {
+	t.Setenv("FOXHARNESS_DISABLE_COMPACT", "")
+	t.Setenv("FOXHARNESS_DISABLE_AUTO_COMPACT", "")
+	p := &stubProvider{
+		response: &provider.GenerateResponse{
+			Message: &schema.Message{Role: schema.RoleAssistant, Content: "<summary>forced</summary>"},
+		},
+	}
+
+	cfg := DefaultCompactionConfig()
+	cfg.Model = "test"
+	cfg.ContextWindow = 1000000
+	cfg.RecentKeep = 2
+	c, err := NewCompactor(p, cfg)
+	if err != nil {
+		t.Fatalf("NewCompactor: %v", err)
+	}
+
+	messages := []schema.Message{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleUser, Content: "anchor"},
+		{Role: schema.RoleAssistant, Content: "old1"},
+		{Role: schema.RoleUser, Content: "old2"},
+		{Role: schema.RoleAssistant, Content: "old3"},
+		{Role: schema.RoleUser, Content: "old4"},
+		{Role: schema.RoleAssistant, Content: "old5"},
+		{Role: schema.RoleUser, Content: "old6"},
+		{Role: schema.RoleAssistant, Content: "old7"},
+		{Role: schema.RoleUser, Content: "recent"},
+	}
+
+	regular, _ := c.MaybeCompact(context.Background(), messages)
+	if len(regular) != len(messages) {
+		t.Fatalf("MaybeCompact should NOT compact (below threshold), but it did")
+	}
+
+	forced, err := c.ForceCompact(context.Background(), messages)
+	if err != nil {
+		t.Fatalf("ForceCompact: %v", err)
+	}
+	hasSummary := false
+	for _, m := range forced {
+		if strings.Contains(m.Content, "forced") && m.Role == schema.RoleUser {
+			hasSummary = true
+		}
+	}
+	if !hasSummary {
+		t.Fatalf("ForceCompact should produce a summary message")
+	}
+	if len(forced) >= len(messages) {
+		t.Fatalf("ForceCompact should produce fewer messages, got %d vs input %d", len(forced), len(messages))
 	}
 }
 
@@ -578,5 +709,70 @@ func TestMaybeCompact_SummaryFailureReturnsOriginal(t *testing.T) {
 	}
 	if len(got) != len(messages) {
 		t.Fatalf("len(got) = %d, want %d (original messages on failure)", len(got), len(messages))
+	}
+}
+
+func TestSummarizeWithInstructions_PassesCustomInstructions(t *testing.T) {
+	p := &fakeProvider{}
+	c := newTestCompactor(t, p)
+
+	messages := []schema.Message{
+		{Role: schema.RoleUser, Content: "implement auth flow"},
+		{Role: schema.RoleAssistant, Content: "done"},
+	}
+	_, err := c.SummarizeWithInstructions(context.Background(), messages, "focus on auth")
+	if err != nil {
+		t.Fatalf("SummarizeWithInstructions error: %v", err)
+	}
+	if len(p.seen) == 0 {
+		t.Fatalf("provider should have been called")
+	}
+	prompt := p.seen[0].Content
+	if !strings.Contains(prompt, "focus on auth") {
+		t.Fatalf("prompt should contain custom instructions, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Additional Instructions") {
+		t.Fatalf("prompt should contain Additional Instructions header")
+	}
+}
+
+func TestSummarizeWithInstructions_EmptyInstructionsOmitsSection(t *testing.T) {
+	p := &fakeProvider{}
+	c := newTestCompactor(t, p)
+
+	messages := []schema.Message{
+		{Role: schema.RoleUser, Content: "implement auth flow"},
+		{Role: schema.RoleAssistant, Content: "done"},
+	}
+	_, err := c.SummarizeWithInstructions(context.Background(), messages, "")
+	if err != nil {
+		t.Fatalf("SummarizeWithInstructions error: %v", err)
+	}
+	prompt := p.seen[0].Content
+	if strings.Contains(prompt, "Additional Instructions") {
+		t.Fatalf("prompt should NOT contain Additional Instructions when empty")
+	}
+}
+
+func TestSummarizeWithInstructions_DisabledReturnsError(t *testing.T) {
+	t.Setenv(EnvDisableCompact, "1")
+	p := &stubProvider{}
+	cfg := DefaultCompactionConfig()
+	cfg.Model = "test-model"
+	cfg.ContextWindow = 10000
+	c, err := NewCompactor(p, cfg)
+	if err != nil {
+		t.Fatalf("NewCompactor: %v", err)
+	}
+
+	messages := []schema.Message{
+		{Role: schema.RoleUser, Content: "hello"},
+	}
+	_, err = c.SummarizeWithInstructions(context.Background(), messages, "")
+	if err == nil {
+		t.Fatalf("expected error when compaction is disabled")
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("error should mention disabled: %v", err)
 	}
 }
