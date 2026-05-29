@@ -635,6 +635,80 @@ func (r *AgentRunner) SetPlanMode(enabled bool) {
 	r.enablePlanMode = enabled
 }
 
+// CompactNow performs a user-initiated compaction of the current session's
+// message history. All messages are summarized and the CompactState is updated
+// so that the next engine run sees only the summary. When customInstructions
+// is non-empty it is appended to the summarization prompt to guide focus.
+func (r *AgentRunner) CompactNow(ctx context.Context, customInstructions string) (*compaction.CompactResult, error) {
+	r.runMu.Lock()
+	defer r.runMu.Unlock()
+
+	r.mu.Lock()
+	sess := r.currentSession
+	llmProvider := r.llmProvider
+	model := r.model
+	r.mu.Unlock()
+
+	if sess == nil {
+		return nil, fmt.Errorf("no active session")
+	}
+
+	records, err := session.NewMessageLog(sess).LoadRecords()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load message history: %w", err)
+	}
+
+	state, err := session.LoadCompactState(sess)
+	if err != nil {
+		return nil, err
+	}
+
+	projected := projectedMessages(state, records)
+	if len(projected) < 2 {
+		return nil, fmt.Errorf("not enough messages to compact (%d messages)", len(projected))
+	}
+
+	compCfg := compaction.DefaultCompactionConfig()
+	compCfg.Model = model
+	compCfg.SessionDir = sess.RootDir
+	compCfg.TranscriptPath = sess.TranscriptPath()
+	compactor, err := compaction.NewCompactor(llmProvider, compCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create compactor: %w", err)
+	}
+
+	preTokens := compactor.Estimate(projected)
+
+	summary, err := compactor.SummarizeWithInstructions(ctx, projected, customInstructions)
+	if err != nil {
+		return nil, err
+	}
+
+	var maxSeq int64 = -1
+	for _, rec := range records {
+		if rec.Seq > maxSeq {
+			maxSeq = rec.Seq
+		}
+	}
+
+	newState := &session.CompactState{
+		Summary:         summary,
+		CoveredUntilSeq: maxSeq,
+	}
+	if err := session.SaveCompactState(sess, newState); err != nil {
+		return nil, err
+	}
+
+	postProjected := projectedMessages(newState, records)
+	postTokens := compactor.Estimate(postProjected)
+
+	return &compaction.CompactResult{
+		PreTokens:          preTokens,
+		PostTokens:         postTokens,
+		MessagesSummarized: len(projected),
+	}, nil
+}
+
 // conditionalActivationHook returns an engine.OnToolCalled callback that
 // extracts a file path from read_file/write_file/edit_file tool calls and
 // notifies the slash registry so it can activate any conditional skills

@@ -49,7 +49,7 @@ func TestBuildCompactPrompt_English(t *testing.T) {
 		{Role: schema.RoleUser, Content: "Implement feature X"},
 		{Role: schema.RoleAssistant, Content: "Working on it"},
 	}
-	prompt := BuildCompactPrompt(messages, "en")
+	prompt := BuildCompactPrompt(messages, "en", "")
 
 	if !strings.Contains(prompt, "CRITICAL: Respond with TEXT ONLY") {
 		t.Fatalf("English prompt missing NO_TOOLS_PREAMBLE: %s", prompt)
@@ -72,7 +72,7 @@ func TestBuildCompactPrompt_Chinese(t *testing.T) {
 	messages := []schema.Message{
 		{Role: schema.RoleUser, Content: "重构 engine 包"},
 	}
-	prompt := BuildCompactPrompt(messages, "zh")
+	prompt := BuildCompactPrompt(messages, "zh", "")
 	if !strings.Contains(prompt, "CRITICAL: Respond with TEXT ONLY") {
 		t.Fatalf("Chinese prompt should still include preamble (universal): %s", prompt)
 	}
@@ -81,6 +81,35 @@ func TestBuildCompactPrompt_Chinese(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "<summary>") {
 		t.Fatalf("Chinese prompt missing summary tag")
+	}
+}
+
+func TestBuildCompactPrompt_WithCustomInstructions(t *testing.T) {
+	messages := []schema.Message{
+		{Role: schema.RoleUser, Content: "Implement auth flow"},
+		{Role: schema.RoleAssistant, Content: "Done"},
+	}
+	prompt := BuildCompactPrompt(messages, "en", "focus on the database migration work")
+
+	if !strings.Contains(prompt, "Additional Instructions") {
+		t.Fatalf("prompt should contain Additional Instructions header")
+	}
+	if !strings.Contains(prompt, "focus on the database migration work") {
+		t.Fatalf("prompt should contain user's custom instructions")
+	}
+	if !strings.Contains(prompt, "Primary Request") {
+		t.Fatalf("prompt should still contain the standard 9-section template")
+	}
+}
+
+func TestBuildCompactPrompt_EmptyCustomInstructions(t *testing.T) {
+	messages := []schema.Message{
+		{Role: schema.RoleUser, Content: "Implement auth flow"},
+	}
+	prompt := BuildCompactPrompt(messages, "en", "")
+
+	if strings.Contains(prompt, "Additional Instructions") {
+		t.Fatalf("prompt should NOT contain Additional Instructions when empty: %s", prompt)
 	}
 }
 

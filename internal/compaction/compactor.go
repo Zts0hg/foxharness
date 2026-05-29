@@ -36,6 +36,14 @@ const DefaultRecentKeep = 12
 // hint for compatibility with persisted configurations.
 const DefaultSummaryMaxTokens = 2048
 
+// maxConsecutiveCompactFailures is the circuit-breaker limit. After this many
+// consecutive compaction attempts that fail to produce a shorter result (e.g.,
+// because the stale Usage estimate exceeds the threshold but there are too few
+// messages to compact), MaybeCompact short-circuits and lets the API call
+// proceed. The next successful API response carries fresh Usage data that
+// corrects the estimate, at which point the circuit breaker resets.
+const maxConsecutiveCompactFailures = 3
+
 // TokenEstimator estimates the token cost of a message slice.
 type TokenEstimator interface {
 	Estimate(messages []schema.Message) int
@@ -117,9 +125,10 @@ type Compactor struct {
 	disabled     bool
 	autoDisabled bool
 
-	mu           sync.Mutex
-	compacting   bool
-	toolOverhead int
+	mu                  sync.Mutex
+	compacting          bool
+	toolOverhead        int
+	consecutiveFailures int
 }
 
 // NewCompactor constructs a Compactor with the supplied provider and
@@ -240,7 +249,19 @@ func (c *Compactor) BlockingThreshold() int {
 // history is used only to detect the summary language; the actual content
 // summarized is the supplied messages slice.
 func (c *Compactor) Summarize(ctx context.Context, messages []schema.Message) (string, error) {
-	return c.summarize(ctx, messages, messages)
+	return c.summarize(ctx, messages, messages, "")
+}
+
+// SummarizeWithInstructions produces a summary with optional custom
+// instructions that guide the summarization focus. Unlike Summarize, this
+// method checks the disabled flag (FOXHARNESS_DISABLE_COMPACT) but not the
+// auto-disabled flag, since it is intended for explicit user-initiated
+// compaction via the /compact command.
+func (c *Compactor) SummarizeWithInstructions(ctx context.Context, messages []schema.Message, customInstructions string) (string, error) {
+	if c.disabled {
+		return "", fmt.Errorf("compaction is disabled (%s is set)", EnvDisableCompact)
+	}
+	return c.summarize(ctx, messages, messages, customInstructions)
 }
 
 // BuildSummaryMessage builds the model-visible summary message including the
@@ -270,16 +291,16 @@ func BuildSummaryMessage(summary, transcriptPath string) schema.Message {
 // anchor, and the most recent messages. If compaction is not needed or has
 // been disabled the original slice is returned unchanged.
 func (c *Compactor) MaybeCompact(ctx context.Context, messages []schema.Message) ([]schema.Message, error) {
-	// The mutex protects only the compacting flag — it is released before the
-	// estimator and provider calls so that concurrent MaybeCompact invocations
-	// can see the flag and bail out immediately rather than blocking on the
-	// in-flight summarize. The flag is reset under the mutex on the way out.
 	c.mu.Lock()
 	if c.compacting {
 		c.mu.Unlock()
 		return messages, nil
 	}
 	if c.disabled || c.autoDisabled {
+		c.mu.Unlock()
+		return messages, nil
+	}
+	if c.consecutiveFailures >= maxConsecutiveCompactFailures {
 		c.mu.Unlock()
 		return messages, nil
 	}
@@ -298,8 +319,84 @@ func (c *Compactor) MaybeCompact(ctx context.Context, messages []schema.Message)
 		return messages, nil
 	}
 
-	if len(messages) <= c.config.RecentKeep+2 {
+	compacted, err := c.doCompact(ctx, messages, used, c.config.RecentKeep)
+	if err != nil {
+		return messages, err
+	}
+	if compacted == nil {
+		c.mu.Lock()
+		c.consecutiveFailures++
+		if c.consecutiveFailures >= maxConsecutiveCompactFailures {
+			log.Printf("[Compactor] circuit breaker tripped after %d consecutive no-op compactions — skipping future attempts until reset", c.consecutiveFailures)
+		}
+		c.mu.Unlock()
 		return messages, nil
+	}
+
+	c.mu.Lock()
+	c.consecutiveFailures = 0
+	c.mu.Unlock()
+	return compacted, nil
+}
+
+// ForceCompact performs compaction regardless of the token threshold. It uses
+// a more aggressive recent-keep window (half the configured value, minimum 4)
+// to shed more context. This is the reactive-compaction path invoked when the
+// API rejects a prompt as too long despite the proactive threshold check.
+func (c *Compactor) ForceCompact(ctx context.Context, messages []schema.Message) ([]schema.Message, error) {
+	c.mu.Lock()
+	if c.compacting {
+		c.mu.Unlock()
+		return messages, nil
+	}
+	if c.disabled {
+		c.mu.Unlock()
+		return messages, nil
+	}
+	c.compacting = true
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.compacting = false
+		c.mu.Unlock()
+	}()
+
+	aggressiveKeep := c.config.RecentKeep / 2
+	if aggressiveKeep < 4 {
+		aggressiveKeep = 4
+	}
+
+	used := c.Estimate(messages)
+	compacted, err := c.doCompact(ctx, messages, used, aggressiveKeep)
+	if err != nil {
+		return messages, err
+	}
+	if compacted == nil {
+		return messages, nil
+	}
+
+	c.mu.Lock()
+	c.consecutiveFailures = 0
+	c.mu.Unlock()
+	return compacted, nil
+}
+
+// ResetCircuitBreaker resets the consecutive-failure counter. The engine
+// calls this after a successful API call that returns fresh Usage data,
+// since fresh Usage corrects the stale over-estimate that caused the
+// circuit breaker to trip.
+func (c *Compactor) ResetCircuitBreaker() {
+	c.mu.Lock()
+	c.consecutiveFailures = 0
+	c.mu.Unlock()
+}
+
+// doCompact is the shared compaction logic for MaybeCompact and ForceCompact.
+// It returns the compacted messages or nil when compaction is not possible
+// (too few messages to split).
+func (c *Compactor) doCompact(ctx context.Context, messages []schema.Message, used int, recentKeep int) ([]schema.Message, error) {
+	if len(messages) <= recentKeep+2 {
+		return nil, nil
 	}
 
 	system := messages[0]
@@ -310,20 +407,20 @@ func (c *Compactor) MaybeCompact(ctx context.Context, messages []schema.Message)
 		keepStart = 2
 	}
 
-	split := len(messages) - c.config.RecentKeep
+	split := len(messages) - recentKeep
 	if split < keepStart {
-		return messages, nil
+		return nil, nil
 	}
 	split = moveSplitToProtocolBoundary(messages, split, keepStart)
 	if split <= keepStart {
-		return messages, nil
+		return nil, nil
 	}
 
 	old := messages[keepStart:split]
 	recent := messages[split:]
-	summary, err := c.summarize(ctx, messages, old)
+	summary, err := c.summarize(ctx, messages, old, "")
 	if err != nil {
-		return messages, fmt.Errorf("context compaction 失败: %w", err)
+		return nil, fmt.Errorf("context compaction 失败: %w", err)
 	}
 
 	boundary := CompactBoundary{
@@ -340,7 +437,6 @@ func (c *Compactor) MaybeCompact(ctx context.Context, messages []schema.Message)
 	compacted = append(compacted, BoundaryMessage(boundary))
 	compacted = append(compacted, summaryMessage)
 	compacted = append(compacted, recent...)
-	clearStaleUsage(compacted)
 	c.runPostCompactCleanup(used, len(old), compacted)
 	return compacted, nil
 }
@@ -351,22 +447,6 @@ func (c *Compactor) runPostCompactCleanup(preTokens, summarized int, compacted [
 	postTokens := c.Estimate(compacted)
 	log.Printf("[Compactor] summarized %d messages (pre-tokens=%d post-tokens=%d delta=%d)",
 		summarized, preTokens, postTokens, preTokens-postTokens)
-}
-
-// clearStaleUsage nils out the Usage pointer on assistant messages in the
-// compacted output. After compaction the surviving assistant messages still
-// carry Usage data from the pre-compaction API call — those InputTokens
-// reflect the full, uncompacted context. If left in place, HybridEstimator
-// treats them as the "exact" token count and overcounts, causing repeated
-// compaction attempts that can never reduce the estimate. Clearing the
-// pointer forces HybridEstimator to fall back to rough estimation, which
-// correctly reflects the now-smaller message list.
-func clearStaleUsage(messages []schema.Message) {
-	for i := range messages {
-		if messages[i].Role == schema.RoleAssistant && messages[i].Usage != nil {
-			messages[i].Usage = nil
-		}
-	}
 }
 
 func moveSplitToProtocolBoundary(messages []schema.Message, split int, min int) int {
@@ -381,9 +461,9 @@ func moveSplitToProtocolBoundary(messages []schema.Message, split int, min int) 
 	return split
 }
 
-func (c *Compactor) summarize(ctx context.Context, fullHistory, toCompact []schema.Message) (string, error) {
+func (c *Compactor) summarize(ctx context.Context, fullHistory, toCompact []schema.Message, customInstructions string) (string, error) {
 	language := DetectSummaryLanguage(fullHistory)
-	prompt := BuildCompactPrompt(toCompact, language)
+	prompt := BuildCompactPrompt(toCompact, language, customInstructions)
 
 	resp, err := c.provider.Generate(ctx, []schema.Message{
 		{Role: schema.RoleUser, Content: prompt},
