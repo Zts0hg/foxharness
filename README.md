@@ -1,6 +1,17 @@
-# foxharness
+<p align="center">
+  <img src="assets/banner.png" alt="foxharness" width="100%">
+</p>
 
-foxharness is a Go-based AI coding agent. It runs in your terminal, reads the current project, calls local tools, keeps session history across multiple runs, and provides a TUI experience similar to Claude Code and Codex.
+<p align="center">
+  <b>English</b> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.zh-TW.md">繁體中文</a> | <a href="README.ja.md">日本語</a>
+</p>
+
+<p align="center">
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go" alt="Go"></a>
+  <a href="https://opensource.org/licenses/AGPL-3.0"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue?style=for-the-badge" alt="License"></a>
+</p>
+
+foxharness is a Go-based AI coding agent. It runs in your terminal, reads the current project, calls local tools, keeps session history across multiple runs, and provides a rich interactive terminal UI (TUI) experience.
 
 The default binary command is `fox`.
 
@@ -141,7 +152,7 @@ Run a one-shot task and print the answer:
 fox exec "Inspect the current project for potential bugs"
 ```
 
-Claude-style print mode is also supported:
+A non-interactive print mode is also available for scripting:
 
 ```bash
 fox -p "Summarize this project's architecture"
