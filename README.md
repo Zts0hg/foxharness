@@ -28,8 +28,7 @@ https://github.com/Zts0hg/foxharness/releases
 macOS Apple Silicon:
 
 ```bash
-curl -L https://github.com/Zts0hg/foxharness/releases/latest/download/fox_darwin_arm64.tar.gz -o fox.tar.gz
-tar -xzf fox.tar.gz
+curl -fL https://github.com/Zts0hg/foxharness/releases/latest/download/fox_darwin_arm64.tar.gz | tar xz
 chmod +x fox
 sudo mv fox /usr/local/bin/fox
 ```
@@ -37,8 +36,7 @@ sudo mv fox /usr/local/bin/fox
 macOS Intel:
 
 ```bash
-curl -L https://github.com/Zts0hg/foxharness/releases/latest/download/fox_darwin_amd64.tar.gz -o fox.tar.gz
-tar -xzf fox.tar.gz
+curl -fL https://github.com/Zts0hg/foxharness/releases/latest/download/fox_darwin_amd64.tar.gz | tar xz
 chmod +x fox
 sudo mv fox /usr/local/bin/fox
 ```
@@ -46,8 +44,7 @@ sudo mv fox /usr/local/bin/fox
 Linux amd64:
 
 ```bash
-curl -L https://github.com/Zts0hg/foxharness/releases/latest/download/fox_linux_amd64.tar.gz -o fox.tar.gz
-tar -xzf fox.tar.gz
+curl -fL https://github.com/Zts0hg/foxharness/releases/latest/download/fox_linux_amd64.tar.gz | tar xz
 chmod +x fox
 sudo mv fox /usr/local/bin/fox
 ```
@@ -55,8 +52,7 @@ sudo mv fox /usr/local/bin/fox
 Linux arm64:
 
 ```bash
-curl -L https://github.com/Zts0hg/foxharness/releases/latest/download/fox_linux_arm64.tar.gz -o fox.tar.gz
-tar -xzf fox.tar.gz
+curl -fL https://github.com/Zts0hg/foxharness/releases/latest/download/fox_linux_arm64.tar.gz | tar xz
 chmod +x fox
 sudo mv fox /usr/local/bin/fox
 ```
