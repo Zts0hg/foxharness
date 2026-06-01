@@ -46,7 +46,9 @@ The feature enables unattended, 24/7-capable autonomous development: the agent s
 **Acceptance Criteria:**
 - [ ] On startup, the agent scans `BACKLOG.md` and finds the first `pending` task
 - [ ] Previously completed tasks (`done`) are skipped automatically
-- [ ] The agent starts the SDD pipeline from scratch for each `pending` task (no partial resume)
+- [ ] For each `pending` task, the agent checks for an existing state file and worktree
+- [ ] If a state file exists with completed phases, the agent resumes from the first incomplete phase, reusing the existing worktree and its artifacts
+- [ ] If no state file exists, the agent starts the SDD pipeline from phase 1
 
 ### Story 4: Review and merge PRs manually
 **As a** project maintainer
@@ -118,6 +120,34 @@ Each task shall have exactly two states:
 
 The agent shall scan tasks in file order and process the first `pending` task found. The exit condition is: all tasks in `BACKLOG.md` are `done`.
 
+#### Phase-Level Resume via State File
+Each task's pipeline progress shall be tracked via a state file (`.keep-run-state.json`) stored in the worktree. The state file shall have the following schema:
+
+```json
+{
+  "task_slug": "add-dark-mode",
+  "worktree_path": ".claude/worktrees/add-dark-mode",
+  "completed_phases": [1, 2, 3, 4, 5, 6],
+  "remote_enabled": true,
+  "last_phase_at": "2026-06-01T10:45:00Z"
+}
+```
+
+- `completed_phases` — Array of 1-indexed phase numbers that have fully completed (artifacts written, review clean if applicable)
+- `task_slug` — The slug derived from the task title (matches FR-005 algorithm)
+- `worktree_path` — Absolute path to the task's worktree directory
+- `remote_enabled` — Cached from `keep-run.config.json` at task start
+- `last_phase_at` — ISO 8601 timestamp of the most recent phase completion
+
+**Resume logic**: When processing a `pending` task, the agent shall:
+1. Check if a worktree with branch `keep-run-{task-slug}` already exists
+2. If yes, read `.keep-run-state.json` from the worktree
+3. Compute `next_phase = max(completed_phases) + 1` (or phase 1 if empty or no state file)
+4. Reuse the existing worktree and resume from `next_phase`
+5. If no worktree exists, create one and start from phase 1
+
+**Phase completion**: A phase shall only be appended to `completed_phases` after its artifacts are successfully produced and, for review phases, all issues/warnings/suggestions are resolved.
+
 ### FR-003: SDD Pipeline Execution
 For each `pending` task, the agent shall execute the following SDD phases in order, invoking each as a slash command. The sequence follows the logical SDD progression: clarify requirements first, then generate the specification document, then review the generated document:
 
@@ -158,7 +188,8 @@ Each task shall be developed in its own git worktree to ensure code isolation be
   - Example: `[feature] Add dark mode support` → `add-dark-mode-support`
   - Example: `[fix] Fix timeout on slow connections!!!` → `fix-timeout-on-slow-connections`
 - SDD artifacts are stored in `.codexspec/specs/{task-slug}/` within the worktree
-- After task completion, the worktree is cleaned up
+- The worktree is preserved between runs to support phase-level resume (FR-002)
+- After a task reaches `done` status, the worktree is cleaned up
 - Worktree creation and cleanup are mandatory regardless of remote configuration
 
 ### FR-006: Remote Operations (Optional)
@@ -246,7 +277,7 @@ The agent shall report progress during execution:
 ## Non-Functional Requirements
 
 ### NFR-001: Reliability
-The system shall not lose work in progress. If interrupted, re-running `/keep-run` shall correctly identify and resume from the next `pending` task.
+The system shall not lose work in progress. If interrupted, re-running `/keep-run` shall correctly identify and resume from the next `pending` task at the first incomplete SDD phase (via the state file, FR-002). Completed phases shall not be re-executed.
 
 ### NFR-002: Isolation
 Each task's code changes shall be fully isolated via git worktrees. No artifacts from a previous task shall leak into a subsequent task's worktree.
@@ -282,6 +313,11 @@ Then the agent shall process all three tasks sequentially, each in its own workt
 Given a `BACKLOG.md` where task 1 is `done` and task 2 is `pending`
 When `/keep-run` is invoked
 Then the agent shall skip task 1 and start processing task 2
+
+### TC-003b: Phase-level resume after interruption
+Given a `BACKLOG.md` with one `pending` task and an existing worktree with state file showing phases 1-6 completed
+When `/keep-run` is invoked
+Then the agent shall reuse the existing worktree and resume from phase 7, skipping phases 1-6
 
 ### TC-004: Worktree isolation
 Given two tasks being processed sequentially
@@ -333,7 +369,6 @@ Then the agent shall report "All tasks completed" and exit immediately
 ## Out of Scope
 
 - Parallel task processing (tasks are strictly sequential)
-- Partial SDD pipeline resume (each task starts the pipeline from scratch)
 - Automatic backlog management (adding/removing tasks via agent)
 - Integration with project management tools beyond GitHub/GitLab Issues
 - Interactive mode for SDD phases during keep-run (all decisions are autonomous)
