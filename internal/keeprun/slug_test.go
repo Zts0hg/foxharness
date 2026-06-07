@@ -43,6 +43,42 @@ func TestGenerateSlug(t *testing.T) {
 	}
 }
 
+func TestGenerateSlugWithTypePrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		title    string
+		taskType string
+		want     string
+	}{
+		{"feature_prefix", "[feature] Add dark mode", "feature", "feat-add-dark-mode"},
+		{"fix_prefix", "[fix] Timeout on slow connections", "fix", "fix-timeout-on-slow-connections"},
+		{"refactor_prefix", "[refactor] Clean up utils", "refactor", "refactor-clean-up-utils"},
+		{"docs_prefix", "[docs] Update README", "docs", "docs-update-readme"},
+		{"chore_prefix", "[chore] Upgrade dependencies", "chore", "chore-upgrade-dependencies"},
+		{"test_prefix", "[test] Add coverage for X", "test", "test-add-coverage-for-x"},
+		{"unknown_type_maps_to_misc", "[unknown-type] Custom thing", "unknown-type", "misc-custom-thing"},
+		{"empty_type_maps_to_misc", "[ ] Add something", "", "misc-add-something"},
+		{"no_type_prefix_with_feature", "Add logging", "feature", "feat-add-logging"},
+		{
+			"truncate_preserves_prefix",
+			"[feature] " + strings.Repeat("verylongword ", 10),
+			"feature",
+			"feat-verylongword-verylongword-verylongword-verylongword",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GenerateSlugWithTypePrefix(tt.title, tt.taskType)
+			if got != tt.want {
+				t.Errorf("GenerateSlugWithTypePrefix(%q, %q) = %q, want %q", tt.title, tt.taskType, got, tt.want)
+			}
+			if len(got) > 60 {
+				t.Errorf("GenerateSlugWithTypePrefix(%q, %q) length = %d, want <= 60", tt.title, tt.taskType, len(got))
+			}
+		})
+	}
+}
+
 func TestDeduplicateSlug(t *testing.T) {
 	tests := []struct {
 		name     string

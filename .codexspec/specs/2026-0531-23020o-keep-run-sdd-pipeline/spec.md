@@ -183,16 +183,25 @@ Each task shall be developed in its own git worktree to ensure code isolation be
 
 - A new worktree is created for each `pending` task
 - Branch naming: `keep-run-{task-slug}` where `task-slug` is derived as follows:
-  1. Take the task title text (e.g., `Add dark mode support`)
-  2. Strip the `[type]` prefix if present (e.g., `[feature] Add dark mode support` → `Add dark mode support`)
-  3. Convert to lowercase
+  1. Extract the `[type]` prefix from the task title and map it to a short prefix:
+     - `feature` → `feat`
+     - `fix` → `fix`
+     - `refactor` → `refactor`
+     - `docs` → `docs`
+     - `chore` → `chore`
+     - `test` → `test`
+     - (unknown or empty) → `misc`
+  2. Strip the `[type]` prefix from the title text
+  3. Convert the title content to lowercase
   4. Replace any character not in `[a-z0-9]` with a hyphen (`-`)
   5. Collapse consecutive hyphens into a single hyphen
   6. Strip leading and trailing hyphens
-  7. Truncate to a maximum of 60 characters, breaking at the last hyphen boundary if possible
-  8. On collision with an existing branch, append a numeric suffix: `-2`, `-3`, etc.
-  - Example: `[feature] Add dark mode support` → `add-dark-mode-support`
+  7. Prepend the mapped type prefix: `{prefix}-{kebab-title}`
+  8. Truncate to a maximum of 60 characters, breaking at the last hyphen boundary if possible (preserves the prefix)
+  9. On collision with an existing branch, strip the `keep-run-` prefix from existing branch names and append a numeric suffix to the slug: `-2`, `-3`, etc.
+  - Example: `[feature] Add dark mode support` → `feat-add-dark-mode-support`
   - Example: `[fix] Fix timeout on slow connections!!!` → `fix-timeout-on-slow-connections`
+  - Example: Same title, different type: `[feature] Add dark mode` → `feat-add-dark-mode`, `[fix] Add dark mode` → `fix-add-dark-mode` (no collision)
 - SDD artifacts are stored in `.codexspec/specs/{task-slug}/` within the worktree
 - The worktree is preserved between runs to support phase-level resume (FR-002)
 - After a task reaches `done` status, the worktree is cleaned up

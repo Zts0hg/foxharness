@@ -368,3 +368,50 @@ func TestOrchestratorContextCancel(t *testing.T) {
 		t.Errorf("Run after cancel = %v, want context.Canceled", err)
 	}
 }
+
+// TestOrchestratorDeduplicatesAgainstExistingBranch tests that when a branch
+// with the same slug already exists, the orchestrator deduplicates by appending
+// a numeric suffix. The branch list from ListBranches includes the
+// "keep-run-" prefix, so deduplication must strip this prefix before comparing.
+func TestOrchestratorDeduplicatesAgainstExistingBranch(t *testing.T) {
+	repo := setupRepo(t, oneTask(), localConfig)
+	// Simulate an existing branch with the same slug.
+	var createdSlug string
+	wt := &fakeWTHook{
+		fakeWT: fakeWT{
+			repoDir:  repo,
+			branches: []string{"keep-run-add-dark-mode"},
+		},
+		onCreate: func(slug string) {
+			createdSlug = slug
+		},
+	}
+	runner := &fakeRun{}
+	o := NewOrchestrator(repo, runner, WithWorktrees(wt), WithVerifier(&fakeVerify{}), WithSleeper(noSleep))
+
+	if err := o.Run(context.Background()); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	// The existing branch is "keep-run-add-dark-mode", so the new slug should
+	// be deduplicated to "add-dark-mode-2".
+	if createdSlug != "add-dark-mode-2" {
+		t.Errorf("Create received slug %q, want %q (deduplicated against existing branch)", createdSlug, "add-dark-mode-2")
+	}
+	if wt.created != 1 {
+		t.Errorf("worktree created count = %d, want 1", wt.created)
+	}
+}
+
+// fakeWTHook wraps fakeWT to allow hooking into Create for testing.
+type fakeWTHook struct {
+	fakeWT
+	onCreate func(slug string)
+}
+
+func (f *fakeWTHook) Create(ctx context.Context, slug, base string) (string, error) {
+	if f.onCreate != nil {
+		f.onCreate(slug)
+	}
+	return f.fakeWT.Create(ctx, slug, base)
+}

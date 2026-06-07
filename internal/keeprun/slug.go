@@ -13,6 +13,30 @@ const (
 
 var typePrefixPattern = regexp.MustCompile(`^\s*\[[^\]]*\]\s*`)
 
+// typePrefixMap maps task type labels from backlog headings to short branch
+// name prefixes. Unknown or empty types map to "misc".
+var typePrefixMap = map[string]string{
+	"feature":  "feat",
+	"fix":      "fix",
+	"refactor": "refactor",
+	"docs":     "docs",
+	"chore":    "chore",
+	"test":     "test",
+}
+
+// mapTypePrefix returns the short prefix for a task type label. Unknown or
+// empty types map to "misc".
+func mapTypePrefix(taskType string) string {
+	if taskType == "" {
+		return "misc"
+	}
+	prefix, ok := typePrefixMap[strings.ToLower(strings.TrimSpace(taskType))]
+	if !ok {
+		return "misc"
+	}
+	return prefix
+}
+
 // GenerateSlug converts a task heading like "[feature] Add dark mode" into a
 // filesystem-safe slug such as "add-dark-mode".
 //
@@ -47,6 +71,51 @@ func GenerateSlug(title string) string {
 	}
 
 	slug := collapseHyphens(b.String())
+	slug = strings.Trim(slug, "-")
+	slug = truncateSlug(slug, maxSlugLength)
+	slug = strings.Trim(slug, "-")
+
+	if slug == "" {
+		return fallbackSlug
+	}
+	return slug
+}
+
+// GenerateSlugWithTypePrefix converts a task heading like "[feature] Add dark mode"
+// into a filesystem-safe slug with a type prefix such as "feat-add-dark-mode".
+//
+// It extends the slug algorithm to prepend a short type prefix (e.g., "feat" for
+// "feature") to avoid collisions between tasks with the same title but different
+// types. The mapping is:
+//
+//	feature   → feat
+//	fix       → fix
+//	refactor  → refactor
+//	docs      → docs
+//	chore     → chore
+//	test      → test
+//	(unknown) → misc
+//
+// The prefix is prepended to the kebab-case title, and the total result is
+// truncated to maxSlugLength characters. Truncation preserves the prefix and
+// breaks at hyphen boundaries when possible.
+func GenerateSlugWithTypePrefix(title string, taskType string) string {
+	// Extract the title content without [type] bracket prefix.
+	contentTitle := typePrefixPattern.ReplaceAllString(title, "")
+	prefix := mapTypePrefix(taskType)
+
+	// Convert content to kebab-case.
+	var b strings.Builder
+	b.Grow(len(prefix) + 1 + len(contentTitle))
+	for _, r := range strings.ToLower(contentTitle) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+
+	slug := prefix + "-" + collapseHyphens(b.String())
 	slug = strings.Trim(slug, "-")
 	slug = truncateSlug(slug, maxSlugLength)
 	slug = strings.Trim(slug, "-")

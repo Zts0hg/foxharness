@@ -242,7 +242,13 @@ func (o *Orchestrator) processTask(ctx context.Context, task Task, cfg Config) e
 		if err != nil {
 			return fmt.Errorf("list branches: %w", err)
 		}
-		slug = DeduplicateSlug(slug, branches)
+		// Strip the "keep-run-" prefix from each branch name so that
+		// DeduplicateSlug compares slugs in the same namespace.
+		taken := make([]string, 0, len(branches))
+		for _, b := range branches {
+			taken = append(taken, strings.TrimPrefix(b, worktreeBranchPrefix))
+		}
+		slug = DeduplicateSlug(slug, taken)
 		baseRef, err := o.wt.DefaultBranch(ctx)
 		if err != nil {
 			return fmt.Errorf("resolve default branch: %w", err)

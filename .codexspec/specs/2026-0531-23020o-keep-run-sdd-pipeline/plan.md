@@ -267,8 +267,28 @@ Key dependency rules (revised):
   //  Note: step 8 (collision deduplication) is in DeduplicateSlug.
   func GenerateSlug(title string) string
 
+  // GenerateSlugWithTypePrefix converts a task heading like "[feature] Add dark mode"
+  // into a filesystem-safe slug with a type prefix: "feat-add-dark-mode".
+  //
+  // It extends the slug algorithm to prepend a short type prefix to avoid
+  // collisions between tasks with the same title but different types.
+  // The type prefix mapping is:
+  //   feature   → feat
+  //   fix       → fix
+  //   refactor  → refactor
+  //   docs      → docs
+  //   chore     → chore
+  //   test      → test
+  //   (unknown) → misc
+  //
+  // The final format is <prefix>-<kebab-title>, truncated to 60 characters.
+  // Truncation preserves the prefix and breaks at hyphen boundaries when possible.
+  func GenerateSlugWithTypePrefix(title string, taskType string) string
+
   // DeduplicateSlug implements step 8 of the slug algorithm:
   // on collision with an existing branch, append -2, -3, etc.
+  // The existing branch names are expected to be bare slugs (without
+  // the "keep-run-" prefix) — callers must strip the prefix before calling.
   func DeduplicateSlug(slug string, existing []string) string
   ```
 - **Files**: `slug.go`, `slug_test.go`
