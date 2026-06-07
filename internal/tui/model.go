@@ -2,8 +2,10 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -113,6 +115,7 @@ var slashCommands = []slashCommand{
 	{Name: "/new", Description: "start a fresh session"},
 	{Name: "/model", Description: "show or switch the active model"},
 	{Name: "/compact", Description: "compact context", ArgumentHint: "<optional custom instructions>"},
+	{Name: "/keep-run", Description: "autonomously run the SDD pipeline over BACKLOG.md"},
 	{Name: "/cancel", Description: "cancel the active run"},
 	{Name: "/sidebar", Description: "show or hide right sidebar"},
 	{Name: "/help", Description: "show available commands"},
@@ -279,6 +282,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case runEventMsg:
 		m.applyRunEvent(msg)
+		return m, waitForRunEvent(m.ctx, m.events)
+
+	case keepRunProgressMsg:
+		m.appendEntry("assistant", "keep-run", formatKeepRunEvent(msg.event), false)
+		return m, waitForRunEvent(m.ctx, m.events)
+
+	case keepRunDoneMsg:
+		m.running = false
+		m.runStartedAt = time.Time{}
+		m.cancelRun = nil
+		m.refreshRuntimeInfo()
+		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+			m.appendEntry("error", "keep-run failed", msg.err.Error(), true)
+			m.status = "keep-run failed"
+		} else {
+			m.status = "keep-run finished"
+		}
 		return m, waitForRunEvent(m.ctx, m.events)
 
 	case runFinishedMsg:
@@ -2013,6 +2033,20 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.spinnerFrame = 0
 		m.status = "Compacting context"
 		return m, compactNowCmd(m.ctx, m.runner, customInstructions)
+	case "/keep-run":
+		if m.running {
+			m.status = "Cannot start keep-run while a run is active"
+			return m, nil
+		}
+		repoDir, _ := os.Getwd()
+		runCtx, cancel := context.WithCancel(m.ctx)
+		m.cancelRun = cancel
+		m.running = true
+		m.runStartedAt = m.nowTime()
+		m.spinnerFrame = 0
+		m.status = "keep-run: starting"
+		m.appendEntry("user", "you", text, false)
+		return m, startKeepRunCmd(runCtx, repoDir, m.runner, m.slashRegistry, m.slashExecutor, m.events)
 	case "/new":
 		if m.running {
 			m.status = "Cannot create a new session while a run is active"

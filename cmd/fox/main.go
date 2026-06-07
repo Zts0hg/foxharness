@@ -42,6 +42,7 @@ type launchMode int
 const (
 	launchTUI launchMode = iota
 	launchPrint
+	launchKeepRun
 )
 
 func main() {
@@ -75,6 +76,13 @@ func main() {
 		return
 	}
 
+	if mode == launchKeepRun {
+		if err := app.RunKeepRun(context.Background(), cfg); err != nil {
+			exitWithError(err)
+		}
+		return
+	}
+
 	prompt, err := readPrompt(cfg.Prompt)
 	if err != nil {
 		exitWithError(err)
@@ -96,6 +104,9 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 	mode := launchTUI
 	if len(args) > 0 && args[0] == "exec" {
 		mode = launchPrint
+		args = args[1:]
+	} else if len(args) > 0 && args[0] == "keep-run" {
+		mode = launchKeepRun
 		args = args[1:]
 	}
 
@@ -127,6 +138,7 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 		fmt.Fprintln(output, "Usage:")
 		fmt.Fprintln(output, "  fox [options] [prompt]       start the interactive TUI")
 		fmt.Fprintln(output, "  fox exec [options] [prompt]  run once and print the result")
+		fmt.Fprintln(output, "  fox keep-run [options]       run the SDD pipeline over BACKLOG.md without the TUI")
 		fmt.Fprintln(output, "  fox -p [options] [prompt]    run once and print the result")
 		fmt.Fprintln(output, "  echo \"prompt\" | fox exec -  read the one-shot prompt from stdin")
 		fmt.Fprintln(output)

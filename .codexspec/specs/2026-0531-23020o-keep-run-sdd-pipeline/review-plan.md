@@ -3,56 +3,58 @@
 ## Meta Information
 - **Plan**: 2026-0531-23020o-keep-run-sdd-pipeline/plan.md
 - **Specification**: 2026-0531-23020o-keep-run-sdd-pipeline/spec.md
-- **Review Date**: 2026-06-01
+- **Review Date**: 2026-06-02
 - **Reviewer Role**: Senior Technical Architect / Code Reviewer
-- **Review Type**: Re-review after phase-level resume design added
+- **Review Type**: Re-review after the 2026-06-02 Hybrid-architecture revision
 
 ## Summary
 - **Overall Status**: ✅ Pass
-- **Quality Score**: 96/100
-- **Readiness**: Ready for Task Breakdown
+- **Quality Score**: 99/100
+- **Readiness**: Ready for Task Breakdown (no open warnings; 4 optional suggestions remain)
+
+The plan is strong: the Hybrid architecture is clearly documented (diagram, component structure, dependency graph), module responsibilities and the `PhaseRunner` seam give clean separation of concerns and full unit-testability without a real LLM, and the nine decisions are well-reasoned. Both warnings are now resolved — PLAN-001 by clarifying `review_mode` (Decision 9: `direct` = inline engine run, `subagent` = isolated fork run → fix run), and PLAN-002 by specifying phase 12 as push → create Issue → create PR (`Closes #N`) with the `verify` matrix gating the Issue. Only optional suggestions remain (undefined supporting types, a testing tech-stack row, phase-narrative sync).
 
 ## Spec Alignment Analysis
 
 | Spec Requirement | Plan Coverage | Status | Implementation Reference |
 |------------------|---------------|--------|--------------------------|
-| FR-001: Backlog File Format | ✅ Full | ✅ | `backlog.ParseBacklog`, Phase 1 |
-| FR-002: Task State Machine + State File | ✅ Full | ✅ | `State` struct, `ReadState`/`WriteState`/`NextPhase()`, architecture steps 1-3, Phase 3 checklist |
-| FR-003: SDD Pipeline Execution | ✅ Full | ✅ | Phase module table (12 phases), Phase 2 |
-| FR-004: Non-Interactive Mode | ✅ Full | ✅ | Config struct, Phase 3 checklist |
-| FR-005: Git Worktree Isolation | ✅ Full | ✅ | 8-step slug algorithm, worktree preserved for resume |
-| FR-006: Remote Operations | ✅ Full | ✅ | `RemoteEnabled`, `Phase.Remote`, conditional logic |
-| FR-007: Error Self-Healing | ✅ Full | ✅ | Decision 6, Phase 3 checklist, risk table |
-| FR-008: Configuration File | ✅ Full | ✅ | `config.LoadConfig`, inlined defaults |
-| FR-009: SDD Artifact Storage | ✅ Full | ✅ | Architecture step 4, Phase 3 checklist |
-| FR-010: Merge Prohibition | ✅ Full | ✅ | Phase 3 checklist, risk table, security section |
-| FR-011: Slash Command Registration | ✅ Full | ✅ | `.claude/commands/codexspec/keep-run.md` |
-| FR-012: Progress Reporting | ✅ Full | ✅ | Phase 3 checklist |
-| US-1: Start autonomous session | ✅ Full | ✅ | Full FR coverage + architecture loop |
-| US-2: Add tasks to backlog | ✅ Full | ✅ | FR-001 + re-read strategy |
-| US-3: Resume after interruption | ✅ Full | ✅ | FR-002 state file + phase-level resume + TC-003b |
-| US-4: Review and merge PRs | ✅ Full | ✅ | FR-006, FR-010 |
-| US-5: Local-only workflow | ✅ Full | ✅ | FR-006 conditional |
-| NFR-001: Reliability | ✅ Full | ✅ | State file resume, re-read BACKLOG.md between tasks |
-| NFR-002: Isolation | ✅ Full | ✅ | Worktree per task, cleanup after done |
-| NFR-003: Idempotency | ✅ Full | ✅ | State machine (skip done) + state file (skip completed phases) |
-| NFR-004: Compatibility | ✅ Full | ✅ | GitHub/GitLab, local-only, existing infrastructure |
-| NFR-005: Observability | ✅ Full | ✅ | Progress reporting, BACKLOG.md updates, transcript |
+| FR-001 Backlog format | ✅ Full | ✅ | `backlog.ParseBacklog` |
+| FR-002 State machine + resume | ✅ Full | ✅ | `State`/`ReadState`/`WriteState`/`NextPhase` + orchestrator; `max+1` matches updated spec |
+| FR-003 12-phase pipeline | ✅ Full | ✅ | `phase.PipelinePhases` + orchestrator loop; phase table matches |
+| FR-004 Non-interactive | ✅ Full | ✅ | `PhaseRequest.Config` + `Instruction` |
+| FR-005 Worktree isolation + slug | ✅ Full | ✅ | `slug` + `worktree` (now with `baseRef`) |
+| FR-006 Remote ops | ✅ Full | ✅ | Phase 12 = push → create Issue (capture #N) → PR via `/codexspec:pr` (`Closes #N`); `verify` gates the Issue |
+| FR-007 Error self-healing | ✅ Full | ✅ | Decision 6 (two-layer) + `BackoffPolicy` |
+| FR-008 Config + defaults | ✅ Full | ✅ | `review_mode` semantics clarified (Decision 9): `direct`=inline run, `subagent`=isolated fork run → fix run |
+| FR-009 Artifact storage | ✅ Full | ✅ | `PhaseRequest.SpecDir = .codexspec/specs/<slug>/` |
+| FR-010 Merge prohibition | ✅ Full | ✅ | Decision 7 + restricted tools; TC-013 |
+| FR-011 Built-in registration | ✅ Full | ✅ | `internal/tui/keeprun_builtin.go` |
+| FR-012 Progress reporting | ✅ Full | ✅ | `ProgressSink` |
+| FR-013 Deterministic Go control | ✅ Full | ✅ | `Orchestrator` + `PhaseRunner` seam |
+| NFR-001 Reliability/resume | ✅ Full | ✅ | State file + `NextPhase` |
+| NFR-002 Isolation | ✅ Full | ✅ | `worktree` per task |
+| NFR-003 Idempotency | ✅ Full | ✅ | Skip `done`, resume `pending` |
+| NFR-004 Compatibility | ✅ Full | ✅ | GitHub/GitLab/local + existing infra |
+| NFR-005 Observability | ✅ Full | ✅ | `ProgressSink` + metrics/tracing |
+| NFR-006 Deterministic & testable | ✅ Full | ✅ | Fake `PhaseRunner` in orchestrator tests |
+| US-1…US-5 | ✅ Full | ✅ | All five stories have technical coverage |
 
-**Coverage Summary**: 12/12 functional requirements, 5/5 user stories, 5/5 non-functional requirements, 9/9 edge cases, 11/11 test cases (TC-001 through TC-010 + TC-003b).
+**Coverage Summary**: 13/13 functional requirements fully covered, 6/6 NFRs, 5/5 user stories. Edge cases from spec are addressed in Phase 4 + Risks.
 
 ## Tech Stack Assessment
 
 | Category | Technology | Version | Assessment | Notes |
 |----------|------------|---------|------------|-------|
-| Language | Go | ≥ 1.22 | ✅ Appropriate | go.mod uses 1.25.0 |
-| TUI Framework | bubbletea | v1.3.x | ✅ Existing dep | No change needed |
-| YAML Parsing | gopkg.in/yaml.v3 | v3.0.1 | ✅ Existing dep | For frontmatter |
-| JSON Parsing | encoding/json | stdlib | ✅ Standard | For config + state file |
-| Git Operations | exec.Command | stdlib | ✅ Standard | Shell-out to git CLI |
-| Testing | go test | stdlib | ✅ Standard | Table-driven tests |
+| Language | Go | ≥ 1.22 | ✅ Appropriate | Matches project |
+| TUI | bubbletea | v1.3.x | ✅ | Existing dependency |
+| YAML | gopkg.in/yaml.v3 | v3.0.1 | ✅ | Existing |
+| JSON | encoding/json | stdlib | ✅ | Config parsing |
+| Git | exec.Command | stdlib | ✅ | Arg-array, no shell |
+| LLM Engine | internal/engine | existing | ✅ | Driven via `PhaseRunner` |
+| Slash exec | internal/slash | existing | ✅ | `Executor` + builtin registration |
+| Testing | (not listed) | — | ⚠️ Minor | Go `testing` stdlib implied; add a row (PLAN-005) |
 
-**Tech Stack Verdict**: ✅ Well-suited — no new dependencies.
+**Tech Stack Verdict**: ✅ Well-suited. No new external dependencies; reuse of existing engine/slash infra is appropriate.
 
 ## Architecture Review
 
@@ -60,92 +62,120 @@
 
 | Component | Responsibility Clear? | Dependencies Documented? | Status |
 |-----------|----------------------|-------------------------|--------|
-| `backlog` | ✅ Parse + state file | ✅ None (pure parsing) | ✅ |
-| `config` | ✅ Load config + defaults | ✅ None (pure JSON) | ✅ |
-| `slug` | ✅ Generate slugs | ✅ None (pure algorithm) | ✅ |
-| `worktree` | ✅ Git worktree lifecycle | ✅ slug + os/exec | ✅ |
-| `phase` | ✅ 12 SDD phase definitions | ✅ None (constants) | ✅ |
-| `keep-run.md` | ✅ Drive pipeline via LLM | ✅ Slash infra + tools | ✅ |
+| backlog / config / slug / phase | ✅ | ✅ (pure logic) | ✅ |
+| worktree | ✅ (now explicit `baseRef`) | ✅ (slug + os/exec) | ✅ |
+| runner (`PhaseRunner` seam) | ✅ | ✅ | ✅ |
+| verify | ✅ | ✅ | ⚠️ `TaskContext` type undefined (PLAN-003) |
+| orchestrator | ✅ | ✅ (interface-injected) | ⚠️ `ProgressEvent` undefined (PLAN-004) |
+| tui adapters | ✅ | ✅ | ✅ |
 
 ### Architecture Strengths
-- Phase-level resume elegantly unifies three prior concerns (state file schema, stale worktree handling, compaction recovery) into a single mechanism
-- `State.NextPhase()` computation is deterministic — `max(completed_phases) + 1` — no ambiguity
-- Worktree reuse on resume eliminates unnecessary git operations and preserves valuable artifacts
-- Dependency graph is clean and correct: four independent leaf packages, only `worktree` has a dependency
+- The `PhaseRunner` interface seam keeps `internal/keeprun` free of `internal/engine`/`internal/tui` imports → the entire control plane is unit-testable with a fake (NFR-006). Excellent DI.
+- Clear three-layer diagram (TUI → Go orchestrator → engine), component tree, and dependency graph with explicit rules.
+- Deterministic `VerifyPhase` gate table makes "phase complete" objective; merge prohibition enforced by construction.
 
 ### Architecture Concerns
-None remaining from prior reviews. The phase-level resume design resolves the previous "stale worktree" risk and the "undefined state file schema" gap.
+- (Resolved) `review_mode` execution is now specified in Decision 9 (`direct` inline vs `subagent` fork → fix run); no conflict with Decision 2.
+- Supporting types `TaskContext` and `ProgressEvent` are referenced but undefined (PLAN-003/004).
+
+### Scalability Assessment
+| Aspect | Addressed? | Notes |
+|--------|-----------|-------|
+| Concurrency | ✅ | Strictly sequential by spec; no concurrency needed |
+| Context growth | ✅ | Per-phase bounded runs (Decision 2) + compaction |
+| Disk growth | ✅ | Worktree cleaned up after `done` |
+
+## API/Interface Review
+
+| Interface | Defined? | Complete? | Status |
+|-----------|----------|-----------|--------|
+| `PhaseRunner.RunPhase` | ✅ | ✅ | ✅ |
+| `PhaseRequest` / `PhaseOutcome` | ✅ | ✅ | ✅ |
+| `Orchestrator.Run` / `NewOrchestrator` | ✅ | ✅ | ✅ |
+| `ProgressSink` / `ProgressEvent` | ✅ / ❌ | ⚠️ | `ProgressEvent` payload undefined (PLAN-004) |
+| `worktree.Manager` (Create/Remove/List/DefaultBranch) | ✅ | ✅ | ✅ |
+| `VerifyPhase` / `ReviewClean` | ✅ | ⚠️ | `TaskContext` undefined (PLAN-003) |
+
+## Data Model Review
+
+| Model | Fields Defined? | Relationships? | Validation? | Status |
+|-------|-----------------|----------------|-------------|--------|
+| Task | ✅ | n/a | ✅ (enum constraints) | ✅ |
+| Config | ✅ | n/a | ✅ (defaults table) | ✅ |
+| Phase | ✅ | n/a | ✅ | ✅ |
+| State (.keep-run-state.json) | ✅ | n/a | ✅ (contiguous, [1,12]) | ✅ |
+| TaskContext | ❌ | — | — | ⚠️ Undefined (PLAN-003) |
 
 ## Implementation Phase Review
 
 | Phase | Clear Deliverables? | Realistic Scope? | Dependencies OK? | Status |
 |-------|--------------------|--------------------|------------------|--------|
-| Phase 1: Foundation | ✅ 14 items (incl. state file) | ✅ Pure logic | ✅ No deps | ✅ |
-| Phase 2: Worktree/Phase | ✅ 8 items | ✅ Git operations | ✅ After Phase 1 | ✅ |
-| Phase 3: Prompt Command | ✅ 16 sub-items | ✅ Single file | ✅ After Phase 2 | ✅ |
-| Phase 4: Testing/Validation | ✅ All TCs + edges | ✅ | ✅ After Phase 3 | ✅ |
+| Phase 1: Foundation | ✅ | ✅ | ✅ | ✅ (done per tasks.md; narrative stale — PLAN-006) |
+| Phase 2: Worktree + Phase | ✅ | ✅ | ✅ | ✅ (done; `baseRef` revision deferred to Phase 3) |
+| Phase 3: Orchestrator + seam + verify + TUI | ✅ | ⚠️ Large but cohesive | ✅ | ✅ |
+| Phase 4: Validation | ✅ | ✅ | ✅ | ✅ (TC-001–013 + edge cases) |
 
 ## Constitution Alignment
 
 | Principle | Compliance | Evidence |
 |-----------|------------|----------|
-| 1. TDD | ✅ | Phase 1-2: tests written first. State file read/write tested. |
-| 2. Code Quality | ✅ | Single-responsibility packages, injectable deps, `State.NextPhase()` is focused |
-| 3. Go Documentation Standards | ✅ | Block comments on all exported identifiers, `doc.go` planned |
-| 4. Testing Standards | ✅ | Table-driven tests, edge cases (empty state, missing file), error paths |
-| 5. Architecture | ✅ | Interfaces before implementations, DI, single-responsibility packages |
-| 6. Performance | ✅ | State file I/O is negligible vs LLM API calls |
-| 7. Security | ✅ | Input validation, shell injection prevention, no secrets |
+| 1. TDD | ✅ | Orchestrator/verify TDD against a fake `PhaseRunner`; foundational packages already test-first |
+| 2. Code Quality | ✅ | Single-responsibility modules; interface-based DI |
+| 3. Go Doc Standards | ✅ | Block comments + `doc.go` specified |
+| 4. Testing Standards | ✅ | Table-driven, edge/error paths, `t.TempDir()` for fs/git |
+| 5. Architecture | ✅ | Focused packages; interfaces before implementations; dependency-light core |
+| 6. Performance | ✅ | I/O-bound; no hot paths |
+| 7. Security | ✅ | Input validation, arg-array git calls, no secrets, merge prohibition by construction |
 
 ## Detailed Findings
 
 ### Critical Issues (Must Fix)
-
-None.
+- None.
 
 ### Warnings (Should Fix)
+- [x] **[PLAN-001]** — RESOLVED (2026-06-02): The conflict rested on a wrong reading of `review_mode`. Correct semantics (now in spec FR-008 + plan Decision 9): `direct` = run the review command inline as one `engine.Run` in the current loop; `subagent` = run it in an isolated subagent (fork-mode) and feed the report to a fix run. This is an intra-phase execution choice that carries no other phase's context, so there is no conflict with Decision 2. Added Decision 9; updated FR-008, the TUI-adapter module, the Config data-model row, and task T026.
 
-- [ ] **PLAN-012**: Spec "Out of Scope" and plan "Non-Goals" contradict FR-002 phase-level resume
-  - **Impact**: Readers encountering these sections will believe phase-level resume is NOT supported, directly contradicting FR-002 which defines it
-  - **Location**: spec.md line 372 ("Partial SDD pipeline resume (each task starts the pipeline from scratch)") and plan.md line 31 ("Partial pipeline resume (each task starts from scratch per spec)")
-  - **Suggestion**: Remove the "Partial SDD pipeline resume" line from both the spec "Out of Scope" section and the plan "Non-Goals" section, since phase-level resume is now an explicitly supported feature
+- [x] **[PLAN-002]** — RESOLVED (2026-06-02): Phase 12 (remote) is now specified as push → create Issue (LLM-composed body, capture #N) → `/codexspec:pr` create PR (`Closes #N`). Reflected in the phase table, a new "Phase 12 (remote) sub-steps" note, the `verify` matrix (`pr` row now gates Issue creation), spec FR-003 step 12 (SPEC-004), and tasks T023/T024.
 
 ### Suggestions (Nice to Have)
-
-None — all prior suggestions have been addressed or absorbed into the phase-level resume design.
+- [ ] **[PLAN-003]**: Define `TaskContext` in the Module Specifications (fields likely: `slug`, `worktreeDir`, `specDir`, `baseRef`, `headCommitBefore`, `config`). It is referenced by `VerifyPhase` and the orchestrator but never specified.
+- [ ] **[PLAN-004]**: Define `ProgressEvent` (the `ProgressSink.Event` payload — e.g., task, phase number/name, transition, message) to make FR-012 reporting concrete.
+- [ ] **[PLAN-005]**: Add a Tech Stack row for testing (Go `testing` stdlib, table-driven) given the constitution's TDD mandate.
+- [ ] **[PLAN-006]**: The Implementation Phases narrative for Phases 1–2 is stale relative to tasks.md (T001–T017 complete) and Phase 2 still describes plain `git worktree add` before the Phase-3 `baseRef` revision. Note completion and the `baseRef` change inline.
 
 ## Scoring Breakdown
 
 | Category | Weight | Score | Rubric Basis | Deduction Details | Weighted |
 |----------|--------|-------|-------------|-------------------|----------|
-| Spec Alignment | 30% | 95/100 | 90-100: All covered, one text contradiction | -5 for contradictory text in spec Out of Scope and plan Non-Goals (PLAN-012) | 28.5 |
-| Tech Stack | 15% | 100/100 | 90-100: All defined, appropriate | No deductions | 15.0 |
-| Architecture Quality | 25% | 95/100 | 90-100: Clear, correct, well-documented | -5 for Go packages as spec-only artifacts (documented trade-off in Decision 4) | 23.75 |
-| Phase Planning | 20% | 95/100 | 90-100: Well-ordered, clear deliverables | -5 for Phase 3 single-file deliverable with 16 sub-items | 19.0 |
-| Constitution Alignment | 10% | 100/100 | 90-100: All principles addressed | No deductions | 10.0 |
-| **Total** | **100%** | | | | **96.25 → 96/100** |
+| Spec Alignment | 30% | 100/100 | 90-100: all covered | PLAN-001 & PLAN-002 resolved | 30.0 |
+| Tech Stack | 15% | 98/100 | 90-100: defined, appropriate | PLAN-005 (no testing row, suggestion): -2 | 14.7 |
+| Architecture Quality | 25% | 97/100 | 90-100: clear diagrams + responsibilities | PLAN-003/004 undefined types (suggestions): -3 | 24.25 |
+| Phase Planning | 20% | 100/100 | 90-100: logical, clear deliverables | PLAN-006 staleness noted (suggestion, cap reached) | 20.0 |
+| Constitution Alignment | 10% | 100/100 | 90-100: fully aligned | None | 10.0 |
+| **Total** | **100%** | | | | **98.95/100** |
 
-> **Suggestion Cap**: 0/5 points deducted (no suggestions).
+> **Suggestion Cap**: Suggestions deducted 5/5 points (PLAN-003/004 -3, PLAN-005 -2; PLAN-006 noted only). At the 5-point cap.
 
-## Improvements from Prior Reviews
-
-| Review | Score | Key Changes Since |
-|--------|-------|-------------------|
-| Review 1 | 89/100 | Initial plan |
-| Review 2 | 96/100 | Fixed FR-009, dependency graph, 12 phases, edge cases, defaults, slug algorithm, BACKLOG.md re-read |
-| Review 3 (this) | 96/100 | Added phase-level resume via state file — unified three prior suggestions into one clean mechanism |
-
-The score remains 96/100. The phase-level resume addition is an architectural improvement that resolved three prior suggestions but introduced one new text-level contradiction (PLAN-012). Net quality is equivalent.
+Both warnings are resolved; the remaining −5 is entirely the suggestion cap. Addressing PLAN-003/004/005 lifts the score toward 100.
 
 ## Recommendations
 
 ### Priority 1: Before Task Breakdown
-1. **Fix PLAN-012**: Remove "Partial SDD pipeline resume" from spec "Out of Scope" (line 372) and plan "Non-Goals" (line 31)
+- None — both warnings resolved. Optional suggestions below.
 
-### Priority 2: During Implementation
-None — the plan is comprehensive and ready.
+### Priority 2: Architecture Improvements
+1. PLAN-003 / PLAN-004 — define `TaskContext` and `ProgressEvent` in the Module Specifications.
+
+### Priority 3: Documentation Enhancements
+1. PLAN-005 — add the testing entry to Tech Stack.
+2. PLAN-006 — sync the Implementation Phases narrative with tasks.md status.
 
 ## Available Follow-up Commands
 
-- Fix PLAN-012, then `/codexspec:plan-to-tasks` — to proceed with task breakdown
-- Proceed directly to `/codexspec:plan-to-tasks` — PLAN-012 is a text-level fix, not architectural
+### If Issues Found (Warnings or Suggestions)
+- **Direct Fix**: Describe the changes (e.g., "Fix PLAN-002") and I will update the plan (and ripple to spec/tasks where needed).
+- **Re-run Review**: `/codexspec:review-plan` — to verify after fixing.
+- **Proceed Anyway**: If the warnings are acceptable for this iteration, proceed to `/codexspec:plan-to-tasks` (tasks.md already exists and reflects the Hybrid design).
+
+### Next Steps Based on Review Result
+- **Pass**: Plan is ready. Recommended order: resolve PLAN-001/002 in spec+plan+tasks, then proceed to implementation (Phase 6 / T021).

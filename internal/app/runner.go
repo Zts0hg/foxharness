@@ -50,6 +50,11 @@ type AgentRunner struct {
 	mu    sync.Mutex
 	runMu sync.Mutex
 
+	// extraMiddleware holds tool middlewares installed for a takeover run such
+	// as keep-run (guarded by mu); buildRegistry installs them on every run's
+	// registry until ClearMiddleware is called.
+	extraMiddleware []middleware.Middleware
+
 	workDir          string
 	model            string
 	providerProtocol string
@@ -789,6 +794,12 @@ func extractFilePath(raw []byte) string {
 func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.LLMProvider, cp checkpoint.Checkpointer, getMessageID func() string) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Use(middleware.NewCheckpointMiddleware(cp, getMessageID, r.workDir))
+	r.mu.Lock()
+	extra := append([]middleware.Middleware(nil), r.extraMiddleware...)
+	r.mu.Unlock()
+	for _, mw := range extra {
+		registry.Use(mw)
+	}
 	registry.Register(tools.NewReadFileTool(r.workDir))
 	registry.Register(tools.NewWriteFileTool(r.workDir))
 	registry.Register(tools.NewBashTool(r.workDir))
@@ -807,6 +818,22 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 		registry.Register(skilltool.NewSkillTool(slashReg, slashExec, func() string { return sess.ID }))
 	}
 	return registry
+}
+
+// AddMiddleware installs an extra tool middleware applied to every subsequent
+// run until ClearMiddleware is called. keep-run uses it to install the merge
+// guard for the duration of a /keep-run takeover (FR-010).
+func (r *AgentRunner) AddMiddleware(m middleware.Middleware) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.extraMiddleware = append(r.extraMiddleware, m)
+}
+
+// ClearMiddleware removes all extra middlewares installed by AddMiddleware.
+func (r *AgentRunner) ClearMiddleware() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.extraMiddleware = nil
 }
 
 func checkpointDisabledFromEnv() bool {
