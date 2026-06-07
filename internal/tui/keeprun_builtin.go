@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -51,6 +53,37 @@ func startKeepRun(ctx context.Context, repoDir string, runner Runner, reg *slash
 	if exec == nil {
 		exec = slash.NewExecutor()
 	}
+
+	// Detect if running from a worktree and use the main repository path
+	mainRepo, isWorktree, err := keeprun.DetectRepoEnvironment(repoDir)
+	if err != nil {
+		return fmt.Errorf("keep-run: detect repo environment: %w", err)
+	}
+
+	if isWorktree {
+		// When running from a worktree, copy BACKLOG.md to the main repo
+		// so the orchestrator can read it from there
+		worktreeBacklog := filepath.Join(repoDir, "BACKLOG.md")
+		mainBacklog := filepath.Join(mainRepo, "BACKLOG.md")
+		if data, err := os.ReadFile(worktreeBacklog); err == nil {
+			if err := os.WriteFile(mainBacklog, data, 0o644); err != nil {
+				return fmt.Errorf("copy BACKLOG.md to main repo: %w", err)
+			}
+		}
+		repoDir = mainRepo
+		// Notify the user that we're using the main repository
+		select {
+		case events <- runEventMsg{
+			role:  "system",
+			title: "keep-run",
+			body:  fmt.Sprintf("检测到从 worktree 中运行，将从主仓库创建 worktree: %s", mainRepo),
+		}:
+		case <-ctx.Done():
+		}
+	} else {
+		repoDir = mainRepo
+	}
+
 	// Install the merge guard so no phase can merge into an integration branch
 	// (FR-010); it is removed when keep-run finishes.
 	guard, _ := runner.(middlewareInstaller)

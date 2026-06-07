@@ -11,6 +11,10 @@ type PhaseRunner interface {
 	// implementation honors req.AllowedTools (notably excluding merge
 	// operations, FR-010) and req.Config (review mode and guidance prompts).
 	RunPhase(ctx context.Context, req PhaseRequest) (PhaseOutcome, error)
+	// CompactSession triggers a compaction of the current session's context
+	// to reduce token usage when approaching limits. This is called by the
+	// orchestrator when a phase fails with a "prompt too long" error.
+	CompactSession(ctx context.Context) error
 }
 
 // PhaseRequest fully describes one phase invocation.

@@ -35,6 +35,11 @@ func (f *fakeRun) RunPhase(_ context.Context, req PhaseRequest) (PhaseOutcome, e
 	return PhaseOutcome{Output: "ok"}, nil
 }
 
+func (f *fakeRun) CompactSession(_ context.Context) error {
+	// No-op for tests
+	return nil
+}
+
 func (f *fakeRun) commands() []string {
 	out := make([]string, len(f.calls))
 	for i, c := range f.calls {

@@ -161,3 +161,81 @@ func (m *Manager) runGit(ctx context.Context, args ...string) ([]byte, error) {
 	}
 	return out, nil
 }
+
+// IsWorktree detects whether dir is a git worktree. A worktree contains a .git
+// file (not a directory) with content "gitdir: <path>". This is used to detect
+// when /keep-run is being run from within a worktree, which can lead to nested
+// worktree structures and path resolution issues.
+func IsWorktree(dir string) bool {
+	gitPath := filepath.Join(dir, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil {
+		return false
+	}
+	// In a worktree, .git is a file pointing to the main repo's .git directory.
+	// In the main repo, .git is a directory.
+	return !info.IsDir()
+}
+
+// ResolveMainRepo resolves the main repository path from a worktree directory.
+// It reads the .git file which contains "gitdir: <path>" and resolves
+// it to the main repository's root directory. This allows /keep-run to create
+// worktrees from the main repo even when invoked from within a worktree.
+func ResolveMainRepo(worktreeDir string) (string, error) {
+	gitFile := filepath.Join(worktreeDir, ".git")
+	content, err := os.ReadFile(gitFile)
+	if err != nil {
+		return "", fmt.Errorf("read .git file: %w", err)
+	}
+
+	// Content format: "gitdir: <path>\n"
+	// The path can be absolute (e.g., "/path/to/repo/.git/worktrees/<name>")
+	// or relative (e.g., "../.git/worktrees/<name>")
+	lines := strings.Split(string(content), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "gitdir:") {
+			gitDir := strings.TrimPrefix(line, "gitdir:")
+			gitDir = strings.TrimSpace(gitDir)
+
+			var absGitDir string
+			if filepath.IsAbs(gitDir) {
+				// Path is already absolute
+				absGitDir = gitDir
+			} else {
+				// Relative path: resolve from worktree directory
+				absGitDir = filepath.Join(worktreeDir, gitDir)
+			}
+
+			// The worktrees directory's parent is the main repo's .git
+			worktreesDir := filepath.Dir(absGitDir)
+			if filepath.Base(worktreesDir) == "worktrees" {
+				// /path/to/repo/.git/worktrees/<name> -> /path/to/repo/.git -> /path/to/repo
+				mainGitDir := filepath.Dir(worktreesDir)
+				mainRepoDir := filepath.Dir(mainGitDir)
+				return mainRepoDir, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("invalid .git file format")
+}
+
+// DetectRepoEnvironment detects whether the current directory is a worktree
+// and returns the appropriate repository path. If the current directory is a
+// worktree, it returns the main repository path; otherwise it returns the
+// current directory. The boolean return indicates whether a worktree was detected.
+func DetectRepoEnvironment(currentDir string) (mainRepo string, isWorktree bool, err error) {
+	absDir, err := filepath.Abs(currentDir)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve absolute path: %w", err)
+	}
+
+	if IsWorktree(absDir) {
+		main, err := ResolveMainRepo(absDir)
+		if err != nil {
+			return "", true, fmt.Errorf("resolve main repo from worktree: %w", err)
+		}
+		return main, true, nil
+	}
+	return absDir, false, nil
+}

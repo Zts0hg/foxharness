@@ -3,10 +3,13 @@ package keeprun
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Zts0hg/foxharness/internal/provider"
 )
 
 // worktreeManager is the subset of *Manager the orchestrator depends on. It is
@@ -386,9 +389,12 @@ func (o *Orchestrator) runReviewPhase(ctx context.Context, phase Phase, tc *Task
 }
 
 // runWithRetry retries RunPhase on transient error (no gate check) until it
-// returns without error or ctx is canceled. There is no retry cap (FR-007).
+// returns without error or ctx is canceled. Max 3 attempts are allowed to prevent
+// infinite loops on persistent errors like "prompt too long" (FR-007).
+const maxPhaseAttempts = 3
+
 func (o *Orchestrator) runWithRetry(ctx context.Context, req PhaseRequest) (PhaseOutcome, error) {
-	for attempt := 0; ; attempt++ {
+	for attempt := 0; attempt < maxPhaseAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return PhaseOutcome{}, err
 		}
@@ -396,11 +402,27 @@ func (o *Orchestrator) runWithRetry(ctx context.Context, req PhaseRequest) (Phas
 		if err == nil {
 			return out, nil
 		}
-		o.sink.Event(ProgressEvent{Kind: EventPhaseRetry, Slug: req.Phase.Command, Command: req.Phase.Command, Attempt: attempt, Message: err.Error()})
+
+		// Check if this is a "prompt too long" error
+		isPromptTooLong := provider.IsPromptTooLong(err)
+		message := err.Error()
+		if isPromptTooLong {
+			message = "Prompt 过长，触发压缩后重试"
+			// Trigger compaction before retry
+			log.Printf("[Orchestrator] Phase %q: prompt too long, triggering compaction (attempt %d/%d)", req.Phase.Command, attempt+1, maxPhaseAttempts)
+			if compactErr := o.runner.CompactSession(ctx); compactErr != nil {
+				log.Printf("[Orchestrator] Compaction failed: %v", compactErr)
+			}
+		}
+
+		o.sink.Event(ProgressEvent{Kind: EventPhaseRetry, Slug: req.Phase.Command, Command: req.Phase.Command, Attempt: attempt, Message: message})
 		if serr := o.sleep(ctx, o.backoff.wait(attempt)); serr != nil {
 			return PhaseOutcome{}, serr
 		}
 	}
+
+	// Max attempts reached
+	return PhaseOutcome{}, fmt.Errorf("阶段 %q 失败: 已达到最大重试次数 (%d)", req.Phase.Command, maxPhaseAttempts)
 }
 
 func (o *Orchestrator) requestFor(phase Phase, tc TaskContext, instruction string) PhaseRequest {

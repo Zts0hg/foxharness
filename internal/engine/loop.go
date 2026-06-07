@@ -42,10 +42,10 @@ import (
 // from user input. Implementations can inject system instructions,
 // context, and formatting into the prompt sent to the LLM.
 type PromptComposer interface {
-	// Compose creates a system prompt from the user's input.
+	// Compose creates the system prompt for the session.
 	// The returned prompt should include any necessary system instructions,
 	// context, or formatting required for the LLM to process the user's request.
-	Compose(userPrompt string) (string, error)
+	Compose() (string, error)
 }
 
 // RunResult contains the final output from an engine run.
@@ -368,7 +368,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	}
 	_ = transcript.AppendRun(run.ID, "user_prompt", promptPayload)
 
-	systemPrompt, err := e.composer.Compose(userPrompt)
+	systemPrompt, err := e.composer.Compose()
 	if err != nil {
 		wrapped := fmt.Errorf("组装系统提示词失败: %w", err)
 		markRunError(wrapped)

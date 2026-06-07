@@ -267,11 +267,9 @@ directories and Claude Code-compatible directories:
 Project-level commands override user-level commands. At the same level,
 `.foxharness` commands override `.claude` commands with the same name.
 
-Reference a skill in your prompt with `$skill-name`:
-
-```bash
-fox exec "Use $go-refactor to refactor internal/session"
-```
+Skills are offered to the model automatically; it invokes a relevant skill
+through the `skill` tool. You can also run a skill directly as a slash command
+(for example `/go-refactor`).
 
 `SKILL.md` can include optional frontmatter:
 

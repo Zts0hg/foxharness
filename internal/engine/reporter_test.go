@@ -223,7 +223,7 @@ func TestModelCallTraceRecordsProviderAndModel(t *testing.T) {
 
 type staticComposer struct{}
 
-func (c staticComposer) Compose(userPrompt string) (string, error) {
+func (c staticComposer) Compose() (string, error) {
 	return "system", nil
 }
 

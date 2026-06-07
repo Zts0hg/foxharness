@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
@@ -28,6 +30,32 @@ func RunKeepRunHeadless(ctx context.Context, runner Runner, repoDir string, reg 
 	if exec == nil {
 		exec = slash.NewExecutor()
 	}
+
+	// Detect if running from a worktree
+	mainRepo, isWorktree, err := keeprun.DetectRepoEnvironment(repoDir)
+	if err != nil {
+		return fmt.Errorf("keep-run: detect repo environment: %w", err)
+	}
+
+	if isWorktree {
+		// When running from a worktree, copy BACKLOG.md to the main repo
+		// so the orchestrator can read it from there
+		fmt.Fprintf(out, "检测到从 worktree 中运行，将从主仓库创建 worktree\n")
+		fmt.Fprintf(out, "主仓库: %s\n", mainRepo)
+		fmt.Fprintf(out, "当前 worktree: %s\n\n", repoDir)
+
+		// Copy BACKLOG.md from worktree to main repo if it exists
+		worktreeBacklog := filepath.Join(repoDir, "BACKLOG.md")
+		mainBacklog := filepath.Join(mainRepo, "BACKLOG.md")
+		if data, err := os.ReadFile(worktreeBacklog); err == nil {
+			if err := os.WriteFile(mainBacklog, data, 0o644); err != nil {
+				return fmt.Errorf("copy BACKLOG.md to main repo: %w", err)
+			}
+			fmt.Fprintf(out, "已将 BACKLOG.md 从 worktree 复制到主仓库\n\n")
+		}
+		repoDir = mainRepo
+	}
+
 	if guard, ok := runner.(middlewareInstaller); ok {
 		guard.AddMiddleware(mergeGuard{})
 		defer guard.ClearMiddleware()

@@ -69,6 +69,11 @@ func (s *scriptedRunner) RunPhase(_ context.Context, req PhaseRequest) (PhaseOut
 	}
 }
 
+func (s *scriptedRunner) CompactSession(_ context.Context) error {
+	// No-op for E2E tests
+	return nil
+}
+
 // TestEndToEndPipelineRealGit drives the full local pipeline against a real git
 // repository. The worktree manager, orchestrator, spec-directory detection, the
 // filesystem artifact gates, and the git commit gate are all real; only the Go

@@ -18,7 +18,10 @@ import (
 // tool-restricted run plus the active session id.
 type phaseEngine interface {
 	RunRestricted(ctx context.Context, prompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error)
+	RunRestrictedInDir(ctx context.Context, prompt string, workDir string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error)
 	SessionID() string
+	// CompactSession triggers compaction of the current session's context.
+	CompactSession(ctx context.Context) error
 }
 
 // keepRunPhaseRunner is the production keeprun.PhaseRunner. For each phase it
@@ -72,7 +75,18 @@ func (r *keepRunPhaseRunner) RunPhase(ctx context.Context, req keeprun.PhaseRequ
 	if r.onPrompt != nil {
 		r.onPrompt(ctx, buildKeepRunDisplayPrompt(req))
 	}
-	res, err := r.engine.RunRestricted(ctx, buildKeepRunPrompt(body, req), keepRunAllowedTools(), r.reporter)
+
+	// Use WorktreeDir as the working directory for file operations.
+	// This ensures that all file tools (read_file, write_file, bash, etc.)
+	// operate in the target worktree, not the runner's original workDir.
+	workDir := req.WorktreeDir
+	if workDir == "" {
+		// Fallback: if no WorktreeDir is specified, use the runner's session directory.
+		// This shouldn't happen in normal keep-run operation but provides safety.
+		workDir = r.engine.SessionID()
+	}
+
+	res, err := r.engine.RunRestrictedInDir(ctx, buildKeepRunPrompt(body, req), workDir, keepRunAllowedTools(), r.reporter)
 	if err != nil {
 		return keeprun.PhaseOutcome{}, err
 	}
@@ -139,3 +153,9 @@ func (keepRunNopReporter) OnToolResult(context.Context, string, string, bool) {}
 func (keepRunNopReporter) OnMessage(context.Context, string)                  {}
 func (keepRunNopReporter) OnRunComplete(context.Context, engine.RunResult)    {}
 func (keepRunNopReporter) OnRunError(context.Context, string, string, error)  {}
+
+// CompactSession triggers compaction of the current session's context.
+// It delegates to the underlying engine's CompactSession method.
+func (r *keepRunPhaseRunner) CompactSession(ctx context.Context) error {
+	return r.engine.CompactSession(ctx)
+}

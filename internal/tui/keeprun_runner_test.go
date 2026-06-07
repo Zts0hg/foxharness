@@ -24,7 +24,22 @@ func (f *fakeEngine) RunRestricted(_ context.Context, prompt string, allowed []s
 	}
 	return f.result, nil
 }
+
+func (f *fakeEngine) RunRestrictedInDir(_ context.Context, prompt string, workDir string, allowed []string, _ engine.Reporter) (*engine.RunResult, error) {
+	f.lastPrompt = prompt
+	f.lastAllowed = allowed
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.result, nil
+}
+
 func (f *fakeEngine) SessionID() string { return "sess-1" }
+
+func (f *fakeEngine) CompactSession(_ context.Context) error {
+	// No-op for tests
+	return nil
+}
 
 func TestKeepRunPhaseRunnerRunPhase(t *testing.T) {
 	eng := &fakeEngine{result: &engine.RunResult{FinalMessage: "phase output"}}

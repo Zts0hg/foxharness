@@ -279,6 +279,14 @@ func (r *AgentRunner) RunRestrictedWithDisplay(ctx context.Context, userPrompt s
 	return r.runInternal(ctx, userPrompt, displayPrompt, allowedTools, reporter)
 }
 
+// RunRestrictedInDir executes a restricted run using the specified working directory.
+// This allows keep-run phases to execute file operations in the target worktree without
+// changing the runner's global workDir. The session and memory are still from the runner's
+// original session, but file tools (read_file, write_file, bash, etc.) operate from workDir.
+func (r *AgentRunner) RunRestrictedInDir(ctx context.Context, userPrompt string, workDir string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
+	return r.runInternalInDir(ctx, userPrompt, "", workDir, allowedTools, reporter)
+}
+
 func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displayPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
 	r.runMu.Lock()
 	defer r.runMu.Unlock()
@@ -349,6 +357,111 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 		llmProvider,
 		toolRegistry,
 		r.workDir,
+		composer,
+		engine.Config{
+			EnableThinking:    enableThinking,
+			MaxTurns:          maxTurns,
+			ProviderProtocol:  providerProtocol,
+			Model:             model,
+			Checkpointer:      cp,
+			DisplayPrompt:     displayPrompt,
+			OnUserMessageID:   setCurrentMessageID,
+			OnToolCalled:      r.conditionalActivationHook(),
+			NextTurnReminders: r.drainPendingActivations,
+			OnContextEstimate: func(usedTokens, contextWindow int) {
+				atomic.StoreInt64(&r.contextUsedTokens, int64(usedTokens))
+				atomic.StoreInt64(&r.contextWindowTokens, int64(contextWindow))
+			},
+		},
+	)
+	compCfg := compaction.DefaultCompactionConfig()
+	compCfg.Model = model
+	compCfg.SessionDir = sess.RootDir
+	compCfg.TranscriptPath = sess.TranscriptPath()
+	compactor, err := compaction.NewCompactor(llmProvider, compCfg)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 Compactor 失败: %w", err)
+	}
+	eng.WithCompactor(compactor)
+
+	return eng.RunWithReporter(ctx, sess, userPrompt, reporter)
+}
+
+// runInternalInDir is similar to runInternal but uses the specified workDir for file
+// operations and engine execution. This allows keep-run phases to operate in the target
+// worktree while keeping the session and memory from the original runner.
+func (r *AgentRunner) runInternalInDir(ctx context.Context, userPrompt string, displayPrompt string, workDir string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
+	r.runMu.Lock()
+	defer r.runMu.Unlock()
+
+	r.mu.Lock()
+	sess := r.currentSession
+	store := r.store
+	enableThinking := r.enableThinking
+	enablePlanMode := r.enablePlanMode
+	llmProvider := r.llmProvider
+	cp := r.checkpointer
+	providerProtocol := r.providerProtocol
+	model := r.model
+	maxTurns := r.maxTurns
+	r.mu.Unlock()
+
+	nextSeq, err := session.NewMessageLog(sess).NextSeq()
+	if err != nil {
+		return nil, fmt.Errorf("读取下一条消息序号失败: %w", err)
+	}
+	if err := memory.NewStateHistory(store).SnapshotBeforeMessage(nextSeq); err != nil {
+		return nil, fmt.Errorf("创建 session state 快照失败: %w", err)
+	}
+
+	if enablePlanMode {
+		planner := memory.NewPlanner(llmProvider, store)
+		if err := planner.BuildPlan(ctx, userPrompt); err != nil {
+			log.Printf("[PlanMode] 生成计划失败，将回退到旧版本每轮 Thinking: %v", err)
+			enableThinking = true
+		} else {
+			log.Printf("[PlanMode] 计划已生成，本次任务关闭每轮 Thinking")
+			enableThinking = false
+		}
+	}
+
+	r.mu.Lock()
+	registry := r.slashRegistry
+	r.mu.Unlock()
+
+	// Use the specified workDir for the composer instead of r.workDir
+	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
+	if registry != nil {
+		contextWindow := compaction.NewModelRegistry().Lookup(model)
+		tokens := contextWindow
+		composer = composer.WithSkillList(func() string {
+			return skilltool.FormatSkillsWithinBudget(registry.ModelInvocable(), tokens)
+		})
+	}
+	var messageIDMu sync.Mutex
+	currentMessageID := ""
+	setCurrentMessageID := func(messageID string) {
+		messageIDMu.Lock()
+		currentMessageID = messageID
+		messageIDMu.Unlock()
+	}
+	getCurrentMessageID := func() string {
+		messageIDMu.Lock()
+		defer messageIDMu.Unlock()
+		return currentMessageID
+	}
+
+	// Use buildRegistryWithWorkDir to create tools with the specified workDir
+	toolRegistry := r.buildRegistryWithWorkDir(sess, llmProvider, cp, getCurrentMessageID, workDir)
+	if len(allowedTools) > 0 {
+		toolRegistry = slash.NewFilteredRegistry(toolRegistry, allowedTools)
+		log.Printf("[slash] restricting next run to allowed tools: %v", allowedTools)
+	}
+
+	eng := engine.NewAgentEngine(
+		llmProvider,
+		toolRegistry,
+		workDir, // Use the specified workDir instead of r.workDir
 		composer,
 		engine.Config{
 			EnableThinking:    enableThinking,
@@ -714,6 +827,14 @@ func (r *AgentRunner) CompactNow(ctx context.Context, customInstructions string)
 	}, nil
 }
 
+// CompactSession performs a compaction of the current session's context
+// without custom instructions. It is used by the orchestrator when a phase
+// fails with a "prompt too long" error to reduce token usage before retrying.
+func (r *AgentRunner) CompactSession(ctx context.Context) error {
+	_, err := r.CompactNow(ctx, "")
+	return err
+}
+
 // conditionalActivationHook returns an engine.OnToolCalled callback that
 // extracts a file path from read_file/write_file/edit_file tool calls and
 // notifies the slash registry so it can activate any conditional skills
@@ -808,6 +929,39 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
 
 	subManager := subagent.NewManager(llmProvider, r.workDir)
+	registry.Register(subagent.NewTool(subManager, sess.ID))
+
+	r.mu.Lock()
+	slashReg := r.slashRegistry
+	slashExec := r.slashExecutor
+	r.mu.Unlock()
+	if slashReg != nil && slashExec != nil {
+		registry.Register(skilltool.NewSkillTool(slashReg, slashExec, func() string { return sess.ID }))
+	}
+	return registry
+}
+
+// buildRegistryWithWorkDir builds a tool registry using the specified workDir instead
+// of r.workDir. This allows keep-run phases to execute file operations in the target
+// worktree while keeping other components (session, memory) unchanged.
+func (r *AgentRunner) buildRegistryWithWorkDir(sess *session.Session, llmProvider provider.LLMProvider, cp checkpoint.Checkpointer, getMessageID func() string, workDir string) tools.Registry {
+	registry := tools.NewRegistry()
+	registry.Use(middleware.NewCheckpointMiddleware(cp, getMessageID, workDir))
+	r.mu.Lock()
+	extra := append([]middleware.Middleware(nil), r.extraMiddleware...)
+	r.mu.Unlock()
+	for _, mw := range extra {
+		registry.Use(mw)
+	}
+	// Use the specified workDir for file tools
+	registry.Register(tools.NewReadFileTool(workDir))
+	registry.Register(tools.NewWriteFileTool(workDir))
+	registry.Register(tools.NewBashTool(workDir))
+	registry.Register(tools.NewEditFileTool(workDir))
+	registry.Register(tools.NewReadTodoTool(sess.RootDir))
+	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
+
+	subManager := subagent.NewManager(llmProvider, workDir)
 	registry.Register(subagent.NewTool(subManager, sess.ID))
 
 	r.mu.Lock()

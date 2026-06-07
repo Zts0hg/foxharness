@@ -247,3 +247,155 @@ func TestManagerListBranches(t *testing.T) {
 		}
 	}
 }
+
+func TestIsWorktree(t *testing.T) {
+	repo := initRepo(t)
+
+	// Main repo is not a worktree
+	if IsWorktree(repo) {
+		t.Errorf("main repo incorrectly identified as worktree: %s", repo)
+	}
+
+	// Create a worktree
+	ctx := context.Background()
+	m := NewManager(repo)
+	worktreeDir, err := m.Create(ctx, "test-worktree", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := m.Remove(ctx, worktreeDir); err != nil {
+			t.Logf("cleanup worktree failed: %v", err)
+		}
+	}()
+
+	// Worktree should be detected
+	if !IsWorktree(worktreeDir) {
+		t.Errorf("worktree not detected: %s", worktreeDir)
+	}
+}
+
+func TestResolveMainRepo(t *testing.T) {
+	repo := initRepo(t)
+	// Normalize repo path to handle macOS /tmp -> /private/tmp symlink
+	absRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Test with main repo (should return same path, not a worktree)
+	mainRepo, isWorktree, err := DetectRepoEnvironment(repo)
+	if err != nil {
+		t.Fatalf("DetectRepoEnvironment on main repo failed: %v", err)
+	}
+	if isWorktree {
+		t.Error("main repo incorrectly detected as worktree")
+	}
+	// Normalize mainRepo for comparison
+	absMainRepo, err := filepath.EvalSymlinks(mainRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absMainRepo != absRepo {
+		t.Errorf("main repo path mismatch: got %s, want %s", absMainRepo, absRepo)
+	}
+
+	// Create a worktree
+	m := NewManager(repo)
+	worktreeDir, err := m.Create(ctx, "test-worktree", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := m.Remove(ctx, worktreeDir); err != nil {
+			t.Logf("cleanup worktree failed: %v", err)
+		}
+	}()
+
+	// Test ResolveMainRepo from worktree
+	resolvedMain, err := ResolveMainRepo(worktreeDir)
+	if err != nil {
+		t.Fatalf("ResolveMainRepo failed: %v", err)
+	}
+	// Normalize resolved path for comparison
+	absResolved, err := filepath.EvalSymlinks(resolvedMain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absResolved != absRepo {
+		t.Errorf("ResolveMainRepo returned %s, want %s", absResolved, absRepo)
+	}
+
+	// Test DetectRepoEnvironment from worktree
+	detectedMain, detectedIsWorktree, err := DetectRepoEnvironment(worktreeDir)
+	if err != nil {
+		t.Fatalf("DetectRepoEnvironment from worktree failed: %v", err)
+	}
+	if !detectedIsWorktree {
+		t.Error("worktree not detected by DetectRepoEnvironment")
+	}
+	absDetected, err := filepath.EvalSymlinks(detectedMain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absDetected != absRepo {
+		t.Errorf("DetectRepoEnvironment returned %s, want %s", absDetected, absRepo)
+	}
+}
+
+func TestDetectRepoEnvironment(t *testing.T) {
+	repo := initRepo(t)
+	// Normalize repo path to handle macOS /tmp -> /private/tmp symlink
+	absRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Test from main repo
+	mainRepo, isWorktree, err := DetectRepoEnvironment(repo)
+	if err != nil {
+		t.Fatalf("DetectRepoEnvironment from main repo failed: %v", err)
+	}
+	if isWorktree {
+		t.Error("main repo incorrectly detected as worktree")
+	}
+	// Normalize for comparison
+	absMain, err := filepath.EvalSymlinks(mainRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absMain != absRepo {
+		t.Errorf("main repo path: got %s, want %s", absMain, absRepo)
+	}
+
+	// Create a worktree
+	m := NewManager(repo)
+	worktreeDir, err := m.Create(ctx, "test-worktree", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := m.Remove(ctx, worktreeDir); err != nil {
+			t.Logf("cleanup worktree failed: %v", err)
+		}
+	}()
+
+	// Test from worktree
+	detectedRepo, detectedIsWorktree, err := DetectRepoEnvironment(worktreeDir)
+	if err != nil {
+		t.Fatalf("DetectRepoEnvironment from worktree failed: %v", err)
+	}
+	if !detectedIsWorktree {
+		t.Error("worktree not detected")
+	}
+	// Normalize for comparison
+	absDetected, err := filepath.EvalSymlinks(detectedRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absDetected != absRepo {
+		t.Errorf("detected main repo: got %s, want %s", absDetected, absRepo)
+	}
+}
