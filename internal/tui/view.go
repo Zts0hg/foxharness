@@ -151,6 +151,17 @@ func (m Model) View() string {
 		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 	}
 
+	if m.askForm != nil {
+		parts := []string{
+			m.renderHeader(width),
+			"",
+			m.askForm.view(width),
+			"",
+			m.renderStatusBar(width),
+		}
+		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	}
+
 	_, bodyHeight := m.contentDimensions()
 	parts := []string{
 		m.renderMainArea(bodyHeight),

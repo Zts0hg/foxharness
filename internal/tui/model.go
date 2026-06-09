@@ -66,6 +66,11 @@ type Config struct {
 	// invoked. May be nil; a default executor with no fork runner is used
 	// in that case.
 	Executor *slash.Executor
+
+	// Asker, when non-nil, enables the interactive ask_user_question overlay.
+	// Only the TUI sets it; non-interactive runners leave it nil so the tool
+	// is never offered to the model.
+	Asker *Asker
 }
 
 // Run starts the interactive chat TUI.
@@ -202,6 +207,9 @@ type Model struct {
 	checkpointer   checkpoint.Checkpointer
 	rewindSelector *selector.Model
 
+	asker   *Asker
+	askForm *askForm
+
 	sidebarVisible       bool
 	sidebarFocused       bool
 	terminalFocused      bool
@@ -245,6 +253,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		contextUsage:      normalizeContextUsage(runner.ContextUsage()),
 		planMode:          runner.PlanMode(),
 		checkpointer:      runner.Checkpointer(),
+		asker:             cfg.Asker,
 		entries:           entries,
 		sidebarVisible:    true,
 		terminalFocused:   true,
@@ -254,7 +263,11 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(waitForRunEvent(m.ctx, m.events), runningTickCmd())
+	cmds := []tea.Cmd{waitForRunEvent(m.ctx, m.events), runningTickCmd()}
+	if m.asker != nil {
+		cmds = append(cmds, listenForAsk(m.ctx, m.asker))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -312,6 +325,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case selector.ResultMsg:
 		return m.handleSelectorResult(msg)
+
+	case askUserMsg:
+		m.askForm = newAskForm(msg.req)
+		return m, nil
+
+	case askDoneMsg:
+		return m.handleAskDone()
 
 	case promptCommandReadyMsg:
 		return m.handlePromptCommandReady(msg)
@@ -797,7 +817,28 @@ func (m Model) shouldRenderSidebar() bool {
 	return m.sidebarVisible && shouldRenderSidebar(m.width)
 }
 
+// handleAskDone replies to the engine with the overlay's collected result and
+// clears the overlay, then re-arms the listener for the next question request.
+func (m Model) handleAskDone() (tea.Model, tea.Cmd) {
+	if m.askForm == nil {
+		return m, nil
+	}
+	m.askForm.req.reply <- answerResult{
+		answers:   m.askForm.answers,
+		cancelled: m.askForm.cancelled,
+	}
+	m.askForm = nil
+	if m.asker != nil {
+		return m, listenForAsk(m.ctx, m.asker)
+	}
+	return m, nil
+}
+
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.askForm != nil {
+		return m, m.askForm.update(msg)
+	}
+
 	if msg.Type == tea.KeyRunes {
 		if next, cmd, ok := m.handleFragmentedMouseTail(msg.Runes); ok {
 			return next, cmd
