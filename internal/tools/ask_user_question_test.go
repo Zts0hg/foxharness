@@ -80,6 +80,15 @@ func TestDefinitionShape(t *testing.T) {
 	if questions["minItems"] != 1 || questions["maxItems"] != 4 {
 		t.Errorf("questions bounds = %v/%v, want 1/4", questions["minItems"], questions["maxItems"])
 	}
+
+	// Lever A: the description must direct the model on WHEN to use the tool,
+	// not just what it does, so it is chosen over free-form prose clarification.
+	desc := strings.ToLower(def.Description)
+	for _, trigger := range []string{"clarify", "decision", "preferences"} {
+		if !strings.Contains(desc, trigger) {
+			t.Errorf("Definition().Description missing trigger guidance %q: %q", trigger, def.Description)
+		}
+	}
 }
 
 func TestValidation(t *testing.T) {

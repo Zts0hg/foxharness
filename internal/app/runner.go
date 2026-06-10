@@ -313,9 +313,12 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 
 	r.mu.Lock()
 	registry := r.slashRegistry
+	interactiveAsk := r.userAsker != nil
 	r.mu.Unlock()
 
-	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
+	composer := prompt.NewComposer(r.workDir).
+		WithMemory(sess.MemoryPath()).
+		WithInteractiveAsk(interactiveAsk)
 	if registry != nil {
 		contextWindow := compaction.NewModelRegistry().Lookup(model)
 		tokens := contextWindow

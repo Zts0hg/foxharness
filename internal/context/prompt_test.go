@@ -7,6 +7,35 @@ import (
 	"testing"
 )
 
+func TestComposeInteractiveAskGuidance(t *testing.T) {
+	workDir := t.TempDir()
+
+	enabled, err := NewComposer(workDir).WithInteractiveAsk(true).Compose("普通任务")
+	if err != nil {
+		t.Fatalf("Compose(enabled) error = %v", err)
+	}
+	if !strings.Contains(enabled, "ask_user_question") {
+		t.Fatalf("interactive guidance missing when enabled:\n%s", enabled)
+	}
+
+	disabled, err := NewComposer(workDir).WithInteractiveAsk(false).Compose("普通任务")
+	if err != nil {
+		t.Fatalf("Compose(disabled) error = %v", err)
+	}
+	if strings.Contains(disabled, "ask_user_question") {
+		t.Fatalf("interactive guidance must be omitted when disabled:\n%s", disabled)
+	}
+
+	// Default (no WithInteractiveAsk) must also omit it.
+	def, err := NewComposer(workDir).Compose("普通任务")
+	if err != nil {
+		t.Fatalf("Compose(default) error = %v", err)
+	}
+	if strings.Contains(def, "ask_user_question") {
+		t.Fatalf("interactive guidance must be off by default:\n%s", def)
+	}
+}
+
 func TestParseSkillMarkdownFrontmatter(t *testing.T) {
 	content := `---
 name: go-refactor

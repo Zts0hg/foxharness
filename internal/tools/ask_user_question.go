@@ -147,10 +147,17 @@ func (t *AskUserQuestionTool) Definition() schema.ToolDefinition {
 
 	return schema.ToolDefinition{
 		Name: t.Name(),
-		Description: "Ask the user multiple-choice questions to gather preferences, clarify ambiguity, " +
-			"or choose between approaches. Notes: an \"Other\" free-text choice is always added automatically; " +
-			"if you recommend an option, put it first and append \"(Recommended)\" to its label. " +
-			"Ask 1-4 questions per call, each with 2-4 options.",
+		Description: "Ask the user one or more multiple-choice questions and wait for their answer. " +
+			"Use this tool whenever you need to: " +
+			"(1) gather user preferences or requirements; " +
+			"(2) clarify ambiguous or underspecified instructions; " +
+			"(3) get a decision on an implementation choice as you work; " +
+			"(4) offer the user a choice about what direction to take. " +
+			"Prefer this tool over asking in plain prose whenever the clarification reduces to a small set of " +
+			"discrete options, and do not guess on a decision that is the user's to make — ask first, then proceed. " +
+			"Notes: an \"Other\" free-text choice is always added automatically (never add your own); " +
+			"if you recommend an option, put it first and append \"(Recommended)\" to its label; " +
+			"ask 1-4 questions per call, each with 2-4 options.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
