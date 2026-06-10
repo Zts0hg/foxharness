@@ -63,6 +63,28 @@ func TestModelOpensRoutesAndCompletesAskForm(t *testing.T) {
 	}
 }
 
+func TestAskFormRendersInlineWithTranscript(t *testing.T) {
+	// The question card must render at the bottom while the conversation
+	// transcript stays visible above it — not a full-screen takeover.
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{Asker: NewAsker()})
+	m.entries = nil
+	m.appendEntry("assistant", "", "TRANSCRIPT_MARKER_42", false)
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	reply := make(chan answerResult, 1)
+	req := askRequest{questions: []tools.Question{{Prompt: "Pick?", Options: []tools.Option{{Label: "A"}, {Label: "B"}}}}, reply: reply}
+	m, _ = update(t, m, askUserMsg{req: req})
+
+	out := m.View()
+	if !strings.Contains(out, "TRANSCRIPT_MARKER_42") {
+		t.Fatalf("transcript should remain visible while the question is shown:\n%s", out)
+	}
+	if !strings.Contains(out, "Pick?") {
+		t.Fatalf("question card should be rendered:\n%s", out)
+	}
+}
+
 func TestModelAskFormCancelReplies(t *testing.T) {
 	runner := newFakeRunner()
 	asker := NewAsker()

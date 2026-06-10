@@ -6,7 +6,11 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/tools"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
+
+// askFocusedStyle highlights the option row under the cursor.
+var askFocusedStyle = lipgloss.NewStyle().Foreground(cAccentHi)
 
 // askDoneMsg signals that the active askForm finished (answered or cancelled).
 // The model reads the form's accumulated state and replies on the request's
@@ -179,28 +183,26 @@ func (f *askForm) moveCursor(delta int) {
 	}
 }
 
-// view renders the overlay for the current question.
+// view renders the overlay for the current question. It is shown inline at the
+// bottom of the screen (in the input band), so it keeps to a compact card.
 func (f *askForm) view(width int) string {
 	if f.done {
 		return ""
 	}
 	q := f.current()
 	var b strings.Builder
-	if len(f.req.questions) > 1 {
-		b.WriteString(headerHint(q.Header))
-		b.WriteString(progress(f.qIndex+1, len(f.req.questions)))
-		b.WriteString("\n")
-	} else if q.Header != "" {
-		b.WriteString(headerHint(q.Header))
+
+	if head := f.headerLine(q); head != "" {
+		b.WriteString(hintStyle.Render(head))
 		b.WriteString("\n")
 	}
-	b.WriteString(q.Prompt)
+	b.WriteString(headerStyle.Render(q.Prompt))
 	b.WriteString("\n\n")
 
 	for i, opt := range q.Options {
 		b.WriteString(f.renderRow(i, opt.Label, q.MultiSelect))
 		if i == f.cursor && opt.Description != "" {
-			b.WriteString("\n      " + opt.Description)
+			b.WriteString("\n" + mutedStyle.Render("      "+opt.Description))
 		}
 		b.WriteString("\n")
 	}
@@ -208,26 +210,39 @@ func (f *askForm) view(width int) string {
 	b.WriteString("\n")
 
 	if f.otherMode {
-		b.WriteString("\n  > " + string(f.otherText) + "_\n")
+		b.WriteString("\n  > " + string(f.otherText) + cursorStyle.Render("_") + "\n")
 	} else if !f.isOtherRow() {
 		if preview := q.Options[f.cursor].Preview; preview != "" {
-			b.WriteString("\n  preview:\n" + indent(preview))
+			b.WriteString("\n" + mutedStyle.Render("preview:\n"+indent(preview)))
 		}
 	}
 
+	hint := "[enter] select · [esc] cancel"
 	if q.MultiSelect {
-		b.WriteString("\n[space] toggle · [enter] confirm · [esc] cancel")
-	} else {
-		b.WriteString("\n[enter] select · [esc] cancel")
+		hint = "[space] toggle · [enter] confirm · [esc] cancel"
 	}
+	b.WriteString("\n" + hintStyle.Render(hint))
 	return b.String()
 }
 
+// headerLine builds the chip + progress line shown above the question.
+func (f *askForm) headerLine(q tools.Question) string {
+	var parts []string
+	if q.Header != "" {
+		parts = append(parts, "["+q.Header+"]")
+	}
+	if len(f.req.questions) > 1 {
+		parts = append(parts, progress(f.qIndex+1, len(f.req.questions)))
+	}
+	return strings.Join(parts, " ")
+}
+
 // renderRow renders one selectable row with a cursor marker and, for
-// multi-select questions, a checkbox.
+// multi-select questions, a checkbox. The focused row is highlighted.
 func (f *askForm) renderRow(index int, label string, multi bool) string {
+	focused := index == f.cursor
 	marker := "  "
-	if index == f.cursor {
+	if focused {
 		marker = "> "
 	}
 	box := ""
@@ -238,14 +253,11 @@ func (f *askForm) renderRow(index int, label string, multi bool) string {
 			box = "[ ] "
 		}
 	}
-	return marker + box + label
-}
-
-func headerHint(header string) string {
-	if header == "" {
-		return ""
+	row := marker + box + label
+	if focused {
+		return askFocusedStyle.Render(row)
 	}
-	return "[" + header + "] "
+	return row
 }
 
 func progress(cur, total int) string {

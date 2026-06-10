@@ -152,12 +152,23 @@ func (m Model) View() string {
 	}
 
 	if m.askForm != nil {
+		// Render the question inline at the bottom (replacing the input band),
+		// keeping the conversation transcript visible above — rather than a
+		// full-screen takeover like the rewind selector.
+		card := inputStyle.Width(width).Render(m.askForm.view(width))
+		chrome := outerStyle.GetVerticalFrameSize() +
+			lipgloss.Height(card) + 1 /* gap above card */ +
+			1 /* footer gap */ +
+			lipgloss.Height(m.renderStatusBar(width)) +
+			lipgloss.Height(m.renderKeybinds(width))
+		bodyHeight := max(m.height-chrome, m.minTranscriptHeightForWindow())
 		parts := []string{
-			m.renderHeader(width),
+			m.renderMainArea(bodyHeight),
 			"",
-			m.askForm.view(width),
+			card,
 			"",
 			m.renderStatusBar(width),
+			m.renderKeybinds(width),
 		}
 		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 	}
