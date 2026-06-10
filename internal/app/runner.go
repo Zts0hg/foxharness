@@ -68,6 +68,8 @@ type AgentRunner struct {
 	slashRegistry  *slash.Registry
 	slashExecutor  *slash.Executor
 
+	userAsker tools.UserAsker
+
 	pendingMu          sync.Mutex
 	pendingActivations []string
 
@@ -311,9 +313,12 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 
 	r.mu.Lock()
 	registry := r.slashRegistry
+	interactiveAsk := r.userAsker != nil
 	r.mu.Unlock()
 
-	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
+	composer := prompt.NewComposer(r.workDir).
+		WithMemory(sess.MemoryPath()).
+		WithInteractiveAsk(interactiveAsk)
 	if registry != nil {
 		contextWindow := compaction.NewModelRegistry().Lookup(model)
 		tokens := contextWindow
@@ -802,11 +807,28 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 	r.mu.Lock()
 	slashReg := r.slashRegistry
 	slashExec := r.slashExecutor
+	userAsker := r.userAsker
 	r.mu.Unlock()
 	if slashReg != nil && slashExec != nil {
 		registry.Register(skilltool.NewSkillTool(slashReg, slashExec, func() string { return sess.ID }))
 	}
+	// The ask_user_question tool is only registered when an interactive asker is
+	// available (set by the TUI). Non-interactive runners leave it nil so the
+	// model is never offered a tool it cannot get answered — the isEnabled()
+	// analog from the reference.
+	if userAsker != nil {
+		registry.Register(tools.NewAskUserQuestionTool(userAsker))
+	}
 	return registry
+}
+
+// SetUserAsker installs the interactive asker used by the ask_user_question
+// tool. The TUI calls this before running prompts; leaving it unset (nil) keeps
+// the tool out of the registry for non-interactive runs.
+func (r *AgentRunner) SetUserAsker(asker tools.UserAsker) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.userAsker = asker
 }
 
 func checkpointDisabledFromEnv() bool {

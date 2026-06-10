@@ -23,12 +23,24 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 	restoreLogs := redirectTUILogs(runner.SessionDir())
 	defer restoreLogs()
 
+	asker := attachInteractiveAsker(runner)
+
 	return tui.Run(ctx, runner, tui.Config{
 		Model:         cfg.Model,
 		InitialPrompt: cfg.Prompt,
 		Registry:      runner.SlashRegistry(),
 		Executor:      runner.SlashExecutor(),
+		Asker:         asker,
 	})
+}
+
+// attachInteractiveAsker creates the interactive asker, installs it on the
+// runner so the ask_user_question tool is registered for this (TUI) session, and
+// returns it for the TUI model to listen on.
+func attachInteractiveAsker(runner *AgentRunner) *tui.Asker {
+	asker := tui.NewAsker()
+	runner.SetUserAsker(asker)
+	return asker
 }
 
 func redirectTUILogs(sessionDir string) func() {

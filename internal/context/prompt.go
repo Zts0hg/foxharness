@@ -16,9 +16,10 @@ import (
 // Composer builds the full system prompt by layering base instructions,
 // project-level AGENTS.md, referenced skills, and session working memory.
 type Composer struct {
-	workDir     string
-	memoryPath  string
-	skillListFn func() string
+	workDir        string
+	memoryPath     string
+	skillListFn    func() string
+	interactiveAsk bool
 }
 
 // WithSkillList registers a function that returns the formatted list of
@@ -44,12 +45,25 @@ func (c *Composer) WithMemory(path string) *Composer {
 	return &clone
 }
 
+// WithInteractiveAsk returns a copy of the Composer that, when enabled, appends
+// guidance directing the model to use the ask_user_question tool for ambiguous
+// requests. It MUST be enabled only when that tool is actually registered (the
+// interactive TUI), so the model is never told to use a tool it lacks.
+func (c *Composer) WithInteractiveAsk(enabled bool) *Composer {
+	clone := *c
+	clone.interactiveAsk = enabled
+	return &clone
+}
+
 // Compose assembles the full system prompt string by loading AGENTS.md,
 // resolving $name skill references found in the user prompt, and appending
 // session working memory when available.
 func (c *Composer) Compose(userPrompt string) (string, error) {
 	parts := []string{
 		baseSystemPrompt(),
+	}
+	if c.interactiveAsk {
+		parts = append(parts, section("Asking the User", askGuidance()))
 	}
 	parts = append(parts, section("Persistent File Memory", memoryInstructions()))
 
@@ -100,6 +114,14 @@ type loadedSkill struct {
 	Name          string
 	Description   string
 	Content       string
+}
+
+func askGuidance() string {
+	return strings.TrimSpace(`
+- When the user's request is ambiguous, underspecified, or hinges on a decision only they can make (scope, tech choice, trade-offs, which-of-several), call the ask_user_question tool with structured multiple-choice options instead of asking in free-form prose.
+- Prefer ask_user_question whenever the clarification reduces to a small set of discrete choices; reserve prose for genuinely open-ended discussion.
+- Do not guess on a material decision that is the user's to make — ask first, then proceed.
+`)
 }
 
 func memoryInstructions() string {
