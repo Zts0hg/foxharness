@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/tui"
 )
 
@@ -31,6 +32,11 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 		Registry:      runner.SlashRegistry(),
 		Executor:      runner.SlashExecutor(),
 		Asker:         asker,
+		Autodev: func(runCtx context.Context, backlogPath string, reporter autodev.Reporter) error {
+			autodevCfg := cfg
+			autodevCfg.Prompt = backlogPath
+			return RunAutodev(runCtx, autodevCfg, reporter)
+		},
 	})
 }
 

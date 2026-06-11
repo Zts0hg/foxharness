@@ -195,6 +195,7 @@ Slash commands:
 fox [options] [prompt]       # start the interactive TUI
 fox exec [options] [prompt]  # run once and print the result
 fox -p [options] [prompt]    # run once and print the result
+fox autodev [backlog-path]   # drain the backlog autonomously (SDD pipeline per item)
 ```
 
 Common options:
@@ -221,6 +222,16 @@ fox exec -session 20260517-192517-a504c5 "Continue this session and summarize th
 fox exec -model glm-4.5-air "Add tests for this project"
 fox exec -provider claude "Summarize the architecture of this project"
 ```
+
+### Autodev (Backlog Autopilot)
+
+`fox autodev` (or `/autodev` inside the TUI) autonomously drains a backlog
+of requirements: each pending item runs the CodexSpec SDD pipeline in its
+own branch + worktree, passes a build/test/gofmt gate, then is committed,
+pushed, and turned into a linked GitHub issue + PR — strictly one item at a
+time, resumable via a durable state ledger. See
+[docs/autodev.md](docs/autodev.md) for the full guide and the
+`.foxharness/autodev.yml` configuration reference.
 
 ## Project Instructions
 
