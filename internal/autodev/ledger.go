@@ -168,8 +168,10 @@ func (l *Ledger) IsDone(slug string) bool {
 	return ok && it.Status == StatusDone
 }
 
-// Save persists the ledger to its JSON file, creating parent directories as
-// needed.
+// Save persists the ledger to its JSON file, creating parent directories
+// as needed. The write is atomic (temp file + rename): the ledger is the
+// authoritative resume source (REQ-021), so a crash mid-write must never
+// leave a torn file behind.
 func (l *Ledger) Save() error {
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return fmt.Errorf("create ledger dir: %w", err)
@@ -178,8 +180,23 @@ func (l *Ledger) Save() error {
 	if err != nil {
 		return fmt.Errorf("encode ledger: %w", err)
 	}
-	if err := os.WriteFile(l.path, append(data, '\n'), 0o644); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(l.path), filepath.Base(l.path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create ledger temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
 		return fmt.Errorf("write ledger: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close ledger temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, l.path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("commit ledger: %w", err)
 	}
 	return nil
 }

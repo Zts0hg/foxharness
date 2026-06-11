@@ -81,7 +81,7 @@ func (m *StageMachine) RunStep(ctx context.Context, core CoreRunner, sc *StageCo
 		}
 	}
 
-	msg, err := m.seedPrompt(core, sc, st)
+	msg, err := m.seedPrompt(ctx, core, sc, st)
 	if err != nil {
 		return err
 	}
@@ -123,7 +123,7 @@ func (m *StageMachine) RunStep(ctx context.Context, core CoreRunner, sc *StageCo
 	}
 }
 
-func (m *StageMachine) seedPrompt(core CoreRunner, sc *StageContext, st Stage) (string, error) {
+func (m *StageMachine) seedPrompt(ctx context.Context, core CoreRunner, sc *StageContext, st Stage) (string, error) {
 	var prompt string
 	switch {
 	case st.Command != "":
@@ -131,7 +131,7 @@ func (m *StageMachine) seedPrompt(core CoreRunner, sc *StageContext, st Stage) (
 		if st.Args != nil {
 			args = st.Args(sc)
 		}
-		materialized, err := core.StagePrompt(st.Command, args)
+		materialized, err := core.StagePrompt(ctx, st.Command, args)
 		if err != nil {
 			return "", fmt.Errorf("materialize %s: %w", st.Command, err)
 		}
@@ -299,13 +299,18 @@ func verifyImplement(deps PipelineDeps) func(ctx context.Context, sc *StageConte
 			return false, gateGap(result)
 		}
 
-		dirty, _ := deps.Git.Run(ctx, sc.WorkDir, "status", "--porcelain")
-		if strings.TrimSpace(dirty) != "" {
+		dirty, dirtyErr := deps.Git.Run(ctx, sc.WorkDir, "status", "--porcelain")
+		if dirtyErr == nil && strings.TrimSpace(dirty) != "" {
 			return true, ""
 		}
-		diff, _ := deps.Git.Run(ctx, sc.WorkDir, "diff", sc.BaseBranch+"...HEAD", "--name-only")
-		if strings.TrimSpace(diff) != "" {
+		diff, diffErr := deps.Git.Run(ctx, sc.WorkDir, "diff", sc.BaseBranch+"...HEAD", "--name-only")
+		if diffErr == nil && strings.TrimSpace(diff) != "" {
 			return true, ""
+		}
+		// A failing git query is its own gap: claiming "no changes" when
+		// git itself broke would steer the engineer at a phantom problem.
+		if dirtyErr != nil || diffErr != nil {
+			return false, fmt.Sprintf("cannot inspect the worktree diff (git status: %v; git diff: %v)", dirtyErr, diffErr)
 		}
 		return false, "the worktree contains no changes (empty diff); implement-tasks must produce real code changes"
 	}

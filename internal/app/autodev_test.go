@@ -85,7 +85,7 @@ func TestCoreRunnerAdapterStagePrompt(t *testing.T) {
 	}
 	adapter := &coreRunnerAdapter{runner: api}
 
-	prompt, err := adapter.StagePrompt("codexspec:generate-spec", "build the thing")
+	prompt, err := adapter.StagePrompt(context.Background(), "codexspec:generate-spec", "build the thing")
 	if err != nil {
 		t.Fatalf("StagePrompt returned error: %v", err)
 	}
@@ -104,8 +104,40 @@ func TestCoreRunnerAdapterStagePromptUnknownCommand(t *testing.T) {
 	}
 	adapter := &coreRunnerAdapter{runner: api}
 
-	if _, err := adapter.StagePrompt("codexspec:nope", ""); err == nil {
+	if _, err := adapter.StagePrompt(context.Background(), "codexspec:nope", ""); err == nil {
 		t.Fatal("StagePrompt returned nil error for an unknown command, want error")
+	}
+}
+
+func TestCoreRunnerAdapterStagePromptHonorsContext(t *testing.T) {
+	registry := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
+	// The embedded command transforms its text so executed output ("OK")
+	// is distinguishable from the command line echoed inside error markers.
+	registry.Register(&slash.Command{
+		Type:    slash.CommandPrompt,
+		Name:    "codexspec:shelly",
+		Source:  slash.SourceProject,
+		Content: "Before !`echo ok | tr a-z A-Z` after",
+	})
+	api := &fakeRunnerAPI{
+		registry: registry,
+		executor: slash.NewExecutor(slash.WithWorkDir(t.TempDir())),
+	}
+	adapter := &coreRunnerAdapter{runner: api}
+
+	live, err := adapter.StagePrompt(context.Background(), "codexspec:shelly", "")
+	if err != nil {
+		t.Fatalf("StagePrompt returned error: %v", err)
+	}
+	if !strings.Contains(live, "OK") {
+		t.Fatalf("prompt = %q, want embedded shell output with a live context", live)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	dead, err := adapter.StagePrompt(cancelled, "codexspec:shelly", "")
+	if err == nil && strings.Contains(dead, "OK") {
+		t.Errorf("prompt = %q, want the cancelled context to stop embedded shell execution (CODE-003)", dead)
 	}
 }
 

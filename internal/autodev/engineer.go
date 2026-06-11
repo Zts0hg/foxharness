@@ -240,6 +240,12 @@ func (a *EngineerAsker) Ask(ctx context.Context, questions []tools.Question) ([]
 
 	answers, err := a.agent.Decide(ctx, questions, sc)
 	if err != nil || len(answers) == 0 {
+		// The fallback keeps the loop alive (PLAN-005) but must not be
+		// silent (NFR-004): surface why the recommended option was chosen.
+		if a.reporter != nil {
+			a.reporter.OnInfo(ctx, fmt.Sprintf(
+				"WARNING: engineer decide failed (%v); answering with each question's first/recommended option", err))
+		}
 		answers = fallbackAnswers(questions)
 	} else {
 		answers = fillMissingAnswers(questions, answers)

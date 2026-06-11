@@ -123,7 +123,7 @@ func (c *remoteCore) Run(ctx context.Context, prompt string, r engine.Reporter) 
 func (c *remoteCore) SetUserAsker(a tools.UserAsker) {}
 func (c *remoteCore) SetModel(model string) error    { return nil }
 func (c *remoteCore) WorkDir() string                { return "/wt" }
-func (c *remoteCore) StagePrompt(command, args string) (string, error) {
+func (c *remoteCore) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	return fmt.Sprintf("PROMPT[%s|%s]", command, args), nil
 }
 

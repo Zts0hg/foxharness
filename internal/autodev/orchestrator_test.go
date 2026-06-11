@@ -65,7 +65,7 @@ func (c *stubCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*
 func (c *stubCore) SetUserAsker(a tools.UserAsker) { c.asker = a }
 func (c *stubCore) SetModel(model string) error    { return nil }
 func (c *stubCore) WorkDir() string                { return c.workDir }
-func (c *stubCore) StagePrompt(command, args string) (string, error) {
+func (c *stubCore) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	return fmt.Sprintf("PROMPT[%s|%s]", command, args), nil
 }
 

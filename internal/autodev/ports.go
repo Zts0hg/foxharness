@@ -24,7 +24,8 @@ type CoreRunner interface {
 	// StagePrompt materializes a codexspec command body (e.g.
 	// "codexspec:generate-spec") with args via the runner's slash
 	// registry and executor, returning the processed prompt (REQ-009).
-	StagePrompt(command, args string) (string, error)
+	// ctx bounds any embedded-shell processing in the command body.
+	StagePrompt(ctx context.Context, command, args string) (string, error)
 }
 
 // CoreRunnerFactory creates a CoreRunner bound to a work directory. The

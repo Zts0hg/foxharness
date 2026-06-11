@@ -112,7 +112,8 @@ func TestEngineerAskerPassesThroughOtherFreeText(t *testing.T) {
 
 func TestEngineerAskerNeverCancels(t *testing.T) {
 	agent := &fakeEngineerAgent{decideErr: errors.New("model unavailable")}
-	asker := NewEngineerAsker(agent, NewTerminalReporter(io.Discard), &StageContext{})
+	var buf strings.Builder
+	asker := NewEngineerAsker(agent, NewTerminalReporter(&buf), &StageContext{})
 
 	answers, err := asker.Ask(context.Background(), sampleQuestions())
 	if err != nil {
@@ -123,6 +124,13 @@ func TestEngineerAskerNeverCancels(t *testing.T) {
 	}
 	if answers[0].Value != "MEMORY.md (Recommended)" {
 		t.Errorf("Value = %q, want the first/recommended option as fallback", answers[0].Value)
+	}
+
+	// The fallback must not happen silently (NFR-004): the failure and the
+	// substitution are reported.
+	out := buf.String()
+	if !strings.Contains(out, "model unavailable") {
+		t.Errorf("reporter output = %q, want the decide failure surfaced (CODE-004)", out)
 	}
 }
 

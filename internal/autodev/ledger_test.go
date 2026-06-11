@@ -234,6 +234,38 @@ func TestSaveAndReloadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveIsAtomicAndLeavesNoTempFiles(t *testing.T) {
+	path := ledgerPath(t)
+	led, err := LoadLedger(path, newTestClock())
+	if err != nil {
+		t.Fatalf("LoadLedger returned error: %v", err)
+	}
+	led.Seed([]Item{{Title: "Atomic", Priority: PriorityHigh}})
+
+	// Saving twice must atomically replace the file and leave no
+	// temporary artifacts behind (the ledger is the authoritative resume
+	// source; a torn write would break recovery).
+	for i := 0; i < 2; i++ {
+		if err := led.Save(); err != nil {
+			t.Fatalf("Save #%d returned error: %v", i+1, err)
+		}
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != filepath.Base(path) {
+			t.Errorf("unexpected file %q next to the ledger, want temp files cleaned up", e.Name())
+		}
+	}
+
+	if _, err := LoadLedger(path, newTestClock()); err != nil {
+		t.Fatalf("reload after Save returned error: %v", err)
+	}
+}
+
 func TestSeedDisambiguatesSlugCollisions(t *testing.T) {
 	led, err := LoadLedger(ledgerPath(t), newTestClock())
 	if err != nil {

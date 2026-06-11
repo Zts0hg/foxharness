@@ -216,7 +216,7 @@ func (c *e2eCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*e
 func (c *e2eCore) SetUserAsker(a tools.UserAsker) { c.asker = a }
 func (c *e2eCore) SetModel(model string) error    { return nil }
 func (c *e2eCore) WorkDir() string                { return c.workDir }
-func (c *e2eCore) StagePrompt(command, args string) (string, error) {
+func (c *e2eCore) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	return fmt.Sprintf("PROMPT[%s|%s]", command, args), nil
 }
 

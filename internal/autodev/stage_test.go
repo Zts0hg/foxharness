@@ -39,7 +39,7 @@ func (f *fakeCore) SetUserAsker(a tools.UserAsker) { f.asker = a }
 func (f *fakeCore) SetModel(model string) error    { return nil }
 func (f *fakeCore) WorkDir() string                { return f.workDir }
 
-func (f *fakeCore) StagePrompt(command, args string) (string, error) {
+func (f *fakeCore) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	return fmt.Sprintf("PROMPT[%s|%s]", command, args), nil
 }
 
@@ -360,6 +360,33 @@ func (g *fakeDiffGit) Run(ctx context.Context, dir string, args ...string) (stri
 		return g.status, nil
 	}
 	return g.diff, nil
+}
+
+// erroringGit fails every git invocation, simulating a broken git binary.
+type erroringGit struct{}
+
+func (erroringGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+	return "git: not found", fmt.Errorf("exec git: not found")
+}
+
+func TestImplementVerifySurfacesGitErrors(t *testing.T) {
+	stages := LeanPipeline(PipelineDeps{
+		Gate: &fakeGate{result: GateResult{Passed: true}},
+		Git:  erroringGit{},
+	})
+	impl := stages[3]
+	sc := &StageContext{WorkDir: t.TempDir(), BaseBranch: "main"}
+
+	ok, gap := impl.Verify(context.Background(), sc)
+	if ok {
+		t.Fatal("Verify passed although git queries failed")
+	}
+	if !strings.Contains(gap, "cannot inspect the worktree") {
+		t.Errorf("gap = %q, want the git failure surfaced, not a phantom empty diff (CODE-002)", gap)
+	}
+	if strings.Contains(gap, "no changes") {
+		t.Errorf("gap = %q, must not claim an empty diff when git itself failed", gap)
+	}
 }
 
 func TestImplementVerifyRequiresGatesAndNonEmptyDiff(t *testing.T) {

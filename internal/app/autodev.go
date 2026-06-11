@@ -65,8 +65,9 @@ func (a *coreRunnerAdapter) WorkDir() string {
 
 // StagePrompt implements autodev.CoreRunner by looking the command up in
 // the runner's slash registry and processing it through the executor
-// pipeline (argument substitution, shell embedding, variables).
-func (a *coreRunnerAdapter) StagePrompt(command, args string) (string, error) {
+// pipeline (argument substitution, shell embedding, variables). ctx bounds
+// the embedded-shell processing so a cancelled run stops promptly.
+func (a *coreRunnerAdapter) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	registry := a.runner.SlashRegistry()
 	if registry == nil {
 		return "", fmt.Errorf("no slash registry available to materialize %q", command)
@@ -79,7 +80,7 @@ func (a *coreRunnerAdapter) StagePrompt(command, args string) (string, error) {
 	if executor == nil {
 		executor = slash.NewExecutor(slash.WithWorkDir(a.runner.WorkDir()))
 	}
-	result, err := executor.Execute(context.Background(), cmd, args, a.runner.SessionID())
+	result, err := executor.Execute(ctx, cmd, args, a.runner.SessionID())
 	if err != nil {
 		return "", fmt.Errorf("materialize %q: %w", command, err)
 	}
