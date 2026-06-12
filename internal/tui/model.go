@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/engine"
@@ -71,6 +72,11 @@ type Config struct {
 	// Only the TUI sets it; non-interactive runners leave it nil so the tool
 	// is never offered to the model.
 	Asker *Asker
+
+	// Autodev, when non-nil, launches the backlog autopilot for the
+	// /autodev builtin. internal/app injects it so the tui -> autodev
+	// dependency stays one-way.
+	Autodev func(ctx context.Context, backlogPath string, reporter autodev.Reporter) error
 }
 
 // Run starts the interactive chat TUI.
@@ -118,6 +124,7 @@ var slashCommands = []slashCommand{
 	{Name: "/new", Description: "start a fresh session"},
 	{Name: "/model", Description: "show or switch the active model"},
 	{Name: "/compact", Description: "compact context", ArgumentHint: "<optional custom instructions>"},
+	{Name: "/autodev", Description: "drain the backlog autonomously", ArgumentHint: "[backlog-path]"},
 	{Name: "/cancel", Description: "cancel the active run"},
 	{Name: "/sidebar", Description: "show or hide right sidebar"},
 	{Name: "/help", Description: "show available commands"},
@@ -219,6 +226,8 @@ type Model struct {
 
 	slashRegistry *slash.Registry
 	slashExecutor *slash.Executor
+
+	autodevLauncher func(ctx context.Context, backlogPath string, reporter autodev.Reporter) error
 }
 
 func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
@@ -254,6 +263,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		planMode:          runner.PlanMode(),
 		checkpointer:      runner.Checkpointer(),
 		asker:             cfg.Asker,
+		autodevLauncher:   cfg.Autodev,
 		entries:           entries,
 		sidebarVisible:    true,
 		terminalFocused:   true,
@@ -2064,6 +2074,12 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.spinnerFrame = 0
 		m.status = "Creating new session"
 		return m, newSessionCmd(m.ctx, m.runner)
+	case "/autodev":
+		backlogPath := ""
+		if len(fields) > 1 {
+			backlogPath = strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
+		}
+		return m.handleAutodevCommand(backlogPath)
 	case "/cancel":
 		if m.cancelRun == nil {
 			m.status = "No active run"

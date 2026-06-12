@@ -195,6 +195,7 @@ Slash commands:
 fox [options] [prompt]       # start the interactive TUI
 fox exec [options] [prompt]  # run once and print the result
 fox -p [options] [prompt]    # run once and print the result
+fox autodev [backlog-path]   # drain the backlog autonomously (SDD pipeline per item)
 ```
 
 Common options:
@@ -221,6 +222,73 @@ fox exec -session 20260517-192517-a504c5 "Continue this session and summarize th
 fox exec -model glm-4.5-air "Add tests for this project"
 fox exec -provider claude "Summarize the architecture of this project"
 ```
+
+### Autodev (Backlog Autopilot)
+
+`fox autodev` (or `/autodev` inside the TUI) autonomously drains a backlog
+of requirements: each pending item runs the CodexSpec SDD pipeline in its
+own branch + worktree, passes a build/test/gofmt gate, then is committed,
+pushed, and turned into a linked GitHub issue + PR — strictly one item at a
+time, resumable via a durable state ledger.
+
+#### Quickstart
+
+1. Install the `fox` binary (see [Install](#install)) and set your API key
+   (see [Configure](#configure)).
+
+2. Autodev publishes its work through your existing git and GitHub CLI
+   credentials. Make sure the target project is a git repository and `gh`
+   is authenticated:
+
+   ```bash
+   gh auth status   # run `gh auth login` first if it fails
+   ```
+
+3. Create a `BACKLOG.md` at the repository root. One `##` heading per
+   requirement:
+
+   ```markdown
+   # Backlog
+
+   ## [feature] Short, action-oriented title
+
+   **Priority**: high
+   **Status**: pending
+   **Description**: Free-text requirement. It is fed to the SDD pipeline
+   as the already-clarified requirement, so spell out scope, constraints,
+   and what is out of scope.
+   ```
+
+   `Priority` is `high` / `medium` / `low`; items are processed in
+   priority order.
+
+4. Run autodev:
+
+   ```bash
+   fox autodev                  # uses backlog_file from .foxharness/autodev.yml (default BACKLOG.md)
+   fox autodev WORK.md          # override the backlog path
+   fox autodev -C /path/repo    # run against another repository
+   ```
+
+For every pending item, autodev creates an `auto/<slug>` branch in an
+isolated worktree, drives spec → plan → tasks → implementation, runs the
+`go build` / `go test` / `gofmt` gate, then commits, pushes, and opens a
+linked GitHub issue + PR (`Closes #N`). Progress is recorded in
+`.foxharness/autodev-state.json`: re-running skips `done` items and resumes
+interrupted ones from their recorded stage. PRs are never auto-merged —
+review stays with you.
+
+Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Backlog drained. |
+| `2` | Precondition failure: not a git repository, or `gh` missing/unauthenticated. |
+| `1` | Unexpected error. |
+
+Configuration is optional — every key in `.foxharness/autodev.yml` has a
+sensible default. See [docs/autodev.md](docs/autodev.md) for the full
+guide and the configuration reference.
 
 ## Project Instructions
 

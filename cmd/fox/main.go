@@ -7,6 +7,7 @@
 //	fox exec "run this task once"
 //	fox -p "run this task once"
 //	echo "your task" | fox exec -
+//	fox autodev [backlog-path]
 //
 // Flags:
 //
@@ -26,6 +27,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -34,6 +36,7 @@ import (
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/app"
+	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/settings"
 )
 
@@ -42,6 +45,7 @@ type launchMode int
 const (
 	launchTUI launchMode = iota
 	launchPrint
+	launchAutodev
 )
 
 func main() {
@@ -57,6 +61,17 @@ func main() {
 	loaded, _ := settings.Load(homeDir)
 	foxModelEnv := os.Getenv("FOX_MODEL")
 	cfg.Model = settings.ResolveModel(cfg.Model, foxModelEnv, "glm-4.5-air", loaded)
+
+	if mode == launchAutodev {
+		// The positional argument, when present, is the backlog path.
+		cfg.Prompt = strings.TrimSpace(cfg.Prompt)
+		reporter := autodev.NewTerminalReporter(os.Stdout)
+		if err := app.RunAutodev(context.Background(), cfg, reporter); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(exitCodeForError(err))
+		}
+		return
+	}
 
 	if mode == launchTUI {
 		cfg.Prompt = strings.TrimSpace(cfg.Prompt)
@@ -91,11 +106,28 @@ func exitWithError(err error) {
 	os.Exit(1)
 }
 
+// exitCodeForError maps an autodev run outcome to the documented exit
+// codes: 0 backlog drained, 2 precondition failure, 1 unexpected error.
+func exitCodeForError(err error) int {
+	if err == nil {
+		return 0
+	}
+	var pre *autodev.PreconditionError
+	if errors.As(err, &pre) {
+		return 2
+	}
+	return 1
+}
+
 func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, error) {
 	var cfg app.CLIConfig
 	mode := launchTUI
 	if len(args) > 0 && args[0] == "exec" {
 		mode = launchPrint
+		args = args[1:]
+	}
+	if len(args) > 0 && args[0] == "autodev" {
+		mode = launchAutodev
 		args = args[1:]
 	}
 
@@ -129,6 +161,7 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 		fmt.Fprintln(output, "  fox exec [options] [prompt]  run once and print the result")
 		fmt.Fprintln(output, "  fox -p [options] [prompt]    run once and print the result")
 		fmt.Fprintln(output, "  echo \"prompt\" | fox exec -  read the one-shot prompt from stdin")
+		fmt.Fprintln(output, "  fox autodev [backlog-path]   drain the backlog autonomously (SDD pipeline per item)")
 		fmt.Fprintln(output)
 		fmt.Fprintln(output, "Options:")
 		fs.PrintDefaults()
@@ -139,10 +172,13 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 	}
 
 	if printMode {
+		if mode == launchAutodev {
+			return cfg, mode, fmt.Errorf("-p/-print 不能和 autodev 同时使用")
+		}
 		mode = launchPrint
 	}
-	if cfg.Interactive && mode == launchPrint {
-		return cfg, mode, fmt.Errorf("-tui/-interactive 不能和 exec 或 -p/-print 同时使用")
+	if cfg.Interactive && mode != launchTUI {
+		return cfg, mode, fmt.Errorf("-tui/-interactive 不能和 exec、-p/-print 或 autodev 同时使用")
 	}
 
 	positionalPrompt := strings.TrimSpace(strings.Join(fs.Args(), " "))

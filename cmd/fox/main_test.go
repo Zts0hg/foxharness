@@ -1,10 +1,14 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/Zts0hg/foxharness/internal/autodev"
 )
 
 func TestParseArgsDefaultsToTUI(t *testing.T) {
@@ -159,6 +163,60 @@ func TestParseArgsRejectsTwoPromptSources(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "不能同时使用 -prompt") {
 		t.Fatalf("error = %q, want prompt source conflict", err.Error())
+	}
+}
+
+func TestParseArgsAutodevMode(t *testing.T) {
+	cfg, mode, err := parseArgs([]string{"autodev"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	if mode != launchAutodev {
+		t.Fatalf("mode = %v, want %v", mode, launchAutodev)
+	}
+	if cfg.Prompt != "" {
+		t.Fatalf("Prompt = %q, want empty (no backlog override)", cfg.Prompt)
+	}
+}
+
+func TestParseArgsAutodevWithBacklogPathAndWorkdir(t *testing.T) {
+	cfg, mode, err := parseArgs([]string{"autodev", "-C", "/tmp/project", "-model", "test-model", "WORK.md"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	if mode != launchAutodev {
+		t.Fatalf("mode = %v, want %v", mode, launchAutodev)
+	}
+	if cfg.WorkDir != "/tmp/project" {
+		t.Errorf("WorkDir = %q, want /tmp/project", cfg.WorkDir)
+	}
+	if cfg.Model != "test-model" {
+		t.Errorf("Model = %q, want test-model", cfg.Model)
+	}
+	if cfg.Prompt != "WORK.md" {
+		t.Errorf("Prompt = %q, want the backlog path positional", cfg.Prompt)
+	}
+}
+
+func TestParseArgsAutodevRejectsInteractive(t *testing.T) {
+	_, _, err := parseArgs([]string{"autodev", "-tui"}, io.Discard)
+	if err == nil {
+		t.Fatal("parseArgs returned nil error, want conflict for autodev + -tui")
+	}
+}
+
+func TestExitCodeForError(t *testing.T) {
+	if got := exitCodeForError(nil); got != 0 {
+		t.Errorf("exitCodeForError(nil) = %d, want 0 (backlog drained)", got)
+	}
+	if got := exitCodeForError(&autodev.PreconditionError{Reason: "gh missing"}); got != 2 {
+		t.Errorf("exitCodeForError(precondition) = %d, want 2", got)
+	}
+	if got := exitCodeForError(fmt.Errorf("wrapped: %w", &autodev.PreconditionError{Reason: "not a repo"})); got != 2 {
+		t.Errorf("exitCodeForError(wrapped precondition) = %d, want 2", got)
+	}
+	if got := exitCodeForError(errors.New("boom")); got != 1 {
+		t.Errorf("exitCodeForError(unexpected) = %d, want 1", got)
 	}
 }
 
