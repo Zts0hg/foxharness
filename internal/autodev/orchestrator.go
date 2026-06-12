@@ -74,7 +74,7 @@ func New(deps Deps) *Orchestrator {
 	return &Orchestrator{
 		deps:      deps,
 		machine:   machine,
-		worktrees: NewWorktreeManager(deps.Git, deps.RepoRoot, deps.Config.WorktreeDir, deps.Config.BaseBranch),
+		worktrees: NewWorktreeManager(deps.Git, deps.RepoRoot, deps.Config.WorktreeDir, deps.Config.BaseBranch, deps.Config.Remote),
 		publisher: NewRemotePublisher(machine, deps.Git, deps.Exec, deps.Reporter, deps.Config),
 		pipeline:  build(pipelineDeps),
 	}
