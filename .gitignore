@@ -2,6 +2,7 @@ reference/
 interesting_output.log
 .gocache
 .worktrees/
+.claude/worktrees/
 
 
 # Created by https://www.toptal.com/developers/gitignore/api/macos,linux,windows,go
