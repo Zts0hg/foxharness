@@ -85,15 +85,11 @@ func TestAskFormMultiSelectRequiresSelection(t *testing.T) {
 func TestAskFormOtherFreeText(t *testing.T) {
 	f := formFor(singleQ())
 	f.update(key(tea.KeyDown)) // Beta
-	f.update(key(tea.KeyDown)) // Other row (index 2)
-	if !f.isOtherRow() {
-		t.Fatalf("cursor should be on Other row, got %d", f.cursor)
+	f.update(key(tea.KeyDown)) // free-text row (index 2)
+	if !f.onOtherRow() {
+		t.Fatalf("cursor should be on the free-text row, got %d", f.cursor)
 	}
-	f.update(key(tea.KeyEnter)) // enter other mode
-	if !f.otherMode {
-		t.Fatal("expected otherMode")
-	}
-	f.update(runes("DuckDB"))
+	f.update(runes("DuckDB")) // type directly — no Enter needed to start
 	cmd := f.update(key(tea.KeyEnter))
 	if len(f.answers) != 1 || f.answers[0].Value != "DuckDB" {
 		t.Fatalf("expected free-text answer 'DuckDB', got %+v", f.answers)
@@ -104,17 +100,62 @@ func TestAskFormOtherFreeText(t *testing.T) {
 }
 
 func TestAskFormOtherPreservesSpaces(t *testing.T) {
-	// Regression (CODE-001): a space key must insert exactly one space.
+	// A space key must insert exactly one space.
 	f := formFor(singleQ())
 	f.update(key(tea.KeyDown))
-	f.update(key(tea.KeyDown)) // Other row
-	f.update(key(tea.KeyEnter))
+	f.update(key(tea.KeyDown)) // free-text row
 	f.update(runes("two"))
 	f.update(key(tea.KeySpace))
 	f.update(runes("words"))
 	f.update(key(tea.KeyEnter))
 	if len(f.answers) != 1 || f.answers[0].Value != "two words" {
 		t.Fatalf("expected 'two words', got %+v", f.answers)
+	}
+}
+
+func TestAskFormDigitSelectsOptionWhenNotEditing(t *testing.T) {
+	// On an option row, a digit selects the matching option.
+	f := formFor(singleQ()) // Alpha=1, Beta=2, Type something=3
+	cmd := f.update(runes("2"))
+	if !f.done {
+		t.Fatal("digit should select option 2 and (single question) submit")
+	}
+	if f.answers[0].Value != "Beta" {
+		t.Fatalf("expected Beta, got %+v", f.answers)
+	}
+	if _, ok := cmd().(askDoneMsg); !ok {
+		t.Fatal("expected askDoneMsg")
+	}
+}
+
+func TestAskFormDigitFocusesFreeTextRow(t *testing.T) {
+	// Pressing the free-text row's number focuses it (does not submit/select).
+	f := formFor(singleQ()) // free-text row is number 3
+	f.update(runes("3"))
+	if f.done {
+		t.Fatal("focusing the free-text row must not submit")
+	}
+	if !f.onOtherRow() {
+		t.Fatalf("expected cursor on free-text row, got %d", f.cursor)
+	}
+}
+
+func TestAskFormDigitsTypedIntoFreeTextRow(t *testing.T) {
+	// Once on the free-text row, digits are typed into it, not used to select.
+	f := formFor(singleQ())
+	f.update(key(tea.KeyDown))
+	f.update(key(tea.KeyDown)) // free-text row
+	f.update(runes("1"))
+	f.update(runes("0"))
+	if f.done {
+		t.Fatal("typing digits into the free-text row must not select an option")
+	}
+	if got := string(f.otherText[f.tab]); got != "10" {
+		t.Fatalf("digits not typed into free-text row: %q", got)
+	}
+	f.update(key(tea.KeyEnter))
+	if f.answers[0].Value != "10" {
+		t.Fatalf("expected free-text answer '10', got %+v", f.answers)
 	}
 }
 
@@ -133,30 +174,64 @@ func TestAskFormTwoQuestionsOrdered(t *testing.T) {
 	q1 := tools.Question{Prompt: "First?", Options: []tools.Option{{Label: "1a"}, {Label: "1b"}}}
 	q2 := tools.Question{Prompt: "Second?", Options: []tools.Option{{Label: "2a"}, {Label: "2b"}}}
 	f := formFor(q1, q2)
-	f.update(key(tea.KeyEnter)) // q1 -> 1a, advance
+	f.update(key(tea.KeyEnter)) // answer q1 -> 1a, move to q2 tab
 	if f.done {
 		t.Fatal("should not be done after first question")
 	}
-	cmd := f.update(key(tea.KeyEnter)) // q2 -> 2a, done
-	if !f.done {
-		t.Fatal("expected done after second question")
+	f.update(key(tea.KeyEnter)) // answer q2 -> 2a, land on Submit tab
+	if f.done {
+		t.Fatal("answering the last question should land on Submit, not finish")
+	}
+	if !f.onSubmit() {
+		t.Fatalf("expected to be on Submit tab, tab=%d", f.tab)
+	}
+	cmd := f.update(key(tea.KeyEnter)) // Submit answers (cursor 0)
+	if !f.done || f.cancelled {
+		t.Fatalf("expected submitted (done && !cancelled)")
 	}
 	if len(f.answers) != 2 || f.answers[0].QuestionText != "First?" || f.answers[1].QuestionText != "Second?" {
 		t.Fatalf("answers out of order: %+v", f.answers)
+	}
+	if f.answers[0].Value != "1a" || f.answers[1].Value != "2a" {
+		t.Fatalf("unexpected values: %+v", f.answers)
 	}
 	if _, ok := cmd().(askDoneMsg); !ok {
 		t.Fatal("expected askDoneMsg")
 	}
 }
 
-func TestAskFormViewRendersAndPreview(t *testing.T) {
+func TestAskFormSubmitTabCancel(t *testing.T) {
+	q1 := tools.Question{Prompt: "First?", Options: []tools.Option{{Label: "1a"}, {Label: "1b"}}}
+	q2 := tools.Question{Prompt: "Second?", Options: []tools.Option{{Label: "2a"}, {Label: "2b"}}}
+	f := formFor(q1, q2)
+	f.update(key(tea.KeyEnter)) // q1
+	f.update(key(tea.KeyEnter)) // q2 -> Submit tab
+	f.update(key(tea.KeyDown))  // move to "Cancel"
+	f.update(key(tea.KeyEnter)) // choose Cancel
+	if !f.cancelled || !f.done {
+		t.Fatalf("expected cancelled via Submit-tab Cancel option")
+	}
+}
+
+func TestAskFormViewRendersOptionsAndDescriptions(t *testing.T) {
 	f := formFor(singleQ())
 	out := f.view(80)
-	if !strings.Contains(out, "Pick one?") || !strings.Contains(out, "Alpha") || !strings.Contains(out, otherOptionLabel) {
-		t.Fatalf("view missing core content: %q", out)
+	// Every option's description must be shown (not only the focused one).
+	for _, want := range []string{"Pick one?", "Alpha", "Beta", "first", "second", otherPlaceholder} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("view missing %q:\n%s", want, out)
+		}
 	}
-	if !strings.Contains(out, "ALPHA-PREVIEW") { // Alpha is focused at cursor 0
-		t.Fatalf("preview not rendered for focused option: %q", out)
+}
+
+func TestAskFormViewTabBarForMultipleQuestions(t *testing.T) {
+	q1 := tools.Question{Header: "First", Prompt: "Q1?", Options: []tools.Option{{Label: "a"}, {Label: "b"}}}
+	q2 := tools.Question{Header: "Second", Prompt: "Q2?", Options: []tools.Option{{Label: "c"}, {Label: "d"}}}
+	out := formFor(q1, q2).view(80)
+	for _, want := range []string{"First", "Second", "Submit", "☐"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("tab bar missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -167,8 +242,8 @@ func TestAskFormPreviewOnMultiSelectHarmless(t *testing.T) {
 		Options:     []tools.Option{{Label: "a", Preview: "PREV-A"}, {Label: "b"}},
 	}
 	f := formFor(q)
-	out := f.view(80) // must not panic; renders the option labels
-	if !strings.Contains(out, "[ ] a") || !strings.Contains(out, "[ ] b") {
+	out := f.view(80) // must not panic; renders numbered checkboxes
+	if !strings.Contains(out, "[ ] 1. a") || !strings.Contains(out, "[ ] 2. b") {
 		t.Fatalf("multiSelect checkboxes missing: %q", out)
 	}
 }
