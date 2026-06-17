@@ -21,6 +21,11 @@ var ErrUserCancelled = errors.New("user cancelled the question prompt")
 // snake_case to match the other built-in tools (read_file, write_file, ...).
 const askUserQuestionToolName = "ask_user_question"
 
+// askUserQuestionToolAliases are alternate call names accepted for the tool.
+// Imported prompts reference the upstream "AskUserQuestion" name; exposing it as
+// an alias lets those prompts work without modification.
+var askUserQuestionToolAliases = []string{"AskUserQuestion"}
+
 // maxResultSizeChars caps the formatted result returned to the LLM, mirroring
 // the reference tool's maxResultSizeChars of 100,000.
 const maxResultSizeChars = 100_000
@@ -95,6 +100,13 @@ func NewAskUserQuestionTool(asker UserAsker) *AskUserQuestionTool {
 // Name returns the registered tool name.
 func (t *AskUserQuestionTool) Name() string {
 	return askUserQuestionToolName
+}
+
+// Aliases exposes the upstream PascalCase name so command and skill prompts
+// imported from Claude Code-compatible sources (which call "AskUserQuestion")
+// invoke this tool unchanged, without editing the re-imported prompts.
+func (t *AskUserQuestionTool) Aliases() []string {
+	return askUserQuestionToolAliases
 }
 
 // Definition returns the tool schema advertised to the LLM, including usage

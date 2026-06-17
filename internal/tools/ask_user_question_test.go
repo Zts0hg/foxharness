@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
 // fakeAsker is a deterministic UserAsker for tests. It records whether it was
@@ -363,6 +365,49 @@ func TestNotParallelSafe(t *testing.T) {
 	var tool interface{} = NewAskUserQuestionTool(nil)
 	if _, ok := tool.(ParallelSafeTool); ok {
 		t.Fatalf("ask_user_question must NOT implement ParallelSafeTool")
+	}
+}
+
+func TestAskUserQuestionAdvertisesUpstreamAlias(t *testing.T) {
+	var tool interface{} = NewAskUserQuestionTool(nil)
+	aliasable, ok := tool.(AliasableTool)
+	if !ok {
+		t.Fatalf("AskUserQuestionTool must implement AliasableTool so imported prompts can call it by the upstream name")
+	}
+	want := "AskUserQuestion"
+	for _, a := range aliasable.Aliases() {
+		if a == want {
+			return
+		}
+	}
+	t.Fatalf("aliases missing upstream name %q: %v", want, aliasable.Aliases())
+}
+
+// TestAskUserQuestionCallableViaUpstreamAlias verifies the full registry path:
+// a tool call bearing the imported "AskUserQuestion" name resolves to the tool
+// and reaches the asker, proving re-imported prompts work unmodified.
+func TestAskUserQuestionCallableViaUpstreamAlias(t *testing.T) {
+	asker := &fakeAsker{answers: []Answer{{QuestionText: "Q?", Value: "a"}}}
+	reg := NewRegistry()
+	reg.Register(NewAskUserQuestionTool(asker))
+
+	defs := reg.GetAvailableTools()
+	sawAlias := false
+	for _, d := range defs {
+		if d.Name == "AskUserQuestion" {
+			sawAlias = true
+		}
+	}
+	if !sawAlias {
+		t.Fatalf("AskUserQuestion alias not advertised: %+v", defs)
+	}
+
+	res := reg.Execute(context.Background(), schema.ToolCall{ID: "1", Name: "AskUserQuestion", Arguments: mustArgs(t, oneQuestionArgs())})
+	if res.IsError {
+		t.Fatalf("alias call failed: %s", res.Output)
+	}
+	if !asker.invoked {
+		t.Fatal("alias call did not reach the asker")
 	}
 }
 
