@@ -1,12 +1,12 @@
 ---
-description: Review code in any language for idiomatic clarity, correctness, robustness, architecture, and constitution alignment
+description: 审查任意语言代码的地道表达、正确性、健壮性、架构与宪法一致性
 argument-hint: |
-  Path to source file or directory to review (any language)
+  要审查的源文件或目录路径（支持任意语言）
 
-  Examples:
-  - `src/` - Review entire source tree
-  - `src/components/Button.tsx` - Review single file
-  - `src/ tests/` - Review multiple paths
+  示例：
+  - `src/` - 审查整个源代码树
+  - `src/components/Button.tsx` - 审查单个文件
+  - `src/ tests/` - 审查多个路径
 allowed-tools: Read, Grep, Glob, Bash(ruff check:*), Bash(mypy:*), Bash(python -m py_compile:*), Bash(npx eslint:*), Bash(npx tsc:*), Bash(npm run lint:*), Bash(go vet:*), Bash(gofmt:*), Bash(golangci-lint:*), Bash(cargo check:*), Bash(cargo clippy:*), Bash(shellcheck:*)
 ---
 

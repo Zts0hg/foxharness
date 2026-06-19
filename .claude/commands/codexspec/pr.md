@@ -1,5 +1,5 @@
 ---
-description: Generate structured Pull Request (GitHub) or Merge Request (GitLab) descriptions based on git diff and optional spec.md integration
+description: 基于 git diff 和可选的 spec.md 集成生成结构化的 Pull Request (GitHub) 或 Merge Request (GitLab) 描述
 allowed-tools: Bash(git branch:*), Bash(git diff:*), Bash(git log:*), Bash(git remote:*), Bash(git rev-parse:*), Bash(ls:*), Bash(cat:*)
 ---
 
@@ -124,8 +124,6 @@ Only when `--spec` is provided, read spec.md for Context section.
 1. If `--spec` is a partial prefix like `2025-0321`, resolve to `.codexspec/specs/2025-0321*/spec.md`
 2. If `--spec` is a full directory name like `2025-0321-1430k7-auth`, resolve to `.codexspec/specs/2025-0321-1430k7-auth/spec.md`
 3. If `--spec` is a path, use directly
-
-> **Note**: Legacy sequential format directories (e.g., `001-feature`) are also supported for backward compatibility.
 
 ### Content Extraction (Best-Effort)
 

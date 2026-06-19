@@ -1,21 +1,21 @@
 ---
-description: Create or update the project constitution from interactive or provided principle inputs, ensuring all dependent templates stay in sync.
+description: 通过交互式或提供的原则输入创建或更新项目宪法，确保所有依赖模板保持同步。
 argument-hint: |
-  [quick|deep | project principles] (optional)
+  [quick|deep | 项目原则] (可选)
 
-  This command creates/updates the project constitution at .codexspec/memory/constitution.md.
+  此命令创建/更新位于 .codexspec/memory/constitution.md 的项目宪法。
 
-  Three ways to use:
-  1. No arguments → Interactive mode: choose exploration depth (quick/deep)
-  2. quick → Lightweight exploration: config files + README + core entry points (~5-10 files)
-  3. deep → Full exploration: all of above + source code analysis + architecture patterns
-  4. <description> → Skip exploration, use your principles directly
+  三种使用方式：
+  1. 无参数 → 交互模式：选择探索深度 (quick/deep)
+  2. quick → 轻量探索：配置文件 + README + 核心入口点 (~5-10 个文件)
+  3. deep → 完整探索：以上内容 + 源代码分析 + 架构模式
+  4. <描述> → 跳过探索，直接使用你的原则
 
-  Examples:
+  示例：
     /codexspec:constitution
     /codexspec:constitution quick
     /codexspec:constitution deep
-    /codexspec:constitution Python FastAPI backend with pytest, focus on type safety
+    /codexspec:constitution Python FastAPI 后端使用 pytest，注重类型安全
 handoffs:
   - agent: codexspec.specify
     step: Create a feature specification based on the updated constitution

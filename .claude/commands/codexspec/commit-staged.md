@@ -1,6 +1,6 @@
 ---
-description: Analyze staged git changes and generate Conventional Commits compliant commit messages strictly from the staged diff
-argument-hint: "[-p] Use -p to only preview the message without committing"
+description: 分析暂存的 git 更改并生成符合 Conventional Commits 规范的提交信息
+argument-hint: "[-p] 使用 -p 仅预览提交信息而不执行提交"
 allowed-tools: Bash(git diff --staged:*), Bash(git diff --cached:*), Bash(git status:*), Bash(git commit:*)
 forbidden-tools: Bash(git add:*), Bash(git reset:*), Bash(git checkout:*), Bash(git restore:*), Bash(git stash:*), Bash(git rm:*)
 ---
