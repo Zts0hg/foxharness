@@ -11,15 +11,32 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/Zts0hg/foxharness/internal/automemory"
 )
 
+// AutoMemoryStore supplies the cross-session persistent memory injected into the
+// system prompt. It is satisfied by *automemory.Store; the interface keeps the
+// Composer decoupled and testable.
+type AutoMemoryStore interface {
+	// MergedIndexString returns the merged two-tier memory index (descriptions
+	// only), or the empty string when no memories exist.
+	MergedIndexString() string
+	// UserGlobalDir returns the absolute user-global memory directory.
+	UserGlobalDir() string
+	// ProjectDir returns the absolute project-scoped memory directory.
+	ProjectDir() string
+}
+
 // Composer builds the full system prompt by layering base instructions,
-// project-level AGENTS.md, referenced skills, and session working memory.
+// project-level AGENTS.md, persistent memory, referenced skills, and session
+// working memory.
 type Composer struct {
 	workDir        string
 	memoryPath     string
 	skillListFn    func() string
 	interactiveAsk bool
+	autoMemory     AutoMemoryStore
 }
 
 // WithSkillList registers a function that returns the formatted list of
@@ -45,6 +62,15 @@ func (c *Composer) WithMemory(path string) *Composer {
 	return &clone
 }
 
+// WithAutoMemory returns a copy of the Composer configured to inject the
+// cross-session persistent memory index and lifecycle guardrails from the given
+// store. Pass nil to disable the section.
+func (c *Composer) WithAutoMemory(store AutoMemoryStore) *Composer {
+	clone := *c
+	clone.autoMemory = store
+	return &clone
+}
+
 // WithInteractiveAsk returns a copy of the Composer that, when enabled, appends
 // guidance directing the model to use the ask_user_question tool for ambiguous
 // requests. It MUST be enabled only when that tool is actually registered (the
@@ -65,7 +91,11 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 	if c.interactiveAsk {
 		parts = append(parts, section("Asking the User", askGuidance()))
 	}
-	parts = append(parts, section("Persistent File Memory", memoryInstructions()))
+	parts = append(parts, section("Session Plan and Todo Files", memoryInstructions()))
+
+	if c.autoMemory != nil {
+		parts = append(parts, section("Persistent Memory", c.persistentMemoryBody()))
+	}
 
 	agents, err := c.loadAgentsFile()
 	if err != nil {
@@ -73,14 +103,6 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 	}
 	if agents != "" {
 		parts = append(parts, section("Project Instructions from AGENTS.md", agents))
-	}
-
-	projectMemory, err := c.loadProjectMemory()
-	if err != nil {
-		return "", err
-	}
-	if projectMemory != "" {
-		parts = append(parts, section("Project Memory from MEMORY.md", projectMemory))
 	}
 
 	skills, err := c.loadMentionedSkills(userPrompt)
@@ -91,12 +113,12 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 		parts = append(parts, skillSection(skill))
 	}
 
-	memory, err := c.loadWorkingMemory()
-	if err != nil {
-		return "", err
-	}
-	if memory != "" {
-		parts = append(parts, section("Session Working Memory", memory))
+	if c.memoryPath != "" {
+		memory, err := c.loadWorkingMemory()
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, section("Session Working Memory", workingMemoryBody(memory, c.relToWorkDir(c.memoryPath))))
 	}
 
 	if c.skillListFn != nil {
@@ -126,19 +148,69 @@ func askGuidance() string {
 
 func memoryInstructions() string {
 	return strings.TrimSpace(`
-Persistent files:
+Session-scoped files (they perish with the session):
 - Session PLAN.md stores the high-level plan for the current session.
 - Session TODO.md stores concrete checklist items for the current session.
-- Project MEMORY.md stores durable project facts that are useful across sessions.
 
 Rules:
 - Use the current session plan and todo to track complex multi-step tasks.
 - Use read_todo and update_todo to inspect and maintain Session TODO.md.
 - Do not use bash, write_file, or edit_file to modify Session TODO.md.
-- Add only durable, high-value facts to MEMORY.md.
-- Do not dump raw logs or large file contents into memory files.
-- Prefer edit_file for focused updates to project MEMORY.md.
+- Do not dump raw logs or large file contents into these files.
 `)
+}
+
+// workingMemoryGuidance instructs the agent to keep the session-scoped
+// working_memory scratchpad current (REQ-015), explicitly distinct from the
+// cross-session Persistent Memory layer (REQ-016). relPath is the workDir-relative
+// path to the session file, surfaced so the agent's write_file/edit_file edits
+// land in the injected scratchpad rather than <workDir>/working_memory.md.
+func workingMemoryGuidance(relPath string) string {
+	var b strings.Builder
+	b.WriteString("working_memory.md is your session-scoped scratchpad. It perishes when this session ends and is separate from the cross-session Persistent Memory above — do not put durable cross-session knowledge here.\n")
+	fmt.Fprintf(&b, "Keep it current as you work by editing the session file at relative path %q using the write_file and edit_file tools (paths resolve against the working directory). Maintain these sections:\n", relPath)
+	b.WriteString("- Goal: what the user ultimately wants from this session.\n")
+	b.WriteString("- Known Facts: facts you have confirmed this session.\n")
+	b.WriteString("- Current Plan: the approach you are taking.\n")
+	b.WriteString("- Next Step: the immediate next action.\n")
+	b.WriteString("Current contents:")
+	return b.String()
+}
+
+// workingMemoryBody combines the maintenance guidance with the file's current
+// contents.
+func workingMemoryBody(current, relPath string) string {
+	current = strings.TrimSpace(current)
+	if current == "" {
+		current = "(empty)"
+	}
+	return workingMemoryGuidance(relPath) + "\n\n" + current
+}
+
+// persistentMemoryBody renders the cross-session memory section: the merged
+// two-tier index (REQ-006) followed by the shared lifecycle guidance and
+// guardrails (REQ-014). Directory paths are expressed relative to the working
+// directory so the existing file tools can address them.
+func (c *Composer) persistentMemoryBody() string {
+	index := strings.TrimSpace(c.autoMemory.MergedIndexString())
+	userRel := c.relToWorkDir(c.autoMemory.UserGlobalDir())
+	projectRel := c.relToWorkDir(c.autoMemory.ProjectDir())
+
+	guidance := automemory.MainMemoryGuidance(userRel, projectRel)
+	if index == "" {
+		return "No memories saved yet.\n\n" + guidance
+	}
+	return "Current memory index (read a file for its full content when relevant):\n" + index + "\n\n" + guidance
+}
+
+// relToWorkDir expresses an absolute path relative to the Composer's working
+// directory, falling back to the absolute path when no relative form exists.
+func (c *Composer) relToWorkDir(abs string) string {
+	rel, err := filepath.Rel(c.workDir, abs)
+	if err != nil {
+		return abs
+	}
+	return rel
 }
 
 func baseSystemPrompt() string {
@@ -175,19 +247,6 @@ func (c *Composer) loadAgentsFile() (string, error) {
 	}
 	if err != nil {
 		return "", fmt.Errorf("读取 AGENTS.md 失败: %w", err)
-	}
-
-	return string(content), nil
-}
-
-func (c *Composer) loadProjectMemory() (string, error) {
-	path := filepath.Join(c.workDir, "MEMORY.md")
-	content, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("读取 MEMORY.md 失败: %w", err)
 	}
 
 	return string(content), nil
