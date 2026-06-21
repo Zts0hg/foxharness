@@ -2,10 +2,14 @@ package autodev
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 )
 
 // GateChecker runs the completion gate inside a worktree. gate.go provides
@@ -34,6 +38,10 @@ type Stage struct {
 	Append func(sc *StageContext) string
 	// Prompt builds a literal seed prompt for command-less steps.
 	Prompt func(sc *StageContext) string
+	// Control runs a deterministic, non-LLM control-plane step. When set,
+	// RunStep executes Control and verifies once instead of seeding the
+	// core Agent.
+	Control func(ctx context.Context, sc *StageContext) error
 	// Prepare runs once before the step's first core run, e.g. to snapshot
 	// pre-existing spec directories. May be nil.
 	Prepare func(ctx context.Context, sc *StageContext) error
@@ -79,6 +87,21 @@ func (m *StageMachine) RunStep(ctx context.Context, core CoreRunner, sc *StageCo
 		if err := st.Prepare(ctx, sc); err != nil {
 			return fmt.Errorf("prepare step %s: %w", st.Name, err)
 		}
+	}
+	if st.Control != nil {
+		if err := st.Control(ctx, sc); err != nil {
+			return fmt.Errorf("control step %s: %w", st.Name, err)
+		}
+		if st.Verify != nil {
+			ok, gap := st.Verify(ctx, sc)
+			if m.reporter != nil {
+				m.reporter.OnVerify(ctx, st.Name, ok, gap)
+			}
+			if !ok {
+				return fmt.Errorf("control step %s did not satisfy verification: %s", st.Name, gap)
+			}
+		}
+		return nil
 	}
 
 	msg, err := m.seedPrompt(ctx, core, sc, st)
@@ -149,130 +172,107 @@ func (m *StageMachine) seedPrompt(ctx context.Context, core CoreRunner, sc *Stag
 	return prompt, nil
 }
 
-// PipelineDeps carries the verification dependencies LeanPipeline closures
-// capture: the completion gate and the read-only git queries used by the
-// implement stage's Verify.
+// PipelineDeps carries the fixed requirements-first pipeline dependencies:
+// the completion gate, read-only git queries, and clock used to create
+// CodexSpec feature workspace IDs.
 type PipelineDeps struct {
 	Gate     GateChecker
 	Git      GitRunner
 	Gates    GateConfig
 	Reporter Reporter
+	Clock    Clock
 }
 
-// specsRelDir is the directory generate-spec creates feature dirs under,
-// relative to the worktree root.
+// specsRelDir is the CodexSpec feature workspace root, relative to the
+// worktree root.
 const specsRelDir = ".codexspec/specs"
 
-// LeanPipeline returns the v1 SDD stages in fixed order:
-// generate-spec → spec-to-plan → plan-to-tasks → implement-tasks (REQ-009).
-// The backlog item's Description seeds generate-spec as the already
-// clarified requirement (REQ-010), and the spec directory produced by
-// generate-spec is bound to the StageContext and threaded through the later
-// stages (REQ-011).
-func LeanPipeline(deps PipelineDeps) []Stage {
+// RequirementsFirstPipeline returns the fixed CodexSpec requirements-first
+// SDD stages. The workflow is intentionally not user-configurable: the
+// control plane materializes confirmed requirements from the backlog, then
+// drives CodexSpec with explicit artifact paths and gates each generated
+// artifact on its paired review report.
+func RequirementsFirstPipeline(deps PipelineDeps) []Stage {
+	if deps.Clock == nil {
+		deps.Clock = SystemClock{}
+	}
 	return []Stage{
+		{
+			Name:    "materialize-requirements",
+			Control: materializeRequirements(deps.Clock),
+			Verify:  verifySpecArtifact("requirements.md"),
+		},
 		{
 			Name:    "generate-spec",
 			Command: "codexspec:generate-spec",
 			Args: func(sc *StageContext) string {
-				return sc.Item.Description
+				return filepath.Join(sc.FeatureDir, "requirements.md")
 			},
-			// The generate-spec command body does not consume $ARGUMENTS,
-			// so the already-clarified requirement is appended explicitly
-			// (REQ-010; specify/clarify are intentionally skipped).
-			Append: func(sc *StageContext) string {
-				return "## Requirement (already clarified — generate the spec directly from it)\n\n" +
-					sc.Item.Description +
-					"\n\nDo not wait for further clarification; this requirement is final. " +
-					"Create the spec directory and spec.md under " + specsRelDir + "/ now."
-			},
-			Prepare: snapshotSpecDirs,
-			Verify:  verifyGenerateSpec,
+			Verify: verifyReviewedArtifact("spec.md", "review-spec.md"),
 		},
 		{
 			Name:    "spec-to-plan",
 			Command: "codexspec:spec-to-plan",
 			Args: func(sc *StageContext) string {
-				return filepath.Join(sc.SpecDir, "spec.md")
+				return filepath.Join(sc.FeatureDir, "spec.md")
 			},
-			Verify: verifySpecArtifact("plan.md"),
+			Verify: verifyReviewedArtifact("plan.md", "review-plan.md"),
 		},
 		{
 			Name:    "plan-to-tasks",
 			Command: "codexspec:plan-to-tasks",
 			Args: func(sc *StageContext) string {
-				return filepath.Join(sc.SpecDir, "spec.md") + " " + filepath.Join(sc.SpecDir, "plan.md")
+				return filepath.Join(sc.FeatureDir, "plan.md")
 			},
-			Verify: verifySpecArtifact("tasks.md"),
+			Verify: verifyReviewedArtifact("tasks.md", "review-tasks.md"),
 		},
 		{
 			Name:    "implement-tasks",
 			Command: "codexspec:implement-tasks",
 			Args: func(sc *StageContext) string {
-				return filepath.Join(sc.SpecDir, "tasks.md")
+				return filepath.Join(sc.FeatureDir, "tasks.md")
 			},
 			Verify: verifyImplement(deps),
 		},
 	}
 }
 
-// snapshotSpecDirs records the spec directories existing before
-// generate-spec runs so the new one is detectable by diff (REQ-011).
-func snapshotSpecDirs(ctx context.Context, sc *StageContext) error {
-	sc.PreexistingSpecDirs = map[string]bool{}
-	entries, err := os.ReadDir(filepath.Join(sc.WorkDir, specsRelDir))
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			sc.PreexistingSpecDirs[e.Name()] = true
+func materializeRequirements(clock Clock) func(ctx context.Context, sc *StageContext) error {
+	return func(ctx context.Context, sc *StageContext) error {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-	}
-	return nil
-}
-
-// verifyGenerateSpec passes when a non-empty spec.md exists in the bound
-// spec directory, binding the directory first when a new one appeared
-// under .codexspec/specs/ (REQ-011, REQ-012).
-func verifyGenerateSpec(ctx context.Context, sc *StageContext) (bool, string) {
-	if sc.SpecDir != "" {
-		return nonEmptyFile(sc, "spec.md")
-	}
-
-	entries, err := os.ReadDir(filepath.Join(sc.WorkDir, specsRelDir))
-	if err != nil {
-		return false, fmt.Sprintf("no spec directory was created under %s", specsRelDir)
-	}
-	for _, e := range entries {
-		if !e.IsDir() || sc.PreexistingSpecDirs[e.Name()] {
-			continue
+		if sc.FeatureDir == "" {
+			name, err := newFeatureDirName(clock, sc.Slug)
+			if err != nil {
+				return err
+			}
+			sc.FeatureDir = filepath.Join(specsRelDir, name)
 		}
-		candidate := filepath.Join(specsRelDir, e.Name())
-		if info, err := os.Stat(filepath.Join(sc.WorkDir, candidate, "spec.md")); err == nil && info.Size() > 0 {
-			sc.SpecDir = candidate
-			return true, ""
+		reqPath := filepath.Join(sc.WorkDir, sc.FeatureDir, "requirements.md")
+		if info, err := os.Stat(reqPath); err == nil && info.Size() > 0 {
+			return nil
 		}
+		if err := os.MkdirAll(filepath.Dir(reqPath), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(reqPath, []byte(requirementsDocument(sc, clock.Now())), 0o644)
 	}
-	return false, fmt.Sprintf("no new directory containing a non-empty spec.md exists under %s", specsRelDir)
 }
 
 // verifySpecArtifact passes when the named artifact exists non-empty in
-// the bound spec directory.
+// the bound feature directory.
 func verifySpecArtifact(artifact string) func(ctx context.Context, sc *StageContext) (bool, string) {
 	return func(ctx context.Context, sc *StageContext) (bool, string) {
-		if sc.SpecDir == "" {
-			return false, "no spec directory is bound for this item"
+		if sc.FeatureDir == "" {
+			return false, "no feature directory is bound for this item"
 		}
 		return nonEmptyFile(sc, artifact)
 	}
 }
 
 func nonEmptyFile(sc *StageContext, artifact string) (bool, string) {
-	path := filepath.Join(sc.SpecDir, artifact)
+	path := filepath.Join(sc.FeatureDir, artifact)
 	info, err := os.Stat(filepath.Join(sc.WorkDir, path))
 	if err != nil {
 		return false, fmt.Sprintf("%s does not exist", path)
@@ -283,11 +283,132 @@ func nonEmptyFile(sc *StageContext, artifact string) (bool, string) {
 	return true, ""
 }
 
+func verifyReviewedArtifact(artifact, review string) func(ctx context.Context, sc *StageContext) (bool, string) {
+	return func(ctx context.Context, sc *StageContext) (bool, string) {
+		if ok, gap := verifySpecArtifact(artifact)(ctx, sc); !ok {
+			return false, gap
+		}
+		if ok, gap := verifySpecArtifact(review)(ctx, sc); !ok {
+			return false, gap
+		}
+		status, err := readReviewStatus(filepath.Join(sc.WorkDir, sc.FeatureDir, review))
+		if err != nil {
+			return false, err.Error()
+		}
+		switch status {
+		case "PASS", "PASS_WITH_WARNINGS":
+			return true, ""
+		default:
+			return false, fmt.Sprintf("%s reports Overall Status %s", filepath.Join(sc.FeatureDir, review), status)
+		}
+	}
+}
+
+var reviewStatusRE = regexp.MustCompile(`(?im)\*\*Overall Status\*\*\s*:\s*([A-Z_]+)`)
+
+func readReviewStatus(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read review status: %w", err)
+	}
+	m := reviewStatusRE.FindSubmatch(data)
+	if len(m) != 2 {
+		return "", fmt.Errorf("%s has no parseable Overall Status", path)
+	}
+	return string(m[1]), nil
+}
+
+func newFeatureDirName(clock Clock, slug string) (string, error) {
+	if strings.TrimSpace(slug) == "" {
+		slug = "item"
+	}
+	suffix, err := randomSuffix(2)
+	if err != nil {
+		return "", err
+	}
+	return clock.Now().UTC().Format("2006-0102-1504") + suffix + "-" + slug, nil
+}
+
+const randomAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+func randomSuffix(n int) (string, error) {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(randomAlphabet))))
+		if err != nil {
+			return "", err
+		}
+		b.WriteByte(randomAlphabet[idx.Int64()])
+	}
+	return b.String(), nil
+}
+
+func requirementsDocument(sc *StageContext, now time.Time) string {
+	confirmedAt := now.UTC().Format(time.RFC3339)
+	title := strings.TrimSpace(sc.Item.Title)
+	if title == "" {
+		title = sc.Slug
+	}
+	if title == "" {
+		title = "Autodev backlog item"
+	}
+	statement := strings.TrimSpace(sc.Item.Description)
+	if statement == "" {
+		statement = title
+	}
+	statementLine := oneLine(statement, 4000)
+	featureName := filepath.Base(sc.FeatureDir)
+	featureID := featureName
+	if len(featureID) >= len("2006-0102-1504ab") {
+		featureID = featureID[:len("2006-0102-1504ab")]
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Confirmed Requirements: %s\n\n", title)
+	b.WriteString("<!--\n")
+	b.WriteString("This file is generated by fox autodev from a backlog item. The backlog item is treated as the confirmed user input for unattended development.\n")
+	b.WriteString("-->\n\n")
+	fmt.Fprintf(&b, "**Feature ID**: `%s`\n", featureID)
+	b.WriteString("**Status**: Confirmed\n")
+	fmt.Fprintf(&b, "**Last Confirmed**: %s\n\n", confirmedAt)
+	b.WriteString("## Authority Rules\n\n")
+	b.WriteString("- Only entries with `Status: confirmed` are binding downstream inputs.\n")
+	b.WriteString("- The backlog item title and description are the confirmation source for this unattended autodev run.\n")
+	b.WriteString("- AI inferences must not be promoted to confirmed requirements without a later user-confirmed backlog update.\n\n")
+	b.WriteString("## Needs\n\n")
+	fmt.Fprintf(&b, "### NEED-001: %s\n\n", title)
+	b.WriteString("- **Status**: confirmed\n")
+	fmt.Fprintf(&b, "- **Statement**: %s\n", statementLine)
+	b.WriteString("- **Rationale**: This behavior is required by the autodev backlog item.\n")
+	fmt.Fprintf(&b, "- **User Evidence**: \"%s\"\n", oneLine(title+": "+statementLine, 500))
+	fmt.Fprintf(&b, "- **Confirmed At**: %s\n\n", confirmedAt)
+	b.WriteString("## Constraints\n\n")
+	b.WriteString("No confirmed constraints were supplied by the backlog item.\n\n")
+	b.WriteString("## Decisions\n\n")
+	b.WriteString("No confirmed trade-off decisions were supplied by the backlog item.\n\n")
+	b.WriteString("## Out of Scope\n\n")
+	b.WriteString("No confirmed exclusions were supplied by the backlog item.\n\n")
+	b.WriteString("## Open Questions\n\n")
+	b.WriteString("No blocking open questions were supplied by the backlog item.\n\n")
+	b.WriteString("## Superseded Entries\n\n")
+	b.WriteString("No superseded entries.\n\n")
+	b.WriteString("## Confirmation Log\n\n")
+	fmt.Fprintf(&b, "### Session %s\n\n", confirmedAt)
+	fmt.Fprintf(&b, "- **Summary Presented**: %s\n", oneLine(statementLine, 500))
+	b.WriteString("- **User Confirmation**: The backlog item is treated as confirmed input for unattended autodev.\n")
+	b.WriteString("- **Entries Confirmed**: NEED-001\n")
+	return b.String()
+}
+
 // verifyImplement passes when the completion gate is green AND the worktree
 // holds real changes — a non-empty diff against the base branch or a dirty
 // working tree (REQ-012, REQ-018, REQ-029; TC-010, TC-026).
 func verifyImplement(deps PipelineDeps) func(ctx context.Context, sc *StageContext) (bool, string) {
 	return func(ctx context.Context, sc *StageContext) (bool, string) {
+		if ok, gap := verifyTasksComplete(sc); !ok {
+			return false, gap
+		}
+
 		result, err := deps.Gate.Check(ctx, sc.WorkDir, deps.Gates)
 		if err != nil {
 			return false, fmt.Sprintf("completion gate could not run: %v", err)
@@ -314,6 +435,33 @@ func verifyImplement(deps PipelineDeps) func(ctx context.Context, sc *StageConte
 		}
 		return false, "the worktree contains no changes (empty diff); implement-tasks must produce real code changes"
 	}
+}
+
+var taskCheckboxRE = regexp.MustCompile(`(?m)^\s*[-*]\s+\[([ xX])\]`)
+
+func verifyTasksComplete(sc *StageContext) (bool, string) {
+	if sc.FeatureDir == "" {
+		return false, "no feature directory is bound for this item"
+	}
+	path := filepath.Join(sc.WorkDir, sc.FeatureDir, "tasks.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Sprintf("%s does not exist", filepath.Join(sc.FeatureDir, "tasks.md"))
+	}
+	matches := taskCheckboxRE.FindAllSubmatch(data, -1)
+	if len(matches) == 0 {
+		return false, fmt.Sprintf("%s contains no markdown task checkboxes", filepath.Join(sc.FeatureDir, "tasks.md"))
+	}
+	var unchecked int
+	for _, m := range matches {
+		if len(m) == 2 && string(m[1]) == " " {
+			unchecked++
+		}
+	}
+	if unchecked > 0 {
+		return false, fmt.Sprintf("%s has %d unchecked task checkbox(es)", filepath.Join(sc.FeatureDir, "tasks.md"), unchecked)
+	}
+	return true, ""
 }
 
 func gateGap(result GateResult) string {

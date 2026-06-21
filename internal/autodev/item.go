@@ -48,8 +48,8 @@ type Item struct {
 	Priority Priority
 	// Status is the advisory initial state; missing defaults to StatusPending.
 	Status Status
-	// Description is the free-text requirement supplied to generate-spec
-	// as the already-clarified input.
+	// Description is the free-text requirement materialized into
+	// requirements.md as confirmed backlog input.
 	Description string
 }
 
@@ -98,8 +98,7 @@ type PublishResult struct {
 }
 
 // StageContext carries the per-item state threaded through stage prompts,
-// engineer decisions, and Verify predicates. Stage Verify functions may
-// mutate it (e.g. binding SpecDir after generate-spec).
+// engineer decisions, deterministic controls, and Verify predicates.
 type StageContext struct {
 	// Item is the backlog requirement being processed.
 	Item Item
@@ -117,12 +116,9 @@ type StageContext struct {
 	Remote string
 	// Stage is the name of the step currently being driven.
 	Stage string
-	// SpecDir is the spec directory bound after generate-spec (REQ-011),
+	// FeatureDir is the CodexSpec feature workspace for this item,
 	// relative to WorkDir.
-	SpecDir string
-	// PreexistingSpecDirs snapshots .codexspec/specs/ entries before
-	// generate-spec so the new directory can be detected by diff.
-	PreexistingSpecDirs map[string]bool
+	FeatureDir string
 	// BaseHead is the worktree HEAD recorded before the commit step so the
 	// commit Verify can observe that HEAD advanced.
 	BaseHead string

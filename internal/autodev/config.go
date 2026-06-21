@@ -1,6 +1,7 @@
 package autodev
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,7 +39,6 @@ type AutodevConfig struct {
 	Model              string
 	EngineerPrompt     string
 	EngineerPromptFile string
-	Pipeline           string
 	Gates              GateConfig
 	RemoteFlow         RemoteFlowConfig
 
@@ -58,7 +58,6 @@ type configFile struct {
 	Model              string `yaml:"model"`
 	EngineerPrompt     string `yaml:"engineer_prompt"`
 	EngineerPromptFile string `yaml:"engineer_prompt_file"`
-	Pipeline           string `yaml:"pipeline"`
 	Gates              struct {
 		Build *bool `yaml:"build"`
 		Test  *bool `yaml:"test"`
@@ -86,9 +85,14 @@ func Load(repoRoot string) (AutodevConfig, error) {
 	if err != nil {
 		return cfg, fmt.Errorf("read autodev.yml: %w", err)
 	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return cfg, nil
+	}
 
 	var file configFile
-	if err := yaml.Unmarshal(data, &file); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&file); err != nil {
 		return cfg, fmt.Errorf("parse autodev.yml: %w", err)
 	}
 
@@ -100,7 +104,6 @@ func Load(repoRoot string) (AutodevConfig, error) {
 	applyString(&cfg.Model, file.Model)
 	applyString(&cfg.EngineerPrompt, file.EngineerPrompt)
 	applyString(&cfg.EngineerPromptFile, file.EngineerPromptFile)
-	applyString(&cfg.Pipeline, file.Pipeline)
 
 	applyBool(&cfg.Gates.Build, file.Gates.Build)
 	applyBool(&cfg.Gates.Test, file.Gates.Test)
@@ -145,7 +148,6 @@ func defaultConfig(repoRoot string) AutodevConfig {
 		BaseBranch:  "main",
 		Remote:      "origin",
 		Concurrency: "serial",
-		Pipeline:    "lean",
 		Gates:       GateConfig{Build: true, Test: true, Gofmt: true},
 		RemoteFlow:  RemoteFlowConfig{CreateIssue: true, OpenPR: true, LinkIssue: true, AutoMerge: false},
 	}
