@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -199,9 +200,9 @@ func TestRunStepSkipPredicateSkipsRun(t *testing.T) {
 
 func sc() *StageContext { return &StageContext{} }
 
-func TestLeanPipelineOrder(t *testing.T) {
-	stages := LeanPipeline(PipelineDeps{})
-	want := []string{"generate-spec", "spec-to-plan", "plan-to-tasks", "implement-tasks"}
+func TestRequirementsFirstPipelineOrder(t *testing.T) {
+	stages := RequirementsFirstPipeline(PipelineDeps{Clock: newTestClock()})
+	want := []string{"materialize-requirements", "generate-spec", "spec-to-plan", "plan-to-tasks", "implement-tasks"}
 	if len(stages) != len(want) {
 		t.Fatalf("len(stages) = %d, want %d", len(stages), len(want))
 	}
@@ -209,134 +210,148 @@ func TestLeanPipelineOrder(t *testing.T) {
 		if stages[i].Name != name {
 			t.Errorf("stages[%d].Name = %q, want %q (REQ-009)", i, stages[i].Name, name)
 		}
+		if name == "materialize-requirements" {
+			if stages[i].Control == nil {
+				t.Errorf("materialize stage missing deterministic Control function")
+			}
+			continue
+		}
 		if stages[i].Command != "codexspec:"+name {
 			t.Errorf("stages[%d].Command = %q, want codexspec command", i, stages[i].Command)
 		}
 	}
 }
 
-func TestGenerateSpecSeedEmbedsDescription(t *testing.T) {
+func TestMaterializeRequirementsCreatesConfirmedRequirements(t *testing.T) {
 	workDir := t.TempDir()
-	specDir := filepath.Join(workDir, ".codexspec", "specs", "feat")
-	core := &fakeCore{workDir: workDir, effects: []func(){func() {
-		if err := os.MkdirAll(specDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(specDir, "spec.md"), []byte("# Spec"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}}}
+	core := &fakeCore{workDir: workDir}
 	machine := newTestMachine(&reviewingEngineer{})
 
 	sc := &StageContext{
 		WorkDir: workDir,
-		Item:    Item{Description: "Persist durable discoveries to MEMORY.md."},
+		Slug:    "persist-memory",
+		Item: Item{
+			Title:       "Persist Memory",
+			Description: "Persist durable discoveries to MEMORY.md.",
+		},
 	}
-	gen := LeanPipeline(PipelineDeps{})[0]
-	if err := machine.RunStep(context.Background(), core, sc, gen); err != nil {
+	mat := RequirementsFirstPipeline(PipelineDeps{Clock: newTestClock()})[0]
+	if err := machine.RunStep(context.Background(), core, sc, mat); err != nil {
 		t.Fatalf("RunStep returned error: %v", err)
 	}
-	if len(core.prompts) != 1 {
-		t.Fatalf("core runs = %d, want 1", len(core.prompts))
+	if len(core.prompts) != 0 {
+		t.Fatalf("core runs = %d, want 0 for deterministic requirements materialization", len(core.prompts))
 	}
-	if !strings.Contains(core.prompts[0], "PROMPT[codexspec:generate-spec|") {
-		t.Errorf("seed prompt = %q, want materialized generate-spec body", core.prompts[0])
+	if ok := regexp.MustCompile(`^\.codexspec/specs/2026-0610-1200[a-z0-9]{2}-persist-memory$`).MatchString(sc.FeatureDir); !ok {
+		t.Fatalf("FeatureDir = %q, want CodexSpec timestamp feature directory", sc.FeatureDir)
 	}
-	if !strings.Contains(core.prompts[0], "Persist durable discoveries") {
-		t.Errorf("seed prompt = %q, want the item Description embedded (REQ-010)", core.prompts[0])
+	content, err := os.ReadFile(filepath.Join(workDir, sc.FeatureDir, "requirements.md"))
+	if err != nil {
+		t.Fatalf("read requirements.md: %v", err)
 	}
-}
-
-func TestGenerateSpecVerifyBindsNewSpecDir(t *testing.T) {
-	workDir := t.TempDir()
-	specsRoot := filepath.Join(workDir, ".codexspec", "specs")
-	if err := os.MkdirAll(filepath.Join(specsRoot, "old-feature"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	stages := LeanPipeline(PipelineDeps{})
-	gen := stages[0]
-	sc := &StageContext{WorkDir: workDir}
-
-	if gen.Prepare != nil {
-		if err := gen.Prepare(context.Background(), sc); err != nil {
-			t.Fatalf("Prepare returned error: %v", err)
+	text := string(content)
+	for _, want := range []string{
+		"# Confirmed Requirements: Persist Memory",
+		"### NEED-001: Persist Memory",
+		"**Status**: confirmed",
+		"Persist durable discoveries to MEMORY.md.",
+		"Entries Confirmed**: NEED-001",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("requirements.md missing %q:\n%s", want, text)
 		}
 	}
+	if strings.Contains(text, "[What outcome") || strings.Contains(text, "**Status**: open") {
+		t.Errorf("requirements.md kept placeholder/open template content:\n%s", text)
+	}
+}
 
-	if ok, _ := gen.Verify(context.Background(), sc); ok {
-		t.Fatal("Verify passed before any spec dir was created")
-	}
+func TestGenerationStagesUseExplicitFeatureArtifactArgs(t *testing.T) {
+	stages := RequirementsFirstPipeline(PipelineDeps{Clock: newTestClock()})
+	sc := &StageContext{FeatureDir: filepath.Join(".codexspec", "specs", "2026-0610-1200ab-feature")}
 
-	newDir := filepath.Join(specsRoot, "2026-0610-new-feature")
-	if err := os.MkdirAll(newDir, 0o755); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		index int
+		want  string
+	}{
+		{1, filepath.Join(sc.FeatureDir, "requirements.md")},
+		{2, filepath.Join(sc.FeatureDir, "spec.md")},
+		{3, filepath.Join(sc.FeatureDir, "plan.md")},
+		{4, filepath.Join(sc.FeatureDir, "tasks.md")},
 	}
-	if err := os.WriteFile(filepath.Join(newDir, "spec.md"), []byte("# Spec\ncontent"), 0o644); err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		if got := stages[tt.index].Args(sc); got != tt.want {
+			t.Errorf("stage %s args = %q, want %q", stages[tt.index].Name, got, tt.want)
+		}
 	}
+}
+
+func TestGenerationVerifyRequiresArtifactAndPassingReview(t *testing.T) {
+	workDir := t.TempDir()
+	featureDir := filepath.Join(".codexspec", "specs", "2026-0610-1200ab-feature")
+	sc := &StageContext{WorkDir: workDir, FeatureDir: featureDir}
+	stages := RequirementsFirstPipeline(PipelineDeps{Clock: newTestClock()})
+	gen := stages[1]
 
 	ok, gap := gen.Verify(context.Background(), sc)
+	if ok || !strings.Contains(gap, "spec.md") {
+		t.Fatalf("Verify = %v, gap = %q, want missing spec.md failure", ok, gap)
+	}
+	writeArtifact(t, workDir, featureDir, "spec.md", "# Spec")
+	ok, gap = gen.Verify(context.Background(), sc)
+	if ok || !strings.Contains(gap, "review-spec.md") {
+		t.Fatalf("Verify = %v, gap = %q, want missing review-spec.md failure", ok, gap)
+	}
+	writeArtifact(t, workDir, featureDir, "review-spec.md", "# Report\n\n- **Overall Status**: NEEDS_REVISION\n")
+	ok, gap = gen.Verify(context.Background(), sc)
+	if ok || !strings.Contains(gap, "NEEDS_REVISION") {
+		t.Fatalf("Verify = %v, gap = %q, want review status failure", ok, gap)
+	}
+	writeArtifact(t, workDir, featureDir, "review-spec.md", "# Report\n\n- **Overall Status**: PASS\n")
+	ok, gap = gen.Verify(context.Background(), sc)
 	if !ok {
-		t.Fatalf("Verify failed after spec.md created: %s", gap)
-	}
-	if sc.SpecDir == "" || !strings.Contains(sc.SpecDir, "2026-0610-new-feature") {
-		t.Errorf("SpecDir = %q, want bound to the new directory (TC-019)", sc.SpecDir)
-	}
-
-	// Subsequent stages must thread the bound dir through their args.
-	planArgs := stages[1].Args(sc)
-	if !strings.Contains(planArgs, sc.SpecDir) {
-		t.Errorf("spec-to-plan args = %q, want bound spec dir threaded (TC-019)", planArgs)
+		t.Fatalf("Verify failed with artifact and passing review: %s", gap)
 	}
 }
 
-func TestGenerateSpecVerifyRejectsEmptySpec(t *testing.T) {
+func TestPlanAndTasksVerifyRequireArtifactsAndReviews(t *testing.T) {
 	workDir := t.TempDir()
-	newDir := filepath.Join(workDir, ".codexspec", "specs", "feat")
-	if err := os.MkdirAll(newDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(newDir, "spec.md"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	featureDir := filepath.Join(".codexspec", "specs", "2026-0610-1200ab-feature")
 
-	gen := LeanPipeline(PipelineDeps{})[0]
-	sc := &StageContext{WorkDir: workDir, PreexistingSpecDirs: map[string]bool{}}
-
-	if ok, _ := gen.Verify(context.Background(), sc); ok {
-		t.Error("Verify passed with an empty spec.md, want fail (REQ-012)")
-	}
-}
-
-func TestPlanAndTasksVerifyRequireArtifacts(t *testing.T) {
-	workDir := t.TempDir()
-	specDir := filepath.Join(".codexspec", "specs", "feat")
-	if err := os.MkdirAll(filepath.Join(workDir, specDir), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	stages := LeanPipeline(PipelineDeps{})
-	sc := &StageContext{WorkDir: workDir, SpecDir: specDir}
-
-	if ok, _ := stages[1].Verify(context.Background(), sc); ok {
-		t.Error("spec-to-plan Verify passed without plan.md")
-	}
-	if err := os.WriteFile(filepath.Join(workDir, specDir, "plan.md"), []byte("# Plan"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if ok, gap := stages[1].Verify(context.Background(), sc); !ok {
-		t.Errorf("spec-to-plan Verify failed with plan.md present: %s", gap)
-	}
+	stages := RequirementsFirstPipeline(PipelineDeps{Clock: newTestClock()})
+	sc := &StageContext{WorkDir: workDir, FeatureDir: featureDir}
 
 	if ok, _ := stages[2].Verify(context.Background(), sc); ok {
+		t.Error("spec-to-plan Verify passed without plan.md")
+	}
+	writeArtifact(t, workDir, featureDir, "plan.md", "# Plan")
+	writeArtifact(t, workDir, featureDir, "review-plan.md", "# Report\n\n- **Overall Status**: PASS_WITH_WARNINGS\n")
+	if ok, gap := stages[2].Verify(context.Background(), sc); !ok {
+		t.Errorf("spec-to-plan Verify failed with plan.md and passing review: %s", gap)
+	}
+
+	if ok, _ := stages[3].Verify(context.Background(), sc); ok {
 		t.Error("plan-to-tasks Verify passed without tasks.md")
 	}
-	if err := os.WriteFile(filepath.Join(workDir, specDir, "tasks.md"), []byte("# Tasks"), 0o644); err != nil {
+	writeArtifact(t, workDir, featureDir, "tasks.md", "# Tasks")
+	writeArtifact(t, workDir, featureDir, "review-tasks.md", "# Report\n\n- **Overall Status**: BLOCKED\n")
+	if ok, gap := stages[3].Verify(context.Background(), sc); ok || !strings.Contains(gap, "BLOCKED") {
+		t.Errorf("plan-to-tasks Verify = %v, gap %q, want BLOCKED review failure", ok, gap)
+	}
+	writeArtifact(t, workDir, featureDir, "review-tasks.md", "# Report\n\n- **Overall Status**: PASS\n")
+	if ok, gap := stages[3].Verify(context.Background(), sc); !ok {
+		t.Errorf("plan-to-tasks Verify failed with tasks.md and passing review: %s", gap)
+	}
+}
+
+func writeArtifact(t *testing.T, workDir, featureDir, name, content string) {
+	t.Helper()
+	path := filepath.Join(workDir, featureDir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if ok, gap := stages[2].Verify(context.Background(), sc); !ok {
-		t.Errorf("plan-to-tasks Verify failed with tasks.md present: %s", gap)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -370,12 +385,16 @@ func (erroringGit) Run(ctx context.Context, dir string, args ...string) (string,
 }
 
 func TestImplementVerifySurfacesGitErrors(t *testing.T) {
-	stages := LeanPipeline(PipelineDeps{
-		Gate: &fakeGate{result: GateResult{Passed: true}},
-		Git:  erroringGit{},
+	stages := RequirementsFirstPipeline(PipelineDeps{
+		Gate:  &fakeGate{result: GateResult{Passed: true}},
+		Git:   erroringGit{},
+		Clock: newTestClock(),
 	})
-	impl := stages[3]
-	sc := &StageContext{WorkDir: t.TempDir(), BaseBranch: "main"}
+	impl := stages[4]
+	workDir := t.TempDir()
+	featureDir := filepath.Join(".codexspec", "specs", "2026-0610-1200ab-feature")
+	writeArtifact(t, workDir, featureDir, "tasks.md", "- [x] Task 1\n")
+	sc := &StageContext{WorkDir: workDir, FeatureDir: featureDir, BaseBranch: "main"}
 
 	ok, gap := impl.Verify(context.Background(), sc)
 	if ok {
@@ -407,14 +426,38 @@ func TestImplementVerifyRequiresGatesAndNonEmptyDiff(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stages := LeanPipeline(PipelineDeps{Gate: tt.gate, Git: tt.git})
-			impl := stages[3]
-			sc := &StageContext{WorkDir: t.TempDir(), BaseBranch: "main"}
+			stages := RequirementsFirstPipeline(PipelineDeps{Gate: tt.gate, Git: tt.git, Clock: newTestClock()})
+			impl := stages[4]
+			workDir := t.TempDir()
+			featureDir := filepath.Join(".codexspec", "specs", "2026-0610-1200ab-feature")
+			writeArtifact(t, workDir, featureDir, "tasks.md", "- [x] Task 1\n")
+			sc := &StageContext{WorkDir: workDir, FeatureDir: featureDir, BaseBranch: "main"}
 
 			ok, gap := impl.Verify(context.Background(), sc)
 			if ok != tt.wantOK {
 				t.Errorf("Verify = %v (gap %q), want %v (TC-010/TC-026)", ok, gap, tt.wantOK)
 			}
 		})
+	}
+}
+
+func TestImplementVerifyRejectsUncheckedTasks(t *testing.T) {
+	stages := RequirementsFirstPipeline(PipelineDeps{
+		Gate:  &fakeGate{result: GateResult{Passed: true}},
+		Git:   &fakeDiffGit{status: " M code.go"},
+		Clock: newTestClock(),
+	})
+	impl := stages[4]
+	workDir := t.TempDir()
+	featureDir := filepath.Join(".codexspec", "specs", "2026-0610-1200ab-feature")
+	writeArtifact(t, workDir, featureDir, "tasks.md", "- [x] Done\n- [ ] Still open\n")
+
+	ok, gap := impl.Verify(context.Background(), &StageContext{
+		WorkDir:    workDir,
+		FeatureDir: featureDir,
+		BaseBranch: "main",
+	})
+	if ok || !strings.Contains(gap, "unchecked") {
+		t.Fatalf("Verify = %v, gap %q, want unchecked task failure", ok, gap)
 	}
 }

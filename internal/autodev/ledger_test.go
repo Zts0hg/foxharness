@@ -198,7 +198,7 @@ func TestSaveAndReloadRoundTrip(t *testing.T) {
 		it.Stage = "spec-to-plan"
 		it.Issue = 7
 		it.PR = 8
-		it.SpecDir = ".codexspec/specs/x"
+		it.FeatureDir = ".codexspec/specs/2026-0610-1200ab-x"
 	})
 	if err := led.Save(); err != nil {
 		t.Fatalf("Save returned error: %v", err)
@@ -213,7 +213,7 @@ func TestSaveAndReloadRoundTrip(t *testing.T) {
 		t.Fatal("Get returned ok=false after reload")
 	}
 	if it.Status != StatusInProgress || it.Branch != "auto/round-trip" || it.Stage != "spec-to-plan" ||
-		it.Issue != 7 || it.PR != 8 || it.SpecDir != ".codexspec/specs/x" {
+		it.Issue != 7 || it.PR != 8 || it.FeatureDir != ".codexspec/specs/2026-0610-1200ab-x" {
 		t.Errorf("reloaded item = %+v, want persisted fields intact", it)
 	}
 

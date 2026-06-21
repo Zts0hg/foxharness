@@ -14,16 +14,16 @@ import (
 // not persisted: the backlog owns the requirement text, the ledger owns the
 // processing state (REQ-028).
 type LedgerItem struct {
-	Slug      string    `json:"slug"`
-	Title     string    `json:"title"`
-	Priority  Priority  `json:"priority"`
-	Status    Status    `json:"status"`
-	Branch    string    `json:"branch,omitempty"`
-	Stage     string    `json:"stage,omitempty"`
-	Issue     int       `json:"issue,omitempty"`
-	PR        int       `json:"pr,omitempty"`
-	SpecDir   string    `json:"spec_dir,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	Slug       string    `json:"slug"`
+	Title      string    `json:"title"`
+	Priority   Priority  `json:"priority"`
+	Status     Status    `json:"status"`
+	Branch     string    `json:"branch,omitempty"`
+	Stage      string    `json:"stage,omitempty"`
+	Issue      int       `json:"issue,omitempty"`
+	PR         int       `json:"pr,omitempty"`
+	FeatureDir string    `json:"feature_dir,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at,omitempty"`
 
 	Description string `json:"-"`
 }

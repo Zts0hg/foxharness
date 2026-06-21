@@ -39,20 +39,27 @@ repository, or `gh` missing/unauthenticated) · `1` unexpected error.
   Agent's `ask_user_question` calls and, whenever verification finds a gap,
   feeds a corrective instruction back as the next user message.
 
-## The lean pipeline
+## The fixed requirements-first pipeline
 
 Per item, the stages run in fixed order with these completion checks:
 
 | Step | Driven by | Go `Verify` (ground truth) |
 |------|-----------|----------------------------|
-| `generate-spec` | `/codexspec:generate-spec` + the item's Description | a new spec dir with a non-empty `spec.md` |
-| `spec-to-plan` | `/codexspec:spec-to-plan` | `plan.md` exists in the bound spec dir |
-| `plan-to-tasks` | `/codexspec:plan-to-tasks` | `tasks.md` exists |
-| `implement-tasks` | `/codexspec:implement-tasks` | gates green **and** non-empty worktree diff |
+| `materialize-requirements` | Go control plane | a CodexSpec feature workspace with confirmed `requirements.md` |
+| `generate-spec` | `/codexspec:generate-spec <feature-dir>/requirements.md` | non-empty `spec.md` and `review-spec.md` with `PASS` or `PASS_WITH_WARNINGS` |
+| `spec-to-plan` | `/codexspec:spec-to-plan <feature-dir>/spec.md` | non-empty `plan.md` and `review-plan.md` with `PASS` or `PASS_WITH_WARNINGS` |
+| `plan-to-tasks` | `/codexspec:plan-to-tasks <feature-dir>/plan.md` | non-empty `tasks.md` and `review-tasks.md` with `PASS` or `PASS_WITH_WARNINGS` |
+| `implement-tasks` | `/codexspec:implement-tasks <feature-dir>/tasks.md` | all task checkboxes complete, gates green **and** non-empty worktree diff |
 | stage → commit | `git add` + `/codexspec:commit-staged` | HEAD advanced + clean worktree |
 | push | `git push -u <remote> <branch>` | `git ls-remote` tip == local tip |
 | issue | `gh issue create` | issue found via `gh issue list --json` |
 | PR | `/codexspec:pr` + `gh pr create` | PR found via `gh pr view --json`, body contains `Closes #N` |
+
+Autodev treats each backlog item as the confirmed user input for unattended
+development. The control plane creates `.codexspec/specs/YYYY-MMDD-HHMMxx-<slug>/requirements.md`
+directly and does not call `/codexspec:specify`, avoiding interactive
+confirmation and CodexSpec branch switching inside the isolated `auto/<slug>`
+worktree.
 
 The completion gate runs inside the worktree: `go build ./...`,
 `go test ./...`, `gofmt -l .`. The **test gate cannot be disabled**; build
@@ -74,7 +81,6 @@ model: ""                                 # empty = global default; engineer & c
 engineer_prompt: ""                       # inline engineer persona; empty = default
 engineer_prompt_file: ""                  # custom engineer persona (.md); empty = default
 
-pipeline: lean                            # generate-spec → spec-to-plan → plan-to-tasks → implement-tasks
 gates: { build: true, test: true, gofmt: true }   # test is mandatory (cannot be disabled)
 
 remote_flow:
@@ -94,7 +100,7 @@ remote_flow:
 **Priority**: high
 **Status**: pending
 **Description**: During an agent run, the Engine should ... (free text; this
-is fed to generate-spec as the already-clarified requirement)
+is treated as confirmed input for the generated requirements.md)
 ```
 
 - `Priority`: `high` / `medium` / `low` (missing → lowest bucket).
@@ -106,10 +112,10 @@ is fed to generate-spec as the already-clarified requirement)
 
 The ledger is the authoritative progress source. Per item it records the
 slug, status (`pending`/`in-progress`/`done`), branch, current stage, issue
-number, PR number, and the bound spec directory. On restart, `done` items
-are skipped and `in-progress` items resume from their recorded stage on
-their existing branch/worktree; remote steps that already happened (commit,
-push, recorded issue) are detected from ground truth and skipped.
+number, PR number, and the bound CodexSpec feature directory. On restart,
+`done` items are skipped and `in-progress` items resume from their recorded
+stage on their existing branch/worktree; remote steps that already happened
+(commit, push, recorded issue) are detected from ground truth and skipped.
 
 ## Preconditions
 

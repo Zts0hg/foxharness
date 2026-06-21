@@ -38,7 +38,7 @@ type Deps struct {
 	// Clock stamps ledger mutations; nil defaults to SystemClock.
 	Clock Clock
 	// BuildPipeline overrides the SDD pipeline construction; nil defaults
-	// to LeanPipeline. Primarily a test seam.
+	// to RequirementsFirstPipeline. Primarily a test seam.
 	BuildPipeline func(PipelineDeps) []Stage
 }
 
@@ -66,10 +66,11 @@ func New(deps Deps) *Orchestrator {
 		Git:      deps.Git,
 		Gates:    deps.Config.Gates,
 		Reporter: deps.Reporter,
+		Clock:    deps.Clock,
 	}
 	build := deps.BuildPipeline
 	if build == nil {
-		build = LeanPipeline
+		build = RequirementsFirstPipeline
 	}
 	return &Orchestrator{
 		deps:      deps,
@@ -173,7 +174,7 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 		Branch:     wt.Branch,
 		BaseBranch: o.deps.Config.BaseBranch,
 		Remote:     o.deps.Config.Remote,
-		SpecDir:    item.SpecDir,
+		FeatureDir: item.FeatureDir,
 	}
 	core.SetUserAsker(NewEngineerAsker(o.deps.Engineer, o.deps.Reporter, sc))
 
@@ -182,8 +183,8 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 		if err := o.machine.RunStep(ctx, core, sc, st); err != nil {
 			return err
 		}
-		if sc.SpecDir != "" {
-			record(func(it *LedgerItem) { it.SpecDir = sc.SpecDir })
+		if sc.FeatureDir != "" {
+			record(func(it *LedgerItem) { it.FeatureDir = sc.FeatureDir })
 		}
 	}
 

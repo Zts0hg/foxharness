@@ -19,11 +19,11 @@ import (
 // e2eItemState is the simulated ground truth for one item's worktree,
 // mutated by the fake core Agent and observed by the fake git/gh runners.
 type e2eItemState struct {
-	specDir   string
-	dirty     bool
-	staged    bool
-	committed bool
-	pushed    bool
+	featureDir string
+	dirty      bool
+	staged     bool
+	committed  bool
+	pushed     bool
 }
 
 // e2eWorld holds the shared simulation state across the fakes.
@@ -182,14 +182,18 @@ func (c *e2eCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*e
 	switch {
 	case strings.Contains(lower, "generate-spec"):
 		w.ledgerStatusAtSpec = append(w.ledgerStatusAtSpec, ledgerStatusOnDisk(w.t, w.repoRoot, slugFromWorkDir(c.workDir)))
-		st.specDir = filepath.Join(c.workDir, ".codexspec", "specs", "feat-"+filepath.Base(c.workDir))
-		mustWrite(w.t, filepath.Join(st.specDir, "spec.md"), "# Spec")
+		st.featureDir = singleFeatureDir(w.t, c.workDir)
+		mustWrite(w.t, filepath.Join(st.featureDir, "spec.md"), "# Spec")
+		mustWrite(w.t, filepath.Join(st.featureDir, "review-spec.md"), "# Review\n\n- **Overall Status**: PASS\n")
 	case strings.Contains(lower, "spec-to-plan"):
-		mustWrite(w.t, filepath.Join(st.specDir, "plan.md"), "# Plan")
+		mustWrite(w.t, filepath.Join(st.featureDir, "plan.md"), "# Plan")
+		mustWrite(w.t, filepath.Join(st.featureDir, "review-plan.md"), "# Review\n\n- **Overall Status**: PASS\n")
 	case strings.Contains(lower, "plan-to-tasks"):
-		mustWrite(w.t, filepath.Join(st.specDir, "tasks.md"), "# Tasks")
+		mustWrite(w.t, filepath.Join(st.featureDir, "tasks.md"), "# Tasks\n\n- [ ] Implement it\n")
+		mustWrite(w.t, filepath.Join(st.featureDir, "review-tasks.md"), "# Review\n\n- **Overall Status**: PASS\n")
 	case strings.Contains(lower, "implement-tasks"):
 		mustWrite(w.t, filepath.Join(c.workDir, "code.go"), "package main")
+		mustWrite(w.t, filepath.Join(st.featureDir, "tasks.md"), "# Tasks\n\n- [x] Implement it\n")
 		st.dirty = true
 	case strings.Contains(lower, "git add"):
 		st.staged = true
@@ -252,6 +256,25 @@ func mustWrite(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func singleFeatureDir(t *testing.T, workDir string) string {
+	t.Helper()
+	specsRoot := filepath.Join(workDir, ".codexspec", "specs")
+	entries, err := os.ReadDir(specsRoot)
+	if err != nil {
+		t.Fatalf("read specs root: %v", err)
+	}
+	var dirs []string
+	for _, e := range entries {
+		if e.IsDir() {
+			dirs = append(dirs, filepath.Join(specsRoot, e.Name()))
+		}
+	}
+	if len(dirs) != 1 {
+		t.Fatalf("feature dirs = %v, want exactly one", dirs)
+	}
+	return dirs[0]
 }
 
 // ledgerStatusOnDisk reads the persisted ledger and returns slug's status,
@@ -352,8 +375,8 @@ func TestOrchestratorEndToEndDrainsBacklog(t *testing.T) {
 		if it.Issue == 0 || it.PR == 0 {
 			t.Errorf("%s issue/pr = %d/%d, want recorded (Story 1)", slug, it.Issue, it.PR)
 		}
-		if it.SpecDir == "" {
-			t.Errorf("%s SpecDir empty, want bound spec dir recorded (REQ-011)", slug)
+		if it.FeatureDir == "" {
+			t.Errorf("%s FeatureDir empty, want bound feature dir recorded (REQ-011)", slug)
 		}
 		if it.Branch != "auto/"+slug {
 			t.Errorf("%s branch = %q, want auto/%s", slug, it.Branch, slug)
