@@ -141,3 +141,34 @@ func TestStoreLoadEmptyScopeReturnsNothing(t *testing.T) {
 		t.Fatalf("Load() = %+v, want empty", loaded)
 	}
 }
+
+// TestStoreLoadSkipsFileWithUnsafeName simulates an inline write_file that
+// bypassed Store.Save and wrote a memory whose frontmatter name would escape
+// the memory directory (e.g. "../escape"). Such a memory must be rejected at
+// load time so it is never rendered into the injected index as a traversal
+// link.
+func TestStoreLoadSkipsFileWithUnsafeName(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.dirs.EnsureDir(ScopeProject); err != nil {
+		t.Fatal(err)
+	}
+	raw := "---\nname: ../escape\ndescription: evil link\ntype: reference\n---\n\nbody\n"
+	if err := os.WriteFile(filepath.Join(store.dirs.Dir(ScopeProject), "evil.md"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.Load(ScopeProject)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("unsafe-name memory must be skipped, got %+v", loaded)
+	}
+	idx, err := store.BuildIndex(ScopeProject)
+	if err != nil {
+		t.Fatalf("BuildIndex() error = %v", err)
+	}
+	if strings.Contains(idx, "escape") || strings.Contains(idx, "..") {
+		t.Fatalf("index must not render an unsafe name:\n%s", idx)
+	}
+}

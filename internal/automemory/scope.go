@@ -88,22 +88,31 @@ func (d Dirs) FilePath(scope Scope, name string) (string, error) {
 	return filepath.Join(d.Dir(scope), safe), nil
 }
 
+// validMemoryName validates that a memory slug is a single, safe path element
+// with no separators or ".." traversal. It is the single source of truth for
+// name safety, shared by Save (filename derivation) and Validate (parsing), so a
+// memory written directly via write_file and later loaded can never advertise an
+// unsafe link in the index.
+func validMemoryName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return fmt.Errorf("memory name must not be empty")
+	}
+	if strings.ContainsAny(trimmed, `/\`) || strings.Contains(trimmed, "..") {
+		return fmt.Errorf("memory name %q must not contain path separators or %q", name, "..")
+	}
+	if trimmed != filepath.Base(trimmed) {
+		return fmt.Errorf("memory name %q must be a single path element", name)
+	}
+	return nil
+}
+
 // safeFileName validates a memory slug and returns the corresponding "<name>.md"
 // filename, rejecting any value that could escape the memory directory.
 func safeFileName(name string) (string, error) {
-	trimmed := strings.TrimSpace(name)
-	if trimmed == "" {
-		return "", fmt.Errorf("memory name must not be empty")
-	}
-	trimmed = strings.TrimSuffix(trimmed, ".md")
-	if trimmed == "" {
-		return "", fmt.Errorf("memory name must not be empty")
-	}
-	if strings.ContainsAny(trimmed, `/\`) || strings.Contains(trimmed, "..") {
-		return "", fmt.Errorf("memory name %q must not contain path separators or %q", name, "..")
-	}
-	if trimmed != filepath.Base(trimmed) {
-		return "", fmt.Errorf("memory name %q must be a single path element", name)
+	trimmed := strings.TrimSuffix(strings.TrimSpace(name), ".md")
+	if err := validMemoryName(trimmed); err != nil {
+		return "", err
 	}
 	return trimmed + ".md", nil
 }

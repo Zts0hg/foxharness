@@ -104,8 +104,8 @@ func ParseMemory(data []byte) (Memory, error) {
 // type, the Why/How-to-apply structure for feedback and project memories, and the
 // content size cap (CON-005).
 func (m Memory) Validate() error {
-	if strings.TrimSpace(m.Name) == "" {
-		return errors.New("memory name is required")
+	if err := validMemoryName(m.Name); err != nil {
+		return err
 	}
 	if strings.TrimSpace(m.Description) == "" {
 		return errors.New("memory description is required")

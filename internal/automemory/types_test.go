@@ -51,6 +51,21 @@ func TestValidateRejectsMissingFields(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUnsafeNames(t *testing.T) {
+	for _, name := range []string{"../outside", "a/b", "..", "foo/../bar", `a\b`, "/abs"} {
+		mem := Memory{Name: name, Description: "d", Type: TypeUser, Body: "b"}
+		if err := mem.Validate(); err == nil {
+			t.Fatalf("Validate(name=%q) expected a path-safety error", name)
+		}
+	}
+	for _, name := range []string{"user-role", "feedback-no-mock-db", "mem-0001", "ref_dash"} {
+		mem := Memory{Name: name, Description: "d", Type: TypeUser, Body: "b"}
+		if err := mem.Validate(); err != nil {
+			t.Fatalf("Validate(name=%q) unexpected error: %v", name, err)
+		}
+	}
+}
+
 func TestValidateRequiresWhyAndHowToApply(t *testing.T) {
 	for _, typ := range []MemoryType{TypeFeedback, TypeProject} {
 		missing := Memory{Name: "n", Description: "d", Type: typ, Body: "just a rule, no structure"}
