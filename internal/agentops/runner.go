@@ -12,6 +12,7 @@ import (
 	"log"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
+	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
@@ -105,8 +106,12 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 		log.Printf("[AgentOps][PlanMode] 计划已生成，本次任务关闭每轮 Thinking")
 	}
 
-	registry := r.buildRegistry(task, sess)
-	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
+	autoStore := automemory.NewStore(r.sessions.HomeDir(), r.workDir)
+	hooks := automemory.NewPerRunHooks(r.provider, autoStore, r.workDir)
+	tracker := hooks.NewTracker()
+
+	registry := r.buildRegistry(task, sess, tracker)
+	composer := r.buildComposer(sess, autoStore)
 
 	eng := engine.NewAgentEngine(
 		r.provider,
@@ -127,7 +132,14 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 	}
 	eng.WithCompactor(compactor)
 
+	nextSeq, seqErr := session.NewMessageLog(sess).NextSeq()
+	if seqErr != nil {
+		log.Printf("[AgentOps] 读取下一条消息序号失败: %v", seqErr)
+		nextSeq = 0
+	}
+
 	result, err := eng.Run(ctx, sess, taskPrompt)
+	r.fireMemoryExtraction(hooks, sess, nextSeq, tracker)
 	if err != nil {
 		return err
 	}
@@ -161,7 +173,31 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 
 }
 
-func (r *Runner) buildRegistry(task Task, sess *session.Session) tools.Registry {
+// buildComposer assembles the system-prompt composer for a task, injecting the
+// cross-session persistent memory index when a store is available (REQ-006).
+func (r *Runner) buildComposer(sess *session.Session, store *automemory.Store) *prompt.Composer {
+	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
+	if store != nil {
+		composer = composer.WithAutoMemory(store)
+	}
+	return composer
+}
+
+// fireMemoryExtraction launches the post-run memory extraction hook (PLD-8). It
+// is fire-and-forget and panic-guarded so it can never disturb the task result.
+func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *session.Session, nextSeq int64, tracker *automemory.Tracker) {
+	if hooks == nil {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[AgentOps] memory extraction launch panic recovered: %v", rec)
+		}
+	}()
+	hooks.Fire(sess, nextSeq, tracker)
+}
+
+func (r *Runner) buildRegistry(task Task, sess *session.Session, tracker *automemory.Tracker) tools.Registry {
 	registry := tools.NewRegistry()
 
 	registry.Register(NewLogSearchTool(r.logDir))
@@ -177,6 +213,10 @@ func (r *Runner) buildRegistry(task Task, sess *session.Session) tools.Registry 
 
 	subManager := subagent.NewManager(r.provider, r.workDir)
 	registry.Register(subagent.NewTool(subManager, sess.ID))
+
+	if tracker != nil {
+		registry.Use(tracker)
+	}
 
 	return registry
 }

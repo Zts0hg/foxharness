@@ -10,10 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	providerpkg "github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 type blockingLLMProvider struct {
@@ -579,7 +581,7 @@ func TestAgentRunnerRestoresSessionStateBeforeMessage(t *testing.T) {
 func TestAgentRunnerRegistryIncludesTodoTools(t *testing.T) {
 	runner := &AgentRunner{workDir: t.TempDir()}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
-	registry := runner.buildRegistry(sess, &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})}, nil, func() string { return "" })
+	registry := runner.buildRegistry(sess, &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})}, nil, func() string { return "" }, nil)
 
 	names := map[string]bool{}
 	for _, def := range registry.GetAvailableTools() {
@@ -648,5 +650,128 @@ func assertFileContent(t *testing.T, path string, want string) {
 	}
 	if got := string(data); got != want {
 		t.Fatalf("%s = %q, want %q", path, got, want)
+	}
+}
+
+// TestInlineMemoryWriteSetsTrackerAndIndex verifies the inline write path
+// (US2): a write_file whose relative path resolves into a memory directory is
+// detected by the tracker, the memory is persisted and indexed, and an explicit
+// forget removes it from the regenerated index. (T012)
+func TestInlineMemoryWriteSetsTrackerAndIndex(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+	store := automemory.NewStore(home, workDir)
+	tracker := automemory.NewTracker(workDir, []string{store.UserGlobalDir(), store.ProjectDir()})
+
+	registry := tools.NewRegistry()
+	registry.Use(tracker)
+	registry.Register(tools.NewWriteFileTool(workDir))
+
+	rel, err := filepath.Rel(workDir, filepath.Join(store.UserGlobalDir(), "user-role.md"))
+	if err != nil {
+		t.Fatalf("Rel() error = %v", err)
+	}
+	content := "---\nname: user-role\ndescription: Staff engineer, terse answers.\ntype: user\n---\n\nThe user is a staff engineer.\n"
+	args, _ := json.Marshal(map[string]string{"path": rel, "content": content})
+
+	res := registry.Execute(context.Background(), schema.ToolCall{ID: "c1", Name: "write_file", Arguments: args})
+	if res.IsError {
+		t.Fatalf("write_file failed: %s", res.Output)
+	}
+	if !tracker.WroteMemory() {
+		t.Fatalf("tracker must flag an inline memory write")
+	}
+
+	mems, err := store.Load(automemory.ScopeUserGlobal)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(mems) != 1 || mems[0].Name != "user-role" {
+		t.Fatalf("inline memory not persisted: %+v", mems)
+	}
+	idx, _ := store.BuildIndex(automemory.ScopeUserGlobal)
+	if !strings.Contains(idx, "user-role.md") {
+		t.Fatalf("index missing inline memory entry:\n%s", idx)
+	}
+
+	// Explicit forget: remove the file; the regenerated index drops the entry.
+	if err := store.Remove(automemory.ScopeUserGlobal, "user-role"); err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	idx2, _ := store.BuildIndex(automemory.ScopeUserGlobal)
+	if strings.Contains(idx2, "user-role.md") {
+		t.Fatalf("index still lists forgotten memory:\n%s", idx2)
+	}
+}
+
+// immediateMemoryRunner builds a runner whose provider returns a final message
+// on the first call, so a Run completes in one turn. Used to exercise the
+// post-run extraction wiring (T015).
+func immediateMemoryRunner(t *testing.T) (*AgentRunner, *blockingLLMProvider) {
+	t.Helper()
+	workDir := t.TempDir()
+	home := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, home)
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	store := memory.NewSessionStore(workDir, sess.RootDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	prov := &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})}
+	close(prov.release) // return a final message immediately, no tool calls
+
+	runner := &AgentRunner{
+		workDir:        workDir,
+		model:          "fake-model",
+		maxTurns:       3,
+		store:          store,
+		autoMemory:     automemory.NewStore(home, workDir),
+		manager:        manager,
+		llmProvider:    prov,
+		currentSession: sess,
+	}
+	return runner, prov
+}
+
+func TestRunFiresExtractionHookWithTracker(t *testing.T) {
+	runner, _ := immediateMemoryRunner(t)
+
+	called := 0
+	var gotTracker *automemory.Tracker
+	runner.extractionFire = func(s *session.Session, sinceSeq int64, tr *automemory.Tracker) {
+		called++
+		gotTracker = tr
+	}
+
+	result, err := runner.Run(context.Background(), "hello", nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == nil || result.FinalMessage == "" {
+		t.Fatalf("unexpected run result: %+v", result)
+	}
+	if called != 1 {
+		t.Fatalf("extraction hook fired %d times, want exactly 1 at run end", called)
+	}
+	if gotTracker == nil {
+		t.Fatalf("extraction hook must receive the run tracker for mutual exclusion")
+	}
+}
+
+func TestPanickingExtractionHookDoesNotAffectRunResult(t *testing.T) {
+	runner, _ := immediateMemoryRunner(t)
+	runner.extractionFire = func(s *session.Session, sinceSeq int64, tr *automemory.Tracker) {
+		panic("extraction blew up")
+	}
+
+	result, err := runner.Run(context.Background(), "hello", nil)
+	if err != nil {
+		t.Fatalf("a panicking extraction hook must not fail the run, got %v", err)
+	}
+	if result == nil || result.FinalMessage == "" {
+		t.Fatalf("a panicking extraction hook must not corrupt the result: %+v", result)
 	}
 }

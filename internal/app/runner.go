@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
@@ -61,9 +62,15 @@ type AgentRunner struct {
 	onModelChange func(model string) error
 
 	store          *memory.Store
+	autoMemory     *automemory.Store
 	manager        *session.Manager
 	llmProvider    provider.LLMProvider
 	currentSession *session.Session
+
+	// extractionFire overrides the default post-run memory extraction launcher.
+	// It is nil in production (which uses automemory.PerRunHooks.Fire); tests set
+	// it to observe the hook synchronously.
+	extractionFire func(sess *session.Session, sinceSeq int64, tracker *automemory.Tracker)
 	checkpointer   checkpoint.Checkpointer
 	slashRegistry  *slash.Registry
 	slashExecutor  *slash.Executor
@@ -112,6 +119,7 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 	if err := store.EnsureFiles(); err != nil {
 		return nil, fmt.Errorf("初始化文件记忆失败: %w", err)
 	}
+	autoMem := automemory.NewStore(manager.HomeDir(), workDir)
 	cp := checkpoint.New(checkpoint.Config{SessionDir: sess.RootDir})
 	if checkpointDisabledFromEnv() {
 		cp.SetDisabled(true)
@@ -148,6 +156,7 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		maxTurns:         cfg.MaxTurns,
 		onModelChange:    cfg.OnModelChange,
 		store:            store,
+		autoMemory:       autoMem,
 		manager:          manager,
 		llmProvider:      llmProvider,
 		currentSession:   sess,
@@ -283,6 +292,7 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	r.mu.Lock()
 	sess := r.currentSession
 	store := r.store
+	autoMem := r.autoMemory
 	enableThinking := r.enableThinking
 	enablePlanMode := r.enablePlanMode
 	llmProvider := r.llmProvider
@@ -319,6 +329,9 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	composer := prompt.NewComposer(r.workDir).
 		WithMemory(sess.MemoryPath()).
 		WithInteractiveAsk(interactiveAsk)
+	if autoMem != nil {
+		composer = composer.WithAutoMemory(autoMem)
+	}
 	if registry != nil {
 		contextWindow := compaction.NewModelRegistry().Lookup(model)
 		tokens := contextWindow
@@ -339,7 +352,14 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 		return currentMessageID
 	}
 
-	toolRegistry := r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID)
+	var hooks *automemory.PerRunHooks
+	var tracker *automemory.Tracker
+	if autoMem != nil {
+		hooks = automemory.NewPerRunHooks(llmProvider, autoMem, r.workDir)
+		tracker = hooks.NewTracker()
+	}
+
+	toolRegistry := r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID, tracker)
 	if len(allowedTools) > 0 {
 		toolRegistry = slash.NewFilteredRegistry(toolRegistry, allowedTools)
 		log.Printf("[slash] restricting next run to allowed tools: %v", allowedTools)
@@ -376,7 +396,28 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	}
 	eng.WithCompactor(compactor)
 
-	return eng.RunWithReporter(ctx, sess, userPrompt, reporter)
+	result, runErr := eng.RunWithReporter(ctx, sess, userPrompt, reporter)
+
+	// Fire the post-run memory extraction hook (PLD-8) over just this run's
+	// messages (Seq >= nextSeq). It is fire-and-forget and runs out-of-band; it
+	// never affects the run result. The launch itself is panic-guarded so a
+	// misbehaving hook can never disturb the returned result.
+	if hooks != nil {
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					log.Printf("[automemory] extraction launch panic recovered: %v", rec)
+				}
+			}()
+			if r.extractionFire != nil {
+				r.extractionFire(sess, nextSeq, tracker)
+			} else {
+				hooks.Fire(sess, nextSeq, tracker)
+			}
+		}()
+	}
+
+	return result, runErr
 }
 
 // NewSession switches the runner to a fresh CLI session.
@@ -791,9 +832,12 @@ func extractFilePath(raw []byte) string {
 	return args.Path
 }
 
-func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.LLMProvider, cp checkpoint.Checkpointer, getMessageID func() string) tools.Registry {
+func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.LLMProvider, cp checkpoint.Checkpointer, getMessageID func() string, tracker *automemory.Tracker) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Use(middleware.NewCheckpointMiddleware(cp, getMessageID, r.workDir))
+	if tracker != nil {
+		registry.Use(tracker)
+	}
 	registry.Register(tools.NewReadFileTool(r.workDir))
 	registry.Register(tools.NewWriteFileTool(r.workDir))
 	registry.Register(tools.NewBashTool(r.workDir))

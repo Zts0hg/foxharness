@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
+	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
@@ -95,9 +96,13 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("继续使用 Session: %s", sess.ID))
 	}
 
-	registry := r.buildRegistry(sess, task.ChatID)
+	autoStore := automemory.NewStore(r.sessionManager.HomeDir(), r.workDir)
+	hooks := automemory.NewPerRunHooks(r.provider, autoStore, r.workDir)
+	tracker := hooks.NewTracker()
 
-	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
+	registry := r.buildRegistry(sess, task.ChatID, tracker)
+
+	composer := r.buildComposer(sess, autoStore)
 	eng := engine.NewAgentEngine(
 		r.provider,
 		registry,
@@ -124,8 +129,15 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 		taskText,
 	)
 
+	nextSeq, err := session.NewMessageLog(sess).NextSeq()
+	if err != nil {
+		log.Printf("[Feishu Runner] 读取下一条消息序号失败: %v", err)
+		nextSeq = 0
+	}
+
 	reporter := NewReporter(r.messenger, task.ChatID, task.TaskID)
 	result, err := eng.RunWithReporter(runCtx, sess, taskPrompt, reporter)
+	r.fireMemoryExtraction(hooks, sess, nextSeq, tracker)
 	if err != nil {
 		log.Printf("[Feishu Runner] task=%s session=%s  failed: %v", task.TaskID, sess.ID, err)
 		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("Session %s 执行失败：%v", sess.ID, err))
@@ -140,7 +152,31 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("任务 %s 已完成，Session: %s，Run: %s", task.TaskID, sess.ID, result.RunID))
 }
 
-func (r *Runner) buildRegistry(sess *session.Session, chatID string) tools.Registry {
+// buildComposer assembles the system-prompt composer for a task, injecting the
+// cross-session persistent memory index when a store is available (REQ-006).
+func (r *Runner) buildComposer(sess *session.Session, store *automemory.Store) *prompt.Composer {
+	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
+	if store != nil {
+		composer = composer.WithAutoMemory(store)
+	}
+	return composer
+}
+
+// fireMemoryExtraction launches the post-run memory extraction hook (PLD-8). It
+// is fire-and-forget and panic-guarded so it can never disturb the task result.
+func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *session.Session, nextSeq int64, tracker *automemory.Tracker) {
+	if hooks == nil {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[Feishu Runner] memory extraction launch panic recovered: %v", rec)
+		}
+	}()
+	hooks.Fire(sess, nextSeq, tracker)
+}
+
+func (r *Runner) buildRegistry(sess *session.Session, chatID string, tracker *automemory.Tracker) tools.Registry {
 	approver := approval.NewFeishuApprover(chatID, r.messenger, r.approvalStore)
 	subManager := subagent.NewManager(r.provider, r.workDir)
 
@@ -153,6 +189,9 @@ func (r *Runner) buildRegistry(sess *session.Session, chatID string) tools.Regis
 	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
 	registry.Register(subagent.NewTool(subManager, sess.ID))
 	registry.Use(middleware.NewDangerMiddleware(approver))
+	if tracker != nil {
+		registry.Use(tracker)
+	}
 	return registry
 }
 
