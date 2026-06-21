@@ -254,9 +254,10 @@ time, resumable via a durable state ledger.
 
    **Priority**: high
    **Status**: pending
-   **Description**: Free-text requirement. It is fed to the SDD pipeline
-   as the already-clarified requirement, so spell out scope, constraints,
-   and what is out of scope.
+   **Description**: Free-text requirement. Autodev treats this backlog
+   item as confirmed input and materializes it into CodexSpec
+   requirements.md, so spell out scope, constraints, and what is out of
+   scope.
    ```
 
    `Priority` is `high` / `medium` / `low`; items are processed in
@@ -271,9 +272,10 @@ time, resumable via a durable state ledger.
    ```
 
 For every pending item, autodev creates an `auto/<slug>` branch in an
-isolated worktree, drives spec → plan → tasks → implementation, runs the
-`go build` / `go test` / `gofmt` gate, then commits, pushes, and opens a
-linked GitHub issue + PR (`Closes #N`). Progress is recorded in
+isolated worktree, drives requirements → spec → plan → tasks →
+implementation with CodexSpec review gates, runs the `go build` /
+`go test` / `gofmt` gate, then commits, pushes, and opens a linked GitHub
+issue + PR (`Closes #N`). Progress is recorded in
 `.foxharness/autodev-state.json`: re-running skips `done` items and resumes
 interrupted ones from their recorded stage. PRs are never auto-merged —
 review stays with you.

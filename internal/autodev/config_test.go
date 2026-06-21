@@ -45,9 +45,6 @@ func TestLoadMissingFileAppliesDefaults(t *testing.T) {
 	if cfg.Model != "" {
 		t.Errorf("Model = %q, want empty (global default)", cfg.Model)
 	}
-	if cfg.Pipeline != "lean" {
-		t.Errorf("Pipeline = %q, want lean", cfg.Pipeline)
-	}
 	if !cfg.Gates.Build || !cfg.Gates.Test || !cfg.Gates.Gofmt {
 		t.Errorf("Gates = %+v, want all true", cfg.Gates)
 	}
@@ -73,7 +70,6 @@ concurrency: serial
 model: glm-4.7
 engineer_prompt: "be terse"
 engineer_prompt_file: persona.md
-pipeline: lean
 gates: { build: true, test: true, gofmt: true }
 remote_flow:
   create_issue: true
@@ -133,6 +129,19 @@ func TestLoadPartialKeysKeepDefaultsForRest(t *testing.T) {
 	}
 }
 
+func TestLoadEmptyFileAppliesDefaults(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeConfig(t, repoRoot, "\n")
+
+	cfg, err := Load(repoRoot)
+	if err != nil {
+		t.Fatalf("Load returned error for empty config: %v", err)
+	}
+	if cfg.BacklogFile != "BACKLOG.md" {
+		t.Errorf("BacklogFile = %q, want default BACKLOG.md", cfg.BacklogFile)
+	}
+}
+
 func TestLoadGateFloorForcesTestOn(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeConfig(t, repoRoot, "gates: { build: false, test: false, gofmt: false }\n")
@@ -185,5 +194,14 @@ func TestLoadMalformedYAMLReturnsError(t *testing.T) {
 
 	if _, err := Load(repoRoot); err == nil {
 		t.Fatal("Load returned nil error for malformed YAML, want error")
+	}
+}
+
+func TestLoadUnknownYAMLFieldReturnsError(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeConfig(t, repoRoot, "pipeline: lean\n")
+
+	if _, err := Load(repoRoot); err == nil {
+		t.Fatal("Load returned nil error for removed pipeline key, want strict YAML error")
 	}
 }

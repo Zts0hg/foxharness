@@ -204,7 +204,7 @@ func testDeps(t *testing.T, repoRoot string, backlog string) (Deps, *eventRecord
 		Exec:          gh,
 		Reporter:      recorder,
 		Clock:         newTestClock(),
-		BuildPipeline: trivialStages("generate-spec", "spec-to-plan", "plan-to-tasks", "implement-tasks"),
+		BuildPipeline: trivialStages("materialize-requirements", "generate-spec", "spec-to-plan", "plan-to-tasks", "implement-tasks"),
 	}
 	return deps, recorder, factory, git, gh
 }
@@ -345,8 +345,8 @@ func TestOrchestratorResumesInProgressFromRecordedStage(t *testing.T) {
 	repoRoot := t.TempDir()
 	deps, recorder, _, _, _ := testDeps(t, repoRoot, twoItemBacklog)
 
-	// Pre-record: first-item is mid-flight at plan-to-tasks with its spec
-	// dir bound; the worktree directory exists from the prior run.
+	// Pre-record: first-item is mid-flight at plan-to-tasks with its
+	// feature dir bound; the worktree directory exists from the prior run.
 	led, err := LoadLedger(filepath.Join(repoRoot, ".foxharness", "autodev-state.json"), newTestClock())
 	if err != nil {
 		t.Fatal(err)
@@ -360,7 +360,7 @@ func TestOrchestratorResumesInProgressFromRecordedStage(t *testing.T) {
 		it.Status = StatusInProgress
 		it.Branch = "auto/first-item"
 		it.Stage = "plan-to-tasks"
-		it.SpecDir = ".codexspec/specs/first"
+		it.FeatureDir = ".codexspec/specs/2026-0610-1200ab-first"
 	})
 	if err := led.Save(); err != nil {
 		t.Fatal(err)
@@ -376,7 +376,9 @@ func TestOrchestratorResumesInProgressFromRecordedStage(t *testing.T) {
 
 	events := recorder.list()
 	for _, e := range events {
-		if e == "stage:first-item:generate-spec" || e == "stage:first-item:spec-to-plan" {
+		if e == "stage:first-item:materialize-requirements" ||
+			e == "stage:first-item:generate-spec" ||
+			e == "stage:first-item:spec-to-plan" {
 			t.Errorf("event %q recorded, want resume from plan-to-tasks (REQ-022)", e)
 		}
 	}
