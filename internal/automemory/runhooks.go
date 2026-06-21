@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
 
@@ -36,6 +37,19 @@ func NewPerRunHooks(p provider.LLMProvider, store *Store, workDir string) *PerRu
 // memory directories.
 func (h *PerRunHooks) NewTracker() *Tracker {
 	return NewTracker(h.workDir, []string{h.store.UserGlobalDir(), h.store.ProjectDir()})
+}
+
+// RecordCallback returns an engine.OnToolCalled callback that records successful
+// memory-directory writes on the given tracker. It is the success-gated seam
+// runners attach so a failed write never sets the mutual-exclusion flag (the
+// Middleware interface only inspects calls pre-execution and cannot see results).
+// A nil tracker yields a no-op callback.
+func (h *PerRunHooks) RecordCallback(tracker *Tracker) func(schema.ToolCall, schema.ToolResult) {
+	return func(call schema.ToolCall, result schema.ToolResult) {
+		if tracker != nil {
+			tracker.MarkSuccess(call, result)
+		}
+	}
 }
 
 // Fire launches the extraction hook over the messages appended since sinceSeq.

@@ -581,7 +581,7 @@ func TestAgentRunnerRestoresSessionStateBeforeMessage(t *testing.T) {
 func TestAgentRunnerRegistryIncludesTodoTools(t *testing.T) {
 	runner := &AgentRunner{workDir: t.TempDir()}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
-	registry := runner.buildRegistry(sess, &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})}, nil, func() string { return "" }, nil)
+	registry := runner.buildRegistry(sess, &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})}, nil, func() string { return "" })
 
 	names := map[string]bool{}
 	for _, def := range registry.GetAvailableTools() {
@@ -655,16 +655,18 @@ func assertFileContent(t *testing.T, path string, want string) {
 
 // TestInlineMemoryWriteSetsTrackerAndIndex verifies the inline write path
 // (US2): a write_file whose relative path resolves into a memory directory is
-// detected by the tracker, the memory is persisted and indexed, and an explicit
-// forget removes it from the regenerated index. (T012)
+// detected by the tracker (recorded on success via the engine's OnToolCalled),
+// the memory is persisted and indexed, and an explicit forget removes it from
+// the regenerated index. (T012)
 func TestInlineMemoryWriteSetsTrackerAndIndex(t *testing.T) {
 	workDir := t.TempDir()
 	home := t.TempDir()
 	store := automemory.NewStore(home, workDir)
-	tracker := automemory.NewTracker(workDir, []string{store.UserGlobalDir(), store.ProjectDir()})
+	hooks := automemory.NewPerRunHooks(nil, store, workDir)
+	tracker := hooks.NewTracker()
+	onToolCalled := hooks.RecordCallback(tracker)
 
 	registry := tools.NewRegistry()
-	registry.Use(tracker)
 	registry.Register(tools.NewWriteFileTool(workDir))
 
 	rel, err := filepath.Rel(workDir, filepath.Join(store.UserGlobalDir(), "user-role.md"))
@@ -674,12 +676,20 @@ func TestInlineMemoryWriteSetsTrackerAndIndex(t *testing.T) {
 	content := "---\nname: user-role\ndescription: Staff engineer, terse answers.\ntype: user\n---\n\nThe user is a staff engineer.\n"
 	args, _ := json.Marshal(map[string]string{"path": rel, "content": content})
 
-	res := registry.Execute(context.Background(), schema.ToolCall{ID: "c1", Name: "write_file", Arguments: args})
+	call := schema.ToolCall{ID: "c1", Name: "write_file", Arguments: args}
+	res := registry.Execute(context.Background(), call)
 	if res.IsError {
 		t.Fatalf("write_file failed: %s", res.Output)
 	}
+	// The engine reports tool results post-execution via OnToolCalled; a failed
+	// write must not set the flag (P2-2).
+	onToolCalled(call, schema.ToolResult{IsError: true, Output: "boom"})
+	if tracker.WroteMemory() {
+		t.Fatalf("a failed write must not set the tracker flag")
+	}
+	onToolCalled(call, res)
 	if !tracker.WroteMemory() {
-		t.Fatalf("tracker must flag an inline memory write")
+		t.Fatalf("tracker must flag a successful inline memory write")
 	}
 
 	mems, err := store.Load(automemory.ScopeUserGlobal)

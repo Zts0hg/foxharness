@@ -1,12 +1,10 @@
 package automemory
 
 import (
-	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
@@ -15,30 +13,30 @@ func writeCall(name, path string) schema.ToolCall {
 	return schema.ToolCall{ID: "c1", Name: name, Arguments: args}
 }
 
-func TestTrackerFlagsAbsoluteMemoryWrite(t *testing.T) {
+// TestTrackerMarksSuccessOnlyOnNonErrorMemoryWrite is the core P2-2 guarantee:
+// a memory-directory write sets the flag only when the tool actually succeeded.
+func TestTrackerMarksSuccessOnlyOnNonErrorMemoryWrite(t *testing.T) {
 	memDir := "/home/dev/.foxharness/memory"
 	tr := NewTracker("/work/proj", []string{memDir})
+	call := writeCall("write_file", filepath.Join(memDir, "user-role.md"))
 
-	dec, err := tr.BeforeExecute(context.Background(), writeCall("write_file", filepath.Join(memDir, "user-role.md")))
-	if err != nil {
-		t.Fatalf("BeforeExecute() error = %v", err)
+	tr.MarkSuccess(call, schema.ToolResult{IsError: true, Output: "edit old_string mismatch"})
+	if tr.WroteMemory() {
+		t.Fatalf("a failed write must not set the flag")
 	}
-	if dec.Type != middleware.DecisionAllow {
-		t.Fatalf("tracker must observe, not block; got %v", dec.Type)
-	}
+
+	tr.MarkSuccess(call, schema.ToolResult{IsError: false})
 	if !tr.WroteMemory() {
-		t.Fatalf("WroteMemory() = false, want true after memory-dir write")
+		t.Fatalf("a successful memory write must set the flag")
 	}
 }
 
-func TestTrackerFlagsEditFileToo(t *testing.T) {
+func TestTrackerMarksSuccessForEditFile(t *testing.T) {
 	memDir := "/home/dev/.foxharness/projects/key/memory"
 	tr := NewTracker("/work/proj", []string{memDir})
-	if _, err := tr.BeforeExecute(context.Background(), writeCall("edit_file", filepath.Join(memDir, "x.md"))); err != nil {
-		t.Fatal(err)
-	}
+	tr.MarkSuccess(writeCall("edit_file", filepath.Join(memDir, "x.md")), schema.ToolResult{})
 	if !tr.WroteMemory() {
-		t.Fatalf("edit_file into memory dir must set the flag")
+		t.Fatalf("a successful edit_file into the memory dir must set the flag")
 	}
 }
 
@@ -46,34 +44,36 @@ func TestTrackerResolvesRelativePaths(t *testing.T) {
 	workDir := "/work/proj"
 	memDir := filepath.Join(workDir, "memdir")
 	tr := NewTracker(workDir, []string{memDir})
-	// "memdir/x.md" relative to workDir resolves inside the memory dir.
-	if _, err := tr.BeforeExecute(context.Background(), writeCall("write_file", "memdir/x.md")); err != nil {
-		t.Fatal(err)
-	}
+	tr.MarkSuccess(writeCall("write_file", "memdir/x.md"), schema.ToolResult{})
 	if !tr.WroteMemory() {
-		t.Fatalf("relative path resolving into memory dir must set the flag")
+		t.Fatalf("a relative path resolving into the memory dir must set the flag")
 	}
 }
 
-func TestTrackerIgnoresNonMemoryWrites(t *testing.T) {
-	tr := NewTracker("/work/proj", []string{"/home/dev/.foxharness/memory"})
-	if _, err := tr.BeforeExecute(context.Background(), writeCall("write_file", "src/main.go")); err != nil {
-		t.Fatal(err)
-	}
-	if tr.WroteMemory() {
-		t.Fatalf("write outside the memory dir must not set the flag")
-	}
-}
-
-func TestTrackerIgnoresReadsAndOtherTools(t *testing.T) {
+func TestTrackerIgnoresNonMemoryAndNonWriteSuccess(t *testing.T) {
 	memDir := "/home/dev/.foxharness/memory"
 	tr := NewTracker("/work/proj", []string{memDir})
+
+	// Successful write outside the memory dir.
+	tr.MarkSuccess(writeCall("write_file", "src/main.go"), schema.ToolResult{})
+	if tr.WroteMemory() {
+		t.Fatalf("a write outside the memory dir must not set the flag")
+	}
+
+	// Successful read/other tool inside the memory dir.
 	for _, name := range []string{"read_file", "bash", "subagent"} {
-		if _, err := tr.BeforeExecute(context.Background(), writeCall(name, filepath.Join(memDir, "x.md"))); err != nil {
-			t.Fatal(err)
-		}
+		tr.MarkSuccess(writeCall(name, filepath.Join(memDir, "x.md")), schema.ToolResult{})
 	}
 	if tr.WroteMemory() {
 		t.Fatalf("non-write tools must not set the flag")
+	}
+}
+
+func TestTrackerCallHasNoPath(t *testing.T) {
+	tr := NewTracker("/work/proj", []string{"/home/dev/.foxharness/memory"})
+	args, _ := json.Marshal(map[string]string{})
+	tr.MarkSuccess(schema.ToolCall{ID: "c", Name: "write_file", Arguments: args}, schema.ToolResult{})
+	if tr.WroteMemory() {
+		t.Fatalf("a write call with no path must not set the flag")
 	}
 }

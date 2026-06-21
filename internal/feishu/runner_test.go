@@ -1,7 +1,6 @@
 package feishu
 
 import (
-	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -41,7 +40,7 @@ func TestParseSessionDirective(t *testing.T) {
 func TestRunnerBuildRegistryIncludesTodoTools(t *testing.T) {
 	runner := &Runner{workDir: t.TempDir()}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
-	registry := runner.buildRegistry(sess, "chat", nil)
+	registry := runner.buildRegistry(sess, "chat")
 
 	names := map[string]bool{}
 	for _, def := range registry.GetAvailableTools() {
@@ -84,30 +83,31 @@ func TestFeishuBuildComposerInjectsPersistentMemory(t *testing.T) {
 	}
 }
 
-// TestFeishuBuildRegistryAttachesTracker proves the memory-write tracker is wired
-// into the registry so inline memory writes are detected for mutual exclusion.
-func TestFeishuBuildRegistryAttachesTracker(t *testing.T) {
+// TestFeishuRecordCallbackRecordsSuccessOnly proves the Feishu runner's
+// OnToolCalled wiring records only successful memory-directory writes for mutual
+// exclusion (P2-2).
+func TestFeishuRecordCallbackRecordsSuccessOnly(t *testing.T) {
 	workDir := t.TempDir()
 	home := t.TempDir()
 	store := automemory.NewStore(home, workDir)
 	hooks := automemory.NewPerRunHooks(nil, store, workDir)
 	tracker := hooks.NewTracker()
-
-	runner := &Runner{workDir: workDir}
-	sess := &session.Session{ID: "sess", RootDir: t.TempDir(), WorkDir: workDir}
-	registry := runner.buildRegistry(sess, "chat", tracker)
+	cb := hooks.RecordCallback(tracker)
 
 	rel, err := filepath.Rel(workDir, filepath.Join(store.ProjectDir(), "feedback-x.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	args, _ := json.Marshal(map[string]string{"path": rel, "content": "x"})
-	res := registry.Execute(context.Background(), schema.ToolCall{ID: "c1", Name: "write_file", Arguments: args})
-	if res.IsError {
-		t.Fatalf("write_file failed: %s", res.Output)
+	call := schema.ToolCall{ID: "c1", Name: "write_file", Arguments: args}
+
+	cb(call, schema.ToolResult{IsError: true, Output: "mismatch"})
+	if tracker.WroteMemory() {
+		t.Fatalf("a failed write must not set the flag")
 	}
+	cb(call, schema.ToolResult{})
 	if !tracker.WroteMemory() {
-		t.Fatalf("feishu registry must detect memory-directory writes via the tracker")
+		t.Fatalf("a successful memory write must set the flag")
 	}
 }
 

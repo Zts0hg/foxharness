@@ -100,7 +100,7 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	hooks := automemory.NewPerRunHooks(r.provider, autoStore, r.workDir)
 	tracker := hooks.NewTracker()
 
-	registry := r.buildRegistry(sess, task.ChatID, tracker)
+	registry := r.buildRegistry(sess, task.ChatID)
 
 	composer := r.buildComposer(sess, autoStore)
 	eng := engine.NewAgentEngine(
@@ -111,6 +111,7 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 		engine.Config{
 			EnableThinking: false,
 			MaxTurns:       20,
+			OnToolCalled:   hooks.RecordCallback(tracker),
 		},
 	)
 	compCfg := compaction.DefaultCompactionConfig()
@@ -176,7 +177,7 @@ func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *sessi
 	hooks.Fire(sess, nextSeq, tracker)
 }
 
-func (r *Runner) buildRegistry(sess *session.Session, chatID string, tracker *automemory.Tracker) tools.Registry {
+func (r *Runner) buildRegistry(sess *session.Session, chatID string) tools.Registry {
 	approver := approval.NewFeishuApprover(chatID, r.messenger, r.approvalStore)
 	subManager := subagent.NewManager(r.provider, r.workDir)
 
@@ -189,9 +190,6 @@ func (r *Runner) buildRegistry(sess *session.Session, chatID string, tracker *au
 	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
 	registry.Register(subagent.NewTool(subManager, sess.ID))
 	registry.Use(middleware.NewDangerMiddleware(approver))
-	if tracker != nil {
-		registry.Use(tracker)
-	}
 	return registry
 }
 

@@ -40,9 +40,7 @@ func TestSC004MutualExclusionSkipsExtraction(t *testing.T) {
 	workDir := t.TempDir()
 	store := NewStore(t.TempDir(), workDir)
 	tracker := NewTracker(workDir, []string{store.UserGlobalDir(), store.ProjectDir()})
-	if _, err := tracker.BeforeExecute(context.Background(), writeCall("write_file", filepath.Join(store.ProjectDir(), "x.md"))); err != nil {
-		t.Fatal(err)
-	}
+	tracker.MarkSuccess(writeCall("write_file", filepath.Join(store.ProjectDir(), "x.md")), schema.ToolResult{})
 
 	prov := &scriptedProvider{}
 	ext := NewExtractor(prov, store, workDir)

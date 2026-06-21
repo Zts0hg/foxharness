@@ -1,21 +1,22 @@
 package automemory
 
 import (
-	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
 	"sync"
 
-	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
-// Tracker is a middleware.Middleware attached to the main run's registry that
-// records whether the agent wrote to a memory directory during the run. The
-// extraction hook reads this flag to enforce mutual exclusion (REQ-011): it skips
-// itself when the main agent already wrote a memory. The check is a deterministic,
-// path-based gate (NFR-004) — it never inspects content and never blocks a call.
+// Tracker records whether the main agent successfully wrote to a memory
+// directory during a run. The extraction hook reads this flag to enforce mutual
+// exclusion (REQ-011): it skips itself when the main agent already wrote a
+// memory. The check is a deterministic, path-based gate (NFR-004).
+//
+// Writes are recorded only after the tool reports success (via MarkSuccess, fed
+// by the engine's post-execution callback) so a failed write_file/edit_file
+// never suppresses extraction for a memory the agent never actually saved.
 type Tracker struct {
 	workDir    string
 	memoryDirs []string
@@ -30,18 +31,23 @@ func NewTracker(workDir string, memoryDirs []string) *Tracker {
 	return &Tracker{workDir: workDir, memoryDirs: memoryDirs}
 }
 
-// BeforeExecute observes write_file/edit_file calls and sets the flag when their
-// target resolves inside a watched memory directory. It always returns Allow.
-func (t *Tracker) BeforeExecute(ctx context.Context, call schema.ToolCall) (middleware.Decision, error) {
+// MarkSuccess records a successful tool call: when call is a write_file or
+// edit_file whose target resolves inside a watched memory directory and result
+// is not an error, it sets the wrote flag. Failed results and other tools are
+// ignored.
+func (t *Tracker) MarkSuccess(call schema.ToolCall, result schema.ToolResult) {
+	if result.IsError {
+		return
+	}
 	switch call.Name {
 	case "write_file", "edit_file":
 	default:
-		return middleware.Allow(), nil
+		return
 	}
 
 	path := toolCallPath(call.Arguments)
 	if path == "" {
-		return middleware.Allow(), nil
+		return
 	}
 	resolved := resolveToolPath(t.workDir, path)
 	for _, dir := range t.memoryDirs {
@@ -49,13 +55,12 @@ func (t *Tracker) BeforeExecute(ctx context.Context, call schema.ToolCall) (midd
 			t.mu.Lock()
 			t.wrote = true
 			t.mu.Unlock()
-			break
+			return
 		}
 	}
-	return middleware.Allow(), nil
 }
 
-// WroteMemory reports whether a memory-directory write was observed.
+// WroteMemory reports whether a successful memory-directory write was observed.
 func (t *Tracker) WroteMemory() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()

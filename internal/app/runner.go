@@ -359,10 +359,31 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 		tracker = hooks.NewTracker()
 	}
 
-	toolRegistry := r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID, tracker)
+	toolRegistry := r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID)
 	if len(allowedTools) > 0 {
 		toolRegistry = slash.NewFilteredRegistry(toolRegistry, allowedTools)
 		log.Printf("[slash] restricting next run to allowed tools: %v", allowedTools)
+	}
+
+	// Compose the post-tool-call callbacks: conditional skill activation plus
+	// the success-gated memory-write tracker (P2-2: a failed write must not set
+	// the mutual-exclusion flag).
+	skillHook := r.conditionalActivationHook()
+	var memoryHook func(schema.ToolCall, schema.ToolResult)
+	if hooks != nil {
+		memoryHook = hooks.RecordCallback(tracker)
+	}
+	var onToolCalled func(schema.ToolCall, schema.ToolResult)
+	switch {
+	case skillHook != nil && memoryHook != nil:
+		onToolCalled = func(call schema.ToolCall, result schema.ToolResult) {
+			skillHook(call, result)
+			memoryHook(call, result)
+		}
+	case skillHook != nil:
+		onToolCalled = skillHook
+	case memoryHook != nil:
+		onToolCalled = memoryHook
 	}
 
 	eng := engine.NewAgentEngine(
@@ -378,7 +399,7 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 			Checkpointer:      cp,
 			DisplayPrompt:     displayPrompt,
 			OnUserMessageID:   setCurrentMessageID,
-			OnToolCalled:      r.conditionalActivationHook(),
+			OnToolCalled:      onToolCalled,
 			NextTurnReminders: r.drainPendingActivations,
 			OnContextEstimate: func(usedTokens, contextWindow int) {
 				atomic.StoreInt64(&r.contextUsedTokens, int64(usedTokens))
@@ -832,12 +853,9 @@ func extractFilePath(raw []byte) string {
 	return args.Path
 }
 
-func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.LLMProvider, cp checkpoint.Checkpointer, getMessageID func() string, tracker *automemory.Tracker) tools.Registry {
+func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.LLMProvider, cp checkpoint.Checkpointer, getMessageID func() string) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Use(middleware.NewCheckpointMiddleware(cp, getMessageID, r.workDir))
-	if tracker != nil {
-		registry.Use(tracker)
-	}
 	registry.Register(tools.NewReadFileTool(r.workDir))
 	registry.Register(tools.NewWriteFileTool(r.workDir))
 	registry.Register(tools.NewBashTool(r.workDir))

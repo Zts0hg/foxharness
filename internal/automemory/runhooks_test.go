@@ -21,16 +21,39 @@ func TestPerRunHooksNewTrackerWatchesMemoryDirs(t *testing.T) {
 	if tracker == nil {
 		t.Fatalf("NewTracker() returned nil")
 	}
-	// A write into the project memory dir sets the flag.
+	// A successful write into the project memory dir sets the flag.
 	rel, err := filepath.Rel(workDir, filepath.Join(store.ProjectDir(), "x.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tracker.BeforeExecute(context.Background(), writeCall("write_file", rel)); err != nil {
+	tracker.MarkSuccess(writeCall("write_file", rel), schema.ToolResult{})
+	if !tracker.WroteMemory() {
+		t.Fatalf("tracker from PerRunHooks must flag successful memory writes")
+	}
+}
+
+// TestPerRunHooksRecordCallbackRecordsSuccessOnly proves the OnToolCalled
+// callback wires the tracker to record only successful writes.
+func TestPerRunHooksRecordCallbackRecordsSuccessOnly(t *testing.T) {
+	workDir := t.TempDir()
+	store := NewStore(t.TempDir(), workDir)
+	hooks := NewPerRunHooks(nil, store, workDir)
+	tracker := hooks.NewTracker()
+	cb := hooks.RecordCallback(tracker)
+
+	rel, err := filepath.Rel(workDir, filepath.Join(store.ProjectDir(), "x.md"))
+	if err != nil {
 		t.Fatal(err)
 	}
+	call := writeCall("write_file", rel)
+
+	cb(call, schema.ToolResult{IsError: true, Output: "mismatch"})
+	if tracker.WroteMemory() {
+		t.Fatalf("callback must not record a failed write")
+	}
+	cb(call, schema.ToolResult{})
 	if !tracker.WroteMemory() {
-		t.Fatalf("tracker from PerRunHooks must flag memory writes")
+		t.Fatalf("callback must record a successful write")
 	}
 }
 

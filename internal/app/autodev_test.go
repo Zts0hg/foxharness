@@ -240,7 +240,7 @@ func TestAutodevToolCallsNeedNoHumanApproval(t *testing.T) {
 	runner.SetUserAsker(fakeAutodevAsker{})
 
 	cp := checkpoint.New(checkpoint.Config{SessionDir: sess.RootDir})
-	reg := runner.buildRegistry(sess, autodevFakeLLM{}, cp, func() string { return "" }, nil)
+	reg := runner.buildRegistry(sess, autodevFakeLLM{}, cp, func() string { return "" })
 
 	args, _ := json.Marshal(map[string]string{"command": "echo autodev-no-approval"})
 	result := reg.Execute(context.Background(), schema.ToolCall{

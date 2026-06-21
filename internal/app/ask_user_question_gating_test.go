@@ -53,14 +53,14 @@ func TestBuildRegistryGatesAskUserQuestion(t *testing.T) {
 
 	// Without an asker (the fox exec / agentops / feishu / bench / subagent case)
 	// the tool must NOT be exposed to the model.
-	reg := runner.buildRegistry(sess, llm, cp, getID, nil)
+	reg := runner.buildRegistry(sess, llm, cp, getID)
 	if registryHasTool(reg, "ask_user_question") {
 		t.Fatal("ask_user_question must be absent when no asker is set")
 	}
 
 	// With an asker set (the TUI case) the tool must be present.
 	runner.SetUserAsker(gatingFakeAsker{})
-	regWithAsker := runner.buildRegistry(sess, llm, cp, getID, nil)
+	regWithAsker := runner.buildRegistry(sess, llm, cp, getID)
 	if !registryHasTool(regWithAsker, "ask_user_question") {
 		t.Fatal("ask_user_question must be present when an asker is set")
 	}

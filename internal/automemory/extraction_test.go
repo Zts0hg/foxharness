@@ -74,10 +74,8 @@ func TestExtractorSkipsWhenTrackerFlagged(t *testing.T) {
 	store := NewStore(t.TempDir(), workDir)
 
 	tracker := NewTracker(workDir, []string{store.UserGlobalDir(), store.ProjectDir()})
-	// Simulate the main agent having written a memory during the run.
-	if _, err := tracker.BeforeExecute(context.Background(), writeCall("write_file", filepath.Join(store.ProjectDir(), "x.md"))); err != nil {
-		t.Fatal(err)
-	}
+	// Simulate the main agent having successfully written a memory this run.
+	tracker.MarkSuccess(writeCall("write_file", filepath.Join(store.ProjectDir(), "x.md")), schema.ToolResult{})
 
 	rel, _ := filepath.Rel(workDir, filepath.Join(store.ProjectDir(), "should-not-exist.md"))
 	prov := &scriptedProvider{msgs: []schema.Message{

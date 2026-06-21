@@ -110,7 +110,7 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 	hooks := automemory.NewPerRunHooks(r.provider, autoStore, r.workDir)
 	tracker := hooks.NewTracker()
 
-	registry := r.buildRegistry(task, sess, tracker)
+	registry := r.buildRegistry(task, sess)
 	composer := r.buildComposer(sess, autoStore)
 
 	eng := engine.NewAgentEngine(
@@ -121,6 +121,7 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 		engine.Config{
 			EnableThinking: enableThinking,
 			MaxTurns:       24,
+			OnToolCalled:   hooks.RecordCallback(tracker),
 		},
 	)
 	compCfg := compaction.DefaultCompactionConfig()
@@ -197,7 +198,7 @@ func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *sessi
 	hooks.Fire(sess, nextSeq, tracker)
 }
 
-func (r *Runner) buildRegistry(task Task, sess *session.Session, tracker *automemory.Tracker) tools.Registry {
+func (r *Runner) buildRegistry(task Task, sess *session.Session) tools.Registry {
 	registry := tools.NewRegistry()
 
 	registry.Register(NewLogSearchTool(r.logDir))
@@ -213,10 +214,6 @@ func (r *Runner) buildRegistry(task Task, sess *session.Session, tracker *autome
 
 	subManager := subagent.NewManager(r.provider, r.workDir)
 	registry.Register(subagent.NewTool(subManager, sess.ID))
-
-	if tracker != nil {
-		registry.Use(tracker)
-	}
 
 	return registry
 }
