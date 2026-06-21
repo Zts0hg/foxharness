@@ -208,6 +208,26 @@ func (l *MessageLog) LoadMessages() ([]schema.Message, error) {
 	return messages, nil
 }
 
+// LoadMessagesSince returns the messages appended at or after the given sequence
+// number, i.e. the messages belonging to a single run when sinceSeq is the
+// NextSeq value captured before that run started. Earlier runs' messages are
+// excluded so post-run consumers (e.g. the extraction hook) do not reprocess
+// prior conversation turns.
+func (l *MessageLog) LoadMessagesSince(sinceSeq int64) ([]schema.Message, error) {
+	records, err := l.LoadRecords()
+	if err != nil {
+		return nil, err
+	}
+	messages := make([]schema.Message, 0)
+	for _, record := range records {
+		if record.Seq < sinceSeq {
+			continue
+		}
+		messages = append(messages, record.Message)
+	}
+	return messages, nil
+}
+
 func (l *MessageLog) ensureSeqLoaded() error {
 	if l.seqLoaded {
 		return nil
