@@ -14,6 +14,11 @@ func writeCall(name, path string) schema.ToolCall {
 	return schema.ToolCall{ID: "c1", Name: name, Arguments: args}
 }
 
+func writeCallWithContent(name, path, content string) schema.ToolCall {
+	args, _ := json.Marshal(map[string]string{"path": path, "content": content})
+	return schema.ToolCall{ID: "c1", Name: name, Arguments: args}
+}
+
 // TestTrackerMarksSuccessOnlyOnNonErrorMemoryWrite is the core P2-2 guarantee:
 // a memory-directory write sets the flag only when the tool actually succeeded.
 func TestTrackerMarksSuccessOnlyOnNonErrorMemoryWrite(t *testing.T) {
@@ -43,6 +48,33 @@ func TestTrackerMarksSuccessForEditFile(t *testing.T) {
 	}
 }
 
+func TestTrackerMarksSuccessForEmptyWriteForgetInMemoryDir(t *testing.T) {
+	workDir := "/work/proj"
+	memDir := filepath.Join(workDir, ".foxharness", "memory")
+	tr := NewTracker(workDir, []string{memDir})
+
+	tr.MarkSuccess(writeCallWithContent("write_file", ".foxharness/memory/user-role.md", ""), schema.ToolResult{IsError: true})
+	if tr.WroteMemory() {
+		t.Fatalf("a failed empty write must not set the flag")
+	}
+
+	tr.MarkSuccess(writeCallWithContent("write_file", ".foxharness/memory/user-role.md", ""), schema.ToolResult{})
+	if !tr.WroteMemory() {
+		t.Fatalf("a successful empty write to a memory file must set the flag")
+	}
+}
+
+func TestTrackerDoesNotTreatNestedEmptyWriteAsForget(t *testing.T) {
+	workDir := "/work/proj"
+	memDir := filepath.Join(workDir, ".foxharness", "memory")
+	tr := NewTracker(workDir, []string{memDir})
+
+	tr.MarkSuccess(writeCallWithContent("write_file", ".foxharness/memory/topic/user-role.md", ""), schema.ToolResult{})
+	if tr.WroteMemory() {
+		t.Fatalf("nested empty memory writes are not indexed and must not suppress extraction")
+	}
+}
+
 func TestTrackerResolvesRelativePaths(t *testing.T) {
 	workDir := "/work/proj"
 	memDir := filepath.Join(workDir, "memdir")
@@ -50,6 +82,30 @@ func TestTrackerResolvesRelativePaths(t *testing.T) {
 	tr.MarkSuccess(writeCall("write_file", "memdir/x.md"), schema.ToolResult{})
 	if !tr.WroteMemory() {
 		t.Fatalf("a relative path resolving into the memory dir must set the flag")
+	}
+}
+
+func TestTrackerDoesNotFlagNestedMemoryWrite(t *testing.T) {
+	workDir := t.TempDir()
+	store := NewStore(t.TempDir(), workDir)
+	tr := NewTracker(workDir, []string{store.UserGlobalDir(), store.ProjectDir()})
+	tr.Validator = store.IsLoadableMemoryAt
+
+	nestedPath := filepath.Join(store.ProjectDir(), "topic", "nested.md")
+	if err := os.MkdirAll(filepath.Dir(nestedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nestedPath, []byte("---\nname: nested\ndescription: d\ntype: reference\n---\n\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(workDir, nestedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tr.MarkSuccess(writeCall("write_file", rel), schema.ToolResult{})
+	if tr.WroteMemory() {
+		t.Fatalf("nested memory files are not indexed and must not suppress extraction")
 	}
 }
 

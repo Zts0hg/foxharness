@@ -249,6 +249,32 @@ func TestStoreLoadSkipsNameFilenameMismatch(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsNestedMemoryAsLoadable(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.dirs.EnsureDir(ScopeProject); err != nil {
+		t.Fatal(err)
+	}
+	nestedPath := filepath.Join(store.dirs.Dir(ScopeProject), "topic", "nested.md")
+	if err := os.MkdirAll(filepath.Dir(nestedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := "---\nname: nested\ndescription: d\ntype: reference\n---\n\nbody\n"
+	if err := os.WriteFile(nestedPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if store.IsLoadableMemoryAt(nestedPath) {
+		t.Fatalf("nested memory file must not be considered loadable because Load/BuildIndex scan only direct children")
+	}
+	loaded, err := store.Load(ScopeProject)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("nested memory file must not be loaded, got %+v", loaded)
+	}
+}
+
 // TestStoreIsLoadableMemoryAt verifies the predicate the tracker uses to decide
 // whether a successful memory-dir write actually produced a valid, indexable
 // memory (P2-2).

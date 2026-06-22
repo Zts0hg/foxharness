@@ -40,10 +40,11 @@ func NewTracker(workDir string, memoryDirs []string) *Tracker {
 	return &Tracker{workDir: absWorkDir(workDir), memoryDirs: memoryDirs}
 }
 
-// MarkSuccess records a successful tool call: when call is a write_file or
-// edit_file whose target resolves inside a watched memory directory and result
-// is not an error, it sets the wrote flag. Failed results and other tools are
-// ignored.
+// MarkSuccess records a successful tool call: when call writes a loadable
+// memory target inside a watched memory directory and result is not an error,
+// it sets the wrote flag. A write_file with empty content to a direct memory
+// file is treated as an explicit forget and also sets the flag. Failed results
+// and other tools are ignored.
 func (t *Tracker) MarkSuccess(call schema.ToolCall, result schema.ToolResult) {
 	if result.IsError {
 		return
@@ -60,15 +61,32 @@ func (t *Tracker) MarkSuccess(call schema.ToolCall, result schema.ToolResult) {
 	}
 	resolved := resolveToolPath(t.workDir, path)
 	for _, dir := range t.memoryDirs {
+		if content, ok := toolCallContent(call.Arguments); call.Name == "write_file" && ok && content == "" {
+			if directMemoryFileInDir(dir, resolved) {
+				t.setWrote()
+			}
+			continue
+		}
 		if pathWithin(dir, resolved) {
 			if t.Validator == nil || t.Validator(resolved) {
-				t.mu.Lock()
-				t.wrote = true
-				t.mu.Unlock()
+				t.setWrote()
 			}
 			return
 		}
 	}
+}
+
+func toolCallContent(raw json.RawMessage) (string, bool) {
+	var args struct {
+		Content *string `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return "", false
+	}
+	if args.Content == nil {
+		return "", false
+	}
+	return *args.Content, true
 }
 
 // WroteMemory reports whether a successful memory-directory write was observed.
@@ -76,6 +94,12 @@ func (t *Tracker) WroteMemory() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.wrote
+}
+
+func (t *Tracker) setWrote() {
+	t.mu.Lock()
+	t.wrote = true
+	t.mu.Unlock()
 }
 
 // toolCallPath extracts the "path" argument from a file tool call, returning ""
@@ -112,6 +136,16 @@ func pathWithin(dir, target string) bool {
 		return true
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func directMemoryFileInDir(dir, target string) bool {
+	dir = comparablePath(dir)
+	target = comparablePath(target)
+	if filepath.Dir(target) != dir {
+		return false
+	}
+	name := filepath.Base(target)
+	return name != indexFileName && strings.HasSuffix(name, ".md")
 }
 
 func comparablePath(path string) string {

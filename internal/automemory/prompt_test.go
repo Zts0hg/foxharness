@@ -44,6 +44,8 @@ func TestMainGuidanceMentionsDirectoriesAndFrontmatter(t *testing.T) {
 		"description",
 		"type",
 		"read_file",
+		"empty content",
+		"write_file",
 	} {
 		if !strings.Contains(main, want) {
 			t.Fatalf("main guidance missing %q:\n%s", want, main)

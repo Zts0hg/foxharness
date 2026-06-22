@@ -131,7 +131,8 @@ func TestManagerBuildComposerUsesReadOnlyPersistentMemoryGuidance(t *testing.T) 
 	for _, forbidden := range []string{
 		"Create or update a memory",
 		"write_file/edit_file",
-		"Forget a memory by deleting",
+		"Forget a memory",
+		"empty content",
 		"Save only what is surprising",
 		"Dedup first",
 	} {

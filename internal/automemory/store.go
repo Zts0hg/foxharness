@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 )
 
 // Store is the persistence layer for typed memory files across the two scopes.
@@ -95,10 +94,10 @@ func (s *Store) Load(scope Scope) ([]Memory, error) {
 // scope, filename matching the frontmatter name). It returns the memory and true
 // when the file is a loadable memory for the scope, else zero/false.
 func (s *Store) loadableMemory(scope Scope, absPath string) (Memory, bool) {
-	entryName := filepath.Base(absPath)
-	if entryName == indexFileName || !strings.HasSuffix(entryName, ".md") {
+	if !directMemoryFileInDir(s.dirs.Dir(scope), absPath) {
 		return Memory{}, false
 	}
+	entryName := filepath.Base(absPath)
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return Memory{}, false

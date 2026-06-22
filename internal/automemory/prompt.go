@@ -53,7 +53,7 @@ func MainMemoryGuidance(userDirRel, projectDirRel string) string {
 	b.WriteString("Working with memory:\n")
 	b.WriteString("- The index above lists every memory by description. When one is relevant, read its full content with read_file using the directory above plus the file name.\n")
 	b.WriteString("- Create or update a memory with write_file/edit_file (the index is regenerated automatically — you do not maintain it by hand).\n")
-	b.WriteString("- Forget a memory by deleting its file when the user asks you to forget it or it is confirmed stale.\n")
+	b.WriteString("- Forget a memory by overwriting its file with empty content using write_file when the user asks you to forget it or it is confirmed stale.\n")
 	b.WriteString("\n")
 	b.WriteString(frontmatterTemplate())
 	b.WriteString("\n\n")
