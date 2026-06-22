@@ -7,7 +7,9 @@ package subagent
 import (
 	"context"
 	"fmt"
+	"os"
 
+	"github.com/Zts0hg/foxharness/internal/automemory"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
@@ -44,12 +46,29 @@ type Result struct {
 type Manager struct {
 	provider provider.LLMProvider
 	workDir  string
+	// homeDir roots the cross-session persistent memory store so subagents read
+	// the same merged index as top-level runs. It defaults to the user home.
+	homeDir string
 }
 
 // NewManager creates a Manager that delegates LLM calls to p and roots
-// subagent sessions under workDir.
+// subagent sessions under workDir. The persistent memory store uses the user
+// home directory, matching top-level runs.
 func NewManager(p provider.LLMProvider, workDir string) *Manager {
-	return &Manager{provider: p, workDir: workDir}
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		homeDir = "."
+	}
+	return &Manager{provider: p, workDir: workDir, homeDir: homeDir}
+}
+
+// buildComposer assembles the subagent system-prompt composer, injecting the
+// cross-session persistent memory index (read-only) so delegated tasks share the
+// project/user memory that top-level runs see. Subagents do not write or
+// extract memory; that remains the main agent's responsibility.
+func (m *Manager) buildComposer(sess *session.Session) *prompt.Composer {
+	store := automemory.NewStore(m.homeDir, m.workDir)
+	return prompt.NewComposer(m.workDir).WithMemory(sess.MemoryPath()).WithAutoMemory(store)
 }
 
 func (m *Manager) buildRegistry(readOnly bool, allowedTools []string) tools.Registry {
@@ -85,7 +104,7 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	registry := m.buildRegistry(req.ReadOnly, req.AllowedTools)
-	composer := prompt.NewComposer(m.workDir).WithMemory(sess.MemoryPath())
+	composer := m.buildComposer(sess)
 	eng := engine.NewAgentEngine(
 		m.provider,
 		registry,

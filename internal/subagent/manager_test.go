@@ -4,10 +4,13 @@ import (
 	"context"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/session"
 )
 
 type finalReportProvider struct{}
@@ -69,4 +72,34 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 
 	return string(out)
+}
+
+// TestManagerBuildComposerInjectsPersistentMemory verifies delegated subagent
+// tasks receive the cross-session persistent memory index (the P2-3 regression:
+// after legacy MEMORY.md injection was removed, subagents had no durable
+// memory).
+func TestManagerBuildComposerInjectsPersistentMemory(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+	store := automemory.NewStore(home, workDir)
+	if err := store.Save(automemory.Memory{
+		Name:        "user-role",
+		Description: "Staff engineer, terse answers.",
+		Type:        automemory.TypeUser,
+		Body:        "The user is a staff engineer.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := &Manager{workDir: workDir, homeDir: home}
+	sess := &session.Session{ID: "sub", RootDir: t.TempDir(), WorkDir: workDir}
+	prompt, err := mgr.buildComposer(sess).Compose("explore the codebase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## Persistent Memory", "user-role.md"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("subagent composer missing %q:\n%s", want, prompt)
+		}
+	}
 }
