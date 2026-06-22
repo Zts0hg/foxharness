@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -113,8 +114,8 @@ func (m Memory) Validate() error {
 	if !m.Type.Valid() {
 		return fmt.Errorf("invalid memory type %q (want user|feedback|project|reference)", m.Type)
 	}
-	if len(m.Body) > MaxContentChars {
-		return fmt.Errorf("memory body has %d characters, exceeding the %d limit", len(m.Body), MaxContentChars)
+	if runes := utf8.RuneCountInString(m.Body); runes > MaxContentChars {
+		return fmt.Errorf("memory body has %d characters, exceeding the %d limit", runes, MaxContentChars)
 	}
 	if m.Type.requiresWhyHow() {
 		lower := strings.ToLower(m.Body)

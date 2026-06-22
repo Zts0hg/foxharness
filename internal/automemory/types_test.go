@@ -101,6 +101,32 @@ func TestValidateRejectsOversizeContent(t *testing.T) {
 	}
 }
 
+// TestValidateContentCapCountsRunesNotBytes ensures the body cap is enforced in
+// characters (runes), not UTF-8 bytes, so large non-ASCII (e.g. Chinese)
+// memories under the character limit are not wrongly rejected.
+func TestValidateContentCapCountsRunesNotBytes(t *testing.T) {
+	// 40000 Chinese runes = 120000 bytes: within the character cap, over the
+	// byte count, so it must be accepted.
+	atLimit := Memory{
+		Name:        "n",
+		Description: "d",
+		Type:        TypeUser,
+		Body:        strings.Repeat("世", MaxContentChars),
+	}
+	if err := atLimit.Validate(); err != nil {
+		t.Fatalf("Validate() at-rune-limit unexpected error: %v", err)
+	}
+	overLimit := Memory{
+		Name:        "n",
+		Description: "d",
+		Type:        TypeUser,
+		Body:        strings.Repeat("世", MaxContentChars+1),
+	}
+	if err := overLimit.Validate(); err == nil {
+		t.Fatalf("Validate() expected error for body exceeding %d runes", MaxContentChars)
+	}
+}
+
 func TestMarshalRoundTrips(t *testing.T) {
 	mem := Memory{
 		Name:        "feedback-tests",
