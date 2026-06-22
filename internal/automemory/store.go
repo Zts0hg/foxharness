@@ -85,6 +85,16 @@ func (s *Store) Load(scope Scope) ([]Memory, error) {
 		if err != nil || mem.Validate() != nil {
 			continue
 		}
+		// A file written directly (bypassing Save) can carry a type or name that
+		// disagrees with its location or filename. Skip such mismatches so a
+		// project-typed file in the user-global dir is not injected for every
+		// project, and a foo.md with name: bar does not index a dead bar.md link.
+		if ScopeForType(mem.Type) != scope {
+			continue
+		}
+		if wantName, err := safeFileName(mem.Name); err != nil || wantName != entry.Name() {
+			continue
+		}
 		memories = append(memories, mem)
 	}
 	sort.Slice(memories, func(i, j int) bool {

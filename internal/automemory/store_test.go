@@ -172,3 +172,50 @@ func TestStoreLoadSkipsFileWithUnsafeName(t *testing.T) {
 		t.Fatalf("index must not render an unsafe name:\n%s", idx)
 	}
 }
+
+// TestStoreLoadSkipsTypeInWrongScope ensures a memory whose type implies a
+// different scope than the directory it was written to is skipped, so a
+// project-typed file dropped into the user-global dir (e.g. by a confused
+// extraction pass) is not injected for every project.
+func TestStoreLoadSkipsTypeInWrongScope(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.dirs.EnsureDir(ScopeUserGlobal); err != nil {
+		t.Fatal(err)
+	}
+	// type: project belongs in the project scope, but it was written into the
+	// user-global directory directly.
+	raw := "---\nname: leaked-build\ndescription: project fact in global dir\ntype: project\n---\n\nrule\n\n**Why:** w\n**How to apply:** h\n"
+	if err := os.WriteFile(filepath.Join(store.dirs.Dir(ScopeUserGlobal), "leaked-build.md"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.Load(ScopeUserGlobal)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("a project-typed memory in the user-global dir must be skipped, got %+v", loaded)
+	}
+}
+
+// TestStoreLoadSkipsNameFilenameMismatch ensures a memory whose frontmatter name
+// does not match its filename is skipped, so the index never advertises a link
+// to a non-existent file (foo.md with name: bar must not index [bar](bar.md)).
+func TestStoreLoadSkipsNameFilenameMismatch(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.dirs.EnsureDir(ScopeProject); err != nil {
+		t.Fatal(err)
+	}
+	raw := "---\nname: bar\ndescription: mismatched\ntype: reference\n---\n\nbody\n"
+	if err := os.WriteFile(filepath.Join(store.dirs.Dir(ScopeProject), "foo.md"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.Load(ScopeProject)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("a name/filename mismatch must be skipped, got %+v", loaded)
+	}
+}
