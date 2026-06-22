@@ -94,7 +94,7 @@ func ParseMemory(data []byte) (Memory, error) {
 	}
 
 	return Memory{
-		Name:        strings.TrimSpace(fm.Name),
+		Name:        canonicalMemoryName(fm.Name),
 		Description: strings.TrimSpace(fm.Description),
 		Type:        MemoryType(strings.TrimSpace(string(fm.Type))),
 		Body:        strings.TrimRight(body, "\n"),
@@ -105,6 +105,7 @@ func ParseMemory(data []byte) (Memory, error) {
 // type, the Why/How-to-apply structure for feedback and project memories, and the
 // content size cap (CON-005).
 func (m Memory) Validate() error {
+	m.Name = canonicalMemoryName(m.Name)
 	if err := validMemoryName(m.Name); err != nil {
 		return err
 	}
@@ -131,6 +132,7 @@ func (m Memory) Validate() error {
 
 // Marshal renders the memory back to its on-disk Markdown-with-frontmatter form.
 func (m Memory) Marshal() ([]byte, error) {
+	m.Name = canonicalMemoryName(m.Name)
 	header, err := yaml.Marshal(frontmatter{
 		Name:        m.Name,
 		Description: m.Description,

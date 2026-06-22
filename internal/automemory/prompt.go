@@ -61,6 +61,26 @@ func MainMemoryGuidance(userDirRel, projectDirRel string) string {
 	return b.String()
 }
 
+// ReadOnlyMemoryGuidance returns the persistent-memory prompt for delegated
+// subagents. They can inspect the same merged memory index as the main agent,
+// but memory writes and extraction tracking remain owned by the parent run.
+func ReadOnlyMemoryGuidance(userDirRel, projectDirRel string) string {
+	var b strings.Builder
+	b.WriteString("Persistent memory is read-only for this run. It is stored as typed Markdown files in two directories (paths relative to the working directory):\n")
+	fmt.Fprintf(&b, "- user-global (type `user`): %s\n", userDirRel)
+	fmt.Fprintf(&b, "- project (types `project`, `feedback`, `reference`): %s\n", projectDirRel)
+	b.WriteString("\n")
+	b.WriteString("Using memory:\n")
+	b.WriteString("- The index above lists every memory by description. When one is relevant, read its full content with read_file using the directory above plus the file name.\n")
+	b.WriteString("- Do not create, update, delete, or otherwise persist memory files from this subagent run; report useful durable findings to the parent agent instead.\n")
+	b.WriteString("\n")
+	b.WriteString("Read-only memory rules:\n")
+	b.WriteString("- Memories are possibly stale: they reflect what was true when written. Verify a memory still holds before relying on it.\n")
+	b.WriteString("- Before recommending a file, function, or flag named in a memory, confirm it still exists in the current code.\n")
+	b.WriteString("- When the user says to ignore memory for a request, proceed as if the index were empty: do not apply, cite, or compare against remembered facts for that request.")
+	return b.String()
+}
+
 // ExtractionInstructions returns the system instructions for the isolated
 // extraction pass: its task framing, the manifest of existing memories for
 // dedup (REQ-012), the memory directories, the frontmatter format, and the same

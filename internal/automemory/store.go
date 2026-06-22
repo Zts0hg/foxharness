@@ -41,6 +41,7 @@ func (s *Store) ProjectDir() string {
 // destination directory and then renamed into place, so a crash can never leave a
 // partially written memory file.
 func (s *Store) Save(m Memory) error {
+	m.Name = canonicalMemoryName(m.Name)
 	if err := m.Validate(); err != nil {
 		return err
 	}

@@ -2,6 +2,8 @@ package automemory
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -51,6 +53,29 @@ func TestBuildIndexEntryFormatAndLineLength(t *testing.T) {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}
 	want := "- [user-role](user-role.md) — Staff engineer, terse answers."
+	if strings.TrimSpace(index) != want {
+		t.Fatalf("index = %q, want %q", index, want)
+	}
+}
+
+func TestBuildIndexCanonicalizesNameWithMarkdownSuffix(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.dirs.EnsureDir(ScopeProject); err != nil {
+		t.Fatal(err)
+	}
+	raw := "---\nname: project-note.md\ndescription: Project convention.\ntype: reference\n---\n\nbody\n"
+	if err := os.WriteFile(filepath.Join(store.dirs.Dir(ScopeProject), "project-note.md"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	index, err := store.BuildIndex(ScopeProject)
+	if err != nil {
+		t.Fatalf("BuildIndex() error = %v", err)
+	}
+	if strings.Contains(index, "project-note.md.md") {
+		t.Fatalf("index rendered a doubled markdown suffix:\n%s", index)
+	}
+	want := "- [project-note](project-note.md) — Project convention."
 	if strings.TrimSpace(index) != want {
 		t.Fatalf("index = %q, want %q", index, want)
 	}

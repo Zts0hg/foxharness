@@ -37,6 +37,7 @@ type Composer struct {
 	skillListFn    func() string
 	interactiveAsk bool
 	autoMemory     AutoMemoryStore
+	autoMemoryRO   bool
 }
 
 // WithSkillList registers a function that returns the formatted list of
@@ -68,6 +69,17 @@ func (c *Composer) WithMemory(path string) *Composer {
 func (c *Composer) WithAutoMemory(store AutoMemoryStore) *Composer {
 	clone := *c
 	clone.autoMemory = store
+	clone.autoMemoryRO = false
+	return &clone
+}
+
+// WithReadOnlyAutoMemory returns a copy of the Composer configured to inject the
+// cross-session persistent memory index with read-only guidance. This is used by
+// subagents, which may inspect memories but must not create/update/remove them.
+func (c *Composer) WithReadOnlyAutoMemory(store AutoMemoryStore) *Composer {
+	clone := *c
+	clone.autoMemory = store
+	clone.autoMemoryRO = true
 	return &clone
 }
 
@@ -197,20 +209,50 @@ func (c *Composer) persistentMemoryBody() string {
 	projectRel := c.relToWorkDir(c.autoMemory.ProjectDir())
 
 	guidance := automemory.MainMemoryGuidance(userRel, projectRel)
+	if c.autoMemoryRO {
+		guidance = automemory.ReadOnlyMemoryGuidance(userRel, projectRel)
+	}
 	if index == "" {
 		return "No memories saved yet.\n\n" + guidance
 	}
 	return "Current memory index (read a file for its full content when relevant):\n" + index + "\n\n" + guidance
 }
 
-// relToWorkDir expresses an absolute path relative to the Composer's working
-// directory, falling back to the absolute path when no relative form exists.
+// relToWorkDir expresses a path relative to the Composer's working directory.
+// The work directory is normalized first so callers can construct a Composer
+// with either an absolute or relative workDir and still get tool-usable paths.
 func (c *Composer) relToWorkDir(abs string) string {
-	rel, err := filepath.Rel(c.workDir, abs)
-	if err != nil {
-		return abs
+	workDir := normalizeForRel(c.workDir)
+	targets := []string{normalizeForRel(abs)}
+	if resolved, err := filepath.EvalSymlinks(targets[0]); err == nil {
+		resolved = filepath.Clean(resolved)
+		if resolved != targets[0] {
+			targets = append(targets, resolved)
+		}
 	}
-	return rel
+
+	best := ""
+	for _, target := range targets {
+		rel, err := filepath.Rel(workDir, target)
+		if err != nil {
+			continue
+		}
+		if best == "" || len(rel) < len(best) {
+			best = rel
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return filepath.Clean(targets[0])
+}
+
+func normalizeForRel(path string) string {
+	normalized := path
+	if abs, err := filepath.Abs(path); err == nil {
+		normalized = abs
+	}
+	return filepath.Clean(normalized)
 }
 
 func baseSystemPrompt() string {

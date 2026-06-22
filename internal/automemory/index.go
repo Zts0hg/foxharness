@@ -56,8 +56,9 @@ func (s *Store) BuildIndex(scope Scope) (string, error) {
 // "- [name](name.md) — description", collapsed to one line and truncated to the
 // per-line character cap.
 func renderIndexEntry(m Memory) string {
+	name := canonicalMemoryName(m.Name)
 	desc := strings.Join(strings.Fields(m.Description), " ")
-	line := fmt.Sprintf("- [%s](%s.md) — %s", m.Name, m.Name, desc)
+	line := fmt.Sprintf("- [%s](%s.md) — %s", name, name, desc)
 	return truncateRunes(line, maxIndexLineLen)
 }
 

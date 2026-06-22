@@ -109,7 +109,7 @@ func (d Dirs) FilePath(scope Scope, name string) (string, error) {
 // memory written directly via write_file and later loaded can never advertise an
 // unsafe link in the index.
 func validMemoryName(name string) error {
-	trimmed := strings.TrimSpace(name)
+	trimmed := canonicalMemoryName(name)
 	if trimmed == "" {
 		return fmt.Errorf("memory name must not be empty")
 	}
@@ -122,10 +122,17 @@ func validMemoryName(name string) error {
 	return nil
 }
 
+// canonicalMemoryName returns the frontmatter/file slug form without a trailing
+// markdown extension. A trailing ".md" is accepted for direct file writes, but
+// the in-memory representation stays extensionless so index links are stable.
+func canonicalMemoryName(name string) string {
+	return strings.TrimSuffix(strings.TrimSpace(name), ".md")
+}
+
 // safeFileName validates a memory slug and returns the corresponding "<name>.md"
 // filename, rejecting any value that could escape the memory directory.
 func safeFileName(name string) (string, error) {
-	trimmed := strings.TrimSuffix(strings.TrimSpace(name), ".md")
+	trimmed := canonicalMemoryName(name)
 	if err := validMemoryName(trimmed); err != nil {
 		return "", err
 	}

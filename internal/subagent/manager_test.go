@@ -103,3 +103,40 @@ func TestManagerBuildComposerInjectsPersistentMemory(t *testing.T) {
 		}
 	}
 }
+
+func TestManagerBuildComposerUsesReadOnlyPersistentMemoryGuidance(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+	store := automemory.NewStore(home, workDir)
+	if err := store.Save(automemory.Memory{
+		Name:        "user-role",
+		Description: "Staff engineer, terse answers.",
+		Type:        automemory.TypeUser,
+		Body:        "The user is a staff engineer.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := &Manager{workDir: workDir, homeDir: home}
+	sess := &session.Session{ID: "sub", RootDir: t.TempDir(), WorkDir: workDir}
+	prompt, err := mgr.buildComposer(sess).Compose("explore the codebase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"read-only", "read_file", "user-role.md"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("subagent composer missing read-only guidance %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{
+		"Create or update a memory",
+		"write_file/edit_file",
+		"Forget a memory by deleting",
+		"Save only what is surprising",
+		"Dedup first",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("subagent composer must not include write guidance %q:\n%s", forbidden, prompt)
+		}
+	}
+}
