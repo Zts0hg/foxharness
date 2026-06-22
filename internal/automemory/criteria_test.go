@@ -40,7 +40,13 @@ func TestSC004MutualExclusionSkipsExtraction(t *testing.T) {
 	workDir := t.TempDir()
 	store := NewStore(t.TempDir(), workDir)
 	tracker := NewTracker(workDir, []string{store.UserGlobalDir(), store.ProjectDir()})
-	tracker.MarkSuccess(writeCall("write_file", filepath.Join(store.ProjectDir(), "x.md")), schema.ToolResult{})
+	// The agent addresses memory by a workDir-relative path (as the file tools
+	// require), which resolves into the project memory directory.
+	rel, err := filepath.Rel(workDir, filepath.Join(store.ProjectDir(), "x.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.MarkSuccess(writeCall("write_file", rel), schema.ToolResult{})
 
 	prov := &scriptedProvider{}
 	ext := NewExtractor(prov, store, workDir)

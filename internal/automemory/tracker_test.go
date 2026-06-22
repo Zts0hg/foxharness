@@ -16,9 +16,10 @@ func writeCall(name, path string) schema.ToolCall {
 // TestTrackerMarksSuccessOnlyOnNonErrorMemoryWrite is the core P2-2 guarantee:
 // a memory-directory write sets the flag only when the tool actually succeeded.
 func TestTrackerMarksSuccessOnlyOnNonErrorMemoryWrite(t *testing.T) {
-	memDir := "/home/dev/.foxharness/memory"
-	tr := NewTracker("/work/proj", []string{memDir})
-	call := writeCall("write_file", filepath.Join(memDir, "user-role.md"))
+	workDir := "/work/proj"
+	memDir := workDir + "/.foxharness/memory"
+	tr := NewTracker(workDir, []string{memDir})
+	call := writeCall("write_file", ".foxharness/memory/user-role.md")
 
 	tr.MarkSuccess(call, schema.ToolResult{IsError: true, Output: "edit old_string mismatch"})
 	if tr.WroteMemory() {
@@ -32,9 +33,10 @@ func TestTrackerMarksSuccessOnlyOnNonErrorMemoryWrite(t *testing.T) {
 }
 
 func TestTrackerMarksSuccessForEditFile(t *testing.T) {
-	memDir := "/home/dev/.foxharness/projects/key/memory"
-	tr := NewTracker("/work/proj", []string{memDir})
-	tr.MarkSuccess(writeCall("edit_file", filepath.Join(memDir, "x.md")), schema.ToolResult{})
+	workDir := "/work/proj"
+	memDir := workDir + "/.foxharness/projects/key/memory"
+	tr := NewTracker(workDir, []string{memDir})
+	tr.MarkSuccess(writeCall("edit_file", ".foxharness/projects/key/memory/x.md"), schema.ToolResult{})
 	if !tr.WroteMemory() {
 		t.Fatalf("a successful edit_file into the memory dir must set the flag")
 	}
@@ -76,4 +78,40 @@ func TestTrackerCallHasNoPath(t *testing.T) {
 	if tr.WroteMemory() {
 		t.Fatalf("a write call with no path must not set the flag")
 	}
+}
+
+// TestTrackerAbsoluteMemoryPathMatchesFileToolResolution ensures the tracker
+// resolves paths exactly like the file tools (filepath.Join(workDir, path),
+// which collapses a leading slash), so an absolute memory path — which the
+// tools actually write under workDir, not at the absolute target — is NOT
+// classified as a memory write. Otherwise a misplaced write would falsely set
+// the mutual-exclusion flag and suppress extraction (P2-2/P2-B).
+func TestTrackerAbsoluteMemoryPathMatchesFileToolResolution(t *testing.T) {
+	workDir := "/work/proj"
+	memDir := "/home/dev/.foxharness/projects/key/memory"
+	tr := NewTracker(workDir, []string{memDir})
+
+	// The tool would write filepath.Join(workDir, "/home/.../x.md") =
+	// /work/proj/home/dev/.foxharness/projects/key/memory/x.md (NOT memDir).
+	tr.MarkSuccess(writeCall("write_file", filepath.Join(memDir, "x.md")), schema.ToolResult{})
+	if tr.WroteMemory() {
+		t.Fatalf("an absolute memory path must be classified by where the tool writes (under workDir), not flagged as a memory write")
+	}
+
+	// The intended relative form still resolves into memDir and is flagged.
+	rel := relPathTo(workDir, memDir) + "/x.md"
+	tr.MarkSuccess(writeCall("write_file", rel), schema.ToolResult{})
+	if !tr.WroteMemory() {
+		t.Fatalf("a relative path resolving into the memory dir must set the flag")
+	}
+}
+
+// relPathTo returns a workDir-relative path reaching target (for constructing
+// intended relative memory paths in tests).
+func relPathTo(workDir, target string) string {
+	rel, err := filepath.Rel(workDir, target)
+	if err != nil {
+		return target
+	}
+	return rel
 }

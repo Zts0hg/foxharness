@@ -79,13 +79,13 @@ func toolCallPath(raw json.RawMessage) string {
 	return args.Path
 }
 
-// resolveToolPath mirrors how the file tools resolve a path: relative paths are
-// joined against the working directory; absolute paths are cleaned as-is.
+// resolveToolPath mirrors how the file tools resolve a path. The tools always do
+// filepath.Join(workDir, path), which collapses a leading slash, so an absolute
+// path is NOT honored as an absolute target — it is joined under workDir just
+// like a relative one. Resolving identically here keeps the tracker's
+// classification consistent with where the write actually lands.
 func resolveToolPath(workDir, path string) string {
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path)
-	}
-	return filepath.Clean(filepath.Join(workDir, path))
+	return filepath.Join(workDir, path)
 }
 
 // pathWithin reports whether target is the directory dir itself or lives beneath

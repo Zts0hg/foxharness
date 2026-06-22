@@ -3,6 +3,7 @@ package automemory
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -76,4 +77,43 @@ func TestFilePathRejectsTraversalSlugs(t *testing.T) {
 	if withExt != want {
 		t.Fatalf("FilePath(.md) = %q, want %q", withExt, want)
 	}
+}
+
+// TestDirsNormalizesRelativeWorkDirToAbsolute ensures a relative workDir (e.g.
+// AGENTOPS_WORKDIR=.) derives the same project key as its absolute form, so
+// project memories are co-located with sessions regardless of how the caller
+// expressed the path. session.Manager absolutizes workDir before keying; the
+// automemory store must do the same.
+func TestDirsNormalizesRelativeWorkDirToAbsolute(t *testing.T) {
+	home := t.TempDir()
+	absWorkDir := t.TempDir()
+	rel, err := filepath.Rel(mustCwd(t), absWorkDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	relDirs := NewDirs(home, rel)
+	absDirs := NewDirs(home, absWorkDir)
+	if got, want := relDirs.Dir(ScopeProject), absDirs.Dir(ScopeProject); got != want {
+		t.Fatalf("relative workDir project dir = %q, want %q (must match absolute)", got, want)
+	}
+
+	// And it must match what session.Manager (which absolutizes) would use.
+	manager := session.NewManagerWithHome(absWorkDir, home) // absWorkDir as the workDir arg
+	_ = manager
+	// The session key derives from the absolute workDir; the automemory project
+	// dir must embed the same key.
+	wantKey := session.EncodeProjectPath(absWorkDir)
+	if !strings.Contains(relDirs.Dir(ScopeProject), wantKey) {
+		t.Fatalf("project dir %q does not embed the session key %q", relDirs.Dir(ScopeProject), wantKey)
+	}
+}
+
+func mustCwd(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wd
 }

@@ -24,14 +24,31 @@ func decide(t *testing.T, g *MemoryDirGuard, call schema.ToolCall) Decision {
 }
 
 func TestMemoryDirGuardAllowsWritesInsideMemoryDir(t *testing.T) {
-	memDir := "/home/dev/.foxharness/memory"
-	g := NewMemoryDirGuard("/work", []string{memDir})
+	// The agent is instructed to address memory files by workDir-relative paths;
+	// memDir lives under workDir so the relative form resolves into it.
+	workDir := "/work"
+	memDir := workDir + "/.foxharness/memory"
+	g := NewMemoryDirGuard(workDir, []string{memDir})
 
 	for _, name := range []string{"write_file", "edit_file"} {
-		dec := decide(t, g, guardCall(name, filepath.Join(memDir, "x.md")))
+		dec := decide(t, g, guardCall(name, ".foxharness/memory/x.md"))
 		if dec.Type != DecisionAllow {
 			t.Fatalf("%s inside memory dir = %v, want allow", name, dec.Type)
 		}
+	}
+}
+
+// TestMemoryDirGuardDeniesAbsoluteMemoryPath ensures an absolute memory path is
+// denied: the file tools join it under workDir (not at the absolute target), so
+// such a write would land outside the memory directory. The guard must classify
+// by where the tool writes, matching the tools' resolution.
+func TestMemoryDirGuardDeniesAbsoluteMemoryPath(t *testing.T) {
+	workDir := "/work"
+	memDir := "/home/dev/.foxharness/memory"
+	g := NewMemoryDirGuard(workDir, []string{memDir})
+	dec := decide(t, g, guardCall("write_file", filepath.Join(memDir, "x.md")))
+	if dec.Type != DecisionDeny {
+		t.Fatalf("absolute memory path = %v, want deny (tool would write under workDir)", dec.Type)
 	}
 }
 

@@ -59,10 +59,11 @@ func guardToolPath(raw json.RawMessage) string {
 }
 
 func resolveGuardPath(workDir, path string) string {
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path)
-	}
-	return filepath.Clean(filepath.Join(workDir, path))
+	// Mirror the file tools: they always filepath.Join(workDir, path), so an
+	// absolute path is joined under workDir rather than honored as an absolute
+	// target. Resolving identically keeps the guard's decision consistent with
+	// where the write actually lands.
+	return filepath.Join(workDir, path)
 }
 
 func guardPathWithin(dir, target string) bool {
