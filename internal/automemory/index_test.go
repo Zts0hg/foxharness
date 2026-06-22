@@ -135,7 +135,13 @@ func TestBuildIndexEnforcesByteCap(t *testing.T) {
 func TestBuildIndexReflectsCurrentFilesNoDrift(t *testing.T) {
 	store := newTestStore(t)
 	saveN(t, store, ScopeProject, 3, 0)
-	if err := store.Remove(ScopeProject, "mem-0001"); err != nil {
+	// Forget is an empty-content write: the emptied file becomes non-loadable and
+	// must drop out of the regenerated index (no drift).
+	memPath, err := store.dirs.FilePath(ScopeProject, "mem-0001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(memPath, []byte{}, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	index, err := store.BuildIndex(ScopeProject)

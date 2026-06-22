@@ -39,8 +39,8 @@ If not configured, use English.
   - **Covers**: REQ-001, REQ-002; **Plan**: Phase 1 scope.go / PLD-2
   - **Deps**: T001
 
-- [x] T004 [INFRA] Implement the memory Store (load/save/remove/list).
-  - Test-first in `internal/automemory/store_test.go`: save→load roundtrip preserves frontmatter+body; explicit removal is idempotent; listing skips empty or malformed files (orphan-safe, no panic); save writes atomically (temp + rename). Then implement `internal/automemory/store.go`.
+- [x] T004 [INFRA] Implement the memory Store (load/save/list).
+  - Test-first in `internal/automemory/store_test.go`: save→load roundtrip preserves frontmatter+body; listing skips empty or malformed files (orphan-safe, no panic); save writes atomically (temp + rename). Then implement `internal/automemory/store.go`.
   - **Covers**: REQ-001, REQ-003, REQ-004; **Plan**: Phase 1 store.go
   - **Deps**: T002, T003
 
@@ -181,7 +181,7 @@ T010 (stop legacy)      │                         │                         
 | REQ-006 (inject merged index) | T006, T008 | Covered |
 | REQ-007 (bounds) | T005 | Covered |
 | REQ-008 (no AI filter, on-demand read) | T008 | Covered |
-| REQ-009 (inline create/update/remove) | T012 | Covered |
+| REQ-009 (inline create/update/forget) | T012 | Covered |
 | REQ-010 (async extraction) | T014, T015 | Covered |
 | REQ-011 (mutual exclusion) | T011, T012, T014, T015 | Covered |
 | REQ-012 (manifest + dedup) | T006, T014 | Covered |

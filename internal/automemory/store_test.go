@@ -74,25 +74,6 @@ func TestStoreSaveIsAtomicNoTempLeftovers(t *testing.T) {
 	}
 }
 
-func TestStoreRemoveDeletesFile(t *testing.T) {
-	store := newTestStore(t)
-	mem := Memory{Name: "tmp-note", Description: "d", Type: TypeUser, Body: "b"}
-	if err := store.Save(mem); err != nil {
-		t.Fatalf("Save() error = %v", err)
-	}
-	if err := store.Remove(ScopeUserGlobal, "tmp-note"); err != nil {
-		t.Fatalf("Remove() error = %v", err)
-	}
-	loaded, _ := store.Load(ScopeUserGlobal)
-	if len(loaded) != 0 {
-		t.Fatalf("memory still present after Remove: %+v", loaded)
-	}
-	// Removing a non-existent memory is a no-op, not an error (idempotent forget).
-	if err := store.Remove(ScopeUserGlobal, "tmp-note"); err != nil {
-		t.Fatalf("Remove(missing) error = %v", err)
-	}
-}
-
 func TestStoreLoadSkipsMalformedFrontmatter(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.dirs.EnsureDir(ScopeProject); err != nil {

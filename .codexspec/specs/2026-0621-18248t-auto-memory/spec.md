@@ -291,7 +291,7 @@ neither cites nor relies on remembered content for the rest of the request.
 ### Key Entities
 
 - **Memory file**: An individual Markdown file with YAML frontmatter (`name`, `description`,
-  `type`) and a typed body. The unit of read/write/delete. Lives in exactly one scope.
+  `type`) and a typed body. The unit of read/write/forget (forget empties the file content). Lives in exactly one scope.
 - **Memory type**: One of `user`, `feedback`, `project`, `reference`; determines scope and
   body structure.
 - **Memory scope**: Either user-global (`~/.foxharness/memory/`) or project-level

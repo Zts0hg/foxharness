@@ -309,7 +309,7 @@ cache but is not hand-maintained and is not the injection source.
 **Rationale**: Removes the "agent forgot to update the index" failure mode and the
 file/index-drift edge case entirely; simpler and more robust; fully satisfies REQ-005
 (still one-line entries pointing to files). The agent's only inline responsibilities are
-create/update/remove of memory files; the index follows automatically.
+create/update/forget of memory files; the index follows automatically.
 
 **Trade-off**: Index regeneration scans the memory dir each turn; cost is bounded by CON-005
 (≤ ~200 files) and acceptable.
@@ -320,7 +320,7 @@ create/update/remove of memory files; the index follows automatically.
 ## Components / Interfaces
 
 - **`automemory.Store`** — `Covers: REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-007`
-  - `Load(scope) ([]Memory, error)`, `Save(scope, Memory) error`, `Remove(scope, name) error`,
+  - `Load(scope) ([]Memory, error)`, `Save(scope, Memory) error`,
     `BuildIndex(scope) (string, error)` (regenerated from on-disk files per PLD-9; truncated
     per CON-005), `MergedIndexString() string` (two tiers merged — the injection source of
     truth), `Manifest() string` (existing-memory list for extraction dedup). Validates
@@ -353,7 +353,7 @@ create/update/remove of memory files; the index follows automatically.
       (tests first: valid/invalid frontmatter, Why/How-to-apply presence for feedback/project).
 - [ ] `automemory/scope.go`: resolve `~/.foxharness/memory/` and
       `~/.foxharness/projects/{key}/memory/`; type→scope mapping (REQ-002).
-- [ ] `automemory/store.go`: load/save/remove/list; idempotent dir creation; orphan-safe on
+- [ ] `automemory/store.go`: load/save/list; idempotent dir creation; orphan-safe on
       malformed frontmatter (skip, don't crash).
 - [ ] `automemory/index.go`: build one-line `< 150` char entries; truncate at ~200 lines /
       ~25 KB with a notice; enforce ~200 files / ~40,000 char content cap (CON-005).
@@ -461,7 +461,7 @@ stay fast and flake-free (constitution: deterministic tests).
 | REQ-006 | Full | Phase 2 (Composer) |
 | REQ-007 | Full | Phase 1 (index.go truncation) |
 | REQ-008 | Full | Phase 2 (Composer index-only) |
-| REQ-009 | Full | Phase 3 (inline create/update/remove + tracker) |
+| REQ-009 | Full | Phase 3 (inline create/update/forget + tracker) |
 | REQ-010 | Full | Phase 4 (Extractor) + PLD-8 |
 | REQ-011 | Full | Phase 3 (tracker) + Phase 4 (skip) |
 | REQ-012 | Full | Phase 4 (manifest + dedup) |

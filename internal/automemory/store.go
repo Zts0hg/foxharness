@@ -135,19 +135,6 @@ func (s *Store) IsLoadableMemoryAt(absPath string) bool {
 	return ok
 }
 
-// Remove deletes the named memory from the scope. Removing a memory that does not
-// exist is a no-op so an explicit "forget" is idempotent.
-func (s *Store) Remove(scope Scope, name string) error {
-	path, err := s.dirs.FilePath(scope, name)
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove memory %s: %w", name, err)
-	}
-	return nil
-}
-
 // atomicWrite writes data to path via a temporary file in the same directory
 // followed by a rename, so readers never observe a partial file.
 func atomicWrite(path string, data []byte) error {
