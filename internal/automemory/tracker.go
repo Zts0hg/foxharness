@@ -145,7 +145,11 @@ func directMemoryFileInDir(dir, target string) bool {
 		return false
 	}
 	name := filepath.Base(target)
-	return name != indexFileName && strings.HasSuffix(name, ".md")
+	if name == indexFileName || !strings.HasSuffix(name, ".md") {
+		return false
+	}
+	safe, err := safeFileName(strings.TrimSuffix(name, ".md"))
+	return err == nil && safe == name
 }
 
 func comparablePath(path string) string {

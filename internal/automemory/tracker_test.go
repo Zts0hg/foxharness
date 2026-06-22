@@ -75,6 +75,17 @@ func TestTrackerDoesNotTreatNestedEmptyWriteAsForget(t *testing.T) {
 	}
 }
 
+func TestTrackerDoesNotTreatUnsafeEmptyWriteAsForget(t *testing.T) {
+	workDir := "/work/proj"
+	memDir := filepath.Join(workDir, ".foxharness", "memory")
+	tr := NewTracker(workDir, []string{memDir})
+
+	tr.MarkSuccess(writeCallWithContent("write_file", ".foxharness/memory/BadName.md", ""), schema.ToolResult{})
+	if tr.WroteMemory() {
+		t.Fatalf("unsafe memory filenames are not indexed and must not suppress extraction")
+	}
+}
+
 func TestTrackerResolvesRelativePaths(t *testing.T) {
 	workDir := "/work/proj"
 	memDir := filepath.Join(workDir, "memdir")
