@@ -52,7 +52,7 @@ func TestValidateRejectsMissingFields(t *testing.T) {
 }
 
 func TestValidateRejectsUnsafeNames(t *testing.T) {
-	for _, name := range []string{"../outside", "a/b", "..", "foo/../bar", `a\b`, "/abs"} {
+	for _, name := range []string{"../outside", "a/b", "..", "foo/../bar", `a\b`, "/abs", "bad\nname", "bad](", "has space", strings.Repeat("a", 129)} {
 		mem := Memory{Name: name, Description: "d", Type: TypeUser, Body: "b"}
 		if err := mem.Validate(); err == nil {
 			t.Fatalf("Validate(name=%q) expected a path-safety error", name)

@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -23,7 +24,7 @@ type MemoryDirGuard struct {
 // NewMemoryDirGuard constructs a guard for the given working directory and the
 // set of absolute memory directories writes are confined to.
 func NewMemoryDirGuard(workDir string, memoryDirs []string) *MemoryDirGuard {
-	return &MemoryDirGuard{workDir: workDir, memoryDirs: memoryDirs}
+	return &MemoryDirGuard{workDir: cleanAbsWorkDir(workDir), memoryDirs: memoryDirs}
 }
 
 // BeforeExecute applies the narrowing policy described on MemoryDirGuard.
@@ -66,8 +67,20 @@ func resolveGuardPath(workDir, path string) string {
 	return filepath.Join(workDir, path)
 }
 
+func cleanAbsWorkDir(workDir string) string {
+	if workDir == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(workDir); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(workDir)
+}
+
 func guardPathWithin(dir, target string) bool {
-	rel, err := filepath.Rel(filepath.Clean(dir), target)
+	dir = comparableGuardPath(dir)
+	target = comparableGuardPath(target)
+	rel, err := filepath.Rel(dir, target)
 	if err != nil {
 		return false
 	}
@@ -75,4 +88,32 @@ func guardPathWithin(dir, target string) bool {
 		return true
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func comparableGuardPath(path string) string {
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+
+	var missing []string
+	for {
+		parent := filepath.Dir(path)
+		if parent == path {
+			return filepath.Clean(path)
+		}
+		missing = append(missing, filepath.Base(path))
+		path = parent
+		if _, err := os.Stat(path); err == nil {
+			break
+		}
+	}
+
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = filepath.Clean(resolved)
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		path = filepath.Join(path, missing[i])
+	}
+	return filepath.Clean(path)
 }

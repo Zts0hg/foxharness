@@ -35,7 +35,7 @@ type PerRunHooks struct {
 // directory. The provider is read at fire time; callers that swap the provider
 // between runs (e.g. a /model switch) should construct fresh hooks per run.
 func NewPerRunHooks(p provider.LLMProvider, store *Store, workDir string) *PerRunHooks {
-	h := &PerRunHooks{provider: p, store: store, workDir: workDir}
+	h := &PerRunHooks{provider: p, store: store, workDir: absWorkDir(workDir)}
 	h.FireFunc = h.fireExtractionAsync
 	return h
 }

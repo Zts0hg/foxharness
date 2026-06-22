@@ -140,3 +140,25 @@ func TestManagerBuildComposerUsesReadOnlyPersistentMemoryGuidance(t *testing.T) 
 		}
 	}
 }
+
+func TestManagerBuildComposerOmitsWorkingMemoryWriteGuidanceWhenReadOnly(t *testing.T) {
+	workDir := t.TempDir()
+	mgr := &Manager{workDir: workDir, homeDir: t.TempDir()}
+	sess := &session.Session{ID: "sub", RootDir: t.TempDir(), WorkDir: workDir}
+
+	prompt, err := mgr.buildComposer(sess).Compose("explore the codebase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"Keep it current as you work",
+		"write_file and edit_file tools",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("read-only subagent composer must not include working-memory write guidance %q:\n%s", forbidden, prompt)
+		}
+	}
+	if !strings.Contains(prompt, "working_memory.md") {
+		t.Fatalf("read-only subagent should still see working memory contents:\n%s", prompt)
+	}
+}

@@ -68,7 +68,7 @@ func NewManager(p provider.LLMProvider, workDir string) *Manager {
 // extract memory; that remains the main agent's responsibility.
 func (m *Manager) buildComposer(sess *session.Session) *prompt.Composer {
 	store := automemory.NewStore(m.homeDir, m.workDir)
-	return prompt.NewComposer(m.workDir).WithMemory(sess.MemoryPath()).WithReadOnlyAutoMemory(store)
+	return prompt.NewComposer(m.workDir).WithReadOnlyMemory(sess.MemoryPath()).WithReadOnlyAutoMemory(store)
 }
 
 func (m *Manager) buildRegistry(readOnly bool, allowedTools []string) tools.Registry {

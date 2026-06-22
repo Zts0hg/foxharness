@@ -2,6 +2,7 @@ package automemory
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -36,7 +37,7 @@ type Tracker struct {
 // NewTracker constructs a Tracker for the given working directory and the set of
 // absolute memory directories to watch.
 func NewTracker(workDir string, memoryDirs []string) *Tracker {
-	return &Tracker{workDir: workDir, memoryDirs: memoryDirs}
+	return &Tracker{workDir: absWorkDir(workDir), memoryDirs: memoryDirs}
 }
 
 // MarkSuccess records a successful tool call: when call is a write_file or
@@ -101,7 +102,9 @@ func resolveToolPath(workDir, path string) string {
 // pathWithin reports whether target is the directory dir itself or lives beneath
 // it, guarding against ".." escapes.
 func pathWithin(dir, target string) bool {
-	rel, err := filepath.Rel(filepath.Clean(dir), target)
+	dir = comparablePath(dir)
+	target = comparablePath(target)
+	rel, err := filepath.Rel(dir, target)
 	if err != nil {
 		return false
 	}
@@ -109,4 +112,32 @@ func pathWithin(dir, target string) bool {
 		return true
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func comparablePath(path string) string {
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+
+	var missing []string
+	for {
+		parent := filepath.Dir(path)
+		if parent == path {
+			return filepath.Clean(path)
+		}
+		missing = append(missing, filepath.Base(path))
+		path = parent
+		if _, err := os.Stat(path); err == nil {
+			break
+		}
+	}
+
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = filepath.Clean(resolved)
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		path = filepath.Join(path, missing[i])
+	}
+	return filepath.Clean(path)
 }

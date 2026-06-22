@@ -41,6 +41,47 @@ func TestPerRunHooksNewTrackerWatchesMemoryDirs(t *testing.T) {
 	}
 }
 
+func TestPerRunHooksNormalizesRelativeWorkDirForTracker(t *testing.T) {
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	workDir := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWd); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	})
+
+	store := NewStore(filepath.Join(tmp, "home"), ".")
+	hooks := NewPerRunHooks(nil, store, ".")
+	tracker := hooks.NewTracker()
+
+	target := filepath.Join(store.UserGlobalDir(), "user-role.md")
+	if err := os.MkdirAll(store.UserGlobalDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("---\nname: user-role\ndescription: d\ntype: user\n---\n\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(workDir, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tracker.MarkSuccess(writeCall("write_file", rel), schema.ToolResult{})
+	if !tracker.WroteMemory() {
+		t.Fatalf("tracker from relative-workDir hooks must flag successful valid memory writes")
+	}
+}
+
 // TestPerRunHooksRecordCallbackRecordsSuccessOnly proves the OnToolCalled
 // callback wires the tracker to record only successful writes of valid memories.
 func TestPerRunHooksRecordCallbackRecordsSuccessOnly(t *testing.T) {

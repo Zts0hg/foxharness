@@ -32,7 +32,7 @@ type Extractor struct {
 // NewExtractor constructs an Extractor bound to a provider, memory store, and the
 // project working directory.
 func NewExtractor(p provider.LLMProvider, store *Store, workDir string) *Extractor {
-	return &Extractor{provider: p, store: store, workDir: workDir, maxTurns: defaultExtractionTurns}
+	return &Extractor{provider: p, store: store, workDir: absWorkDir(workDir), maxTurns: defaultExtractionTurns}
 }
 
 // Run performs the extraction pass. It returns nil and does nothing when the

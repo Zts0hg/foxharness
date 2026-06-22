@@ -23,6 +23,8 @@ const (
 // indexFileName is the generated entry-point index written in each scope.
 const indexFileName = "MEMORY.md"
 
+const maxMemoryNameLen = 80
+
 // ScopeForType maps a memory type to its storage scope: user memories are
 // cross-project (user-global); project, feedback, and reference memories are
 // per-project (REQ-002).
@@ -103,21 +105,29 @@ func (d Dirs) FilePath(scope Scope, name string) (string, error) {
 	return filepath.Join(d.Dir(scope), safe), nil
 }
 
-// validMemoryName validates that a memory slug is a single, safe path element
-// with no separators or ".." traversal. It is the single source of truth for
-// name safety, shared by Save (filename derivation) and Validate (parsing), so a
-// memory written directly via write_file and later loaded can never advertise an
-// unsafe link in the index.
+// validMemoryName validates that a memory slug is a short, markdown-safe path
+// element. It is the single source of truth for name safety, shared by Save
+// (filename derivation) and Validate (parsing), so a memory written directly via
+// write_file and later loaded can never advertise an unsafe link in the index.
 func validMemoryName(name string) error {
 	trimmed := canonicalMemoryName(name)
 	if trimmed == "" {
 		return fmt.Errorf("memory name must not be empty")
+	}
+	if len(trimmed) > maxMemoryNameLen {
+		return fmt.Errorf("memory name %q must be at most %d characters", name, maxMemoryNameLen)
 	}
 	if strings.ContainsAny(trimmed, `/\`) || strings.Contains(trimmed, "..") {
 		return fmt.Errorf("memory name %q must not contain path separators or %q", name, "..")
 	}
 	if trimmed != filepath.Base(trimmed) {
 		return fmt.Errorf("memory name %q must be a single path element", name)
+	}
+	for _, r := range trimmed {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return fmt.Errorf("memory name %q must contain only lowercase letters, digits, hyphen, or underscore", name)
 	}
 	return nil
 }

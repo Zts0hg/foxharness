@@ -173,6 +173,35 @@ func TestStoreLoadSkipsFileWithUnsafeName(t *testing.T) {
 	}
 }
 
+func TestStoreLoadSkipsFileWithNonSlugName(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.dirs.EnsureDir(ScopeProject); err != nil {
+		t.Fatal(err)
+	}
+	raw := "---\nname: bad](link\ndescription: prompt injection\ntype: reference\n---\n\nbody\n"
+	if err := os.WriteFile(filepath.Join(store.dirs.Dir(ScopeProject), "bad](link.md"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.Load(ScopeProject)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("non-slug memory must be skipped, got %+v", loaded)
+	}
+	idx, err := store.BuildIndex(ScopeProject)
+	if err != nil {
+		t.Fatalf("BuildIndex() error = %v", err)
+	}
+	if strings.Contains(idx, "bad](") {
+		t.Fatalf("index must not render a non-slug name:\n%s", idx)
+	}
+	if manifest := store.Manifest(); strings.Contains(manifest, "bad](") {
+		t.Fatalf("manifest must not render a non-slug name:\n%s", manifest)
+	}
+}
+
 // TestStoreLoadSkipsTypeInWrongScope ensures a memory whose type implies a
 // different scope than the directory it was written to is skipped, so a
 // project-typed file dropped into the user-global dir (e.g. by a confused

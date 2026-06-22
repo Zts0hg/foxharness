@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -35,6 +36,41 @@ func TestMemoryDirGuardAllowsWritesInsideMemoryDir(t *testing.T) {
 		if dec.Type != DecisionAllow {
 			t.Fatalf("%s inside memory dir = %v, want allow", name, dec.Type)
 		}
+	}
+}
+
+func TestMemoryDirGuardAllowsRelativeWorkDirMemoryWrite(t *testing.T) {
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	workDir := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWd); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	})
+
+	memDir := filepath.Join(tmp, "home", ".foxharness", "memory")
+	if err := os.MkdirAll(memDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(workDir, filepath.Join(memDir, "x.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := NewMemoryDirGuard(".", []string{memDir})
+
+	dec := decide(t, g, guardCall("write_file", rel))
+	if dec.Type != DecisionAllow {
+		t.Fatalf("relative-workDir memory write = %v, want allow", dec.Type)
 	}
 }
 

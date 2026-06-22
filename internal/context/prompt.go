@@ -34,6 +34,7 @@ type AutoMemoryStore interface {
 type Composer struct {
 	workDir        string
 	memoryPath     string
+	memoryRO       bool
 	skillListFn    func() string
 	interactiveAsk bool
 	autoMemory     AutoMemoryStore
@@ -60,6 +61,17 @@ func NewComposer(workDir string) *Composer {
 func (c *Composer) WithMemory(path string) *Composer {
 	clone := *c
 	clone.memoryPath = path
+	clone.memoryRO = false
+	return &clone
+}
+
+// WithReadOnlyMemory returns a copy of the Composer configured to inject
+// session working memory without telling the model to mutate it. It is used for
+// read-only delegated contexts whose tool registry lacks write_file/edit_file.
+func (c *Composer) WithReadOnlyMemory(path string) *Composer {
+	clone := *c
+	clone.memoryPath = path
+	clone.memoryRO = true
 	return &clone
 }
 
@@ -130,7 +142,7 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		parts = append(parts, section("Session Working Memory", workingMemoryBody(memory, c.relToWorkDir(c.memoryPath))))
+		parts = append(parts, section("Session Working Memory", workingMemoryBody(memory, c.relToWorkDir(c.memoryPath), c.memoryRO)))
 	}
 
 	if c.skillListFn != nil {
@@ -189,12 +201,23 @@ func workingMemoryGuidance(relPath string) string {
 	return b.String()
 }
 
+func readOnlyWorkingMemoryGuidance(relPath string) string {
+	var b strings.Builder
+	b.WriteString("working_memory.md is this subagent session's scratchpad. It is read-only in this run because the available tools do not include working-memory write access.\n")
+	fmt.Fprintf(&b, "Use the current contents below for context. If the scratchpad should change, include the update in your final report instead of editing the file at relative path %q.\n", relPath)
+	b.WriteString("Current contents:")
+	return b.String()
+}
+
 // workingMemoryBody combines the maintenance guidance with the file's current
 // contents.
-func workingMemoryBody(current, relPath string) string {
+func workingMemoryBody(current, relPath string, readOnly bool) string {
 	current = strings.TrimSpace(current)
 	if current == "" {
 		current = "(empty)"
+	}
+	if readOnly {
+		return readOnlyWorkingMemoryGuidance(relPath) + "\n\n" + current
 	}
 	return workingMemoryGuidance(relPath) + "\n\n" + current
 }
