@@ -293,7 +293,12 @@ neither cites nor relies on remembered content for the rest of the request.
 - **Memory file**: An individual Markdown file with YAML frontmatter (`name`, `description`,
   `type`) and a typed body. The unit of read/write/forget (forget empties the file content). Lives in exactly one scope.
 - **Memory type**: One of `user`, `feedback`, `project`, `reference`; determines scope and
-  body structure.
+  body structure. `user` — durable facts about the user (role, expertise, preferences),
+  cross-project, no Why/How. `feedback` — guidance/corrections on how the agent should work,
+  requires Why + How to apply. `project` — this project's goals, ongoing work, or constraints
+  not derivable from the code/git, requires Why + How to apply. `reference` — pointers to
+  external resources (URLs, dashboards, tickets), no Why/How. `user` is user-global; the
+  other three are project-scoped.
 - **Memory scope**: Either user-global (`~/.foxharness/memory/`) or project-level
   (`~/.foxharness/projects/{encoded-workdir}/memory/`). Each scope owns a `MEMORY.md` index.
 - **`MEMORY.md` index**: The always-injected entry point for a scope; one-line pointers to

@@ -36,7 +36,13 @@ Each memory is one Markdown file with YAML frontmatter:
 
     <the memory body>
 
-For feedback and project memories, the body must also include a "Why:" line and a "How to apply:" line.`)
+For feedback and project memories, the body must also include a "Why:" line and a "How to apply:" line.
+
+Pick the type that best fits the content:
+- user — durable facts about the user (role, expertise, preferences); cross-project. Body has no Why/How.
+- feedback — guidance or corrections on how the agent should work; body needs Why + How to apply.
+- project — this project's goals, ongoing work, or constraints not derivable from the code or git history; body needs Why + How to apply.
+- reference — pointers to external resources (URLs, dashboards, tickets); body has no Why/How.`)
 }
 
 // MainMemoryGuidance returns the body of the injected "Persistent Memory" section

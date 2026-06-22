@@ -60,3 +60,34 @@ func TestExtractionInstructionsEmbedManifest(t *testing.T) {
 		t.Fatalf("extraction instructions must embed the manifest:\n%s", got)
 	}
 }
+
+func TestFrontmatterTemplateGuidesTypeChoice(t *testing.T) {
+	tpl := frontmatterTemplate()
+	for _, want := range []string{
+		"Pick the type that best fits",
+		"user — durable facts about the user",
+		"feedback — guidance or corrections on how the agent should work",
+		"project — this project's goals",
+		"reference — pointers to external resources",
+	} {
+		if !strings.Contains(tpl, want) {
+			t.Fatalf("frontmatterTemplate() missing type guide %q:\n%s", want, tpl)
+		}
+	}
+}
+
+func TestTypeGuideReachesBothWriteLayers(t *testing.T) {
+	main := MainMemoryGuidance("../m", "../p")
+	extraction := ExtractionInstructions("", "../m", "../p")
+	for _, want := range []string{
+		"how the agent should work",
+		"pointers to external resources",
+	} {
+		if !strings.Contains(main, want) {
+			t.Fatalf("main guidance missing type guide %q:\n%s", want, main)
+		}
+		if !strings.Contains(extraction, want) {
+			t.Fatalf("extraction guidance missing type guide %q:\n%s", want, extraction)
+		}
+	}
+}
