@@ -38,6 +38,19 @@ func TestParseMemoryMissingFrontmatter(t *testing.T) {
 	}
 }
 
+func TestParseMemoryRequiresExactClosingDelimiter(t *testing.T) {
+	raw := `---
+name: user-role
+description: d
+type: user
+---not-a-delimiter
+body
+`
+	if _, err := ParseMemory([]byte(raw)); err == nil {
+		t.Fatalf("ParseMemory() expected error for non-delimiter closing line")
+	}
+}
+
 func TestValidateRejectsMissingFields(t *testing.T) {
 	cases := map[string]Memory{
 		"missing name":        {Description: "d", Type: TypeUser, Body: "b"},

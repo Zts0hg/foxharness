@@ -79,9 +79,13 @@ func ParseMemory(data []byte) (Memory, error) {
 	}
 
 	rest := text[len("---\n"):]
-	end := strings.Index(rest, "\n---")
+	end := strings.Index(rest, "\n---\n")
 	if end < 0 {
-		return Memory{}, errors.New("memory file is missing the closing frontmatter delimiter")
+		if strings.HasSuffix(rest, "\n---") {
+			end = len(rest) - len("\n---")
+		} else {
+			return Memory{}, errors.New("memory file is missing the closing frontmatter delimiter")
+		}
 	}
 
 	header := rest[:end]
