@@ -77,19 +77,6 @@ func cleanAbsWorkDir(workDir string) string {
 	return filepath.Clean(workDir)
 }
 
-func guardPathWithin(dir, target string) bool {
-	dir = comparableGuardPath(dir)
-	target = comparableGuardPath(target)
-	rel, err := filepath.Rel(dir, target)
-	if err != nil {
-		return false
-	}
-	if rel == "." {
-		return true
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
 func guardDirectMemoryFile(dir, target string) bool {
 	dir = comparableGuardPath(dir)
 	target = comparableGuardPath(target)
