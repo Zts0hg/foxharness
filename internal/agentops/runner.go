@@ -133,14 +133,10 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 	}
 	eng.WithCompactor(compactor)
 
-	nextSeq, seqErr := session.NewMessageLog(sess).NextSeq()
-	if seqErr != nil {
-		log.Printf("[AgentOps] 读取下一条消息序号失败: %v", seqErr)
-		nextSeq = 0
-	}
-
 	result, err := eng.Run(ctx, sess, taskPrompt)
-	r.fireMemoryExtraction(hooks, sess, nextSeq, tracker)
+	if result != nil {
+		r.fireMemoryExtraction(hooks, sess, result.RunID, tracker)
+	}
 	if err != nil {
 		return err
 	}
@@ -186,7 +182,7 @@ func (r *Runner) buildComposer(sess *session.Session, store *automemory.Store) *
 
 // fireMemoryExtraction launches the post-run memory extraction hook (PLD-8). It
 // is fire-and-forget and panic-guarded so it can never disturb the task result.
-func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *session.Session, nextSeq int64, tracker *automemory.Tracker) {
+func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *session.Session, runID string, tracker *automemory.Tracker) {
 	if hooks == nil {
 		return
 	}
@@ -195,7 +191,7 @@ func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *sessi
 			log.Printf("[AgentOps] memory extraction launch panic recovered: %v", rec)
 		}
 	}()
-	hooks.Fire(sess, nextSeq, tracker)
+	hooks.Fire(sess, runID, tracker)
 }
 
 func (r *Runner) buildRegistry(task Task, sess *session.Session) tools.Registry {

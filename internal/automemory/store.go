@@ -74,25 +74,11 @@ func (s *Store) Load(scope Scope) ([]Memory, error) {
 
 	var memories []Memory
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() == indexFileName || !strings.HasSuffix(entry.Name(), ".md") {
+		if entry.IsDir() {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			continue
-		}
-		mem, err := ParseMemory(data)
-		if err != nil || mem.Validate() != nil {
-			continue
-		}
-		// A file written directly (bypassing Save) can carry a type or name that
-		// disagrees with its location or filename. Skip such mismatches so a
-		// project-typed file in the user-global dir is not injected for every
-		// project, and a foo.md with name: bar does not index a dead bar.md link.
-		if ScopeForType(mem.Type) != scope {
-			continue
-		}
-		if wantName, err := safeFileName(mem.Name); err != nil || wantName != entry.Name() {
+		mem, ok := s.loadableMemory(scope, filepath.Join(dir, entry.Name()))
+		if !ok {
 			continue
 		}
 		memories = append(memories, mem)
@@ -101,6 +87,52 @@ func (s *Store) Load(scope Scope) ([]Memory, error) {
 		return memories[i].Name < memories[j].Name
 	})
 	return memories, nil
+}
+
+// loadableMemory parses and validates a single memory file for a scope, applying
+// the same consistency checks Load uses (valid frontmatter, type matching the
+// scope, filename matching the frontmatter name). It returns the memory and true
+// when the file is a loadable memory for the scope, else zero/false.
+func (s *Store) loadableMemory(scope Scope, absPath string) (Memory, bool) {
+	entryName := filepath.Base(absPath)
+	if entryName == indexFileName || !strings.HasSuffix(entryName, ".md") {
+		return Memory{}, false
+	}
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return Memory{}, false
+	}
+	mem, err := ParseMemory(data)
+	if err != nil || mem.Validate() != nil {
+		return Memory{}, false
+	}
+	if ScopeForType(mem.Type) != scope {
+		return Memory{}, false
+	}
+	wantName, err := safeFileName(mem.Name)
+	if err != nil || wantName != entryName {
+		return Memory{}, false
+	}
+	return mem, true
+}
+
+// IsLoadableMemoryAt reports whether absPath is a valid, loadable memory file in
+// whichever memory directory contains it. It is the predicate the write tracker
+// uses to decide whether a successful memory-directory write actually produced a
+// memory, so a botched write (bad frontmatter, wrong type for the scope, the
+// index file) does not set the mutual-exclusion flag and suppress extraction.
+func (s *Store) IsLoadableMemoryAt(absPath string) bool {
+	var scope Scope
+	switch {
+	case pathWithin(s.dirs.Dir(ScopeUserGlobal), absPath):
+		scope = ScopeUserGlobal
+	case pathWithin(s.dirs.Dir(ScopeProject), absPath):
+		scope = ScopeProject
+	default:
+		return false
+	}
+	_, ok := s.loadableMemory(scope, absPath)
+	return ok
 }
 
 // Remove deletes the named memory from the scope. Removing a memory that does not

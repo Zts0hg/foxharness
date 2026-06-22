@@ -2,6 +2,7 @@ package automemory
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -114,4 +115,47 @@ func relPathTo(workDir, target string) string {
 		return target
 	}
 	return rel
+}
+
+// TestTrackerDoesNotFlagInvalidMemoryWrite proves the tracker only sets the
+// mutual-exclusion flag when the write produced a valid, loadable memory — so a
+// botched inline "remember" (malformed frontmatter, wrong type for the scope,
+// or the index file) does not suppress the extraction backstop (P2-2).
+func TestTrackerDoesNotFlagInvalidMemoryWrite(t *testing.T) {
+	workDir := t.TempDir()
+	store := NewStore(t.TempDir(), workDir)
+	tr := NewTracker(workDir, []string{store.UserGlobalDir(), store.ProjectDir()})
+	tr.Validator = store.IsLoadableMemoryAt
+
+	dir := store.UserGlobalDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Invalid: malformed frontmatter.
+	badPath := filepath.Join(dir, "bad.md")
+	if err := os.WriteFile(badPath, []byte("no frontmatter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	badRel, err := filepath.Rel(workDir, badPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.MarkSuccess(writeCall("write_file", badRel), schema.ToolResult{})
+	if tr.WroteMemory() {
+		t.Fatalf("an invalid memory write must not set the flag")
+	}
+
+	// Valid: well-formed user memory.
+	goodPath := filepath.Join(dir, "good.md")
+	if err := os.WriteFile(goodPath, []byte("---\nname: good\ndescription: d\ntype: user\n---\n\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goodRel, err := filepath.Rel(workDir, goodPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.MarkSuccess(writeCall("write_file", goodRel), schema.ToolResult{})
+	if !tr.WroteMemory() {
+		t.Fatalf("a valid memory write must set the flag")
+	}
 }

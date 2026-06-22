@@ -70,7 +70,7 @@ type AgentRunner struct {
 	// extractionFire overrides the default post-run memory extraction launcher.
 	// It is nil in production (which uses automemory.PerRunHooks.Fire); tests set
 	// it to observe the hook synchronously.
-	extractionFire func(sess *session.Session, sinceSeq int64, tracker *automemory.Tracker)
+	extractionFire func(sess *session.Session, runID string, tracker *automemory.Tracker)
 	checkpointer   checkpoint.Checkpointer
 	slashRegistry  *slash.Registry
 	slashExecutor  *slash.Executor
@@ -423,11 +423,12 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 
 	result, runErr := eng.RunWithReporter(ctx, sess, userPrompt, reporter)
 
-	// Fire the post-run memory extraction hook (PLD-8) over just this run's
-	// messages (Seq >= nextSeq). It is fire-and-forget and runs out-of-band; it
-	// never affects the run result. The launch itself is panic-guarded so a
-	// misbehaving hook can never disturb the returned result.
-	if hooks != nil {
+	// Fire the post-run memory extraction hook (PLD-8), bounded to this run's
+	// messages by run ID so a delayed extraction cannot pick up a later run. It
+	// is fire-and-forget and runs out-of-band; it never affects the run result.
+	// The launch itself is panic-guarded so a misbehaving hook can never disturb
+	// the returned result.
+	if hooks != nil && result != nil {
 		func() {
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -435,11 +436,11 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 				}
 			}()
 			if r.extractionFire != nil {
-				r.extractionFire(sess, nextSeq, tracker)
+				r.extractionFire(sess, result.RunID, tracker)
 			} else {
 				// Tracked launch so the one-shot CLI can drain extraction before
 				// the process exits (P2-A); the interactive TUI simply never waits.
-				hooks.FireTracked(&r.extractWG, sess, nextSeq, tracker)
+				hooks.FireTracked(&r.extractWG, sess, result.RunID, tracker)
 			}
 		}()
 	}

@@ -130,15 +130,11 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 		taskText,
 	)
 
-	nextSeq, err := session.NewMessageLog(sess).NextSeq()
-	if err != nil {
-		log.Printf("[Feishu Runner] 读取下一条消息序号失败: %v", err)
-		nextSeq = 0
-	}
-
 	reporter := NewReporter(r.messenger, task.ChatID, task.TaskID)
 	result, err := eng.RunWithReporter(runCtx, sess, taskPrompt, reporter)
-	r.fireMemoryExtraction(hooks, sess, nextSeq, tracker)
+	if result != nil {
+		r.fireMemoryExtraction(hooks, sess, result.RunID, tracker)
+	}
 	if err != nil {
 		log.Printf("[Feishu Runner] task=%s session=%s  failed: %v", task.TaskID, sess.ID, err)
 		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("Session %s 执行失败：%v", sess.ID, err))
@@ -165,7 +161,7 @@ func (r *Runner) buildComposer(sess *session.Session, store *automemory.Store) *
 
 // fireMemoryExtraction launches the post-run memory extraction hook (PLD-8). It
 // is fire-and-forget and panic-guarded so it can never disturb the task result.
-func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *session.Session, nextSeq int64, tracker *automemory.Tracker) {
+func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *session.Session, runID string, tracker *automemory.Tracker) {
 	if hooks == nil {
 		return
 	}
@@ -174,7 +170,7 @@ func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *sessi
 			log.Printf("[Feishu Runner] memory extraction launch panic recovered: %v", rec)
 		}
 	}()
-	hooks.Fire(sess, nextSeq, tracker)
+	hooks.Fire(sess, runID, tracker)
 }
 
 func (r *Runner) buildRegistry(sess *session.Session, chatID string) tools.Registry {

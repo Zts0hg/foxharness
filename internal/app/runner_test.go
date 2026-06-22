@@ -752,7 +752,7 @@ func TestRunFiresExtractionHookWithTracker(t *testing.T) {
 
 	called := 0
 	var gotTracker *automemory.Tracker
-	runner.extractionFire = func(s *session.Session, sinceSeq int64, tr *automemory.Tracker) {
+	runner.extractionFire = func(s *session.Session, runID string, tr *automemory.Tracker) {
 		called++
 		gotTracker = tr
 	}
@@ -774,7 +774,7 @@ func TestRunFiresExtractionHookWithTracker(t *testing.T) {
 
 func TestPanickingExtractionHookDoesNotAffectRunResult(t *testing.T) {
 	runner, _ := immediateMemoryRunner(t)
-	runner.extractionFire = func(s *session.Session, sinceSeq int64, tr *automemory.Tracker) {
+	runner.extractionFire = func(s *session.Session, runID string, tr *automemory.Tracker) {
 		panic("extraction blew up")
 	}
 

@@ -21,6 +21,14 @@ type Tracker struct {
 	workDir    string
 	memoryDirs []string
 
+	// Validator, when non-nil, is consulted on each successful memory-directory
+	// write and must report whether the written path is a valid loadable memory.
+	// When it returns false (e.g. malformed frontmatter, wrong type for the
+	// scope, or the index file) the write does not set the flag, so the
+	// extraction backstop still runs. When nil, any memory-directory write sets
+	// the flag.
+	Validator func(absPath string) bool
+
 	mu    sync.Mutex
 	wrote bool
 }
@@ -52,9 +60,11 @@ func (t *Tracker) MarkSuccess(call schema.ToolCall, result schema.ToolResult) {
 	resolved := resolveToolPath(t.workDir, path)
 	for _, dir := range t.memoryDirs {
 		if pathWithin(dir, resolved) {
-			t.mu.Lock()
-			t.wrote = true
-			t.mu.Unlock()
+			if t.Validator == nil || t.Validator(resolved) {
+				t.mu.Lock()
+				t.wrote = true
+				t.mu.Unlock()
+			}
 			return
 		}
 	}

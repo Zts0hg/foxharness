@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -94,7 +95,14 @@ func TestFeishuRecordCallbackRecordsSuccessOnly(t *testing.T) {
 	tracker := hooks.NewTracker()
 	cb := hooks.RecordCallback(tracker)
 
-	rel, err := filepath.Rel(workDir, filepath.Join(store.ProjectDir(), "feedback-x.md"))
+	target := filepath.Join(store.ProjectDir(), "feedback-x.md")
+	if err := os.MkdirAll(store.ProjectDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("---\nname: feedback-x\ndescription: d\ntype: reference\n---\n\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(workDir, target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +115,7 @@ func TestFeishuRecordCallbackRecordsSuccessOnly(t *testing.T) {
 	}
 	cb(call, schema.ToolResult{})
 	if !tracker.WroteMemory() {
-		t.Fatalf("a successful memory write must set the flag")
+		t.Fatalf("a successful valid memory write must set the flag")
 	}
 }
 
@@ -118,17 +126,17 @@ func TestFeishuFireMemoryExtractionInvokesHooks(t *testing.T) {
 	store := automemory.NewStore(t.TempDir(), workDir)
 	hooks := automemory.NewPerRunHooks(nil, store, workDir)
 
-	var gotSeq int64 = -1
+	var gotRunID string
 	var gotTracker *automemory.Tracker
-	hooks.FireFunc = func(s *session.Session, sinceSeq int64, tr *automemory.Tracker) {
-		gotSeq = sinceSeq
+	hooks.FireFunc = func(s *session.Session, runID string, tr *automemory.Tracker) {
+		gotRunID = runID
 		gotTracker = tr
 	}
 	tracker := hooks.NewTracker()
 	runner := &Runner{}
-	runner.fireMemoryExtraction(hooks, &session.Session{ID: "s"}, 42, tracker)
-	if gotSeq != 42 {
-		t.Fatalf("extraction fired with seq %d, want 42", gotSeq)
+	runner.fireMemoryExtraction(hooks, &session.Session{ID: "s"}, "run-42", tracker)
+	if gotRunID != "run-42" {
+		t.Fatalf("extraction fired with runID %q, want run-42", gotRunID)
 	}
 	if gotTracker == nil {
 		t.Fatalf("extraction must receive the tracker")
@@ -141,7 +149,7 @@ func TestFeishuFireMemoryExtractionSwallowsPanic(t *testing.T) {
 	workDir := t.TempDir()
 	store := automemory.NewStore(t.TempDir(), workDir)
 	hooks := automemory.NewPerRunHooks(nil, store, workDir)
-	hooks.FireFunc = func(*session.Session, int64, *automemory.Tracker) { panic("boom") }
+	hooks.FireFunc = func(*session.Session, string, *automemory.Tracker) { panic("boom") }
 	runner := &Runner{}
-	runner.fireMemoryExtraction(hooks, &session.Session{ID: "s"}, 0, nil) // must not panic
+	runner.fireMemoryExtraction(hooks, &session.Session{ID: "s"}, "", nil) // must not panic
 }

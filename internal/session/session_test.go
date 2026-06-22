@@ -123,7 +123,7 @@ func TestMessageLogAppendReturnsSeq(t *testing.T) {
 	}
 }
 
-func TestMessageLogLoadMessagesSinceFiltersBySeq(t *testing.T) {
+func TestMessageLogLoadMessagesForRunFiltersByRunID(t *testing.T) {
 	workDir := t.TempDir()
 	manager := NewManagerWithHome(workDir, t.TempDir())
 	sess, err := manager.Create(CreateOptions{
@@ -135,20 +135,14 @@ func TestMessageLogLoadMessagesSinceFiltersBySeq(t *testing.T) {
 	}
 
 	log := NewMessageLog(sess)
-	// Two "runs": run-1 owns seqs 0..1, run-2 owns seq 2+.
-	s0, err := log.Append("run-1", schema.Message{Role: schema.RoleUser, Content: "run1-q"})
-	if err != nil {
+	// Two runs with interleaved seqs. LoadMessagesForRun must return only the
+	// requested run's messages regardless of when it reads the log (timing-
+	// independent), so a delayed post-run consumer cannot pick up a later run.
+	if _, err := log.Append("run-1", schema.Message{Role: schema.RoleUser, Content: "run1-q"}); err != nil {
 		t.Fatalf("Append(run1-q) error = %v", err)
 	}
 	if _, err := log.Append("run-1", schema.Message{Role: schema.RoleAssistant, Content: "run1-a"}); err != nil {
 		t.Fatalf("Append(run1-a) error = %v", err)
-	}
-	run2Start, err := log.NextSeq()
-	if err != nil {
-		t.Fatalf("NextSeq() error = %v", err)
-	}
-	if run2Start != s0+2 {
-		t.Fatalf("run2 start seq = %d, want %d", run2Start, s0+2)
 	}
 	if _, err := log.Append("run-2", schema.Message{Role: schema.RoleUser, Content: "run2-q"}); err != nil {
 		t.Fatalf("Append(run2-q) error = %v", err)
@@ -157,23 +151,28 @@ func TestMessageLogLoadMessagesSinceFiltersBySeq(t *testing.T) {
 		t.Fatalf("Append(run2-a) error = %v", err)
 	}
 
-	sinceRun2, err := log.LoadMessagesSince(run2Start)
+	run2, err := log.LoadMessagesForRun("run-2")
 	if err != nil {
-		t.Fatalf("LoadMessagesSince() error = %v", err)
+		t.Fatalf("LoadMessagesForRun(run-2) error = %v", err)
 	}
-	if len(sinceRun2) != 2 {
-		t.Fatalf("LoadMessagesSince(run2) len = %d, want 2 (run-2 only)", len(sinceRun2))
-	}
-	if sinceRun2[0].Content != "run2-q" || sinceRun2[1].Content != "run2-a" {
-		t.Fatalf("LoadMessagesSince(run2) = %#v, want only run-2 messages", sinceRun2)
+	if len(run2) != 2 || run2[0].Content != "run2-q" || run2[1].Content != "run2-a" {
+		t.Fatalf("LoadMessagesForRun(run-2) = %#v, want only run-2 messages", run2)
 	}
 
-	all, err := log.LoadMessages()
+	run1, err := log.LoadMessagesForRun("run-1")
 	if err != nil {
-		t.Fatalf("LoadMessages() error = %v", err)
+		t.Fatalf("LoadMessagesForRun(run-1) error = %v", err)
 	}
-	if len(all) != 4 {
-		t.Fatalf("LoadMessages() len = %d, want 4 (whole session)", len(all))
+	if len(run1) != 2 || run1[0].Content != "run1-q" {
+		t.Fatalf("LoadMessagesForRun(run-1) = %#v, want only run-1 messages", run1)
+	}
+
+	none, err := log.LoadMessagesForRun("run-3")
+	if err != nil {
+		t.Fatalf("LoadMessagesForRun(run-3) error = %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("LoadMessagesForRun(unknown) = %#v, want empty", none)
 	}
 }
 

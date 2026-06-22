@@ -2,6 +2,7 @@ package automemory
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -21,19 +22,27 @@ func TestPerRunHooksNewTrackerWatchesMemoryDirs(t *testing.T) {
 	if tracker == nil {
 		t.Fatalf("NewTracker() returned nil")
 	}
-	// A successful write into the project memory dir sets the flag.
-	rel, err := filepath.Rel(workDir, filepath.Join(store.ProjectDir(), "x.md"))
+	// A successful write of a valid memory into the project memory dir sets the
+	// flag. The tracker validates the file, so create a real valid memory file.
+	target := filepath.Join(store.ProjectDir(), "x.md")
+	if err := os.MkdirAll(store.ProjectDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("---\nname: x\ndescription: d\ntype: reference\n---\n\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(workDir, target)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tracker.MarkSuccess(writeCall("write_file", rel), schema.ToolResult{})
 	if !tracker.WroteMemory() {
-		t.Fatalf("tracker from PerRunHooks must flag successful memory writes")
+		t.Fatalf("tracker from PerRunHooks must flag successful valid memory writes")
 	}
 }
 
 // TestPerRunHooksRecordCallbackRecordsSuccessOnly proves the OnToolCalled
-// callback wires the tracker to record only successful writes.
+// callback wires the tracker to record only successful writes of valid memories.
 func TestPerRunHooksRecordCallbackRecordsSuccessOnly(t *testing.T) {
 	workDir := t.TempDir()
 	store := NewStore(t.TempDir(), workDir)
@@ -41,7 +50,14 @@ func TestPerRunHooksRecordCallbackRecordsSuccessOnly(t *testing.T) {
 	tracker := hooks.NewTracker()
 	cb := hooks.RecordCallback(tracker)
 
-	rel, err := filepath.Rel(workDir, filepath.Join(store.ProjectDir(), "x.md"))
+	target := filepath.Join(store.ProjectDir(), "x.md")
+	if err := os.MkdirAll(store.ProjectDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("---\nname: x\ndescription: d\ntype: reference\n---\n\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(workDir, target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +69,7 @@ func TestPerRunHooksRecordCallbackRecordsSuccessOnly(t *testing.T) {
 	}
 	cb(call, schema.ToolResult{})
 	if !tracker.WroteMemory() {
-		t.Fatalf("callback must record a successful write")
+		t.Fatalf("callback must record a successful valid write")
 	}
 }
 
@@ -72,10 +88,6 @@ func TestPerRunHooksFireFiltersMessagesToRunAndCallsProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := log.Append("run-1", schema.Message{Role: schema.RoleAssistant, Content: "ok forgotten"}); err != nil {
-		t.Fatal(err)
-	}
-	run2Start, err := log.NextSeq()
-	if err != nil {
 		t.Fatal(err)
 	}
 	// run-2: the just-finished run carrying a saveable signal.
@@ -101,7 +113,9 @@ func TestPerRunHooksFireFiltersMessagesToRunAndCallsProvider(t *testing.T) {
 	}
 	hooks := NewPerRunHooks(prov, store, workDir)
 
-	hooks.Fire(sess, run2Start, nil)
+	// Filter by run ID: only run-2's messages reach extraction, even though
+	// run-1's messages are also in the log.
+	hooks.Fire(sess, "run-2", nil)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -132,15 +146,15 @@ func TestPerRunHooksFireFuncOverride(t *testing.T) {
 	store := NewStore(t.TempDir(), workDir)
 	hooks := NewPerRunHooks(nil, store, workDir)
 
-	var gotSeq int64 = -1
+	var gotRunID string
 	var gotTracker *Tracker
-	hooks.FireFunc = func(s *session.Session, sinceSeq int64, tr *Tracker) {
-		gotSeq = sinceSeq
+	hooks.FireFunc = func(s *session.Session, runID string, tr *Tracker) {
+		gotRunID = runID
 		gotTracker = tr
 	}
-	hooks.Fire(nil, 7, hooks.NewTracker())
-	if gotSeq != 7 {
-		t.Fatalf("FireFunc sinceSeq = %d, want 7", gotSeq)
+	hooks.Fire(nil, "run-7", hooks.NewTracker())
+	if gotRunID != "run-7" {
+		t.Fatalf("FireFunc runID = %q, want run-7", gotRunID)
 	}
 	if gotTracker == nil {
 		t.Fatalf("FireFunc must receive the tracker")
@@ -184,10 +198,6 @@ func TestPerRunHooksFireTrackedWaitsForCompletion(t *testing.T) {
 	if _, err := session.NewMessageLog(sess).Append("run-1", schema.Message{Role: schema.RoleUser, Content: "remember: terse answers"}); err != nil {
 		t.Fatal(err)
 	}
-	runStart, err := session.NewMessageLog(sess).NextSeq()
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	store := NewStore(home, workDir)
 	var mu sync.Mutex
@@ -199,7 +209,7 @@ func TestPerRunHooksFireTrackedWaitsForCompletion(t *testing.T) {
 	hooks := NewPerRunHooks(prov, store, workDir)
 
 	var wg sync.WaitGroup
-	hooks.FireTracked(&wg, sess, runStart, nil)
+	hooks.FireTracked(&wg, sess, "run-1", nil)
 	wg.Wait()
 
 	mu.Lock()
@@ -232,7 +242,6 @@ func TestPerRunHooksFireTrackedBoundedByTimeout(t *testing.T) {
 	if _, err := session.NewMessageLog(sess).Append("run-1", schema.Message{Role: schema.RoleUser, Content: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	runStart, _ := session.NewMessageLog(sess).NextSeq()
 
 	store := NewStore(home, workDir)
 	hooks := NewPerRunHooks(ctxBlockingProvider{}, store, workDir)
@@ -243,7 +252,7 @@ func TestPerRunHooksFireTrackedBoundedByTimeout(t *testing.T) {
 
 	var wg sync.WaitGroup
 	start := time.Now()
-	hooks.FireTracked(&wg, sess, runStart, nil)
+	hooks.FireTracked(&wg, sess, "run-1", nil)
 	wg.Wait()
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("FireTracked hung %v; extraction must be bounded by its timeout", elapsed)

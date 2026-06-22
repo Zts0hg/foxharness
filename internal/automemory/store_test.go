@@ -219,3 +219,41 @@ func TestStoreLoadSkipsNameFilenameMismatch(t *testing.T) {
 		t.Fatalf("a name/filename mismatch must be skipped, got %+v", loaded)
 	}
 }
+
+// TestStoreIsLoadableMemoryAt verifies the predicate the tracker uses to decide
+// whether a successful memory-dir write actually produced a valid, indexable
+// memory (P2-2).
+func TestStoreIsLoadableMemoryAt(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(Memory{Name: "user-role", Description: "d", Type: TypeUser, Body: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	valid, err := store.dirs.FilePath(ScopeUserGlobal, "user-role")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.IsLoadableMemoryAt(valid) {
+		t.Fatalf("a valid user memory must be loadable")
+	}
+
+	dir := store.dirs.Dir(ScopeUserGlobal)
+	bad := filepath.Join(dir, "bad.md")
+	if err := os.WriteFile(bad, []byte("no frontmatter at all"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if store.IsLoadableMemoryAt(bad) {
+		t.Fatalf("a malformed file must not be loadable")
+	}
+
+	idx := store.dirs.IndexPath(ScopeUserGlobal)
+	if err := os.WriteFile(idx, []byte("# index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if store.IsLoadableMemoryAt(idx) {
+		t.Fatalf("the index file must not be loadable as a memory")
+	}
+
+	if store.IsLoadableMemoryAt(filepath.Join(t.TempDir(), "elsewhere.md")) {
+		t.Fatalf("a path outside the memory dirs must not be loadable")
+	}
+}
