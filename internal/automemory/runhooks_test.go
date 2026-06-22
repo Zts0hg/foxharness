@@ -208,3 +208,44 @@ func TestPerRunHooksFireTrackedWaitsForCompletion(t *testing.T) {
 		t.Fatalf("FireTracked must run extraction before wg.Wait() returns")
 	}
 }
+
+// ctxBlockingProvider blocks every Generate until ctx is done, then returns the
+// ctx error. It lets tests prove extraction honors a bounded context.
+type ctxBlockingProvider struct{}
+
+func (ctxBlockingProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestPerRunHooksFireTrackedBoundedByTimeout proves FireTracked bounds the
+// extraction with a timeout so a runaway/slow provider cannot hang the caller's
+// Wait forever (P2-2). It shrinks the timeout for the test.
+func TestPerRunHooksFireTrackedBoundedByTimeout(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, home)
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.NewMessageLog(sess).Append("run-1", schema.Message{Role: schema.RoleUser, Content: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	runStart, _ := session.NewMessageLog(sess).NextSeq()
+
+	store := NewStore(home, workDir)
+	hooks := NewPerRunHooks(ctxBlockingProvider{}, store, workDir)
+
+	orig := extractionTimeout
+	extractionTimeout = 100 * time.Millisecond
+	defer func() { extractionTimeout = orig }()
+
+	var wg sync.WaitGroup
+	start := time.Now()
+	hooks.FireTracked(&wg, sess, runStart, nil)
+	wg.Wait()
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("FireTracked hung %v; extraction must be bounded by its timeout", elapsed)
+	}
+}
