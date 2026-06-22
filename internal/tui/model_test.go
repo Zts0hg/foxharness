@@ -47,6 +47,13 @@ type fakeRunner struct {
 	compactResult   *compaction.CompactResult
 	compactErr      error
 	compactInstr    string
+	memoryIndex     string
+}
+
+// AutoMemoryIndex satisfies the Runner interface for the test double; tests that
+// care about the sidebar Memory panel set memoryIndex explicitly.
+func (r *fakeRunner) AutoMemoryIndex() string {
+	return r.memoryIndex
 }
 
 type projectHistoryRunner struct {
@@ -2640,7 +2647,6 @@ func TestModelViewContainsSessionAndInput(t *testing.T) {
 func TestModelWideViewRendersSidebarDocuments(t *testing.T) {
 	workDir := t.TempDir()
 	sessionDir := t.TempDir()
-	writeTestFile(t, workDir, "MEMORY.md", "# Memory\n\nRemember the repo conventions.")
 	writeTestFile(t, workDir, "PLAN.md", "stale project plan")
 	writeTestFile(t, workDir, "TODO.md", "stale project todo")
 	writeTestFile(t, sessionDir, "PLAN.md", "- Build right sidebar")
@@ -2649,6 +2655,8 @@ func TestModelWideViewRendersSidebarDocuments(t *testing.T) {
 	runner := newFakeRunner()
 	runner.workDir = workDir
 	runner.sessionDir = sessionDir
+	// The Memory panel now reflects the cross-session persistent memory index.
+	runner.memoryIndex = "Remember the repo conventions."
 	m := NewModel(context.Background(), runner, Config{})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 

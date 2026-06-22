@@ -443,7 +443,7 @@ type sidebarLayout struct {
 func (m Model) sidebarLayout(width int, height int) sidebarLayout {
 	docs := m.sidebarDocuments
 	if len(docs) == 0 {
-		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
+		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir(), m.runner.AutoMemoryIndex())
 	}
 	if len(docs) == 0 {
 		return sidebarLayout{}

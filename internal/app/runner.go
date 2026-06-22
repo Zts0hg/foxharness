@@ -447,6 +447,19 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	return result, runErr
 }
 
+// AutoMemoryIndex returns the merged two-tier persistent memory index
+// (descriptions only) for sidebar display, or "" when no automemory store is
+// wired.
+func (r *AgentRunner) AutoMemoryIndex() string {
+	r.mu.Lock()
+	store := r.autoMemory
+	r.mu.Unlock()
+	if store == nil {
+		return ""
+	}
+	return store.MergedIndexString()
+}
+
 // WaitForExtraction blocks until every in-flight post-run memory extraction
 // goroutine has finished. The one-shot CLI calls it before exiting so the
 // asynchronous extraction is not killed mid-call; the interactive TUI does not
