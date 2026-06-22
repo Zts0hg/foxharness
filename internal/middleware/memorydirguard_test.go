@@ -39,6 +39,25 @@ func TestMemoryDirGuardAllowsWritesInsideMemoryDir(t *testing.T) {
 	}
 }
 
+func TestMemoryDirGuardDeniesInvisibleMemoryTargets(t *testing.T) {
+	workDir := "/work"
+	memDir := workDir + "/.foxharness/memory"
+	g := NewMemoryDirGuard(workDir, []string{memDir})
+
+	for _, path := range []string{
+		".foxharness/memory/topic/x.md",
+		".foxharness/memory/MEMORY.md",
+		".foxharness/memory/not-markdown.txt",
+		".foxharness/memory/BadName.md",
+		".foxharness/memory/bad](link.md",
+	} {
+		dec := decide(t, g, guardCall("write_file", path))
+		if dec.Type != DecisionDeny {
+			t.Fatalf("write to invisible memory target %q = %v, want deny", path, dec.Type)
+		}
+	}
+}
+
 func TestMemoryDirGuardAllowsRelativeWorkDirMemoryWrite(t *testing.T) {
 	oldWd, err := os.Getwd()
 	if err != nil {

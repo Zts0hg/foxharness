@@ -62,15 +62,15 @@ injected and its full content readable. Delivers visible cross-session persisten
 ### User Story 2 — Explicit "remember this" (Priority: P1)
 
 A user says "remember that I prefer tests first" or "forget that note". The agent saves
-or removes the memory inline, immediately, using the existing file tools, classifying it
-into the best-fit type.
+or forgets the memory inline, immediately, using the existing file tools, classifying it
+into the best-fit type when saving.
 
 **Why this priority**: Explicit capture is the primary, deterministic write path and is
 required for the extraction hook's mutual-exclusion logic to be meaningful.
 
 **Independent Test**: In a session, ask the agent to remember a fact; verify a typed memory
 file with correct frontmatter is created and the index updated. Then ask it to forget it;
-verify removal.
+verify the memory file is emptied, becomes non-loadable, and drops out of the index.
 
 **Acceptance Scenarios**:
 1. **Given** a user request to remember a preference, **When** the agent handles it inline,
@@ -79,7 +79,7 @@ verify removal.
 2. **Given** a `feedback` or `project` memory, **When** it is saved, **Then** its body contains
    a `Why` and a `How to apply` structure.
 3. **Given** a user request to forget a memory, **When** the agent handles it, **Then** the
-   memory file is removed and its index line is removed.
+   memory file content is emptied and its index line is removed.
 
 ---
 
@@ -204,11 +204,12 @@ neither cites nor relies on remembered content for the rest of the request.
   specific memory's full content on demand via `read_file` when relevant.
   - Sources: NEED-005, DEC-004, OUT-005
 
-- **REQ-009**: The main agent MUST be able to create, update, and remove memories inline,
+- **REQ-009**: The main agent MUST be able to create, update, and forget memories inline,
   driven by the shared memory system prompt. Create and update use the existing
-  `write_file`/`edit_file` tools; removal deletes the memory file and drops its index line
-  (inline, via the agent's available file tools). When the user explicitly asks to forget a
-  memory, the agent MUST remove it persistently. This persistent removal is distinct from the
+  `write_file`/`edit_file` tools; forget is represented by writing empty content to the memory
+  file with the existing file tools, making it non-loadable and dropping its index line. When
+  the user explicitly asks to forget a memory, the agent MUST persist that forget. This
+  persistent forget is distinct from the
   temporary "ignore memory" directive (REQ-014), which only suppresses memory for the current
   request without removing anything.
   - Sources: NEED-004, NEED-008, DEC-002, DEC-009

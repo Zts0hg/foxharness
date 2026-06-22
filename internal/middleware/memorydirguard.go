@@ -39,11 +39,11 @@ func (g *MemoryDirGuard) BeforeExecute(ctx context.Context, call schema.ToolCall
 		}
 		resolved := resolveGuardPath(g.workDir, path)
 		for _, dir := range g.memoryDirs {
-			if guardPathWithin(dir, resolved) {
+			if guardDirectMemoryFile(dir, resolved) {
 				return Allow(), nil
 			}
 		}
-		return Deny("memory extraction may only write inside the memory directory"), nil
+		return Deny("memory extraction may only write direct memory .md files"), nil
 	default:
 		return Deny("memory extraction is restricted to read-only file access and memory-directory writes"), nil
 	}
@@ -88,6 +88,29 @@ func guardPathWithin(dir, target string) bool {
 		return true
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func guardDirectMemoryFile(dir, target string) bool {
+	dir = comparableGuardPath(dir)
+	target = comparableGuardPath(target)
+	if filepath.Dir(target) != dir {
+		return false
+	}
+	name := filepath.Base(target)
+	if name == "MEMORY.md" || !strings.HasSuffix(name, ".md") {
+		return false
+	}
+	stem := strings.TrimSuffix(name, ".md")
+	if stem == "" || len(stem) > 80 {
+		return false
+	}
+	for _, r := range stem {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func comparableGuardPath(path string) string {

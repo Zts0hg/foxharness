@@ -40,7 +40,7 @@ If not configured, use English.
   - **Deps**: T001
 
 - [x] T004 [INFRA] Implement the memory Store (load/save/remove/list).
-  - Test-first in `internal/automemory/store_test.go`: save→load roundtrip preserves frontmatter+body; remove deletes the file; listing skips files with malformed frontmatter (orphan-safe, no panic); save writes atomically (temp + rename). Then implement `internal/automemory/store.go`.
+  - Test-first in `internal/automemory/store_test.go`: save→load roundtrip preserves frontmatter+body; explicit removal is idempotent; listing skips empty or malformed files (orphan-safe, no panic); save writes atomically (temp + rename). Then implement `internal/automemory/store.go`.
   - **Covers**: REQ-001, REQ-003, REQ-004; **Plan**: Phase 1 store.go
   - **Deps**: T002, T003
 
@@ -95,8 +95,8 @@ If not configured, use English.
   - **Covers**: REQ-011, NFR-004; **Plan**: Phase 3 tracker.go / PLD-5
   - **Deps**: T003
 
-- [x] T012 [US2] Wire the tracker into the main run and verify inline create/update/remove.
-  - Test-first in `internal/app/runner_test.go` (or an automemory integration test): during a run, an inline `write_file` to a memory dir sets the tracker flag; an explicit "forget" removes the memory file and the regenerated index no longer lists it. Then attach the tracker in `internal/app/runner.go` (`buildRegistry`/`runInternal`) and ensure inline create/update/remove work via existing `write_file`/`edit_file` (+ file removal for delete).
+- [x] T012 [US2] Wire the tracker into the main run and verify inline create/update/forget.
+  - Test-first in `internal/app/runner_test.go` (or an automemory integration test): during a run, an inline `write_file` to a memory dir sets the tracker flag; an explicit "forget" writes empty content to the memory file, sets the tracker flag, and drops the memory from the regenerated index. Then attach the tracker in `internal/app/runner.go` (`buildRegistry`/`runInternal`) and ensure inline create/update/forget work via existing `write_file`/`edit_file`.
   - **Covers**: REQ-009, REQ-011; **Plan**: Phase 3
   - **Deps**: T004, T011
 

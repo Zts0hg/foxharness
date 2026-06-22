@@ -83,7 +83,7 @@ Relevant verified repository facts (used to anchor the design):
                         │   └─ AGENTS.md / Skills / … (UNCHANGED)         │
                         │                                                │
                         │  Agent acts with file tools (read/write/edit)  │
-                        │   ├─ inline write/update/remove to memory dir  │── REQ-009
+                        │   ├─ inline write/update/forget to memory dir  │── REQ-009
                         │   └─ maintain working_memory.md                │── REQ-015
                         │                                                │
                         │  memory-write tracker middleware (flag)        │── REQ-011 detect
@@ -374,8 +374,9 @@ create/update/remove of memory files; the index follows automatically.
 - [ ] `automemory/tracker.go`: memory-write tracker middleware (flag on memory-dir
       write/edit); `WroteMemory()`.
 - [ ] Wire `Tracker` into the main registry in `AgentRunner.buildRegistry`/`runInternal`.
-- [ ] Ensure inline create/update/remove (remove = delete file + drop index line) works via
-      existing `write_file`/`edit_file` + file removal; forget honored on explicit request.
+- [ ] Ensure inline create/update/forget works via existing `write_file`/`edit_file`;
+      forget is represented by writing empty content so the memory becomes non-loadable and
+      drops from the regenerated index.
 - **Covers**: REQ-009, REQ-011 (detection side), NFR-004
 
 ### Phase 4: Extraction hook (isolated, async, narrowed)

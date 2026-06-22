@@ -9,7 +9,7 @@ quotes needed to resolve later interpretation disputes.
 
 **Feature ID**: `2026-0621-18248t`
 **Status**: Discovery Complete — Requirements Confirmed
-**Last Confirmed**: 2026-06-21
+**Last Confirmed**: 2026-06-22
 
 ## Context
 
@@ -89,7 +89,7 @@ has **no cross-session persistent memory** today.
 ### NEED-008: Persistent forget/delete of memories
 
 - **Status**: confirmed
-- **Statement**: The main agent MUST be able to persistently remove a memory when the user asks it to forget/delete one (or when a memory is confirmed stale) — by removing the memory file and dropping its index line. This is distinct from the temporary "ignore memory" directive (NEED-006), which only suppresses memory for the current request without removing anything. Removal is performed inline by the main agent using the existing file tools.
+- **Statement**: The main agent MUST be able to persistently forget a memory when the user asks it to forget/delete one (or when a memory is confirmed stale) — by writing empty content to the memory file via the existing `write_file`/`edit_file` tools, which makes the file non-loadable and causes its index line to be dropped. No new `delete_file` tool is introduced: emptying the content reuses the same tools already used to create and update memories, avoiding unnecessary complexity. This is distinct from the temporary "ignore memory" directive (NEED-006), which only suppresses memory for the current request without changing any file. Forget is performed inline by the main agent using the existing file tools.
 - **Rationale**: A memory system that can create and update but not delete forces stale or unwanted entries to accumulate; persistent forget/delete is a natural and expected maintenance capability.
 - **User Evidence**: During spec generation, review surfaced that "delete" had been introduced into the spec without a confirmed source. User selected "纳入范围（推荐）", confirming persistent forget/delete is in scope.
 - **Confirmed At**: 2026-06-21
@@ -216,8 +216,8 @@ has **no cross-session persistent memory** today.
 ### DEC-009: Persistent forget/delete is in scope
 
 - **Status**: confirmed
-- **Decision**: Persistent forget/delete is in scope. The main agent removes a memory by deleting its file and dropping its index line (inline, via the existing file tools). It honors explicit user requests to forget a specific memory.
-- **Alternatives Rejected**: Drop delete from the spec (keep only create/update + temporary "ignore") — rejected; user confirmed persistent removal is desired.
+- **Decision**: Persistent forget/delete is in scope. The main agent forgets a memory by writing empty content to its file via `write_file`/`edit_file` (inline), which makes the file non-loadable and drops it from the index; it honors explicit user requests to forget a specific memory. A dedicated `delete_file` tool is NOT added — emptying the content reuses the existing create/update tools and avoids unnecessary complexity.
+- **Alternatives Rejected**: (a) Drop delete from the spec (keep only create/update + temporary "ignore") — rejected; user confirmed persistent removal is desired. (b) Introduce a dedicated `delete_file` tool — rejected; it adds unnecessary complexity when emptying the file via the existing `write_file`/`edit_file` tools achieves the same observable effect.
 - **Reason**: A memory system without persistent removal accumulates stale/unwanted entries; forget/delete is a natural maintenance capability the user wants.
 - **User Evidence**: User selected "纳入范围（推荐）" when asked whether persistent forget/delete is in scope.
 - **Confirmed At**: 2026-06-21
@@ -297,4 +297,11 @@ written; the corrected understanding is captured in NEED-007 and DEC-005.)
 - **Trigger**: Spec review (W1) found that "delete" had been introduced into `spec.md` REQ-009 and User Story 2 without a confirmed source. The confirmed requirements at that point covered only writes (NEED-004) and a temporary "ignore memory" directive (NEED-006).
 - **User Decision**: User selected "纳入范围（推荐）", confirming persistent forget/delete is in scope.
 - **Entries Confirmed**: NEED-008, DEC-009.
-- **Note**: "ignore memory" (NEED-006) is a temporary, per-request directive — the agent proceeds as if the index were empty for that request without removing anything. It is distinct from persistent forget/delete (NEED-008), which physically removes a memory file and its index line.
+- **Note**: "ignore memory" (NEED-006) is a temporary, per-request directive — the agent proceeds as if the index were empty for that request without changing any file. It is distinct from persistent forget/delete (NEED-008), which persists the forget by emptying the memory file's content via `write_file`/`edit_file` so the memory is dropped from the index and no longer injected.
+
+### Amendment 2026-06-22 (mechanism refinement: forget via empty-content write)
+
+- **Trigger**: Implementing NEED-008/DEC-009 required a concrete forget mechanism. The original wording ("removing/deleting the memory file") implied physical file deletion, which would need a deletion capability the existing file tools do not provide.
+- **User Decision**: User selected clearing the memory file's content (writing empty content via `write_file`/`edit_file`) as the forget mechanism, reusing the existing create/update tools rather than introducing a new `delete_file` tool, to avoid unnecessary complexity.
+- **Entries Updated**: NEED-008 (Statement), DEC-009 (Decision + Alternatives Rejected), and the 2026-06-21 amendment Note — all rewritten to describe emptying the file content instead of deleting the file. Entry IDs and titles are unchanged for traceability, and the capability itself (persistent forget) is unchanged; only the mechanism is refined.
+- **Observable Effect**: A forgotten memory's file becomes non-loadable and is dropped from the index, manifest, and injection. The now-empty file may remain on disk.

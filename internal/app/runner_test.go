@@ -657,8 +657,8 @@ func assertFileContent(t *testing.T, path string, want string) {
 // TestInlineMemoryWriteSetsTrackerAndIndex verifies the inline write path
 // (US2): a write_file whose relative path resolves into a memory directory is
 // detected by the tracker (recorded on success via the engine's OnToolCalled),
-// the memory is persisted and indexed, and an explicit forget removes it from
-// the regenerated index. (T012)
+// the memory is persisted and indexed, and an explicit forget via empty
+// write_file content removes it from the regenerated index. (T012)
 func TestInlineMemoryWriteSetsTrackerAndIndex(t *testing.T) {
 	workDir := t.TempDir()
 	home := t.TempDir()
@@ -705,13 +705,23 @@ func TestInlineMemoryWriteSetsTrackerAndIndex(t *testing.T) {
 		t.Fatalf("index missing inline memory entry:\n%s", idx)
 	}
 
-	// Explicit forget: remove the file; the regenerated index drops the entry.
-	if err := store.Remove(automemory.ScopeUserGlobal, "user-role"); err != nil {
-		t.Fatalf("Remove() error = %v", err)
+	forgetTracker := hooks.NewTracker()
+	forgetArgs, _ := json.Marshal(map[string]string{"path": rel, "content": ""})
+	forgetCall := schema.ToolCall{ID: "c2", Name: "write_file", Arguments: forgetArgs}
+	forgetRes := registry.Execute(context.Background(), forgetCall)
+	if forgetRes.IsError {
+		t.Fatalf("forget write_file failed: %s", forgetRes.Output)
+	}
+	hooks.RecordCallback(forgetTracker)(forgetCall, forgetRes)
+	if !forgetTracker.WroteMemory() {
+		t.Fatalf("tracker must flag a successful empty-content forget")
 	}
 	idx2, _ := store.BuildIndex(automemory.ScopeUserGlobal)
 	if strings.Contains(idx2, "user-role.md") {
 		t.Fatalf("index still lists forgotten memory:\n%s", idx2)
+	}
+	if mems, _ := store.Load(automemory.ScopeUserGlobal); len(mems) != 0 {
+		t.Fatalf("forgotten memory must no longer load: %+v", mems)
 	}
 }
 
