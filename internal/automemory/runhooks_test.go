@@ -169,3 +169,42 @@ func (p *recordingProvider) Generate(ctx context.Context, messages []schema.Mess
 	msg := p.final
 	return &provider.GenerateResponse{Message: &msg}, nil
 }
+
+// TestPerRunHooksFireTrackedWaitsForCompletion proves FireTracked registers the
+// launch on the provided WaitGroup so a short-lived caller can Wait for the
+// extraction LLM call to finish before exiting (P2-A).
+func TestPerRunHooksFireTrackedWaitsForCompletion(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, home)
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.NewMessageLog(sess).Append("run-1", schema.Message{Role: schema.RoleUser, Content: "remember: terse answers"}); err != nil {
+		t.Fatal(err)
+	}
+	runStart, err := session.NewMessageLog(sess).NextSeq()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStore(home, workDir)
+	var mu sync.Mutex
+	called := 0
+	prov := &recordingProvider{
+		onGenerate: func([]schema.Message) { mu.Lock(); called++; mu.Unlock() },
+		final:      schema.Message{Role: schema.RoleAssistant, Content: "done"},
+	}
+	hooks := NewPerRunHooks(prov, store, workDir)
+
+	var wg sync.WaitGroup
+	hooks.FireTracked(&wg, sess, runStart, nil)
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if called == 0 {
+		t.Fatalf("FireTracked must run extraction before wg.Wait() returns")
+	}
+}

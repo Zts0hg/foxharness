@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -783,5 +784,67 @@ func TestPanickingExtractionHookDoesNotAffectRunResult(t *testing.T) {
 	}
 	if result == nil || result.FinalMessage == "" {
 		t.Fatalf("a panicking extraction hook must not corrupt the result: %+v", result)
+	}
+}
+
+// immediateCountingProvider returns a final message on every Generate and counts
+// calls, so a run ends in one turn and extraction's Generate is observable.
+type immediateCountingProvider struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (p *immediateCountingProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*providerpkg.GenerateResponse, error) {
+	p.mu.Lock()
+	p.n++
+	p.mu.Unlock()
+	return &providerpkg.GenerateResponse{
+		Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"},
+	}, nil
+}
+
+func (p *immediateCountingProvider) count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.n
+}
+
+// TestOneShotRunAwaitsExtraction proves the one-shot path drains the extraction
+// goroutine before returning: after Run + WaitForExtraction, the extraction
+// Generate call has completed (P2-A). Without awaiting, the process would exit
+// first.
+func TestOneShotRunAwaitsExtraction(t *testing.T) {
+	t.Setenv("ZHIPU_API_KEY", "test-key")
+	workDir := t.TempDir()
+	home := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, home)
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	store := memory.NewSessionStore(workDir, sess.RootDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	prov := &immediateCountingProvider{}
+	runner := &AgentRunner{
+		workDir:        workDir,
+		model:          "fake-model",
+		maxTurns:       3,
+		store:          store,
+		autoMemory:     automemory.NewStore(home, workDir),
+		manager:        manager,
+		llmProvider:    prov,
+		currentSession: sess,
+	}
+
+	if _, err := runner.Run(context.Background(), "hello", nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	runner.WaitForExtraction()
+
+	// 1 Generate for the main run, plus >=1 for the extraction pass.
+	if got, want := prov.count(), 2; got < want {
+		t.Fatalf("extraction not awaited: Generate calls = %d, want >= %d", got, want)
 	}
 }

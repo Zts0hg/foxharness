@@ -82,6 +82,10 @@ type AgentRunner struct {
 
 	contextUsedTokens   int64
 	contextWindowTokens int64
+
+	// extractWG tracks in-flight post-run memory extraction goroutines so a
+	// short-lived runner (the one-shot CLI) can await them before exiting.
+	extractWG sync.WaitGroup
 }
 
 func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
@@ -433,12 +437,22 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 			if r.extractionFire != nil {
 				r.extractionFire(sess, nextSeq, tracker)
 			} else {
-				hooks.Fire(sess, nextSeq, tracker)
+				// Tracked launch so the one-shot CLI can drain extraction before
+				// the process exits (P2-A); the interactive TUI simply never waits.
+				hooks.FireTracked(&r.extractWG, sess, nextSeq, tracker)
 			}
 		}()
 	}
 
 	return result, runErr
+}
+
+// WaitForExtraction blocks until every in-flight post-run memory extraction
+// goroutine has finished. The one-shot CLI calls it before exiting so the
+// asynchronous extraction is not killed mid-call; the interactive TUI does not
+// call it (extraction stays fire-and-forget across runs).
+func (r *AgentRunner) WaitForExtraction() {
+	r.extractWG.Wait()
 }
 
 // NewSession switches the runner to a fresh CLI session.

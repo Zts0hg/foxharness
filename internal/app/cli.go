@@ -48,6 +48,11 @@ func RunCLI(ctx context.Context, cfg CLIConfig) error {
 		log.Printf("[CLI] 任务失败: %v", err)
 	}
 
+	// One-shot mode: ensure the asynchronous post-run memory extraction finishes
+	// before the process exits, otherwise the detached goroutine is killed
+	// mid-call and US3 (automatic capture) silently never persists.
+	runner.WaitForExtraction()
+
 	if result != nil && result.FinalMessage != "" {
 		fmt.Println(result.FinalMessage)
 	}

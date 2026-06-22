@@ -3,6 +3,7 @@ package automemory
 import (
 	"context"
 	"log"
+	"sync"
 
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -54,35 +55,46 @@ func (h *PerRunHooks) RecordCallback(tracker *Tracker) func(schema.ToolCall, sch
 
 // Fire launches the extraction hook over the messages appended since sinceSeq.
 // It is fire-and-forget: the actual work runs in a detached goroutine and never
-// blocks the caller. When the tracker reports an inline memory write this run,
-// the extractor skips itself (mutual exclusion). The launch call itself does
+// blocks the caller, suited to long-lived runners (the interactive TUI) where
+// the process outlives the run. When the tracker reports an inline memory write
+// this run, the extractor skips itself (mutual exclusion). The launch call does
 // not recover; callers that want launch-panic isolation wrap the call.
 func (h *PerRunHooks) Fire(sess *session.Session, sinceSeq int64, tracker *Tracker) {
 	if h.FireFunc != nil {
 		h.FireFunc(sess, sinceSeq, tracker)
+		return
 	}
+	go h.RunExtraction(sess, sinceSeq, tracker)
 }
 
-// fireExtractionAsync is the default launcher: it loads just this run's messages
-// (Seq >= sinceSeq) and runs the isolated Extractor in a detached goroutine.
-func (h *PerRunHooks) fireExtractionAsync(sess *session.Session, sinceSeq int64, tracker *Tracker) {
+// FireTracked is like Fire but registers the launch on the provided WaitGroup so
+// a short-lived runner (e.g. the one-shot CLI) can Wait for extraction to finish
+// before the process exits, preventing the detached goroutine from being killed
+// mid-call. Long-lived runners should use Fire instead.
+func (h *PerRunHooks) FireTracked(wg *sync.WaitGroup, sess *session.Session, sinceSeq int64, tracker *Tracker) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		h.RunExtraction(sess, sinceSeq, tracker)
+	}()
+}
+
+// RunExtraction is the synchronous extraction core: it loads just this run's
+// messages (Seq >= sinceSeq) and runs the isolated Extractor. Extractor.Run
+// recovers its own panics, so this does not propagate them.
+func (h *PerRunHooks) RunExtraction(sess *session.Session, sinceSeq int64, tracker *Tracker) {
 	messages, err := session.NewMessageLog(sess).LoadMessagesSince(sinceSeq)
 	if err != nil {
 		log.Printf("[automemory] extraction skipped: failed to load run messages: %v", err)
 		return
 	}
+	if err := NewExtractor(h.provider, h.store, h.workDir).Run(context.Background(), messages, tracker); err != nil {
+		log.Printf("[automemory] extraction error (swallowed): %v", err)
+	}
+}
 
-	provider := h.provider
-	store := h.store
-	workDir := h.workDir
-	go func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				log.Printf("[automemory] extraction goroutine panic recovered: %v", rec)
-			}
-		}()
-		if err := NewExtractor(provider, store, workDir).Run(context.Background(), messages, tracker); err != nil {
-			log.Printf("[automemory] extraction error (swallowed): %v", err)
-		}
-	}()
+// fireExtractionAsync is retained as the historical default FireFunc for tests
+// that override Fire via the FireFunc field.
+func (h *PerRunHooks) fireExtractionAsync(sess *session.Session, sinceSeq int64, tracker *Tracker) {
+	go h.RunExtraction(sess, sinceSeq, tracker)
 }
