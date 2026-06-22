@@ -50,7 +50,7 @@ func TestBuildPlanWritesPlanAndTodoFromJSON(t *testing.T) {
 	}
 }
 
-func TestSessionStoreKeepsPlanTodoInSessionAndMemoryInProject(t *testing.T) {
+func TestSessionStoreKeepsPlanTodoInSession(t *testing.T) {
 	projectDir := t.TempDir()
 	sessionDir := t.TempDir()
 	store := NewSessionStore(projectDir, sessionDir)
@@ -61,9 +61,6 @@ func TestSessionStoreKeepsPlanTodoInSessionAndMemoryInProject(t *testing.T) {
 	if got, want := store.TodoPath(), filepath.Join(sessionDir, "TODO.md"); got != want {
 		t.Fatalf("TodoPath() = %q, want %q", got, want)
 	}
-	if got, want := store.MemoryPath(), filepath.Join(projectDir, "MEMORY.md"); got != want {
-		t.Fatalf("MemoryPath() = %q, want %q", got, want)
-	}
 
 	if err := store.EnsureFiles(); err != nil {
 		t.Fatalf("EnsureFiles() error = %v", err)
@@ -71,18 +68,20 @@ func TestSessionStoreKeepsPlanTodoInSessionAndMemoryInProject(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join(sessionDir, "PLAN.md"),
 		filepath.Join(sessionDir, "TODO.md"),
-		filepath.Join(projectDir, "MEMORY.md"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected file %s: %v", path, err)
 		}
 	}
+	// Neither project-local plan/todo nor the legacy project MEMORY.md is created
+	// (REQ-017 / CON-002).
 	for _, path := range []string{
 		filepath.Join(projectDir, "PLAN.md"),
 		filepath.Join(projectDir, "TODO.md"),
+		filepath.Join(projectDir, "MEMORY.md"),
 	} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("project-local plan/todo should not exist at %s, stat err = %v", path, err)
+			t.Fatalf("file should not exist at %s, stat err = %v", path, err)
 		}
 	}
 }

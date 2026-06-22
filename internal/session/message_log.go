@@ -208,6 +208,24 @@ func (l *MessageLog) LoadMessages() ([]schema.Message, error) {
 	return messages, nil
 }
 
+// LoadMessagesForRun returns only the messages belonging to the given run ID.
+// It is timing-independent, so a post-run consumer (e.g. the extraction hook)
+// never picks up a later run's messages even if it reads the log after the next
+// run has started appending.
+func (l *MessageLog) LoadMessagesForRun(runID string) ([]schema.Message, error) {
+	records, err := l.LoadRecords()
+	if err != nil {
+		return nil, err
+	}
+	messages := make([]schema.Message, 0)
+	for _, record := range records {
+		if record.RunID == runID {
+			messages = append(messages, record.Message)
+		}
+	}
+	return messages, nil
+}
+
 func (l *MessageLog) ensureSeqLoaded() error {
 	if l.seqLoaded {
 		return nil

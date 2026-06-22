@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Zts0hg/foxharness/internal/automemory"
 )
 
 func TestComposeInteractiveAskGuidance(t *testing.T) {
@@ -125,10 +127,11 @@ func TestComposeDoesNotLoadUnmentionedSkill(t *testing.T) {
 	}
 }
 
-func TestComposeLoadsProjectMemorySeparatelyFromWorkingMemory(t *testing.T) {
+func TestComposeNoLongerInjectsLegacyProjectMemory(t *testing.T) {
 	workDir := t.TempDir()
 	sessionDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(workDir, "MEMORY.md"), []byte("project convention"), 0o644); err != nil {
+	// A legacy flat MEMORY.md must be ignored now (REQ-017 / CON-002).
+	if err := os.WriteFile(filepath.Join(workDir, "MEMORY.md"), []byte("legacy project convention"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	workingMemoryPath := filepath.Join(sessionDir, "working_memory.md")
@@ -140,16 +143,336 @@ func TestComposeLoadsProjectMemorySeparatelyFromWorkingMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
+	for _, absent := range []string{
 		"## Project Memory from MEMORY.md",
-		"project convention",
-		"## Session Working Memory",
-		"session note",
+		"legacy project convention",
+	} {
+		if strings.Contains(prompt, absent) {
+			t.Fatalf("prompt must no longer inject legacy MEMORY.md, found %q:\n%s", absent, prompt)
+		}
+	}
+	// Working memory is still injected.
+	for _, want := range []string{"## Session Working Memory", "session note"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestComposeInjectsPersistentMemoryIndexAndGuardrails(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+	store := automemory.NewStore(home, workDir)
+	if err := store.Save(automemory.Memory{
+		Name:        "user-role",
+		Description: "Staff engineer, terse answers.",
+		Type:        automemory.TypeUser,
+		Body:        "The user is a staff engineer.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, err := NewComposer(workDir).WithAutoMemory(store).Compose("普通任务")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## Persistent Memory",
+		"user-role.md",  // merged index entry (REQ-006)
+		"Do NOT save",   // guardrail (REQ-014)
+		"ignore memory", // ignore directive (REQ-014)
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
+	if strings.Contains(prompt, "## Project Memory from MEMORY.md") {
+		t.Fatalf("legacy MEMORY.md section must be gone:\n%s", prompt)
+	}
+}
+
+// TestSC001MemoryPersistsAcrossSessionsSameProject covers SC-001: a memory saved
+// in one session is observable in the injected index of a later session in the
+// same project.
+func TestSC001MemoryPersistsAcrossSessionsSameProject(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+
+	// Session 1 saves a project memory.
+	session1 := automemory.NewStore(home, workDir)
+	if err := session1.Save(automemory.Memory{
+		Name:        "proj-build",
+		Description: "Build with make build.",
+		Type:        automemory.TypeProject,
+		Body:        "Use make build.\n\n**Why:** wraps codegen.\n**How to apply:** run make build before go build.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh session in the same project (new Store, same home+workDir) sees it.
+	session2 := automemory.NewStore(home, workDir)
+	prompt, err := NewComposer(workDir).WithAutoMemory(session2).Compose("task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "proj-build.md") {
+		t.Fatalf("SC-001: memory not visible in new session's injected index:\n%s", prompt)
+	}
+}
+
+// TestSC002UserMemoryVisibleAcrossProjects covers SC-002: a user memory written
+// while working in project A is observable in project B's injected index, while a
+// project-scoped memory from A does not leak to B.
+func TestSC002UserMemoryVisibleAcrossProjects(t *testing.T) {
+	home := t.TempDir()
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+
+	storeA := automemory.NewStore(home, projectA)
+	if err := storeA.Save(automemory.Memory{
+		Name:        "user-role",
+		Description: "Staff engineer, terse answers.",
+		Type:        automemory.TypeUser,
+		Body:        "The user is a staff engineer.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storeA.Save(automemory.Memory{
+		Name:        "proj-a-only",
+		Description: "Project A specific.",
+		Type:        automemory.TypeProject,
+		Body:        "x\n\n**Why:** w\n**How to apply:** h",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	storeB := automemory.NewStore(home, projectB)
+	prompt, err := NewComposer(projectB).WithAutoMemory(storeB).Compose("task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "user-role.md") {
+		t.Fatalf("SC-002: user memory not visible in project B:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "proj-a-only.md") {
+		t.Fatalf("SC-002: project A memory leaked into project B:\n%s", prompt)
+	}
+}
+
+func TestComposeOmitsPersistentMemoryWhenStoreUnset(t *testing.T) {
+	prompt, err := NewComposer(t.TempDir()).Compose("普通任务")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "## Persistent Memory") {
+		t.Fatalf("persistent memory section must be omitted when no store is set:\n%s", prompt)
+	}
+}
+
+func TestComposeIncludesWorkingMemoryMaintenanceGuidance(t *testing.T) {
+	workDir := t.TempDir()
+	sessionDir := t.TempDir()
+	workingMemoryPath := filepath.Join(sessionDir, "working_memory.md")
+	if err := os.WriteFile(workingMemoryPath, []byte("# Working Memory\n\n## Goal\n\nNot recorded.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, err := NewComposer(workDir).WithMemory(workingMemoryPath).Compose("普通任务")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## Session Working Memory",
+		"session-scoped",
+		"Goal",
+		"Known Facts",
+		"Current Plan",
+		"Next Step",
+		"write_file",
+		"edit_file",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("working memory guidance missing %q:\n%s", want, prompt)
+		}
+	}
+	// The guidance must name the workDir-relative path to the session file so the
+	// agent's write_file/edit_file land in the injected scratchpad, not in
+	// <workDir>/working_memory.md (P2).
+	rel, err := filepath.Rel(workDir, workingMemoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, rel) {
+		t.Fatalf("working memory guidance must include the workDir-relative path %q:\n%s", rel, prompt)
+	}
+}
+
+func TestComposeWorkingMemoryPathResolvesBackToSessionFile(t *testing.T) {
+	workDir := t.TempDir()
+	// A session-style layout: workDir's sibling tree under the same home root.
+	sessionDir := filepath.Join(filepath.Dir(workDir), ".foxharness", "projects", "key", "sessions", "1")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workingMemoryPath := filepath.Join(sessionDir, "working_memory.md")
+	if err := os.WriteFile(workingMemoryPath, []byte("# Working Memory\n\n## Goal\n\ngoal\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, err := NewComposer(workDir).WithMemory(workingMemoryPath).Compose("task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(workDir, workingMemoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, rel) {
+		t.Fatalf("guidance missing relative path %q", rel)
+	}
+	// Joined back with workDir, the relative path must resolve to the session file.
+	resolved := filepath.Join(workDir, rel)
+	if resolved != workingMemoryPath {
+		t.Fatalf("rel path resolves to %q, want %q", resolved, workingMemoryPath)
+	}
+}
+
+func TestComposeNormalizesRelativeWorkDirBeforeRenderingMemoryPaths(t *testing.T) {
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWd); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	})
+
+	workDir := "workspace"
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionDir := filepath.Join(tmp, ".foxharness", "projects", "key", "sessions", "1")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workingMemoryPath := filepath.Join(sessionDir, "working_memory.md")
+	if err := os.WriteFile(workingMemoryPath, []byte("# Working Memory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, err := NewComposer(workDir).WithMemory(workingMemoryPath).Compose("task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := extractWorkingMemoryRelPath(t, prompt)
+	if filepath.IsAbs(got) {
+		t.Fatalf("guidance must use a relative path, got %q:\n%s", got, prompt)
+	}
+	resolved, err := filepath.Abs(filepath.Join(workDir, got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedReal, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantReal, err := filepath.EvalSymlinks(workingMemoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolvedReal != wantReal {
+		t.Fatalf("prompt path resolves through tool join to %q, want %q", resolvedReal, wantReal)
+	}
+	if strings.Contains(got, workingMemoryPath) {
+		t.Fatalf("guidance must not fall back to absolute session path %q:\n%s", workingMemoryPath, prompt)
+	}
+}
+
+func TestComposeMemoryPathStaysRelativeToSymlinkWorkDir(t *testing.T) {
+	tmp := t.TempDir()
+	realWorkDir := filepath.Join(tmp, "real", "workspace")
+	if err := os.MkdirAll(realWorkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(tmp, "workspace-link")
+	if err := os.Symlink(realWorkDir, workDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	sessionDir := filepath.Join(tmp, ".foxharness", "projects", "key", "sessions", "1")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workingMemoryPath := filepath.Join(sessionDir, "working_memory.md")
+	if err := os.WriteFile(workingMemoryPath, []byte("# Working Memory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, err := NewComposer(workDir).WithMemory(workingMemoryPath).Compose("task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(filepath.Clean(workDir), workingMemoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := extractWorkingMemoryRelPath(t, prompt)
+	if got != rel {
+		t.Fatalf("working memory path = %q, want symlink-workdir-relative path %q:\n%s", got, rel, prompt)
+	}
+	if resolved := filepath.Clean(filepath.Join(workDir, got)); resolved != workingMemoryPath {
+		t.Fatalf("prompt path resolves through tool join to %q, want %q", resolved, workingMemoryPath)
+	}
+}
+
+func TestComposePersistentMemoryDirsStayRelativeToSymlinkWorkDir(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	realWorkDir := filepath.Join(tmp, "real", "workspace")
+	if err := os.MkdirAll(realWorkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(tmp, "workspace-link")
+	if err := os.Symlink(realWorkDir, workDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	store := automemory.NewStore(home, workDir)
+
+	prompt, err := NewComposer(workDir).WithAutoMemory(store).Compose("task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{store.UserGlobalDir(), store.ProjectDir()} {
+		rel, err := filepath.Rel(filepath.Clean(workDir), dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(prompt, rel) {
+			t.Fatalf("persistent memory guidance missing symlink-workdir-relative dir %q:\n%s", rel, prompt)
+		}
+		if resolved := filepath.Clean(filepath.Join(workDir, rel)); resolved != dir {
+			t.Fatalf("prompt dir resolves through tool join to %q, want %q", resolved, dir)
+		}
+	}
+}
+
+func extractWorkingMemoryRelPath(t *testing.T, prompt string) string {
+	t.Helper()
+	prefix := `relative path "`
+	start := strings.Index(prompt, prefix)
+	if start < 0 {
+		t.Fatalf("working memory guidance missing quoted relative path:\n%s", prompt)
+	}
+	rest := prompt[start+len(prefix):]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		t.Fatalf("working memory guidance has unterminated quoted relative path:\n%s", prompt)
+	}
+	return rest[:end]
 }
 
 func TestComposeIncludesTodoToolInstructions(t *testing.T) {

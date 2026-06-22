@@ -182,6 +182,14 @@ func NewManagerWithHome(workDir string, homeDir string) *Manager {
 	}
 }
 
+// HomeDir returns the user home directory that owns this manager's .foxharness
+// storage root. Callers that need to place sibling state under the same home
+// (e.g. the persistent memory store) use this to stay aligned with session
+// storage.
+func (m *Manager) HomeDir() string {
+	return m.homeDir
+}
+
 // CreateOptions configures the creation of a new session.
 type CreateOptions struct {
 	// Source identifies where the session request originated.
@@ -333,7 +341,13 @@ func cleanAbsPath(path string) string {
 	return filepath.Clean(abs)
 }
 
-func encodeProjectPath(workDir string) string {
+// EncodeProjectPath converts an absolute working directory into the stable,
+// filesystem-safe key used to namespace per-project storage under
+// ~/.foxharness/projects/{key}/. The encoding mirrors Claude Code's scheme:
+// drive colons are dropped and path separators become dashes. It is exported so
+// other packages (e.g. automemory) derive the same project key without
+// duplicating the encoder.
+func EncodeProjectPath(workDir string) string {
 	clean := filepath.Clean(workDir)
 	slash := filepath.ToSlash(clean)
 	encoded := strings.ReplaceAll(slash, ":", "")
@@ -342,6 +356,11 @@ func encodeProjectPath(workDir string) string {
 		return "-"
 	}
 	return encoded
+}
+
+// encodeProjectPath is the internal alias retained for existing callers.
+func encodeProjectPath(workDir string) string {
+	return EncodeProjectPath(workDir)
 }
 
 func newSessionID() string {

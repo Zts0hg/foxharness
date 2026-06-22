@@ -41,6 +41,9 @@ type Runner interface {
 	SessionID() string
 	SessionDir() string
 	WorkDir() string
+	// AutoMemoryIndex returns the merged two-tier persistent memory index
+	// (descriptions only) for sidebar display, or "" when no store is wired.
+	AutoMemoryIndex() string
 	Model() string
 	SetModel(model string) error
 	ContextUsage() string
@@ -268,7 +271,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		sidebarVisible:    true,
 		terminalFocused:   true,
 		sidebarFocusIndex: -1,
-		sidebarDocuments:  loadSidebarDocuments(runner.WorkDir(), runner.SessionDir()),
+		sidebarDocuments:  loadSidebarDocuments(runner.WorkDir(), runner.SessionDir(), runner.AutoMemoryIndex()),
 	}
 }
 
@@ -378,7 +381,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sessionID = msg.sessionID
 		m.refreshRuntimeInfo()
-		m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
+		m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir(), m.runner.AutoMemoryIndex())
 		m.clampSidebarScrollOffsets()
 		m.status = "New session ready"
 		m.entries = nil
@@ -398,7 +401,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runningTickMsg:
 		m.spinnerFrame++
 		if m.spinnerFrame%4 == 0 {
-			m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
+			m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir(), m.runner.AutoMemoryIndex())
 		}
 		m.clampSidebarScrollOffsets()
 		return m, runningTickCmd()
@@ -768,7 +771,7 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 
 	docs := m.sidebarDocuments
 	if len(docs) == 0 {
-		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
+		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir(), m.runner.AutoMemoryIndex())
 	}
 	heights := sidebarBoxHeights(sidebarDocumentAreaHeight(contentHeight, len(docs)), len(docs))
 	top := 0
@@ -792,7 +795,7 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 func (m *Model) clampSidebarScrollOffsets() {
 	docs := m.sidebarDocuments
 	if len(docs) == 0 {
-		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir())
+		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir(), m.runner.AutoMemoryIndex())
 	}
 	if !m.shouldRenderSidebar() || len(docs) == 0 {
 		for i := range m.sidebarScrollOffsets {

@@ -48,6 +48,9 @@ func RunCLI(ctx context.Context, cfg CLIConfig) error {
 		log.Printf("[CLI] 任务失败: %v", err)
 	}
 
+	// Print the completed run result first so the user is not blocked on the
+	// out-of-band memory extraction, then drain extraction (bounded) before the
+	// process exits so US3 (automatic capture) is not killed mid-call.
 	if result != nil && result.FinalMessage != "" {
 		fmt.Println(result.FinalMessage)
 	}
@@ -60,6 +63,8 @@ func RunCLI(ctx context.Context, cfg CLIConfig) error {
 		fmt.Println("Metrics: ", result.MetricsPath)
 		fmt.Println("Trace: ", result.TracePath)
 	}
+
+	runner.WaitForExtraction()
 	return err
 }
 

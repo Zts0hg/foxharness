@@ -123,6 +123,59 @@ func TestMessageLogAppendReturnsSeq(t *testing.T) {
 	}
 }
 
+func TestMessageLogLoadMessagesForRunFiltersByRunID(t *testing.T) {
+	workDir := t.TempDir()
+	manager := NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(CreateOptions{
+		Source:  SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	log := NewMessageLog(sess)
+	// Two runs with interleaved seqs. LoadMessagesForRun must return only the
+	// requested run's messages regardless of when it reads the log (timing-
+	// independent), so a delayed post-run consumer cannot pick up a later run.
+	if _, err := log.Append("run-1", schema.Message{Role: schema.RoleUser, Content: "run1-q"}); err != nil {
+		t.Fatalf("Append(run1-q) error = %v", err)
+	}
+	if _, err := log.Append("run-1", schema.Message{Role: schema.RoleAssistant, Content: "run1-a"}); err != nil {
+		t.Fatalf("Append(run1-a) error = %v", err)
+	}
+	if _, err := log.Append("run-2", schema.Message{Role: schema.RoleUser, Content: "run2-q"}); err != nil {
+		t.Fatalf("Append(run2-q) error = %v", err)
+	}
+	if _, err := log.Append("run-2", schema.Message{Role: schema.RoleAssistant, Content: "run2-a"}); err != nil {
+		t.Fatalf("Append(run2-a) error = %v", err)
+	}
+
+	run2, err := log.LoadMessagesForRun("run-2")
+	if err != nil {
+		t.Fatalf("LoadMessagesForRun(run-2) error = %v", err)
+	}
+	if len(run2) != 2 || run2[0].Content != "run2-q" || run2[1].Content != "run2-a" {
+		t.Fatalf("LoadMessagesForRun(run-2) = %#v, want only run-2 messages", run2)
+	}
+
+	run1, err := log.LoadMessagesForRun("run-1")
+	if err != nil {
+		t.Fatalf("LoadMessagesForRun(run-1) error = %v", err)
+	}
+	if len(run1) != 2 || run1[0].Content != "run1-q" {
+		t.Fatalf("LoadMessagesForRun(run-1) = %#v, want only run-1 messages", run1)
+	}
+
+	none, err := log.LoadMessagesForRun("run-3")
+	if err != nil {
+		t.Fatalf("LoadMessagesForRun(run-3) error = %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("LoadMessagesForRun(unknown) = %#v, want empty", none)
+	}
+}
+
 func TestMessageLogTruncateBeforeSeq(t *testing.T) {
 	workDir := t.TempDir()
 	manager := NewManagerWithHome(workDir, t.TempDir())
@@ -197,6 +250,25 @@ func TestEncodeProjectPathMatchesClaudeStyleWithoutHash(t *testing.T) {
 	want := "-Users-xiaoming-code-foxharness-go"
 	if got != want {
 		t.Fatalf("encodeProjectPath() = %q, want %q", got, want)
+	}
+}
+
+func TestExportedEncodeProjectPathMatchesUnexported(t *testing.T) {
+	samples := []string{
+		"/Users/xiaoming/code/foxharness-go",
+		"/tmp/work",
+		"C:\\Users\\dev\\proj",
+		"",
+		".",
+		"relative/path",
+	}
+	for _, p := range samples {
+		if got, want := EncodeProjectPath(p), encodeProjectPath(p); got != want {
+			t.Fatalf("EncodeProjectPath(%q) = %q, want %q", p, got, want)
+		}
+	}
+	if got, want := EncodeProjectPath("/Users/xiaoming/code/foxharness-go"), "-Users-xiaoming-code-foxharness-go"; got != want {
+		t.Fatalf("EncodeProjectPath() = %q, want %q", got, want)
 	}
 }
 

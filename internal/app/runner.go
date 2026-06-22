@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
@@ -61,9 +62,15 @@ type AgentRunner struct {
 	onModelChange func(model string) error
 
 	store          *memory.Store
+	autoMemory     *automemory.Store
 	manager        *session.Manager
 	llmProvider    provider.LLMProvider
 	currentSession *session.Session
+
+	// extractionFire overrides the default post-run memory extraction launcher.
+	// It is nil in production (which uses automemory.PerRunHooks.Fire); tests set
+	// it to observe the hook synchronously.
+	extractionFire func(sess *session.Session, runID string, tracker *automemory.Tracker)
 	checkpointer   checkpoint.Checkpointer
 	slashRegistry  *slash.Registry
 	slashExecutor  *slash.Executor
@@ -75,6 +82,10 @@ type AgentRunner struct {
 
 	contextUsedTokens   int64
 	contextWindowTokens int64
+
+	// extractWG tracks in-flight post-run memory extraction goroutines so a
+	// short-lived runner (the one-shot CLI) can await them before exiting.
+	extractWG sync.WaitGroup
 }
 
 func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
@@ -112,6 +123,7 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 	if err := store.EnsureFiles(); err != nil {
 		return nil, fmt.Errorf("初始化文件记忆失败: %w", err)
 	}
+	autoMem := automemory.NewStore(manager.HomeDir(), workDir)
 	cp := checkpoint.New(checkpoint.Config{SessionDir: sess.RootDir})
 	if checkpointDisabledFromEnv() {
 		cp.SetDisabled(true)
@@ -148,6 +160,7 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		maxTurns:         cfg.MaxTurns,
 		onModelChange:    cfg.OnModelChange,
 		store:            store,
+		autoMemory:       autoMem,
 		manager:          manager,
 		llmProvider:      llmProvider,
 		currentSession:   sess,
@@ -283,6 +296,7 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	r.mu.Lock()
 	sess := r.currentSession
 	store := r.store
+	autoMem := r.autoMemory
 	enableThinking := r.enableThinking
 	enablePlanMode := r.enablePlanMode
 	llmProvider := r.llmProvider
@@ -319,6 +333,9 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	composer := prompt.NewComposer(r.workDir).
 		WithMemory(sess.MemoryPath()).
 		WithInteractiveAsk(interactiveAsk)
+	if autoMem != nil {
+		composer = composer.WithAutoMemory(autoMem)
+	}
 	if registry != nil {
 		contextWindow := compaction.NewModelRegistry().Lookup(model)
 		tokens := contextWindow
@@ -339,10 +356,38 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 		return currentMessageID
 	}
 
+	var hooks *automemory.PerRunHooks
+	var tracker *automemory.Tracker
+	if autoMem != nil {
+		hooks = automemory.NewPerRunHooks(llmProvider, autoMem, r.workDir)
+		tracker = hooks.NewTracker()
+	}
+
 	toolRegistry := r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID)
 	if len(allowedTools) > 0 {
 		toolRegistry = slash.NewFilteredRegistry(toolRegistry, allowedTools)
 		log.Printf("[slash] restricting next run to allowed tools: %v", allowedTools)
+	}
+
+	// Compose the post-tool-call callbacks: conditional skill activation plus
+	// the success-gated memory-write tracker (P2-2: a failed write must not set
+	// the mutual-exclusion flag).
+	skillHook := r.conditionalActivationHook()
+	var memoryHook func(schema.ToolCall, schema.ToolResult)
+	if hooks != nil {
+		memoryHook = hooks.RecordCallback(tracker)
+	}
+	var onToolCalled func(schema.ToolCall, schema.ToolResult)
+	switch {
+	case skillHook != nil && memoryHook != nil:
+		onToolCalled = func(call schema.ToolCall, result schema.ToolResult) {
+			skillHook(call, result)
+			memoryHook(call, result)
+		}
+	case skillHook != nil:
+		onToolCalled = skillHook
+	case memoryHook != nil:
+		onToolCalled = memoryHook
 	}
 
 	eng := engine.NewAgentEngine(
@@ -358,7 +403,7 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 			Checkpointer:      cp,
 			DisplayPrompt:     displayPrompt,
 			OnUserMessageID:   setCurrentMessageID,
-			OnToolCalled:      r.conditionalActivationHook(),
+			OnToolCalled:      onToolCalled,
 			NextTurnReminders: r.drainPendingActivations,
 			OnContextEstimate: func(usedTokens, contextWindow int) {
 				atomic.StoreInt64(&r.contextUsedTokens, int64(usedTokens))
@@ -376,7 +421,52 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	}
 	eng.WithCompactor(compactor)
 
-	return eng.RunWithReporter(ctx, sess, userPrompt, reporter)
+	result, runErr := eng.RunWithReporter(ctx, sess, userPrompt, reporter)
+
+	// Fire the post-run memory extraction hook (PLD-8), bounded to this run's
+	// messages by run ID so a delayed extraction cannot pick up a later run. It
+	// is fire-and-forget and runs out-of-band; it never affects the run result.
+	// The launch itself is panic-guarded so a misbehaving hook can never disturb
+	// the returned result.
+	if hooks != nil && result != nil {
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					log.Printf("[automemory] extraction launch panic recovered: %v", rec)
+				}
+			}()
+			if r.extractionFire != nil {
+				r.extractionFire(sess, result.RunID, tracker)
+			} else {
+				// Tracked launch so the one-shot CLI can drain extraction before
+				// the process exits (P2-A); the interactive TUI simply never waits.
+				hooks.FireTracked(&r.extractWG, sess, result.RunID, tracker)
+			}
+		}()
+	}
+
+	return result, runErr
+}
+
+// AutoMemoryIndex returns the merged two-tier persistent memory index
+// (descriptions only) for sidebar display, or "" when no automemory store is
+// wired.
+func (r *AgentRunner) AutoMemoryIndex() string {
+	r.mu.Lock()
+	store := r.autoMemory
+	r.mu.Unlock()
+	if store == nil {
+		return ""
+	}
+	return store.MergedIndexString()
+}
+
+// WaitForExtraction blocks until every in-flight post-run memory extraction
+// goroutine has finished. The one-shot CLI calls it before exiting so the
+// asynchronous extraction is not killed mid-call; the interactive TUI does not
+// call it (extraction stays fire-and-forget across runs).
+func (r *AgentRunner) WaitForExtraction() {
+	r.extractWG.Wait()
 }
 
 // NewSession switches the runner to a fresh CLI session.

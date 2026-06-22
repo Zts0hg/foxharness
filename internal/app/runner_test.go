@@ -7,13 +7,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	providerpkg "github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 type blockingLLMProvider struct {
@@ -648,5 +651,210 @@ func assertFileContent(t *testing.T, path string, want string) {
 	}
 	if got := string(data); got != want {
 		t.Fatalf("%s = %q, want %q", path, got, want)
+	}
+}
+
+// TestInlineMemoryWriteSetsTrackerAndIndex verifies the inline write path
+// (US2): a write_file whose relative path resolves into a memory directory is
+// detected by the tracker (recorded on success via the engine's OnToolCalled),
+// the memory is persisted and indexed, and an explicit forget via empty
+// write_file content removes it from the regenerated index. (T012)
+func TestInlineMemoryWriteSetsTrackerAndIndex(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+	store := automemory.NewStore(home, workDir)
+	hooks := automemory.NewPerRunHooks(nil, store, workDir)
+	tracker := hooks.NewTracker()
+	onToolCalled := hooks.RecordCallback(tracker)
+
+	registry := tools.NewRegistry()
+	registry.Register(tools.NewWriteFileTool(workDir))
+
+	rel, err := filepath.Rel(workDir, filepath.Join(store.UserGlobalDir(), "user-role.md"))
+	if err != nil {
+		t.Fatalf("Rel() error = %v", err)
+	}
+	content := "---\nname: user-role\ndescription: Staff engineer, terse answers.\ntype: user\n---\n\nThe user is a staff engineer.\n"
+	args, _ := json.Marshal(map[string]string{"path": rel, "content": content})
+
+	call := schema.ToolCall{ID: "c1", Name: "write_file", Arguments: args}
+	res := registry.Execute(context.Background(), call)
+	if res.IsError {
+		t.Fatalf("write_file failed: %s", res.Output)
+	}
+	// The engine reports tool results post-execution via OnToolCalled; a failed
+	// write must not set the flag (P2-2).
+	onToolCalled(call, schema.ToolResult{IsError: true, Output: "boom"})
+	if tracker.WroteMemory() {
+		t.Fatalf("a failed write must not set the tracker flag")
+	}
+	onToolCalled(call, res)
+	if !tracker.WroteMemory() {
+		t.Fatalf("tracker must flag a successful inline memory write")
+	}
+
+	mems, err := store.Load(automemory.ScopeUserGlobal)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(mems) != 1 || mems[0].Name != "user-role" {
+		t.Fatalf("inline memory not persisted: %+v", mems)
+	}
+	idx, _ := store.BuildIndex(automemory.ScopeUserGlobal)
+	if !strings.Contains(idx, "user-role.md") {
+		t.Fatalf("index missing inline memory entry:\n%s", idx)
+	}
+
+	forgetTracker := hooks.NewTracker()
+	forgetArgs, _ := json.Marshal(map[string]string{"path": rel, "content": ""})
+	forgetCall := schema.ToolCall{ID: "c2", Name: "write_file", Arguments: forgetArgs}
+	forgetRes := registry.Execute(context.Background(), forgetCall)
+	if forgetRes.IsError {
+		t.Fatalf("forget write_file failed: %s", forgetRes.Output)
+	}
+	hooks.RecordCallback(forgetTracker)(forgetCall, forgetRes)
+	if !forgetTracker.WroteMemory() {
+		t.Fatalf("tracker must flag a successful empty-content forget")
+	}
+	idx2, _ := store.BuildIndex(automemory.ScopeUserGlobal)
+	if strings.Contains(idx2, "user-role.md") {
+		t.Fatalf("index still lists forgotten memory:\n%s", idx2)
+	}
+	if mems, _ := store.Load(automemory.ScopeUserGlobal); len(mems) != 0 {
+		t.Fatalf("forgotten memory must no longer load: %+v", mems)
+	}
+}
+
+// immediateMemoryRunner builds a runner whose provider returns a final message
+// on the first call, so a Run completes in one turn. Used to exercise the
+// post-run extraction wiring (T015).
+func immediateMemoryRunner(t *testing.T) (*AgentRunner, *blockingLLMProvider) {
+	t.Helper()
+	workDir := t.TempDir()
+	home := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, home)
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	store := memory.NewSessionStore(workDir, sess.RootDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	prov := &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})}
+	close(prov.release) // return a final message immediately, no tool calls
+
+	runner := &AgentRunner{
+		workDir:        workDir,
+		model:          "fake-model",
+		maxTurns:       3,
+		store:          store,
+		autoMemory:     automemory.NewStore(home, workDir),
+		manager:        manager,
+		llmProvider:    prov,
+		currentSession: sess,
+	}
+	return runner, prov
+}
+
+func TestRunFiresExtractionHookWithTracker(t *testing.T) {
+	runner, _ := immediateMemoryRunner(t)
+
+	called := 0
+	var gotTracker *automemory.Tracker
+	runner.extractionFire = func(s *session.Session, runID string, tr *automemory.Tracker) {
+		called++
+		gotTracker = tr
+	}
+
+	result, err := runner.Run(context.Background(), "hello", nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == nil || result.FinalMessage == "" {
+		t.Fatalf("unexpected run result: %+v", result)
+	}
+	if called != 1 {
+		t.Fatalf("extraction hook fired %d times, want exactly 1 at run end", called)
+	}
+	if gotTracker == nil {
+		t.Fatalf("extraction hook must receive the run tracker for mutual exclusion")
+	}
+}
+
+func TestPanickingExtractionHookDoesNotAffectRunResult(t *testing.T) {
+	runner, _ := immediateMemoryRunner(t)
+	runner.extractionFire = func(s *session.Session, runID string, tr *automemory.Tracker) {
+		panic("extraction blew up")
+	}
+
+	result, err := runner.Run(context.Background(), "hello", nil)
+	if err != nil {
+		t.Fatalf("a panicking extraction hook must not fail the run, got %v", err)
+	}
+	if result == nil || result.FinalMessage == "" {
+		t.Fatalf("a panicking extraction hook must not corrupt the result: %+v", result)
+	}
+}
+
+// immediateCountingProvider returns a final message on every Generate and counts
+// calls, so a run ends in one turn and extraction's Generate is observable.
+type immediateCountingProvider struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (p *immediateCountingProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*providerpkg.GenerateResponse, error) {
+	p.mu.Lock()
+	p.n++
+	p.mu.Unlock()
+	return &providerpkg.GenerateResponse{
+		Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"},
+	}, nil
+}
+
+func (p *immediateCountingProvider) count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.n
+}
+
+// TestOneShotRunAwaitsExtraction proves the one-shot path drains the extraction
+// goroutine before returning: after Run + WaitForExtraction, the extraction
+// Generate call has completed (P2-A). Without awaiting, the process would exit
+// first.
+func TestOneShotRunAwaitsExtraction(t *testing.T) {
+	t.Setenv("ZHIPU_API_KEY", "test-key")
+	workDir := t.TempDir()
+	home := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, home)
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	store := memory.NewSessionStore(workDir, sess.RootDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	prov := &immediateCountingProvider{}
+	runner := &AgentRunner{
+		workDir:        workDir,
+		model:          "fake-model",
+		maxTurns:       3,
+		store:          store,
+		autoMemory:     automemory.NewStore(home, workDir),
+		manager:        manager,
+		llmProvider:    prov,
+		currentSession: sess,
+	}
+
+	if _, err := runner.Run(context.Background(), "hello", nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	runner.WaitForExtraction()
+
+	// 1 Generate for the main run, plus >=1 for the extraction pass.
+	if got, want := prov.count(), 2; got < want {
+		t.Fatalf("extraction not awaited: Generate calls = %d, want >= %d", got, want)
 	}
 }
