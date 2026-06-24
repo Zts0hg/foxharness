@@ -41,6 +41,13 @@ type Result struct {
 	Report    string
 }
 
+// DefaultMaxTurns is the default maximum number of turns a subagent engine may
+// execute before its turn budget is considered exhausted. It is sized for
+// real-world coding subtasks and aligns with the subagent turn budget used by
+// Claude Code. Production callers receive it automatically via NewManager;
+// internal and test callers may override it with Manager.WithMaxTurns.
+const DefaultMaxTurns = 200
+
 // Manager creates and runs isolated subagent sessions using a shared LLM
 // provider and workspace root.
 type Manager struct {
@@ -49,6 +56,10 @@ type Manager struct {
 	// homeDir roots the cross-session persistent memory store so subagents read
 	// the same merged index as top-level runs. It defaults to the user home.
 	homeDir string
+	// maxTurns is the turn budget handed to the subagent engine. It defaults to
+	// DefaultMaxTurns (applied by NewManager) and may be overridden via
+	// WithMaxTurns, primarily for deterministic tests of the exhaustion path.
+	maxTurns int
 }
 
 // NewManager creates a Manager that delegates LLM calls to p and roots
@@ -59,7 +70,15 @@ func NewManager(p provider.LLMProvider, workDir string) *Manager {
 	if err != nil || homeDir == "" {
 		homeDir = "."
 	}
-	return &Manager{provider: p, workDir: workDir, homeDir: homeDir}
+	return &Manager{provider: p, workDir: workDir, homeDir: homeDir, maxTurns: DefaultMaxTurns}
+}
+
+// WithMaxTurns overrides the subagent turn budget and returns the receiver for
+// chaining. It is intended for internal and test injection; production callers
+// use the DefaultMaxTurns default applied by NewManager.
+func (m *Manager) WithMaxTurns(n int) *Manager {
+	m.maxTurns = n
+	return m
 }
 
 // buildComposer assembles the subagent system-prompt composer, injecting the
@@ -89,8 +108,9 @@ func (m *Manager) buildRegistry(readOnly bool, allowedTools []string) tools.Regi
 
 // Run executes the subagent task described by req. It creates a new session,
 // builds a scoped tool registry (read-only when requested), and runs the
-// engine for up to 8 turns. The returned Result contains the session ID and
-// the agent's final message as a report.
+// engine for up to the configured turn budget (DefaultMaxTurns by default).
+// The returned Result contains the session ID and the agent's final message
+// as a report.
 func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 	manager := session.NewManager(m.workDir)
 	sess, err := manager.Create(session.CreateOptions{
@@ -112,7 +132,7 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 		composer,
 		engine.Config{
 			EnableThinking: false,
-			MaxTurns:       8,
+			MaxTurns:       m.maxTurns,
 		},
 	)
 

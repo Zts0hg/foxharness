@@ -2,6 +2,7 @@ package subagent
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"strings"
@@ -161,5 +162,67 @@ func TestManagerBuildComposerOmitsWorkingMemoryWriteGuidanceWhenReadOnly(t *test
 	}
 	if !strings.Contains(prompt, "working_memory.md") {
 		t.Fatalf("read-only subagent should still see working memory contents:\n%s", prompt)
+	}
+}
+
+// loopingToolCallProvider is a fake provider whose every Generate response
+// requests a read_file tool call, forcing the engine to keep looping. It is
+// used to drive a subagent past its turn budget so the exhaustion path can be
+// exercised deterministically and quickly.
+type loopingToolCallProvider struct {
+	calls int
+}
+
+func (p *loopingToolCallProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	p.calls++
+	return &provider.GenerateResponse{
+		Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID:        "call_exhaustion",
+				Name:      "read_file",
+				Arguments: json.RawMessage(`{"path":"nonexistent-exhaustion-probe"}`),
+			}},
+		},
+	}, nil
+}
+
+func TestDefaultMaxTurnsIs200(t *testing.T) {
+	if DefaultMaxTurns != 200 {
+		t.Fatalf("DefaultMaxTurns = %d, want 200", DefaultMaxTurns)
+	}
+}
+
+func TestNewManagerDefaultsMaxTurnsTo200(t *testing.T) {
+	m := NewManager(&finalReportProvider{}, t.TempDir())
+	if m.maxTurns != DefaultMaxTurns {
+		t.Fatalf("maxTurns = %d, want %d (DefaultMaxTurns)", m.maxTurns, DefaultMaxTurns)
+	}
+}
+
+func TestWithMaxTurnsOverridesDefault(t *testing.T) {
+	m := NewManager(&finalReportProvider{}, t.TempDir()).WithMaxTurns(3)
+	if m.maxTurns != 3 {
+		t.Fatalf("maxTurns = %d, want 3", m.maxTurns)
+	}
+}
+
+// TestRunHonorsInjectedMaxTurnsAndPreservesExhaustion verifies that an injected
+// turn budget actually governs the engine (REQ-004) and that the exhaustion
+// behavior is preserved when the budget is reached (REQ-005): Run returns an
+// error whose message carries the injected limit, not the old default of 8.
+func TestRunHonorsInjectedMaxTurnsAndPreservesExhaustion(t *testing.T) {
+	mgr := NewManager(&loopingToolCallProvider{}, t.TempDir()).WithMaxTurns(1)
+
+	result, err := mgr.Run(context.Background(), Request{
+		ParentSessionID: "parent-session",
+		Task:            "loop until stopped",
+		ReadOnly:        true,
+	})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want exhaustion error for injected MaxTurns=1; result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), "超过最大 Turn 数限制: 1") {
+		t.Fatalf("Run() error = %q, want error containing %q", err.Error(), "超过最大 Turn 数限制: 1")
 	}
 }
