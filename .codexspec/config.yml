@@ -22,5 +22,5 @@ language:
 
 # Project metadata
 project:
-  ai: "claude"
+  ai: "codex"
   created: "2026-04-28"
