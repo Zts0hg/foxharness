@@ -18,6 +18,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/tools"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -260,6 +261,118 @@ func TestModelSubmitsPromptAndRendersRunEvents(t *testing.T) {
 	}
 }
 
+func TestModelBangCommandRunsLocalShellWithoutModelRun(t *testing.T) {
+	workDir := t.TempDir()
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("!printf fox-bang"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatalf("bang command did not dispatch shell command")
+	}
+	if !m.running {
+		t.Fatalf("model running = false, want shell command running")
+	}
+	if got := string(m.input); got != "" {
+		t.Fatalf("input after bang submit = %q, want empty", got)
+	}
+
+	m, _ = update(t, m, cmd())
+	if m.running {
+		t.Fatalf("model running = true after shell command completion")
+	}
+	if len(runner.runs) != 0 {
+		t.Fatalf("runner runs = %#v, want no model runs for bang command", runner.runs)
+	}
+	if !entriesContain(m.entries, "command", "fox-bang") {
+		t.Fatalf("entries missing shell output: %#v", m.entries)
+	}
+	if len(m.inputHistory) == 0 || m.inputHistory[len(m.inputHistory)-1] != "!printf fox-bang" {
+		t.Fatalf("input history = %#v, want bang command recorded", m.inputHistory)
+	}
+}
+
+func TestModelBangCommandEmptyInputShowsHelp(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("!"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("empty bang returned command")
+	}
+	if len(runner.runs) != 0 {
+		t.Fatalf("runner runs = %#v, want no model runs", runner.runs)
+	}
+	if !entriesContain(m.entries, "command", "Example: !ls") {
+		t.Fatalf("entries missing bang help: %#v", m.entries)
+	}
+}
+
+func TestModelBangCommandRejectedWhileRunActive(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.running = true
+
+	m, _ = update(t, m, keyRunes("!pwd"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("bang while running returned command")
+	}
+	if len(m.queuedPrompts) != 0 {
+		t.Fatalf("queued prompts = %#v, want bang command not queued", m.queuedPrompts)
+	}
+	if string(m.input) != "!pwd" {
+		t.Fatalf("input after rejected bang = %q, want preserved", string(m.input))
+	}
+	if !strings.Contains(m.status, "Shell command unavailable") {
+		t.Fatalf("status = %q, want shell unavailable notice", m.status)
+	}
+}
+
+func TestModelEscCancelsRunningBangCommand(t *testing.T) {
+	workDir := t.TempDir()
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("!sleep 2; printf done"))
+	m, shellCmd := update(t, m, keyEnter())
+	if shellCmd == nil {
+		t.Fatalf("bang command did not dispatch shell command")
+	}
+
+	done := make(chan tea.Msg, 1)
+	go func() {
+		done <- shellCmd()
+	}()
+
+	m, escCmd := update(t, m, keyEsc())
+	if escCmd == nil {
+		t.Fatalf("esc did not schedule pending cancellation")
+	}
+	m, _ = update(t, m, escCmd())
+
+	select {
+	case msg := <-done:
+		m, _ = update(t, m, msg)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("running bang command did not stop promptly after Esc cancellation")
+	}
+
+	if m.running {
+		t.Fatalf("model running = true after cancelled bang command")
+	}
+	if len(m.entries) == 0 || m.entries[len(m.entries)-1].title != "Shell: !sleep 2; printf done" {
+		t.Fatalf("entries missing cancelled shell command: %#v", m.entries)
+	}
+	if entriesContain(m.entries, "command", "done") {
+		t.Fatalf("shell command continued after Esc cancellation: %#v", m.entries)
+	}
+}
+
 func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
@@ -394,6 +507,59 @@ func TestCtrlOTogglesLongToolOutputExpansion(t *testing.T) {
 	collapsed := stripANSI(m.View())
 	if !strings.Contains(collapsed, "+2 lines (ctrl+o to expand)") || strings.Contains(collapsed, "line 5") {
 		t.Fatalf("second ctrl+o should collapse output again:\n%s", collapsed)
+	}
+}
+
+func TestShellCommandRenderingCollapsesLongOutput(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = []entry{{
+		role:  "command",
+		title: "Shell: !printf lines",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5",
+	}}
+
+	plain := stripANSI(m.View())
+	for _, want := range []string{"Shell: !printf lines", "line 1", "line 2", "line 3", "+2 lines (ctrl+o to expand)"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("collapsed shell command output missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "line 4") || strings.Contains(plain, "line 5") {
+		t.Fatalf("collapsed shell command output should hide lines after third:\n%s", plain)
+	}
+}
+
+func TestCtrlOTogglesShellCommandOutputExpansion(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = []entry{{
+		role:  "command",
+		title: "Shell: !printf lines",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5",
+	}}
+
+	m, _ = update(t, m, keyCtrlO())
+	expanded := stripANSI(m.View())
+	if strings.Contains(expanded, "ctrl+o to expand") {
+		t.Fatalf("expanded shell output still shows collapse hint:\n%s", expanded)
+	}
+	for _, want := range []string{"line 4", "line 5"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded shell output missing %q:\n%s", want, expanded)
+		}
+	}
+}
+
+func TestFormatShellCommandResultTruncatesLargeOutput(t *testing.T) {
+	raw := strings.Repeat("x", maxShellCommandOutputBytes*2)
+	formatted := formatShellCommandResult(tools.BashCommandResult{Output: raw})
+
+	if len(formatted) >= len(raw) {
+		t.Fatalf("formatted output length = %d, want shorter than raw length %d", len(formatted), len(raw))
+	}
+	if !strings.Contains(formatted, "output truncated") {
+		t.Fatalf("formatted output missing truncation marker: %q", formatted[len(formatted)-80:])
 	}
 }
 

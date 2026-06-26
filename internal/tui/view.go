@@ -807,7 +807,7 @@ func renderEntryWithOptions(e entry, width int, toolOutputExpanded bool) string 
 	case e.role == "assistant":
 		return renderAssistantEntry(e, width)
 	case e.role == "command":
-		return renderCommandEntry(e, width)
+		return renderCommandEntry(e, width, toolOutputExpanded)
 	}
 
 	label := labelStyle(e).Render(strings.ToUpper(e.role))
@@ -837,7 +837,7 @@ func renderAssistantEntry(e entry, width int) string {
 	return assistantLabelStyle.Width(width).Render(renderMarkdown(e.body, max(width, 20)))
 }
 
-func renderCommandEntry(e entry, width int) string {
+func renderCommandEntry(e entry, width int, expanded bool) string {
 	title := strings.TrimSpace(e.title)
 	if title == "" {
 		title = "Result"
@@ -847,7 +847,27 @@ func renderCommandEntry(e entry, width int) string {
 	if body == "" {
 		return header
 	}
+	if isShellCommandEntry(e) {
+		body = collapseCommandOutput(body, expanded)
+	}
 	return header + "\n" + indentLines(body, "  ")
+}
+
+func isShellCommandEntry(e entry) bool {
+	return e.role == "command" && strings.HasPrefix(strings.TrimSpace(e.title), "Shell: !")
+}
+
+func collapseCommandOutput(body string, expanded bool) string {
+	if expanded {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) <= maxCollapsedToolOutputLines {
+		return body
+	}
+	hidden := len(lines) - maxCollapsedToolOutputLines
+	lines = append(lines[:maxCollapsedToolOutputLines], fmt.Sprintf("+%d lines (ctrl+o to expand)", hidden))
+	return strings.Join(lines, "\n")
 }
 
 func renderToolCall(e entry, width int) string {
@@ -1214,7 +1234,7 @@ func (m Model) renderCursor() string {
 }
 
 func (m Model) renderFooter(width int) string {
-	help := "Enter send | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown/wheel scroll | drag select to copy | Ctrl+F sidebar | Ctrl+C twice quit"
+	help := "Enter send | !cmd shell | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown/wheel scroll | drag select to copy | Ctrl+F sidebar | Ctrl+C twice quit"
 	if m.sidebarFocused {
 		help = "Tab switch box | Up/Down/PgUp/PgDown scroll | 1/2/3 select | Esc close | Ctrl+C twice quit"
 	} else if m.hasSlashMenu() {
