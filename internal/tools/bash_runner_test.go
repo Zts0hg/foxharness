@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -109,4 +110,47 @@ func TestRunBashCommandContextCancelStopsInfiniteOutput(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("RunBashCommand did not return promptly after context cancellation")
 	}
+}
+
+func TestBashToolExecuteReportsTruncatedFailedOutput(t *testing.T) {
+	tool := NewBashTool(t.TempDir())
+	out, err := tool.Execute(context.Background(), bashCommandArgs(t, "yes x | head -c 20000; exit 7"))
+
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(out, "执行报错:") {
+		t.Fatalf("output = %q, want execution error prefix", out)
+	}
+	if !strings.Contains(out, "终端输出过长") {
+		t.Fatalf("output = %q, want truncation notice", out)
+	}
+}
+
+func TestBashToolExecuteReportsTruncatedTimedOutOutput(t *testing.T) {
+	tool := NewBashTool(t.TempDir())
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	out, err := tool.Execute(ctx, bashCommandArgs(t, "yes x"))
+
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(out, "命令执行超时") {
+		t.Fatalf("output = %q, want timeout warning", out)
+	}
+	if !strings.Contains(out, "终端输出过长") {
+		t.Fatalf("output = %q, want truncation notice", out)
+	}
+}
+
+func bashCommandArgs(t *testing.T, command string) json.RawMessage {
+	t.Helper()
+
+	args, err := json.Marshal(map[string]string{"command": command})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	return args
 }

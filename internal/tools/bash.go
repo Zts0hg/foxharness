@@ -163,6 +163,9 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 
 	result := RunBashCommand(ctx, t.workDir, input.Command, defaultBashTimeout)
 	outputStr := result.Output
+	if result.Truncated {
+		outputStr = appendBashTruncationNotice(outputStr)
+	}
 
 	if result.TimedOut {
 		return outputStr + "\n[警告: 命令执行超时(30s)，已被系统强制终止。如果是常驻服务，请尝试将其转入后台。] ", nil
@@ -176,10 +179,10 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return "命令执行成功，无终端输出。", nil
 	}
 
-	if result.Truncated {
-		return fmt.Sprintf("%s\n\n...[终端输出过长，已截断至前 %d 字节]...", outputStr, MaxBashOutputBytes), nil
-	}
-
 	return outputStr, nil
 
+}
+
+func appendBashTruncationNotice(output string) string {
+	return fmt.Sprintf("%s\n\n...[终端输出过长，已截断至前 %d 字节]...", output, MaxBashOutputBytes)
 }
