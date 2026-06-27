@@ -920,14 +920,33 @@ func isToolResultPair(prev entry, current entry) bool {
 }
 
 func (m Model) renderInput(width int) string {
+	bang := m.hasBangPrefix() && m.inputPastePreviewLabel() == ""
 	prompt := lipgloss.NewStyle().Foreground(cAccentHi).Render("> ")
-	value := string(m.input)
+	if bang {
+		prompt = lipgloss.NewStyle().Bold(true).Foreground(cWarn).Render("! ")
+	}
+
+	// In bang mode the leading '!' is absorbed into the prompt, so render
+	// against a display copy with that rune removed; the cursor index shifts by
+	// one to stay aligned with the command text. The editing state is untouched.
+	view := m
+	if bang {
+		view.input = m.input[1:]
+		if view.inputCursor > 0 {
+			view.inputCursor--
+		}
+	}
+
+	value := string(view.input)
 	cursor := ""
-	if m.inputCanAcceptTyping() {
-		cursor = m.renderCursor()
+	if view.inputCanAcceptTyping() {
+		cursor = view.renderCursor()
 	}
 	if value == "" {
 		placeholder := "ask anything, or /help for commands"
+		if bang {
+			placeholder = "run a local shell command, e.g. ls"
+		}
 		if m.running {
 			placeholder = "message will be queued, or /cancel"
 		}
@@ -940,8 +959,8 @@ func (m Model) renderInput(width int) string {
 		if label := m.inputPastePreviewLabel(); label != "" && len(m.input) > 0 {
 			return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(prompt + lipgloss.NewStyle().Foreground(cTextPri).Render(label) + cursor)
 		}
-		m.clampInputCursor()
-		return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(m.renderInputRows(prompt, cursor))
+		view.clampInputCursor()
+		return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(view.renderInputRows(prompt, cursor))
 	}
 	return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(prompt + value)
 }

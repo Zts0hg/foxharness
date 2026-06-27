@@ -1994,6 +1994,12 @@ func (m Model) hasFileMentionMenu() bool {
 	return len(m.matchingFileMentions()) > 0
 }
 
+// hasBangPrefix reports whether the current input starts with the bang shell
+// prefix, so the prompt can switch to shell mode while the user is still typing.
+func (m Model) hasBangPrefix() bool {
+	return len(m.input) > 0 && m.input[0] == '!'
+}
+
 func (m *Model) moveSlashSelection(delta int) {
 	matches := m.matchingSlashCommands()
 	if len(matches) == 0 {

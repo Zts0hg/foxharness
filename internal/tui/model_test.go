@@ -261,6 +261,47 @@ func TestModelSubmitsPromptAndRendersRunEvents(t *testing.T) {
 	}
 }
 
+func TestBangInputRendering(t *testing.T) {
+	runner := newFakeRunner()
+	base := func() Model {
+		m := NewModel(context.Background(), runner, Config{})
+		m.width = 80
+		m.height = 20
+		return m
+	}
+
+	// Typing "!ls" renders as "! ls" (bang prompt + command, no duplicated '!'),
+	// not the ordinary "> !ls".
+	m, _ := update(t, base(), keyRunes("!ls"))
+	rendered := stripANSI(m.renderInput(m.innerWidth()))
+	if !strings.Contains(rendered, "! ls") {
+		t.Fatalf("bang input should render as '! ls', got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "> !ls") {
+		t.Fatalf("bang input must not keep the ordinary '> ' prompt, got:\n%s", rendered)
+	}
+	if rows := renderedInputContentRows(m); len(rows) == 0 || rows[0] != "ls" {
+		t.Fatalf("rendered content rows = %#v, want first row \"ls\"", rows)
+	}
+	if _, col, ok := renderedInputCursorPosition(m); !ok || col != lipgloss.Width("! ls") {
+		t.Fatalf("cursor col = %d (ok=%v), want %d (after \"! ls\")", col, ok, lipgloss.Width("! ls"))
+	}
+
+	// A lone "!" shows the bang prompt plus a shell-mode placeholder.
+	m2, _ := update(t, base(), keyRunes("!"))
+	rendered2 := stripANSI(m2.renderInput(m2.innerWidth()))
+	if !strings.Contains(rendered2, "! ") || !strings.Contains(rendered2, "shell command") {
+		t.Fatalf("empty bang should show '! ' + shell placeholder, got:\n%s", rendered2)
+	}
+
+	// Ordinary input still uses the "> " prompt.
+	m3, _ := update(t, base(), keyRunes("hello"))
+	rendered3 := stripANSI(m3.renderInput(m3.innerWidth()))
+	if !strings.Contains(rendered3, "> hello") {
+		t.Fatalf("ordinary input should keep '> ' prompt, got:\n%s", rendered3)
+	}
+}
+
 func TestModelBangCommandRunsLocalShellWithoutModelRun(t *testing.T) {
 	workDir := t.TempDir()
 	runner := newFakeRunner()
@@ -3876,6 +3917,10 @@ func renderedInputContentRows(m Model) []string {
 		}
 		if strings.HasPrefix(trimmed, "> ") {
 			rows = append(rows, strings.TrimPrefix(trimmed, "> "))
+			continue
+		}
+		if strings.HasPrefix(trimmed, "! ") {
+			rows = append(rows, strings.TrimPrefix(trimmed, "! "))
 			continue
 		}
 		if strings.HasPrefix(trimmed, "  ") {
