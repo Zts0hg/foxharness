@@ -385,10 +385,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.status = "Shell command failed"
 			}
+			if len(m.queuedPrompts) > 0 {
+				return m.startNextQueuedPrompt()
+			}
 			return m, nil
 		}
 		m.appendCommandEntry("Shell: !"+msg.command, formatShellCommandResult(msg.result))
 		m.status = "Shell command complete"
+		if len(m.queuedPrompts) > 0 {
+			return m.startNextQueuedPrompt()
+		}
 		return m, nil
 
 	case newSessionFinishedMsg:
@@ -2917,7 +2923,7 @@ func formatShellCommandResult(result tools.BashCommandResult) string {
 
 func truncateShellCommandOutput(output string) string {
 	if len(output) <= maxShellCommandOutputBytes {
-		return strings.TrimSpace(output)
+		return output
 	}
 	cut := 0
 	for i := range output {
@@ -2929,7 +2935,7 @@ func truncateShellCommandOutput(output string) string {
 	if cut == 0 {
 		cut = maxShellCommandOutputBytes
 	}
-	return strings.TrimSpace(output[:cut]) +
+	return output[:cut] +
 		shellCommandTruncationMarker()
 }
 

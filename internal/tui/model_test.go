@@ -294,6 +294,87 @@ func TestModelBangCommandRunsLocalShellWithoutModelRun(t *testing.T) {
 	}
 }
 
+func TestModelBangCommandCompletionStartsQueuedPrompt(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("!printf shell"))
+	m, shellCmd := update(t, m, keyEnter())
+	if shellCmd == nil {
+		t.Fatalf("bang command did not dispatch shell command")
+	}
+
+	m, cmd := update(t, m, keyRunes("queued prompt"))
+	if cmd != nil {
+		t.Fatalf("typing while shell command runs returned command")
+	}
+	m, cmd = update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("queueing prompt while shell command runs returned command")
+	}
+	if len(m.queuedPrompts) != 1 || m.queuedPrompts[0] != "queued prompt" {
+		t.Fatalf("queuedPrompts = %#v, want queued prompt", m.queuedPrompts)
+	}
+
+	m, queuedCmd := update(t, m, shellCommandFinishedMsg{
+		command: "printf shell",
+		result:  tools.BashCommandResult{Output: "shell"},
+	})
+	if queuedCmd == nil {
+		t.Fatalf("shell command completion did not start queued prompt")
+	}
+	if !m.running {
+		t.Fatalf("model running = false, want queued prompt running")
+	}
+	if len(m.queuedPrompts) != 0 {
+		t.Fatalf("queuedPrompts = %#v, want empty after queued prompt starts", m.queuedPrompts)
+	}
+	if !entriesContain(m.entries, "user", "queued prompt") {
+		t.Fatalf("entries missing queued prompt user message: %#v", m.entries)
+	}
+
+	m, _ = update(t, m, queuedCmd())
+	if got := strings.Join(runner.runs, ","); got != "queued prompt" {
+		t.Fatalf("runs = %#v, want queued prompt to run", runner.runs)
+	}
+}
+
+func TestModelFailedBangCommandCompletionStartsQueuedPrompt(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("!false"))
+	m, shellCmd := update(t, m, keyEnter())
+	if shellCmd == nil {
+		t.Fatalf("bang command did not dispatch shell command")
+	}
+
+	m, _ = update(t, m, keyRunes("queued after failure"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("queueing prompt while shell command runs returned command")
+	}
+
+	m, queuedCmd := update(t, m, shellCommandFinishedMsg{
+		command: "false",
+		result:  tools.BashCommandResult{Err: errors.New("exit status 1"), ExitCode: 1},
+	})
+	if queuedCmd == nil {
+		t.Fatalf("failed shell command completion did not start queued prompt")
+	}
+	if !m.running {
+		t.Fatalf("model running = false, want queued prompt running")
+	}
+	if !entriesContain(m.entries, "command", "exit status 1") {
+		t.Fatalf("entries missing failed shell command output: %#v", m.entries)
+	}
+
+	m, _ = update(t, m, queuedCmd())
+	if got := strings.Join(runner.runs, ","); got != "queued after failure" {
+		t.Fatalf("runs = %#v, want queued prompt to run after shell failure", runner.runs)
+	}
+}
+
 func TestModelBangCommandEmptyInputShowsHelp(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
@@ -551,6 +632,21 @@ func TestCtrlOTogglesShellCommandOutputExpansion(t *testing.T) {
 	}
 }
 
+func TestShellCommandRenderingPreservesWhitespace(t *testing.T) {
+	rendered := stripANSI(renderCommandEntry(entry{
+		role:  "command",
+		title: "Shell: !printf yaml",
+		body:  "  key: value  \n\n",
+	}, 80, true))
+
+	if !strings.Contains(rendered, "    key: value  ") {
+		t.Fatalf("rendered shell output did not preserve leading/trailing spaces:\n%q", rendered)
+	}
+	if !strings.Contains(rendered, "\n  \n") {
+		t.Fatalf("rendered shell output did not preserve blank output line:\n%q", rendered)
+	}
+}
+
 func TestFormatShellCommandResultTruncatesLargeOutput(t *testing.T) {
 	raw := strings.Repeat("x", maxShellCommandOutputBytes*2)
 	formatted := formatShellCommandResult(tools.BashCommandResult{Output: raw})
@@ -560,6 +656,18 @@ func TestFormatShellCommandResultTruncatesLargeOutput(t *testing.T) {
 	}
 	if !strings.Contains(formatted, "output truncated") {
 		t.Fatalf("formatted output missing truncation marker: %q", formatted[len(formatted)-80:])
+	}
+}
+
+func TestFormatShellCommandResultPreservesWhitespace(t *testing.T) {
+	for _, output := range []string{
+		"  key: value\n\n",
+		" \n\t",
+	} {
+		formatted := formatShellCommandResult(tools.BashCommandResult{Output: output})
+		if formatted != output {
+			t.Fatalf("formatted output = %q, want original output %q", formatted, output)
+		}
 	}
 }
 

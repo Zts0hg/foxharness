@@ -843,7 +843,13 @@ func renderCommandEntry(e entry, width int, expanded bool) string {
 		title = "Result"
 	}
 	header := fitLine(commandLabelStyle.Render(title), width)
-	body := renderPlainBlock(e.body, max(width-2, 20))
+	bodyWidth := max(width-2, 20)
+	var body string
+	if isShellCommandEntry(e) {
+		body = renderPlainBlockPreserveWhitespace(e.body, bodyWidth)
+	} else {
+		body = renderPlainBlock(e.body, bodyWidth)
+	}
 	if body == "" {
 		return header
 	}
@@ -1415,6 +1421,17 @@ func renderPlainBlock(text string, width int) string {
 	return strings.Join(out, "\n")
 }
 
+func renderPlainBlockPreserveWhitespace(text string, width int) string {
+	if text == "" {
+		return ""
+	}
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		out = append(out, wrapPlainLinePreserveWhitespace(line, width)...)
+	}
+	return strings.Join(out, "\n")
+}
+
 func wrapPlainLine(line string, width int) []string {
 	line = strings.TrimRight(line, " \t")
 	if line == "" {
@@ -1442,6 +1459,27 @@ func wrapPlainLine(line string, width int) []string {
 	return lines
 }
 
+func wrapPlainLinePreserveWhitespace(line string, width int) []string {
+	if line == "" {
+		return []string{""}
+	}
+	if lipgloss.Width(line) <= width {
+		return []string{line}
+	}
+	var lines []string
+	current := line
+	for lipgloss.Width(current) > width {
+		head, tail := splitLineAtExactWidth(current, width)
+		if head == "" {
+			break
+		}
+		lines = append(lines, head)
+		current = tail
+	}
+	lines = append(lines, current)
+	return lines
+}
+
 func splitLineAtWidth(line string, width int) (string, string) {
 	runes := []rune(line)
 	lastSpace := -1
@@ -1455,6 +1493,23 @@ func splitLineAtWidth(line string, width int) (string, string) {
 		}
 		if runes[i] == ' ' || runes[i] == '\t' {
 			lastSpace = i
+		}
+	}
+	return line, ""
+}
+
+func splitLineAtExactWidth(line string, width int) (string, string) {
+	runes := []rune(line)
+	for i := range runes {
+		candidate := string(runes[:i+1])
+		if lipgloss.Width(candidate) > width {
+			if i == 0 {
+				return string(runes[:1]), string(runes[1:])
+			}
+			return string(runes[:i]), string(runes[i:])
+		}
+		if lipgloss.Width(candidate) == width {
+			return candidate, string(runes[i+1:])
 		}
 	}
 	return line, ""
