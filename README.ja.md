@@ -348,6 +348,19 @@ go run ./cmd/fox exec "現在のプロジェクトをチェックして"
 go build -trimpath -ldflags="-s -w" -o fox ./cmd/fox
 ```
 
+開発版（`foxdev`）をインストール：
+
+現在のブランチをビルドして、リリース版の `fox` と並存するグローバルな `foxdev` バイナリを作成します。これにより、開発中の foxharness を任意のプロジェクトディレクトリで実行してテストできます：
+
+```bash
+./scripts/install-foxdev.sh                  # /usr/local/bin にインストール（sudo が必要な場合あり）
+sudo ./scripts/install-foxdev.sh             # /usr/local/bin に権限エラーなく書き込む
+PREFIX=~/go/bin ./scripts/install-foxdev.sh  # sudo 無しでインストール（~/go/bin を PATH に設定する必要あり）
+./scripts/install-foxdev.sh --check          # ビルド前に `go test ./...` を実行
+```
+
+`fox` はリリース版のまま、`foxdev` は最後にビルドしたブランチに追従します —— `git switch feat/x && ./scripts/install-foxdev.sh` で更新できます。`foxdev` にも `fox` と同じ `ZHIPU_API_KEY` が必要です。
+
 ## ライセンス
 
 foxharness は GNU Affero General Public License v3.0 以降（`AGPL-3.0-or-later`）でライセンスされています。

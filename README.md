@@ -420,6 +420,23 @@ Build locally:
 go build -trimpath -ldflags="-s -w" -o fox ./cmd/fox
 ```
 
+Install a dev build (`foxdev`):
+
+Build the current branch into a global `foxdev` binary that lives alongside the
+released `fox`, so you can exercise in-development foxharness in any project
+directory:
+
+```bash
+./scripts/install-foxdev.sh                  # installs to /usr/local/bin (may need sudo)
+sudo ./scripts/install-foxdev.sh             # write to /usr/local/bin without a permission error
+PREFIX=~/go/bin ./scripts/install-foxdev.sh  # install without sudo (needs ~/go/bin on PATH)
+./scripts/install-foxdev.sh --check          # run `go test ./...` before building
+```
+
+`fox` stays the released version; `foxdev` tracks the branch you last built —
+`git switch feat/x && ./scripts/install-foxdev.sh` refreshes it. `foxdev` needs
+the same `ZHIPU_API_KEY` as `fox`.
+
 ## License
 
 foxharness is licensed under the GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`).
