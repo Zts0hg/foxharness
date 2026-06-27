@@ -175,6 +175,7 @@ Inside the TUI:
 - Drag over transcript text: copy the selection to the macOS clipboard.
 - `Ctrl+F`: focus the right sidebar, then use `Tab`, `Up` / `Down`, `PgUp` / `PgDown`, `Home`, and `End` to browse its boxes.
 - `/`: open slash command suggestions.
+- `!<command>`: run a local shell command and show the output without sending it to the model.
 - `Esc`: cancel the active run.
 - `Ctrl+C` twice within two seconds: quit.
 

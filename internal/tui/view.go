@@ -807,7 +807,7 @@ func renderEntryWithOptions(e entry, width int, toolOutputExpanded bool) string 
 	case e.role == "assistant":
 		return renderAssistantEntry(e, width)
 	case e.role == "command":
-		return renderCommandEntry(e, width)
+		return renderCommandEntry(e, width, toolOutputExpanded)
 	}
 
 	label := labelStyle(e).Render(strings.ToUpper(e.role))
@@ -837,17 +837,43 @@ func renderAssistantEntry(e entry, width int) string {
 	return assistantLabelStyle.Width(width).Render(renderMarkdown(e.body, max(width, 20)))
 }
 
-func renderCommandEntry(e entry, width int) string {
+func renderCommandEntry(e entry, width int, expanded bool) string {
 	title := strings.TrimSpace(e.title)
 	if title == "" {
 		title = "Result"
 	}
 	header := fitLine(commandLabelStyle.Render(title), width)
-	body := renderPlainBlock(e.body, max(width-2, 20))
+	bodyWidth := max(width-2, 20)
+	var body string
+	if isShellCommandEntry(e) {
+		body = renderPlainBlockPreserveWhitespace(e.body, bodyWidth)
+	} else {
+		body = renderPlainBlock(e.body, bodyWidth)
+	}
 	if body == "" {
 		return header
 	}
+	if isShellCommandEntry(e) {
+		body = collapseCommandOutput(body, expanded)
+	}
 	return header + "\n" + indentLines(body, "  ")
+}
+
+func isShellCommandEntry(e entry) bool {
+	return e.role == "command" && strings.HasPrefix(strings.TrimSpace(e.title), "Shell: !")
+}
+
+func collapseCommandOutput(body string, expanded bool) string {
+	if expanded {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) <= maxCollapsedToolOutputLines {
+		return body
+	}
+	hidden := len(lines) - maxCollapsedToolOutputLines
+	lines = append(lines[:maxCollapsedToolOutputLines], fmt.Sprintf("+%d lines (ctrl+o to expand)", hidden))
+	return strings.Join(lines, "\n")
 }
 
 func renderToolCall(e entry, width int) string {
@@ -894,14 +920,33 @@ func isToolResultPair(prev entry, current entry) bool {
 }
 
 func (m Model) renderInput(width int) string {
+	bang := m.hasBangPrefix() && m.inputPastePreviewLabel() == ""
 	prompt := lipgloss.NewStyle().Foreground(cAccentHi).Render("> ")
-	value := string(m.input)
+	if bang {
+		prompt = lipgloss.NewStyle().Bold(true).Foreground(cWarn).Render("! ")
+	}
+
+	// In bang mode the leading '!' is absorbed into the prompt, so render
+	// against a display copy with that rune removed; the cursor index shifts by
+	// one to stay aligned with the command text. The editing state is untouched.
+	view := m
+	if bang {
+		view.input = m.input[1:]
+		if view.inputCursor > 0 {
+			view.inputCursor--
+		}
+	}
+
+	value := string(view.input)
 	cursor := ""
-	if m.inputCanAcceptTyping() {
-		cursor = m.renderCursor()
+	if view.inputCanAcceptTyping() {
+		cursor = view.renderCursor()
 	}
 	if value == "" {
 		placeholder := "ask anything, or /help for commands"
+		if bang {
+			placeholder = "run a local shell command, e.g. ls"
+		}
 		if m.running {
 			placeholder = "message will be queued, or /cancel"
 		}
@@ -914,8 +959,8 @@ func (m Model) renderInput(width int) string {
 		if label := m.inputPastePreviewLabel(); label != "" && len(m.input) > 0 {
 			return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(prompt + lipgloss.NewStyle().Foreground(cTextPri).Render(label) + cursor)
 		}
-		m.clampInputCursor()
-		return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(m.renderInputRows(prompt, cursor))
+		view.clampInputCursor()
+		return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(view.renderInputRows(prompt, cursor))
 	}
 	return inputStyle.Width(width - inputStyle.GetHorizontalFrameSize()).Render(prompt + value)
 }
@@ -1214,7 +1259,7 @@ func (m Model) renderCursor() string {
 }
 
 func (m Model) renderFooter(width int) string {
-	help := "Enter send | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown/wheel scroll | drag select to copy | Ctrl+F sidebar | Ctrl+C twice quit"
+	help := "Enter send | !cmd shell | Up/Down history | Tab complete | Shift+Tab plan | PgUp/PgDown/wheel scroll | drag select to copy | Ctrl+F sidebar | Ctrl+C twice quit"
 	if m.sidebarFocused {
 		help = "Tab switch box | Up/Down/PgUp/PgDown scroll | 1/2/3 select | Esc close | Ctrl+C twice quit"
 	} else if m.hasSlashMenu() {
@@ -1395,6 +1440,17 @@ func renderPlainBlock(text string, width int) string {
 	return strings.Join(out, "\n")
 }
 
+func renderPlainBlockPreserveWhitespace(text string, width int) string {
+	if text == "" {
+		return ""
+	}
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		out = append(out, wrapPlainLinePreserveWhitespace(line, width)...)
+	}
+	return strings.Join(out, "\n")
+}
+
 func wrapPlainLine(line string, width int) []string {
 	line = strings.TrimRight(line, " \t")
 	if line == "" {
@@ -1422,6 +1478,27 @@ func wrapPlainLine(line string, width int) []string {
 	return lines
 }
 
+func wrapPlainLinePreserveWhitespace(line string, width int) []string {
+	if line == "" {
+		return []string{""}
+	}
+	if lipgloss.Width(line) <= width {
+		return []string{line}
+	}
+	var lines []string
+	current := line
+	for lipgloss.Width(current) > width {
+		head, tail := splitLineAtExactWidth(current, width)
+		if head == "" {
+			break
+		}
+		lines = append(lines, head)
+		current = tail
+	}
+	lines = append(lines, current)
+	return lines
+}
+
 func splitLineAtWidth(line string, width int) (string, string) {
 	runes := []rune(line)
 	lastSpace := -1
@@ -1435,6 +1512,23 @@ func splitLineAtWidth(line string, width int) (string, string) {
 		}
 		if runes[i] == ' ' || runes[i] == '\t' {
 			lastSpace = i
+		}
+	}
+	return line, ""
+}
+
+func splitLineAtExactWidth(line string, width int) (string, string) {
+	runes := []rune(line)
+	for i := range runes {
+		candidate := string(runes[:i+1])
+		if lipgloss.Width(candidate) > width {
+			if i == 0 {
+				return string(runes[:1]), string(runes[1:])
+			}
+			return string(runes[:i]), string(runes[i:])
+		}
+		if lipgloss.Width(candidate) == width {
+			return candidate, string(runes[i+1:])
 		}
 	}
 	return line, ""

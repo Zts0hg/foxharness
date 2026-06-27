@@ -17,6 +17,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/slash"
+	"github.com/Zts0hg/foxharness/internal/tools"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
 	xansi "github.com/charmbracelet/x/ansi"
@@ -31,6 +32,8 @@ const (
 	pendingEscDelay   = 50 * time.Millisecond
 	mouseTailDelay    = 150 * time.Millisecond
 	inputHistoryLimit = 100
+
+	maxShellCommandOutputBytes = tools.MaxBashOutputBytes
 )
 
 // Runner is the app-facing runtime required by the TUI. It is intentionally
@@ -368,6 +371,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendCommandEntry("Compact", body)
 		m.refreshRuntimeInfo()
 		m.status = "Context compacted"
+		return m, nil
+
+	case shellCommandFinishedMsg:
+		m.running = false
+		m.runStartedAt = time.Time{}
+		m.cancelRun = nil
+		m.refreshRuntimeInfo()
+		if msg.result.Err != nil {
+			m.appendEntry("command", "Shell: !"+msg.command, formatShellCommandResult(msg.result), true)
+			if msg.result.TimedOut {
+				m.status = "Shell command timed out"
+			} else {
+				m.status = "Shell command failed"
+			}
+			if len(m.queuedPrompts) > 0 {
+				return m.startNextQueuedPrompt()
+			}
+			return m, nil
+		}
+		m.appendCommandEntry("Shell: !"+msg.command, formatShellCommandResult(msg.result))
+		m.status = "Shell command complete"
+		if len(m.queuedPrompts) > 0 {
+			return m.startNextQueuedPrompt()
+		}
 		return m, nil
 
 	case newSessionFinishedMsg:
@@ -1555,6 +1582,9 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	if text == "" {
 		return m, nil
 	}
+	if strings.HasPrefix(text, "!") {
+		return m.submitBangCommand(text)
+	}
 	if strings.HasPrefix(text, "/") {
 		if command, ok := m.selectedSlashCommand(); ok {
 			text = command.Name
@@ -1591,6 +1621,40 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	m.resetHistoryNavigation()
 	m.resetCompletions()
 	return m.startPrompt(text)
+}
+
+func (m Model) submitBangCommand(text string) (tea.Model, tea.Cmd) {
+	command := strings.TrimSpace(strings.TrimPrefix(text, "!"))
+	if command == "" {
+		m.input = nil
+		m.inputCursor = 0
+		m.clearInputPastePreview()
+		m.resetHistoryNavigation()
+		m.resetCompletions()
+		m.appendCommandEntry("Shell commands", "Prefix a command with ! to run it locally.\nExample: !ls")
+		m.status = "Shell command help"
+		return m, nil
+	}
+	if m.running {
+		m.status = "Shell command unavailable while a run is active"
+		return m, nil
+	}
+
+	m.addInputHistory("!" + command)
+	m.input = nil
+	m.inputCursor = 0
+	m.clearInputPastePreview()
+	m.resetHistoryNavigation()
+	m.resetCompletions()
+	m.scrollOffset = 0
+	m.running = true
+	m.runStartedAt = m.nowTime()
+	m.spinnerFrame = 0
+	m.status = "Running shell command"
+
+	runCtx, cancel := context.WithCancel(m.ctx)
+	m.cancelRun = cancel
+	return m, runShellCommandCmd(runCtx, m.runner.WorkDir(), command)
 }
 
 func (m Model) startPrompt(text string) (tea.Model, tea.Cmd) {
@@ -1928,6 +1992,12 @@ func (m Model) hasSlashMenu() bool {
 
 func (m Model) hasFileMentionMenu() bool {
 	return len(m.matchingFileMentions()) > 0
+}
+
+// hasBangPrefix reports whether the current input starts with the bang shell
+// prefix, so the prompt can switch to shell mode while the user is still typing.
+func (m Model) hasBangPrefix() bool {
+	return len(m.input) > 0 && m.input[0] == '!'
 }
 
 func (m *Model) moveSlashSelection(delta int) {
@@ -2496,6 +2566,7 @@ func slashCommandHelp() string {
 	for _, command := range slashCommands {
 		lines = append(lines, fmt.Sprintf("%-*s  %s", commandWidth, command.Name, command.Description))
 	}
+	lines = append(lines, "", "!<command>  run a local shell command without sending it to the model")
 	return strings.Join(lines, "\n")
 }
 
@@ -2807,12 +2878,75 @@ type compactFinishedMsg struct {
 	err    error
 }
 
+type shellCommandFinishedMsg struct {
+	command string
+	result  tools.BashCommandResult
+}
+
 func runPromptCmd(ctx context.Context, runner Runner, prompt string, events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
 		result, err := runner.Run(ctx, prompt, reporter)
 		return runFinishedMsg{result: result, err: err}
 	}
+}
+
+func runShellCommandCmd(ctx context.Context, workDir string, command string) tea.Cmd {
+	return func() tea.Msg {
+		return shellCommandFinishedMsg{
+			command: command,
+			result:  tools.RunBashCommand(ctx, workDir, command, 0),
+		}
+	}
+}
+
+func formatShellCommandResult(result tools.BashCommandResult) string {
+	output := truncateShellCommandOutput(result.Output)
+	if result.Truncated && output != "" {
+		output += shellCommandTruncationMarker()
+	}
+	if result.TimedOut {
+		if output == "" {
+			return "Command timed out after 30s."
+		}
+		return output + "\n\nCommand timed out after 30s."
+	}
+	if result.Err != nil {
+		status := result.Err.Error()
+		if result.ExitCode != 0 {
+			status = fmt.Sprintf("exit status %d", result.ExitCode)
+		}
+		if output == "" {
+			return status
+		}
+		return output + "\n\n" + status
+	}
+	if output == "" {
+		return "Command completed with no output."
+	}
+	return output
+}
+
+func truncateShellCommandOutput(output string) string {
+	if len(output) <= maxShellCommandOutputBytes {
+		return output
+	}
+	cut := 0
+	for i := range output {
+		if i > maxShellCommandOutputBytes {
+			break
+		}
+		cut = i
+	}
+	if cut == 0 {
+		cut = maxShellCommandOutputBytes
+	}
+	return output[:cut] +
+		shellCommandTruncationMarker()
+}
+
+func shellCommandTruncationMarker() string {
+	return fmt.Sprintf("\n\n[output truncated to %d bytes]", maxShellCommandOutputBytes)
 }
 
 func newSessionCmd(ctx context.Context, runner Runner) tea.Cmd {

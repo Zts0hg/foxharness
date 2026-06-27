@@ -18,6 +18,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/tools"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -260,6 +261,240 @@ func TestModelSubmitsPromptAndRendersRunEvents(t *testing.T) {
 	}
 }
 
+func TestBangInputRendering(t *testing.T) {
+	runner := newFakeRunner()
+	base := func() Model {
+		m := NewModel(context.Background(), runner, Config{})
+		m.width = 80
+		m.height = 20
+		return m
+	}
+
+	// Typing "!ls" renders as "! ls" (bang prompt + command, no duplicated '!'),
+	// not the ordinary "> !ls".
+	m, _ := update(t, base(), keyRunes("!ls"))
+	rendered := stripANSI(m.renderInput(m.innerWidth()))
+	if !strings.Contains(rendered, "! ls") {
+		t.Fatalf("bang input should render as '! ls', got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "> !ls") {
+		t.Fatalf("bang input must not keep the ordinary '> ' prompt, got:\n%s", rendered)
+	}
+	if rows := renderedInputContentRows(m); len(rows) == 0 || rows[0] != "ls" {
+		t.Fatalf("rendered content rows = %#v, want first row \"ls\"", rows)
+	}
+	if _, col, ok := renderedInputCursorPosition(m); !ok || col != lipgloss.Width("! ls") {
+		t.Fatalf("cursor col = %d (ok=%v), want %d (after \"! ls\")", col, ok, lipgloss.Width("! ls"))
+	}
+
+	// A lone "!" shows the bang prompt plus a shell-mode placeholder.
+	m2, _ := update(t, base(), keyRunes("!"))
+	rendered2 := stripANSI(m2.renderInput(m2.innerWidth()))
+	if !strings.Contains(rendered2, "! ") || !strings.Contains(rendered2, "shell command") {
+		t.Fatalf("empty bang should show '! ' + shell placeholder, got:\n%s", rendered2)
+	}
+
+	// Ordinary input still uses the "> " prompt.
+	m3, _ := update(t, base(), keyRunes("hello"))
+	rendered3 := stripANSI(m3.renderInput(m3.innerWidth()))
+	if !strings.Contains(rendered3, "> hello") {
+		t.Fatalf("ordinary input should keep '> ' prompt, got:\n%s", rendered3)
+	}
+}
+
+func TestModelBangCommandRunsLocalShellWithoutModelRun(t *testing.T) {
+	workDir := t.TempDir()
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("!printf fox-bang"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatalf("bang command did not dispatch shell command")
+	}
+	if !m.running {
+		t.Fatalf("model running = false, want shell command running")
+	}
+	if got := string(m.input); got != "" {
+		t.Fatalf("input after bang submit = %q, want empty", got)
+	}
+
+	m, _ = update(t, m, cmd())
+	if m.running {
+		t.Fatalf("model running = true after shell command completion")
+	}
+	if len(runner.runs) != 0 {
+		t.Fatalf("runner runs = %#v, want no model runs for bang command", runner.runs)
+	}
+	if !entriesContain(m.entries, "command", "fox-bang") {
+		t.Fatalf("entries missing shell output: %#v", m.entries)
+	}
+	if len(m.inputHistory) == 0 || m.inputHistory[len(m.inputHistory)-1] != "!printf fox-bang" {
+		t.Fatalf("input history = %#v, want bang command recorded", m.inputHistory)
+	}
+}
+
+func TestModelBangCommandCompletionStartsQueuedPrompt(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("!printf shell"))
+	m, shellCmd := update(t, m, keyEnter())
+	if shellCmd == nil {
+		t.Fatalf("bang command did not dispatch shell command")
+	}
+
+	m, cmd := update(t, m, keyRunes("queued prompt"))
+	if cmd != nil {
+		t.Fatalf("typing while shell command runs returned command")
+	}
+	m, cmd = update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("queueing prompt while shell command runs returned command")
+	}
+	if len(m.queuedPrompts) != 1 || m.queuedPrompts[0] != "queued prompt" {
+		t.Fatalf("queuedPrompts = %#v, want queued prompt", m.queuedPrompts)
+	}
+
+	m, queuedCmd := update(t, m, shellCommandFinishedMsg{
+		command: "printf shell",
+		result:  tools.BashCommandResult{Output: "shell"},
+	})
+	if queuedCmd == nil {
+		t.Fatalf("shell command completion did not start queued prompt")
+	}
+	if !m.running {
+		t.Fatalf("model running = false, want queued prompt running")
+	}
+	if len(m.queuedPrompts) != 0 {
+		t.Fatalf("queuedPrompts = %#v, want empty after queued prompt starts", m.queuedPrompts)
+	}
+	if !entriesContain(m.entries, "user", "queued prompt") {
+		t.Fatalf("entries missing queued prompt user message: %#v", m.entries)
+	}
+
+	m, _ = update(t, m, queuedCmd())
+	if got := strings.Join(runner.runs, ","); got != "queued prompt" {
+		t.Fatalf("runs = %#v, want queued prompt to run", runner.runs)
+	}
+}
+
+func TestModelFailedBangCommandCompletionStartsQueuedPrompt(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("!false"))
+	m, shellCmd := update(t, m, keyEnter())
+	if shellCmd == nil {
+		t.Fatalf("bang command did not dispatch shell command")
+	}
+
+	m, _ = update(t, m, keyRunes("queued after failure"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("queueing prompt while shell command runs returned command")
+	}
+
+	m, queuedCmd := update(t, m, shellCommandFinishedMsg{
+		command: "false",
+		result:  tools.BashCommandResult{Err: errors.New("exit status 1"), ExitCode: 1},
+	})
+	if queuedCmd == nil {
+		t.Fatalf("failed shell command completion did not start queued prompt")
+	}
+	if !m.running {
+		t.Fatalf("model running = false, want queued prompt running")
+	}
+	if !entriesContain(m.entries, "command", "exit status 1") {
+		t.Fatalf("entries missing failed shell command output: %#v", m.entries)
+	}
+
+	m, _ = update(t, m, queuedCmd())
+	if got := strings.Join(runner.runs, ","); got != "queued after failure" {
+		t.Fatalf("runs = %#v, want queued prompt to run after shell failure", runner.runs)
+	}
+}
+
+func TestModelBangCommandEmptyInputShowsHelp(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("!"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("empty bang returned command")
+	}
+	if len(runner.runs) != 0 {
+		t.Fatalf("runner runs = %#v, want no model runs", runner.runs)
+	}
+	if !entriesContain(m.entries, "command", "Example: !ls") {
+		t.Fatalf("entries missing bang help: %#v", m.entries)
+	}
+}
+
+func TestModelBangCommandRejectedWhileRunActive(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.running = true
+
+	m, _ = update(t, m, keyRunes("!pwd"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("bang while running returned command")
+	}
+	if len(m.queuedPrompts) != 0 {
+		t.Fatalf("queued prompts = %#v, want bang command not queued", m.queuedPrompts)
+	}
+	if string(m.input) != "!pwd" {
+		t.Fatalf("input after rejected bang = %q, want preserved", string(m.input))
+	}
+	if !strings.Contains(m.status, "Shell command unavailable") {
+		t.Fatalf("status = %q, want shell unavailable notice", m.status)
+	}
+}
+
+func TestModelEscCancelsRunningBangCommand(t *testing.T) {
+	workDir := t.TempDir()
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("!sleep 2; printf done"))
+	m, shellCmd := update(t, m, keyEnter())
+	if shellCmd == nil {
+		t.Fatalf("bang command did not dispatch shell command")
+	}
+
+	done := make(chan tea.Msg, 1)
+	go func() {
+		done <- shellCmd()
+	}()
+
+	m, escCmd := update(t, m, keyEsc())
+	if escCmd == nil {
+		t.Fatalf("esc did not schedule pending cancellation")
+	}
+	m, _ = update(t, m, escCmd())
+
+	select {
+	case msg := <-done:
+		m, _ = update(t, m, msg)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("running bang command did not stop promptly after Esc cancellation")
+	}
+
+	if m.running {
+		t.Fatalf("model running = true after cancelled bang command")
+	}
+	if len(m.entries) == 0 || m.entries[len(m.entries)-1].title != "Shell: !sleep 2; printf done" {
+		t.Fatalf("entries missing cancelled shell command: %#v", m.entries)
+	}
+	if entriesContain(m.entries, "command", "done") {
+		t.Fatalf("shell command continued after Esc cancellation: %#v", m.entries)
+	}
+}
+
 func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
@@ -394,6 +629,86 @@ func TestCtrlOTogglesLongToolOutputExpansion(t *testing.T) {
 	collapsed := stripANSI(m.View())
 	if !strings.Contains(collapsed, "+2 lines (ctrl+o to expand)") || strings.Contains(collapsed, "line 5") {
 		t.Fatalf("second ctrl+o should collapse output again:\n%s", collapsed)
+	}
+}
+
+func TestShellCommandRenderingCollapsesLongOutput(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = []entry{{
+		role:  "command",
+		title: "Shell: !printf lines",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5",
+	}}
+
+	plain := stripANSI(m.View())
+	for _, want := range []string{"Shell: !printf lines", "line 1", "line 2", "line 3", "+2 lines (ctrl+o to expand)"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("collapsed shell command output missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "line 4") || strings.Contains(plain, "line 5") {
+		t.Fatalf("collapsed shell command output should hide lines after third:\n%s", plain)
+	}
+}
+
+func TestCtrlOTogglesShellCommandOutputExpansion(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = []entry{{
+		role:  "command",
+		title: "Shell: !printf lines",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5",
+	}}
+
+	m, _ = update(t, m, keyCtrlO())
+	expanded := stripANSI(m.View())
+	if strings.Contains(expanded, "ctrl+o to expand") {
+		t.Fatalf("expanded shell output still shows collapse hint:\n%s", expanded)
+	}
+	for _, want := range []string{"line 4", "line 5"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded shell output missing %q:\n%s", want, expanded)
+		}
+	}
+}
+
+func TestShellCommandRenderingPreservesWhitespace(t *testing.T) {
+	rendered := stripANSI(renderCommandEntry(entry{
+		role:  "command",
+		title: "Shell: !printf yaml",
+		body:  "  key: value  \n\n",
+	}, 80, true))
+
+	if !strings.Contains(rendered, "    key: value  ") {
+		t.Fatalf("rendered shell output did not preserve leading/trailing spaces:\n%q", rendered)
+	}
+	if !strings.Contains(rendered, "\n  \n") {
+		t.Fatalf("rendered shell output did not preserve blank output line:\n%q", rendered)
+	}
+}
+
+func TestFormatShellCommandResultTruncatesLargeOutput(t *testing.T) {
+	raw := strings.Repeat("x", maxShellCommandOutputBytes*2)
+	formatted := formatShellCommandResult(tools.BashCommandResult{Output: raw})
+
+	if len(formatted) >= len(raw) {
+		t.Fatalf("formatted output length = %d, want shorter than raw length %d", len(formatted), len(raw))
+	}
+	if !strings.Contains(formatted, "output truncated") {
+		t.Fatalf("formatted output missing truncation marker: %q", formatted[len(formatted)-80:])
+	}
+}
+
+func TestFormatShellCommandResultPreservesWhitespace(t *testing.T) {
+	for _, output := range []string{
+		"  key: value\n\n",
+		" \n\t",
+	} {
+		formatted := formatShellCommandResult(tools.BashCommandResult{Output: output})
+		if formatted != output {
+			t.Fatalf("formatted output = %q, want original output %q", formatted, output)
+		}
 	}
 }
 
@@ -3602,6 +3917,10 @@ func renderedInputContentRows(m Model) []string {
 		}
 		if strings.HasPrefix(trimmed, "> ") {
 			rows = append(rows, strings.TrimPrefix(trimmed, "> "))
+			continue
+		}
+		if strings.HasPrefix(trimmed, "! ") {
+			rows = append(rows, strings.TrimPrefix(trimmed, "! "))
 			continue
 		}
 		if strings.HasPrefix(trimmed, "  ") {
