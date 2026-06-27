@@ -349,6 +349,19 @@ go run ./cmd/fox exec "检查一下当前项目"
 go build -trimpath -ldflags="-s -w" -o fox ./cmd/fox
 ```
 
+安装开发版（`foxdev`）：
+
+把当前分支编译成一个全局可用的 `foxdev` 二进制，与正式发布的 `fox` 并存，这样就能在任意项目目录中运行开发中的 foxharness 进行测试：
+
+```bash
+./scripts/install-foxdev.sh                  # 安装到 /usr/local/bin（可能需要 sudo）
+sudo ./scripts/install-foxdev.sh             # 写入 /usr/local/bin，避免权限错误
+PREFIX=~/go/bin ./scripts/install-foxdev.sh  # 免 sudo 安装（需要 ~/go/bin 在 PATH 中）
+./scripts/install-foxdev.sh --check          # 编译前先运行 `go test ./...`
+```
+
+`fox` 仍是正式发布版；`foxdev` 跟随你最近编译的分支 —— `git switch feat/x && ./scripts/install-foxdev.sh` 即可刷新。`foxdev` 同样需要设置 `ZHIPU_API_KEY`。
+
 ## 许可证
 
 foxharness 采用 GNU Affero General Public License v3.0 或更高版本（`AGPL-3.0-or-later`）授权。
