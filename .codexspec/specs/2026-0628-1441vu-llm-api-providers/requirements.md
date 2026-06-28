@@ -89,10 +89,10 @@ quotes needed to resolve later interpretation disputes.
 ### DEC-004: Provider profile and protocol CLI flags
 
 - **Status**: confirmed
-- **Decision**: The CLI MUST use `-llm-provider` for named provider profile selection and `-protocol` for OpenAI/Claude compatibility selection. The old `-provider` flag MUST NOT be retained as either a primary flag or compatibility alias; users passing it SHOULD receive a clear error directing them to the new flags.
+- **Decision**: The CLI MUST use `-llm-provider` for named provider profile selection and `-protocol` for OpenAI/Claude compatibility selection. The old `-provider` flag MUST NOT be retained as either a primary flag or compatibility alias. It MUST NOT receive special parsing or migration handling; when used in flag position, it is treated like any other unknown flag by the standard parser, while occurrences inside positional prompt text are preserved as prompt text.
 - **Alternatives Rejected**: Reusing `-provider` for either protocol selection or provider profile selection.
 - **Reason**: Keeping `-provider` would preserve ambiguity because it historically meant protocol, while the new design distinguishes provider identity from protocol compatibility.
-- **User Evidence**: The user questioned why `-provider` should remain when `-llm-provider` exists, then accepted the recommendation to use `-llm-provider` and `-protocol`.
+- **User Evidence**: The user questioned why `-provider` should remain when `-llm-provider` exists, accepted the `-llm-provider` / `-protocol` split, and later clarified that `-provider` should behave as if it never existed rather than receiving targeted rejection logic.
 
 ### DEC-005: Separate provider identity from protocol compatibility
 
@@ -139,7 +139,7 @@ None.
 
 ### Session 2026-06-28 15:04:52 CST
 
-- **Summary Presented**: Support user-configured OpenAI-compatible or Claude-compatible LLM providers; replace the implicit Zhipu default; support named provider profiles; resolve config by CLI, environment, settings file, then no default; store persistent config in `~/.foxharness/settings.json`; use `-llm-provider` and `-protocol`; do not retain old `-provider`; keep Zhipu only as an ordinary example.
+- **Summary Presented**: Support user-configured OpenAI-compatible or Claude-compatible LLM providers; replace the implicit Zhipu default; support named provider profiles and complete inline config; resolve config by CLI, environment, settings file, then no default; store persistent profile config in `~/.foxharness/settings.json`; use `-llm-provider` and `-protocol`; do not retain or specially handle old `-provider`; keep Zhipu only as an ordinary example.
 - **User Confirmation**: "确认写入"
 - **Entries Confirmed**: NEED-001, NEED-002, NEED-003, NEED-004, CON-001, DEC-001, DEC-002, DEC-003, DEC-004, DEC-005, DEC-006, OUT-001
 

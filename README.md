@@ -160,8 +160,9 @@ Use `-protocol` only to override the compatibility adapter for a run:
 fox exec -protocol claude -base-url https://api.anthropic.com -model claude-sonnet-4-20250514 -api-key-env ANTHROPIC_API_KEY "Inspect this project for potential bugs"
 ```
 
-The old `-provider` flag is no longer accepted. Use `-llm-provider` for profile
-selection and `-protocol` for OpenAI/Claude compatibility.
+There is no `-provider` flag. In flag position it is reported as an unknown
+flag; use `-llm-provider` for profile selection and `-protocol` for
+OpenAI/Claude compatibility.
 
 Both modes use the same internal agent messages and tools. The provider adapter translates them into the target protocol:
 

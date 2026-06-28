@@ -143,9 +143,6 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 		mode = launchAutodev
 		args = args[1:]
 	}
-	if err := rejectOldProviderFlag(args); err != nil {
-		return cfg, mode, err
-	}
 
 	fs := flag.NewFlagSet("fox", flag.ContinueOnError)
 	if output == nil {
@@ -215,18 +212,6 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 
 func resolveLLMConfig(homeDir string, cli llmconfig.CLIOverrides, lookup llmconfig.EnvLookup) (llmconfig.ResolvedConfig, error) {
 	return llmresolve.FromUserSettings(homeDir, cli, lookup)
-}
-
-func rejectOldProviderFlag(args []string) error {
-	for _, arg := range args {
-		if arg == "--" {
-			break
-		}
-		if arg == "-provider" || arg == "--provider" || strings.HasPrefix(arg, "-provider=") || strings.HasPrefix(arg, "--provider=") {
-			return fmt.Errorf("-provider is no longer supported; use -llm-provider to select a provider profile or -protocol to select openai/claude compatibility")
-		}
-	}
-	return nil
 }
 
 func readPrompt(input string) (string, error) {

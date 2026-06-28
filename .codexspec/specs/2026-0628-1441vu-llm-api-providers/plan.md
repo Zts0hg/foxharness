@@ -110,7 +110,7 @@ Field rules:
 - `-api-key-env`: environment variable name to read the API key from.
 - `-api-key`: direct API key override.
 
-The old `-provider` flag will not be registered as a normal flag. Argument parsing will pre-detect `-provider` and `--provider` and return a clear error instructing users to use `-llm-provider` for provider profile selection or `-protocol` for OpenAI/Claude protocol selection.
+The old `-provider` flag will not be registered and will not receive targeted migration parsing. When it appears in flag position, the standard Go flag parser reports it as an unknown flag. When it appears after the first positional prompt token or after `--`, it remains prompt text.
 
 **Covers**: REQ-004, REQ-005, REQ-006, REQ-007, REQ-010, REQ-013
 
@@ -192,7 +192,7 @@ Auth behavior:
 Update CLI parsing and app startup:
 
 - Register the new LLM flags listed in this plan.
-- Reject old `-provider` / `--provider` with a targeted error before normal flag parsing.
+- Do not register or pre-scan old `-provider` / `--provider`; rely on standard unknown-flag behavior in flag position and preserve positional prompt text.
 - Load settings from `~/.foxharness/settings.json`.
 - Resolve effective LLM configuration via `internal/llmconfig`.
 - Pass the resolved LLM config into `app.RunTUI` and non-TUI app startup instead of passing a protocol string and model fallback separately.
@@ -239,7 +239,7 @@ Documentation should:
 - Show the new `llm.default_provider` / `llm.providers` settings shape.
 - Explain config priority: CLI > env vars > `~/.foxharness/settings.json` > no built-in provider default.
 - Explain `-llm-provider` versus `-protocol`.
-- Explain that `-provider` is no longer accepted.
+- Explain that foxharness has no `-provider` flag and that flag-position usage is a standard unknown flag.
 - Include Zhipu only as an ordinary example profile, with explicit `protocol`, `base_url`, `model`, `auth`, and `api_key_env`.
 - Include an `auth: "none"` local endpoint example.
 - Prefer `api_key_env` over direct `api_key` in examples.
@@ -248,7 +248,7 @@ Documentation should:
 
 ## Data Flow
 
-1. CLI parses flags and rejects old `-provider`.
+1. CLI parses flags and does not register old `-provider`.
 2. The app loads `~/.foxharness/settings.json`.
 3. `llmconfig` collects environment overrides.
 4. `llmconfig` selects a profile id from CLI, env, or settings.
@@ -296,7 +296,7 @@ Reasoning: missing credentials for `api-key` should fail early, while local or g
 
 ### PLD-005: Provider Switching Is Profile Selection, Not Protocol Aliasing
 
-`-llm-provider` selects a named profile. `-protocol` overrides only protocol. The old `-provider` flag is rejected because its old meaning was protocol-like and conflicts with the new user-facing provider concept.
+`-llm-provider` selects a named profile. `-protocol` overrides only protocol. The old `-provider` flag is not registered because its old meaning was protocol-like and conflicts with the new user-facing provider concept; no targeted rejection is added, so prompt text containing `-provider` remains valid after positional parsing starts.
 
 Reasoning: users need to switch full configurations, not just protocol strings. Separating profile id from protocol avoids ambiguous CLI behavior.
 
@@ -348,7 +348,7 @@ Reasoning: the spec requires convenient provider switching through configuration
 
 - Update `internal/app.CLIConfig` and `cmd/fox` flag parsing.
 - Add tests for `-llm-provider`, `-protocol`, `-base-url`, `-auth`, `-api-key-env`, and `-api-key`.
-- Add tests for rejecting `-provider` and `--provider` with migration guidance.
+- Add tests for generic unknown-flag behavior when `-provider` or `--provider` appears in flag position, and for preserving `-provider` when it appears in positional prompt text.
 - Replace model fallback resolution with LLM config resolution.
 - Update errors surfaced by startup to identify missing required config fields.
 
@@ -389,7 +389,7 @@ Reasoning: the spec requires convenient provider switching through configuration
 - `internal/llmconfig`: resolution, validation, errors, auth modes, env override names.
 - `internal/settings`: load/save schema, unknown field preservation, provider profile update.
 - `internal/provider`: request construction for OpenAI and Claude protocols, auth headers, base URLs, model ids.
-- `cmd/fox`: flag parsing, old flag rejection, startup config resolution errors.
+- `cmd/fox`: flag parsing, old flag unknown behavior, startup config resolution errors.
 - `internal/app`: runner config propagation and `SetModel` provider rebuild.
 
 ### Integration-Level Tests
@@ -433,11 +433,11 @@ Mitigation: update model persistence to write `llm.providers[active_profile].mod
 
 **Covers**: REQ-003, REQ-012
 
-### Risk: Old `-provider` Error Looks Like a Generic Flag Parse Failure
+### Risk: Old `-provider` Text Is Mistaken for a Flag
 
-If left to Go's flag package, users may only see "flag provided but not defined".
+Users can mention `-provider` in an unquoted positional prompt, such as `fox exec explain -provider usage`.
 
-Mitigation: pre-scan arguments and return a targeted error explaining `-llm-provider` and `-protocol`.
+Mitigation: do not pre-scan arguments for removed flags; let the standard flag parser stop at positional text and treat only flag-position `-provider` as an unknown flag.
 
 **Covers**: REQ-006
 
@@ -450,7 +450,7 @@ Mitigation: pre-scan arguments and return a targeted error explaining `-llm-prov
 | REQ-003 | `llm.default_provider` and named `llm.providers`; `-llm-provider` switching |
 | REQ-004 | Resolver priority CLI > env > settings > no default |
 | REQ-005 | New `-llm-provider` and `-protocol` CLI flags |
-| REQ-006 | Explicit old `-provider` rejection |
+| REQ-006 | No registered or specially handled old `-provider` flag |
 | REQ-007 | CLI/env overrides for provider id, protocol, base URL, model, auth, API key source |
 | REQ-008 | Removal of implicit Zhipu key/base/model fallback |
 | REQ-009 | Zhipu docs/examples only as ordinary profile |

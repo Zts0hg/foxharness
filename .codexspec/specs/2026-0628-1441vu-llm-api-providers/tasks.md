@@ -100,14 +100,14 @@
 
 ### [x] T012 - Add main CLI flag parsing tests
 
-- **Outcome**: Failing tests cover `-llm-provider`, `-protocol`, `-base-url`, `-auth`, `-api-key-env`, `-api-key`, continued `-model` model override, and targeted rejection of `-provider` / `--provider` with guidance to `-llm-provider` and `-protocol`.
+- **Outcome**: Failing tests cover `-llm-provider`, `-protocol`, `-base-url`, `-auth`, `-api-key-env`, `-api-key`, continued `-model` model override, standard unknown-flag behavior for `-provider` / `--provider` in flag position, and preservation of `-provider` inside positional prompt text.
 - **Paths**: `cmd/fox/main_test.go`
 - **Dependencies**: T002
 - **Traceability**: Covers: REQ-004, REQ-005, REQ-006, REQ-007, REQ-010, REQ-013; Plan: Phase 4, Component `cmd/fox`, PLD-005
 
 ### [x] T013 - Implement main CLI flag parsing
 
-- **Outcome**: `cmd/fox` parses the new LLM flags into app CLI config, rejects old `-provider` before normal flag parsing, and no longer assigns default protocol/model values during parsing.
+- **Outcome**: `cmd/fox` parses the new LLM flags into app CLI config, does not register or pre-scan old `-provider`, and no longer assigns default protocol/model values during parsing.
 - **Paths**: `cmd/fox/main.go`, `cmd/fox/main_test.go`, `internal/app/cli.go`
 - **Dependencies**: T012
 - **Traceability**: Covers: REQ-004, REQ-005, REQ-006, REQ-007, REQ-010, REQ-013; Plan: Phase 4, Component `cmd/fox`, PLD-005
@@ -211,7 +211,7 @@
 
 ### [x] T027 - Update provider configuration documentation
 
-- **Outcome**: README files document the new `llm.default_provider` / `llm.providers` schema, config priority, `-llm-provider`, `-protocol`, old `-provider` rejection, Zhipu as an explicit ordinary profile, local `auth: "none"` profile, and `api_key_env` security guidance.
+- **Outcome**: README files document the new `llm.default_provider` / `llm.providers` schema, config priority, `-llm-provider`, `-protocol`, absence of a `-provider` flag, Zhipu as an explicit ordinary profile, local `auth: "none"` profile, and `api_key_env` security guidance.
 - **Paths**: `README.md`, `README.zh-CN.md`, `README.zh-TW.md`, `README.ja.md`
 - **Dependencies**: T013, T022
 - **Traceability**: Covers: REQ-003, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009, REQ-013, NFR-001; Plan: Phase 7, Component Documentation

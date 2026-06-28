@@ -16,7 +16,7 @@
 | REQ-003 | Settings File, `internal/llmconfig`, `internal/app`, Phase 2, Phase 5, Coverage Matrix | PASS |
 | REQ-004 | CLI Flags, Environment Variables, `internal/llmconfig`, `cmd/fox`, Phase 1, Phase 4, Coverage Matrix | PASS |
 | REQ-005 | CLI Flags, PLD-005, Phase 4, Phase 7, Coverage Matrix | PASS |
-| REQ-006 | CLI Flags, `cmd/fox`, PLD-005, Phase 4, Risk: Old `-provider` Error, Coverage Matrix | PASS |
+| REQ-006 | CLI Flags, `cmd/fox`, PLD-005, Phase 4, Risk: Old `-provider` Text, Coverage Matrix | PASS |
 | REQ-007 | CLI Flags, Environment Variables, `internal/llmconfig`, Phase 1, Phase 4, Phase 7, Coverage Matrix | PASS |
 | REQ-008 | Environment Variables, `internal/settings`, `internal/provider`, Phase 2, Phase 3, Phase 4, Coverage Matrix | PASS |
 | REQ-009 | Environment Variables, Documentation, PLD-003, Phase 7, Coverage Matrix | PASS |

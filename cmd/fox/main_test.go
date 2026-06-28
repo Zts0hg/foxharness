@@ -148,7 +148,7 @@ func TestParseArgsAliases(t *testing.T) {
 	}
 }
 
-func TestParseArgsRejectsOldProviderFlag(t *testing.T) {
+func TestParseArgsTreatsOldProviderAsUnknownFlag(t *testing.T) {
 	tests := [][]string{
 		{"-provider", "openai"},
 		{"--provider", "claude"},
@@ -158,12 +158,25 @@ func TestParseArgsRejectsOldProviderFlag(t *testing.T) {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			_, _, err := parseArgs(args, io.Discard)
 			if err == nil {
-				t.Fatal("parseArgs returned nil error, want old provider rejection")
+				t.Fatal("parseArgs returned nil error, want unknown flag error")
 			}
-			if !strings.Contains(err.Error(), "-llm-provider") || !strings.Contains(err.Error(), "-protocol") {
-				t.Fatalf("error = %q, want guidance to -llm-provider and -protocol", err.Error())
+			if !strings.Contains(err.Error(), "flag provided but not defined") || strings.Contains(err.Error(), "-llm-provider") {
+				t.Fatalf("error = %q, want generic unknown flag error", err.Error())
 			}
 		})
+	}
+}
+
+func TestParseArgsAllowsOldProviderTextAfterPositionalPrompt(t *testing.T) {
+	cfg, mode, err := parseArgs([]string{"exec", "explain", "-provider", "usage"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	if mode != launchPrint {
+		t.Fatalf("mode = %v, want launchPrint", mode)
+	}
+	if cfg.Prompt != "explain -provider usage" {
+		t.Fatalf("Prompt = %q, want positional prompt text", cfg.Prompt)
 	}
 }
 

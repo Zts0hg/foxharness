@@ -97,12 +97,13 @@ As a user, I want foxharness to tell me exactly which LLM setting is missing or 
 
 1. **Given** no complete LLM configuration is available from CLI, environment, or settings, **When** the user starts foxharness, **Then** startup fails with a clear error that identifies the missing configuration and does not mention `ZHIPU_API_KEY` as a required default.
 2. **Given** the user passes `-llm-provider missing`, **When** no profile named `missing` exists and no inline configuration completes the provider, **Then** startup fails with an error naming the unknown profile id.
-3. **Given** the user passes `-provider openai`, **When** CLI flags are parsed, **Then** foxharness rejects the flag and tells the user to use `-llm-provider` for profile selection or `-protocol` for OpenAI/Claude compatibility.
+3. **Given** the user passes `-provider openai` in flag position, **When** CLI flags are parsed, **Then** foxharness treats it as a standard unknown flag because no `-provider` flag is registered.
+4. **Given** the user writes positional prompt text containing `-provider`, **When** the text appears after the first positional argument or after `--`, **Then** foxharness preserves it as prompt text and does not treat it as a removed flag.
 
 ### Edge Cases
 
 - **No default provider**: If `llm.default_provider` is missing and no CLI or environment input identifies or completes a provider, fail with a configuration error.
-- **Unknown provider profile**: If the selected provider id is absent from `llm.providers`, fail with an error naming the missing profile id.
+- **Unknown provider profile**: If the selected provider id is absent from `llm.providers` and the remaining CLI/environment fields do not form a complete inline provider config, fail with an error naming the missing profile id. If the remaining fields do form a complete inline provider config, resolve and run it, but do not treat the provider id as settings-backed for persistence.
 - **Missing base URL**: If the effective provider config lacks an API base URL, fail before sending a model request.
 - **Missing model**: If the effective provider config lacks a model id, fail before sending a model request.
 - **Missing or empty API key source for API-key auth**: If a profile uses the default `auth: "api-key"` mode or explicitly declares `auth: "api-key"`, fail with an error that identifies the credential source problem and redacts secret values.
@@ -130,7 +131,7 @@ As a user, I want foxharness to tell me exactly which LLM setting is missing or 
 - **REQ-005**: The CLI MUST use `-llm-provider` to select a named provider profile and `-protocol` to select the OpenAI-compatible or Claude-compatible adapter.
   - Sources: DEC-004, DEC-005
 
-- **REQ-006**: The old `-provider` flag MUST NOT be accepted as a primary flag or compatibility alias. If a user passes `-provider`, foxharness MUST fail with a clear message directing them to `-llm-provider` and `-protocol`.
+- **REQ-006**: The old `-provider` flag MUST NOT be accepted as a primary flag or compatibility alias and MUST NOT receive targeted migration parsing. If `-provider` appears in flag position, foxharness MUST let the standard flag parser report it as an unknown flag. If `-provider` appears in positional prompt text, foxharness MUST preserve it as prompt text.
   - Sources: DEC-004
 
 - **REQ-007**: CLI and environment overrides MUST be available for the configurable LLM connection fields: provider profile id, protocol, API base URL, model id, and API key source. The exact environment-variable names are implementation details, but they MUST be stable, documented, and scoped to foxharness.
@@ -184,9 +185,10 @@ As a user, I want foxharness to tell me exactly which LLM setting is missing or 
 - **SC-003**: A user can define at least two provider profiles and switch between them using `-llm-provider` without re-entering base URL, protocol, credential source, and default model.
 - **SC-004**: Conflicting CLI, environment, and settings values resolve according to `CLI flag > environment variables > settings file`.
 - **SC-005**: Starting foxharness without a complete LLM configuration fails with an actionable error instead of silently selecting Zhipu.
-- **SC-006**: Passing `-provider` fails with a clear message pointing to `-llm-provider` and `-protocol`.
+- **SC-006**: Passing `-provider` in flag position fails as a standard unknown flag, while prompt text containing `-provider` remains valid positional text.
 - **SC-007**: A provider profile using default `api-key` auth fails clearly when its API key source is missing or unresolved.
 - **SC-008**: A provider profile with `auth: "none"` can be resolved without an API key source.
+- **SC-009**: A complete inline configuration with an unknown provider id can start foxharness, and interactive model changes do not try to write that unknown id into settings.
 
 ## Expected Error Behavior
 
@@ -196,7 +198,7 @@ As a user, I want foxharness to tell me exactly which LLM setting is missing or 
 - Credential-related errors MUST identify the missing or unresolved source but MUST NOT print secret values.
 - Profiles that omit `auth` MUST be validated as `auth: "api-key"` profiles.
 - Profiles that explicitly set `auth: "none"` MUST NOT fail solely because no API key source is configured.
-- Deprecated or removed flag errors for `-provider` MUST tell users that `-llm-provider` selects a provider profile and `-protocol` selects OpenAI/Claude compatibility.
+- Removed `-provider` handling MUST rely on standard unknown-flag behavior in flag position and MUST NOT scan positional prompt text for targeted rejection.
 
 ## Constraints
 

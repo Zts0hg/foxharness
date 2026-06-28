@@ -158,8 +158,9 @@ fox exec -llm-provider local "檢查這個專案有沒有潛在的 bug"
 fox exec -protocol claude -base-url https://api.anthropic.com -model claude-sonnet-4-20250514 -api-key-env ANTHROPIC_API_KEY "檢查這個專案有沒有潛在的 bug"
 ```
 
-舊的 `-provider` 參數不再接受。請使用 `-llm-provider` 切換 provider profile，
-或用 `-protocol` 指定 OpenAI/Claude 相容協定。
+foxharness 沒有 `-provider` 參數。它出現在 flag 位置時會被視為未知 flag；
+請使用 `-llm-provider` 切換 provider profile，或用 `-protocol` 指定
+OpenAI/Claude 相容協定。
 
 兩種協定模式下，內部的 Agent 訊息和工具呼叫完全相同，差異僅在於供應商介面卡將訊息轉換為目標協定的格式：
 
