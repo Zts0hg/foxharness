@@ -158,7 +158,7 @@
 
 ### [x] T020 - Implement TUI model persistence wiring
 
-- **Outcome**: TUI startup and model-change callbacks persist model changes to the active settings-backed provider profile when available and avoid writing obsolete top-level model values as effective LLM config.
+- **Outcome**: TUI startup and model-change callbacks persist model changes to the active settings-backed provider profile when available, keep inline-only provider changes in memory, and avoid writing obsolete top-level model values as effective LLM config.
 - **Paths**: `internal/app/tui.go`, `internal/app/tui_test.go`, `internal/tui/model.go`, `internal/tui/model_test.go`, `cmd/fox/main.go`
 - **Dependencies**: T017, T019
 - **Traceability**: Covers: REQ-003, REQ-010, REQ-012, NFR-002; Plan: Phase 5, Component `internal/app`, PLD-006
@@ -285,6 +285,7 @@ No task is marked `[P]` because the implementation will likely be performed by o
 | REQ-011 | T007, T008, T009, T010, T011, T015, T016, T018, T019, T021, T023, T024, T025, T026, T028, T030 |
 | REQ-012 | T004, T005, T006, T016, T017, T019, T020, T023, T030 |
 | REQ-013 | T001, T002, T003, T007, T008, T009, T010, T011, T012, T013, T014, T022, T023, T024, T025, T026, T027, T030 |
+| REQ-014 | T001, T002, T003, T017, T020, T023, T030 |
 | NFR-001 | T001, T002, T008, T009, T010, T011, T014, T022, T023, T024, T025, T026, T027, T028, T030 |
 | NFR-002 | T001, T002, T003, T007, T008, T009, T010, T011, T014, T015, T016, T017, T018, T019, T020, T021, T022, T023, T024, T025, T026, T029, T030 |
 | NFR-003 | T007, T008, T009, T010, T011, T015, T016, T018, T019, T021, T023, T028, T029, T030 |

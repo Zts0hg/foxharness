@@ -155,6 +155,9 @@ As a user, I want foxharness to tell me exactly which LLM setting is missing or 
 - **REQ-013**: Provider profiles MUST default to `auth: "api-key"` when `auth` is omitted. API key source MAY be omitted only when the provider profile explicitly declares `auth: "none"`.
   - Sources: DEC-007, NEED-002
 
+- **REQ-014**: Model changes in interactive runs MUST persist only when the resolved provider maps to an existing settings profile. Complete inline configurations, including inline configs paired with an unknown provider id, MUST remain runtime-only and MUST NOT attempt to update a missing settings profile.
+  - Sources: DEC-008, NEED-004
+
 ### Non-Functional Requirements
 
 - **NFR-001** (security): API key values and resolved secret values MUST NOT be logged, displayed in normal error messages, or written to project-local files. User-level settings MUST avoid encouraging committed secrets.
@@ -238,13 +241,14 @@ None. No open items block later planning or implementation.
 | NEED-001 | REQ-001, REQ-011, NFR-003, User Story 1 | Supports any compatible LLM provider |
 | NEED-002 | REQ-002, REQ-004, REQ-007, REQ-011, REQ-013, NFR-001, User Story 1, User Story 3 | Covers configurable API key source, base URL, model id, protocol, and auth behavior |
 | NEED-003 | REQ-008, User Story 4, SC-005, Out of Scope | Replaces implicit Zhipu default |
-| NEED-004 | REQ-003, REQ-004, User Story 2, SC-003 | Named provider profiles and switching |
+| NEED-004 | REQ-003, REQ-004, REQ-014, User Story 2, SC-003, SC-009 | Named provider profiles, inline configs, and switching |
 | CON-001 | REQ-001, REQ-002, Constraints, Out of Scope | Protocol scope preserved |
 | DEC-001 | REQ-001, REQ-009, REQ-011, NFR-002, NFR-003 | Protocol compatibility over vendor hardcoding |
 | DEC-002 | REQ-004, REQ-007, REQ-008, User Story 3 | Configuration priority preserved |
 | DEC-003 | REQ-003, REQ-012, NFR-001, NFR-004, Constraints | Uses existing settings file and preserves unrelated fields |
 | DEC-004 | REQ-005, REQ-006, REQ-007, REQ-010, SC-006 | `-llm-provider` and `-protocol`; no `-provider` |
 | DEC-005 | REQ-003, REQ-005, REQ-010, NFR-003 | Provider identity separated from protocol |
+| DEC-008 | REQ-014, SC-009, Edge Cases | Inline config may run without a settings-backed profile |
 | DEC-006 | REQ-008, REQ-009, REQ-011, Out of Scope | Zhipu as example only |
 | DEC-007 | REQ-002, REQ-013, User Story 1, Edge Cases, SC-007, SC-008 | API-key auth is default; `auth: "none"` is the explicit no-key exception |
 | OUT-001 | Out of Scope, Constraints | Non-compatible protocols excluded |

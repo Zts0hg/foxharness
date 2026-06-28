@@ -83,11 +83,11 @@ func main() {
 	if mode == launchTUI {
 		cfg.Prompt = strings.TrimSpace(cfg.Prompt)
 		onSave := func(model string) error {
-			if resolvedLLM.ProviderID == "" {
+			if resolvedLLM.SettingsProviderID == "" {
 				return nil
 			}
 			current, _ := settings.Load(homeDir)
-			if err := settings.SetProviderModel(current, resolvedLLM.ProviderID, model); err != nil {
+			if err := settings.SetProviderModel(current, resolvedLLM.SettingsProviderID, model); err != nil {
 				log.Printf("[Settings] failed to update provider model: %v", err)
 				return err
 			}

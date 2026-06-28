@@ -287,6 +287,9 @@ func TestResolveLLMConfigUsesSettingsDefaultProvider(t *testing.T) {
 	if got.ProviderID != "local" || got.Protocol != "openai" || got.Model != "local-model" {
 		t.Fatalf("resolved LLM = %+v, want settings default provider", got)
 	}
+	if got.SettingsProviderID != "local" {
+		t.Fatalf("SettingsProviderID = %q, want local", got.SettingsProviderID)
+	}
 }
 
 func TestResolveLLMConfigAppliesCLIAndEnvPriority(t *testing.T) {

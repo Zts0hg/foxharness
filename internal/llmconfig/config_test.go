@@ -24,6 +24,9 @@ func TestResolveSelectsConfiguredDefaultProvider(t *testing.T) {
 	if got.ProviderID != "primary" {
 		t.Fatalf("ProviderID = %q, want primary", got.ProviderID)
 	}
+	if got.SettingsProviderID != "primary" {
+		t.Fatalf("SettingsProviderID = %q, want primary", got.SettingsProviderID)
+	}
 	if got.Protocol != ProtocolOpenAI {
 		t.Fatalf("Protocol = %q, want openai", got.Protocol)
 	}
@@ -62,6 +65,9 @@ func TestResolveProfileSelectionPriority(t *testing.T) {
 	if got.ProviderID != "env" || got.Model != "env-model" {
 		t.Fatalf("env provider not selected: got id=%q model=%q", got.ProviderID, got.Model)
 	}
+	if got.SettingsProviderID != "env" {
+		t.Fatalf("SettingsProviderID = %q, want env", got.SettingsProviderID)
+	}
 
 	got, err = Resolve(settings, EnvOverrides{ProviderID: "env"}, CLIOverrides{ProviderID: "cli"}, env.Lookup)
 	if err != nil {
@@ -69,6 +75,9 @@ func TestResolveProfileSelectionPriority(t *testing.T) {
 	}
 	if got.ProviderID != "cli" || got.Model != "cli-model" {
 		t.Fatalf("cli provider not selected: got id=%q model=%q", got.ProviderID, got.Model)
+	}
+	if got.SettingsProviderID != "cli" {
+		t.Fatalf("SettingsProviderID = %q, want cli", got.SettingsProviderID)
 	}
 }
 
@@ -139,6 +148,28 @@ func TestResolveUnknownProviderRequiresCompleteInlineConfig(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `provider profile "missing" not found`) {
 		t.Fatalf("error = %q, want missing provider id", err.Error())
+	}
+}
+
+func TestResolveUnknownProviderWithCompleteInlineConfigHasNoSettingsProvider(t *testing.T) {
+	got, err := Resolve(Settings{
+		DefaultProvider: "primary",
+		Providers:       map[string]Profile{},
+	}, EnvOverrides{}, CLIOverrides{
+		ProviderID: "typo",
+		Protocol:   ProtocolOpenAI,
+		BaseURL:    "http://127.0.0.1:11434/v1",
+		Model:      "local-model",
+		Auth:       AuthNone,
+	}, mapEnv{}.Lookup)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got.ProviderID != "typo" {
+		t.Fatalf("ProviderID = %q, want typo", got.ProviderID)
+	}
+	if got.SettingsProviderID != "" {
+		t.Fatalf("SettingsProviderID = %q, want empty for inline config", got.SettingsProviderID)
 	}
 }
 
@@ -282,20 +313,21 @@ func TestEnvOverridesFromLookup(t *testing.T) {
 
 func TestResolvedConfigWithModelPreservesConnectionFields(t *testing.T) {
 	cfg := ResolvedConfig{
-		ProviderID:   "primary",
-		Protocol:     ProtocolClaude,
-		BaseURL:      "https://example.test",
-		Model:        "old",
-		Auth:         AuthAPIKey,
-		APIKey:       "secret",
-		APIKeyEnv:    "KEY",
-		APIKeySource: "env:KEY",
+		ProviderID:         "primary",
+		SettingsProviderID: "primary",
+		Protocol:           ProtocolClaude,
+		BaseURL:            "https://example.test",
+		Model:              "old",
+		Auth:               AuthAPIKey,
+		APIKey:             "secret",
+		APIKeyEnv:          "KEY",
+		APIKeySource:       "env:KEY",
 	}
 	got := cfg.WithModel("new")
 	if got.Model != "new" {
 		t.Fatalf("Model = %q, want new", got.Model)
 	}
-	if got.ProviderID != cfg.ProviderID || got.Protocol != cfg.Protocol || got.BaseURL != cfg.BaseURL || got.APIKey != cfg.APIKey {
+	if got.ProviderID != cfg.ProviderID || got.SettingsProviderID != cfg.SettingsProviderID || got.Protocol != cfg.Protocol || got.BaseURL != cfg.BaseURL || got.APIKey != cfg.APIKey {
 		t.Fatalf("WithModel changed connection fields: got %+v want based on %+v", got, cfg)
 	}
 }

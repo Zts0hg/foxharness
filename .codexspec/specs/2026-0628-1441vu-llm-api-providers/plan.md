@@ -152,7 +152,7 @@ Proposed responsibilities:
 - Resolve API key values only when `auth` is `api-key`.
 - Return redacted error details that identify missing field names and provider ids without exposing secrets.
 
-The profile selection rule is: CLI `-llm-provider` overrides `FOXHARNESS_LLM_PROVIDER`, which overrides `llm.default_provider`. Field-level CLI and environment overrides then modify the selected or inline config according to the same CLI > environment > settings priority. If no provider profile exists but CLI/env provide a complete inline config, resolution succeeds without requiring a profile id.
+The profile selection rule is: CLI `-llm-provider` overrides `FOXHARNESS_LLM_PROVIDER`, which overrides `llm.default_provider`. Field-level CLI and environment overrides then modify the selected or inline config according to the same CLI > environment > settings priority. If no provider profile exists but CLI/env provide a complete inline config, resolution succeeds. Such a config retains the requested provider id for display/debugging but is not settings-backed, so runtime model changes do not attempt to persist to a missing profile.
 
 **Covers**: REQ-001, REQ-002, REQ-003, REQ-004, REQ-007, REQ-008, REQ-010, REQ-013, NFR-001, NFR-002
 
@@ -358,7 +358,7 @@ Reasoning: the spec requires convenient provider switching through configuration
 
 - Update `AgentRunnerConfig` to carry resolved LLM config.
 - Update `NewAgentRunner` and `SetModel` to rebuild providers through the generic factory.
-- Update TUI model persistence to write into the selected provider profile when available.
+- Update TUI model persistence to write into the selected settings-backed provider profile when available, and keep inline-only provider model changes in memory.
 - Update autodev dependency construction to apply autodev model overrides on top of the resolved provider config.
 - Update app tests that currently assert Zhipu or protocol-only construction.
 
@@ -458,6 +458,7 @@ Mitigation: do not pre-scan arguments for removed flags; let the standard flag p
 | REQ-011 | Provider construction from resolved protocol and fields, no vendor-specific constructor path |
 | REQ-012 | Settings raw merge preservation and profile model update helpers |
 | REQ-013 | `auth: "api-key"` default and explicit `auth: "none"` behavior |
+| REQ-014 | Settings-backed provider id tracking for model persistence |
 | NFR-001 | Redacted errors, no secret logging, env-var examples, auth-none header tests |
 | NFR-002 | Injectable env/settings and fake HTTP/provider factories |
 | NFR-003 | Generic protocol factory and config schema |

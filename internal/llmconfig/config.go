@@ -59,14 +59,15 @@ type EnvOverrides struct {
 // ResolvedConfig is the complete, validated provider configuration used to
 // construct an LLM provider.
 type ResolvedConfig struct {
-	ProviderID   string
-	Protocol     string
-	BaseURL      string
-	Model        string
-	Auth         string
-	APIKeyEnv    string
-	APIKey       string
-	APIKeySource string
+	ProviderID         string
+	SettingsProviderID string
+	Protocol           string
+	BaseURL            string
+	Model              string
+	Auth               string
+	APIKeyEnv          string
+	APIKey             string
+	APIKeySource       string
 }
 
 // EnvLookup returns the value of an environment variable name.
@@ -108,14 +109,20 @@ func Resolve(settings Settings, env EnvOverrides, cli CLIOverrides, lookup EnvLo
 	applyEnvOverrides(&profile, env)
 	applyCLIOverrides(&profile, cli)
 
+	settingsProviderID := ""
+	if providerID != "" && found {
+		settingsProviderID = providerID
+	}
+
 	resolved := ResolvedConfig{
-		ProviderID: providerID,
-		Protocol:   normalize(strings.ToLower(profile.Protocol)),
-		BaseURL:    normalize(profile.BaseURL),
-		Model:      normalize(profile.Model),
-		Auth:       normalize(strings.ToLower(profile.Auth)),
-		APIKeyEnv:  normalize(profile.APIKeyEnv),
-		APIKey:     normalize(profile.APIKey),
+		ProviderID:         providerID,
+		SettingsProviderID: settingsProviderID,
+		Protocol:           normalize(strings.ToLower(profile.Protocol)),
+		BaseURL:            normalize(profile.BaseURL),
+		Model:              normalize(profile.Model),
+		Auth:               normalize(strings.ToLower(profile.Auth)),
+		APIKeyEnv:          normalize(profile.APIKeyEnv),
+		APIKey:             normalize(profile.APIKey),
 	}
 	if resolved.Auth == "" {
 		resolved.Auth = AuthAPIKey

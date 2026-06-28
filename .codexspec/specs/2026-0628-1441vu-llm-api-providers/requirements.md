@@ -102,6 +102,13 @@ quotes needed to resolve later interpretation disputes.
 - **Reason**: Separating the concepts supports convenient provider switching and avoids ambiguity in configuration and runtime metadata.
 - **User Evidence**: The user adopted the named provider profile recommendation and the `-llm-provider`/`-protocol` split.
 
+### DEC-008: Inline config may run without a settings-backed profile
+
+- **Decision**: A complete inline CLI/environment configuration MAY run even if the requested provider id is absent from settings. Such a run MUST NOT be treated as settings-backed for persistence; model changes should remain in memory unless the resolved provider id maps to an existing settings profile.
+- **Alternatives Rejected**: Requiring every `-llm-provider` value to pre-exist in settings even when protocol, base URL, model, and auth fields are complete.
+- **Reason**: Users can reasonably launch one-off or local providers without first editing `~/.foxharness/settings.json`, especially for TUI startup with inline connection fields.
+- **User Evidence**: The user challenged rejecting complete inline config with an unknown provider id and asked how standalone `fox` TUI startup should choose a provider.
+
 ### DEC-006: Zhipu as example only
 
 - **Status**: confirmed
