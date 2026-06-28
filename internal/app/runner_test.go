@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	providerpkg "github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -24,29 +25,31 @@ type blockingLLMProvider struct {
 	release chan struct{}
 }
 
-func TestNewAgentRunnerMissingAPIKeyReturnsHelpfulError(t *testing.T) {
-	t.Setenv("ZHIPU_API_KEY", "")
+func testResolvedLLM(protocol string, model string) llmconfig.ResolvedConfig {
+	return llmconfig.ResolvedConfig{
+		ProviderID: "test-provider",
+		Protocol:   protocol,
+		BaseURL:    "http://127.0.0.1:1",
+		Model:      model,
+		Auth:       llmconfig.AuthNone,
+	}
+}
 
+func TestNewAgentRunnerMissingLLMConfigReturnsHelpfulError(t *testing.T) {
 	_, err := NewAgentRunner(context.Background(), AgentRunnerConfig{
 		WorkDir:  t.TempDir(),
 		Model:    "test-model",
-		Provider: "openai",
 		MaxTurns: 1,
 	})
 	if err == nil {
-		t.Fatal("NewAgentRunner returned nil error, want missing key error")
+		t.Fatal("NewAgentRunner returned nil error, want missing config error")
 	}
-	if !strings.Contains(err.Error(), "ZHIPU_API_KEY is not set") {
-		t.Fatalf("error = %q, want missing key message", err.Error())
-	}
-	if !strings.Contains(err.Error(), `export ZHIPU_API_KEY="your-api-key"`) {
-		t.Fatalf("error = %q, want export hint", err.Error())
+	if !strings.Contains(err.Error(), "missing LLM configuration") {
+		t.Fatalf("error = %q, want missing LLM configuration", err.Error())
 	}
 }
 
 func TestAgentRunnerSetModelUpdatesModel(t *testing.T) {
-	t.Setenv("ZHIPU_API_KEY", "test-key")
-
 	workDir := t.TempDir()
 	store := memory.NewStore(workDir)
 	if err := store.EnsureFiles(); err != nil {
@@ -65,6 +68,7 @@ func TestAgentRunnerSetModelUpdatesModel(t *testing.T) {
 		workDir:          workDir,
 		model:            "old-model",
 		providerProtocol: "claude",
+		llmConfig:        testResolvedLLM(llmconfig.ProtocolClaude, "old-model"),
 		maxTurns:         3,
 		store:            store,
 		manager:          manager,
@@ -78,10 +82,15 @@ func TestAgentRunnerSetModelUpdatesModel(t *testing.T) {
 	if got := runner.Model(); got != "new-model" {
 		t.Fatalf("Model() = %q, want new-model", got)
 	}
+	if runner.llmConfig.Model != "new-model" {
+		t.Fatalf("llmConfig.Model = %q, want new-model", runner.llmConfig.Model)
+	}
+	if runner.llmConfig.Protocol != llmconfig.ProtocolClaude {
+		t.Fatalf("llmConfig.Protocol = %q, want preserved claude", runner.llmConfig.Protocol)
+	}
 }
 
 func TestAgentRunnerSetModelNilCallback(t *testing.T) {
-	t.Setenv("ZHIPU_API_KEY", "test-key")
 	workDir := t.TempDir()
 	store := memory.NewStore(workDir)
 	if err := store.EnsureFiles(); err != nil {
@@ -100,6 +109,7 @@ func TestAgentRunnerSetModelNilCallback(t *testing.T) {
 		workDir:          workDir,
 		model:            "old-model",
 		providerProtocol: "openai",
+		llmConfig:        testResolvedLLM(llmconfig.ProtocolOpenAI, "old-model"),
 		maxTurns:         3,
 		store:            store,
 		manager:          manager,
@@ -117,7 +127,6 @@ func TestAgentRunnerSetModelNilCallback(t *testing.T) {
 }
 
 func TestAgentRunnerSetModelCallbackError(t *testing.T) {
-	t.Setenv("ZHIPU_API_KEY", "test-key")
 	workDir := t.TempDir()
 	store := memory.NewStore(workDir)
 	if err := store.EnsureFiles(); err != nil {
@@ -137,6 +146,7 @@ func TestAgentRunnerSetModelCallbackError(t *testing.T) {
 		workDir:          workDir,
 		model:            "old-model",
 		providerProtocol: "openai",
+		llmConfig:        testResolvedLLM(llmconfig.ProtocolOpenAI, "old-model"),
 		maxTurns:         3,
 		store:            store,
 		manager:          manager,
@@ -160,7 +170,6 @@ func TestAgentRunnerSetModelCallbackError(t *testing.T) {
 }
 
 func TestAgentRunnerSetModelCallbackSuccess(t *testing.T) {
-	t.Setenv("ZHIPU_API_KEY", "test-key")
 	workDir := t.TempDir()
 	store := memory.NewStore(workDir)
 	if err := store.EnsureFiles(); err != nil {
@@ -180,6 +189,7 @@ func TestAgentRunnerSetModelCallbackSuccess(t *testing.T) {
 		workDir:          workDir,
 		model:            "old-model",
 		providerProtocol: "openai",
+		llmConfig:        testResolvedLLM(llmconfig.ProtocolOpenAI, "old-model"),
 		maxTurns:         3,
 		store:            store,
 		manager:          manager,
@@ -824,7 +834,6 @@ func (p *immediateCountingProvider) count() int {
 // Generate call has completed (P2-A). Without awaiting, the process would exit
 // first.
 func TestOneShotRunAwaitsExtraction(t *testing.T) {
-	t.Setenv("ZHIPU_API_KEY", "test-key")
 	workDir := t.TempDir()
 	home := t.TempDir()
 	manager := session.NewManagerWithHome(workDir, home)

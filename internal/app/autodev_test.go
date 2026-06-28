@@ -11,6 +11,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -151,7 +152,6 @@ func TestResolveAutodevModelPrecedence(t *testing.T) {
 }
 
 func TestBuildAutodevDepsSharesOneModel(t *testing.T) {
-	t.Setenv("ZHIPU_API_KEY", "test-key")
 	repoRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoRoot, ".foxharness"), 0o755); err != nil {
 		t.Fatal(err)
@@ -160,7 +160,11 @@ func TestBuildAutodevDepsSharesOneModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deps, err := buildAutodevDeps(context.Background(), CLIConfig{WorkDir: repoRoot, Model: "cli-model", Provider: "openai"}, autodev.NewTerminalReporter(os.Stderr))
+	deps, err := buildAutodevDeps(context.Background(), CLIConfig{
+		WorkDir:     repoRoot,
+		Model:       "cli-model",
+		ResolvedLLM: testAutodevResolvedLLM("cli-model"),
+	}, autodev.NewTerminalReporter(os.Stderr))
 	if err != nil {
 		t.Fatalf("buildAutodevDeps returned error: %v", err)
 	}
@@ -179,8 +183,18 @@ func TestBuildAutodevDepsSharesOneModel(t *testing.T) {
 	if !ok {
 		t.Fatalf("CoreFactory is %T, want *appCoreRunnerFactory", deps.CoreFactory)
 	}
-	if factory.model != deps.Config.Model {
-		t.Errorf("factory model = %q, want %q (TC-022)", factory.model, deps.Config.Model)
+	if factory.llmConfig.Model != deps.Config.Model {
+		t.Errorf("factory model = %q, want %q (TC-022)", factory.llmConfig.Model, deps.Config.Model)
+	}
+}
+
+func testAutodevResolvedLLM(model string) llmconfig.ResolvedConfig {
+	return llmconfig.ResolvedConfig{
+		ProviderID: "local",
+		Protocol:   llmconfig.ProtocolOpenAI,
+		BaseURL:    "http://127.0.0.1:1",
+		Model:      model,
+		Auth:       llmconfig.AuthNone,
 	}
 }
 
@@ -218,7 +232,6 @@ func (autodevFakeLLM) Generate(ctx context.Context, messages []schema.Message, _
 }
 
 func TestAutodevToolCallsNeedNoHumanApproval(t *testing.T) {
-	t.Setenv("ZHIPU_API_KEY", "test-key")
 	workDir := t.TempDir()
 	store := memory.NewStore(workDir)
 	if err := store.EnsureFiles(); err != nil {

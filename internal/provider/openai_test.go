@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -200,6 +202,96 @@ func TestOpenAIProviderNormalizesEmptyToolCallArguments(t *testing.T) {
 	if got := string(resp.Message.ToolCalls[0].Arguments); got != "{}" {
 		t.Fatalf("tool call arguments = %q, want {}", got)
 	}
+}
+
+func TestNewProviderOpenAIUsesConfiguredConnectionAndAPIKeyAuth(t *testing.T) {
+	requests := make(chan openAIRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("request path = %q, want /chat/completions", r.URL.Path)
+		}
+		var body openAIRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		body.Authorization = r.Header.Get("Authorization")
+		body.XAPIKey = r.Header.Get("X-Api-Key")
+		requests <- body
+		writeChatCompletion(t, w, "ok")
+	}))
+	defer server.Close()
+
+	got, err := NewProvider(llmconfig.ResolvedConfig{
+		Protocol: llmconfig.ProtocolOpenAI,
+		BaseURL:  server.URL,
+		Model:    "configured-model",
+		Auth:     llmconfig.AuthAPIKey,
+		APIKey:   "configured-key",
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	_, err = got.Generate(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	req := <-requests
+	if req.Model != "configured-model" {
+		t.Fatalf("model = %q, want configured-model", req.Model)
+	}
+	if req.Authorization != "Bearer configured-key" {
+		t.Fatalf("Authorization = %q, want Bearer configured-key", req.Authorization)
+	}
+	if req.XAPIKey != "" {
+		t.Fatalf("X-Api-Key = %q, want empty", req.XAPIKey)
+	}
+}
+
+func TestNewProviderOpenAIAuthNoneSendsNoCredentialHeaders(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "env-openai-key")
+	t.Setenv("ANTHROPIC_API_KEY", "env-anthropic-key")
+
+	requests := make(chan openAIRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body openAIRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		body.Authorization = r.Header.Get("Authorization")
+		body.XAPIKey = r.Header.Get("X-Api-Key")
+		requests <- body
+		writeChatCompletion(t, w, "ok")
+	}))
+	defer server.Close()
+
+	got, err := NewProvider(llmconfig.ResolvedConfig{
+		Protocol: llmconfig.ProtocolOpenAI,
+		BaseURL:  server.URL,
+		Model:    "local-model",
+		Auth:     llmconfig.AuthNone,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	_, err = got.Generate(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	req := <-requests
+	if req.Authorization != "" {
+		t.Fatalf("Authorization = %q, want empty for auth none", req.Authorization)
+	}
+	if req.XAPIKey != "" {
+		t.Fatalf("X-Api-Key = %q, want empty for auth none", req.XAPIKey)
+	}
+}
+
+type openAIRequest struct {
+	Model         string `json:"model"`
+	Authorization string
+	XAPIKey       string
 }
 
 func newTestOpenAIProvider(baseURL string, retry RetryConfig) *OpenAIProvider {

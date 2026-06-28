@@ -47,16 +47,16 @@ func chatCompletionWithRetry(ctx context.Context, client openai.Client, params o
 		}
 
 		delay := retry.delay(attempt)
-		log.Printf("[Provider] OpenAI/Zhipu API request failed, retrying attempt %d/%d in %s: %v", attempt+1, retry.MaxAttempts, delay, err)
+		log.Printf("[Provider] OpenAI-compatible API request failed, retrying attempt %d/%d in %s: %v", attempt+1, retry.MaxAttempts, delay, err)
 		if err := sleepWithContext(ctx, delay); err != nil {
-			return nil, fmt.Errorf("OpenAI/Zhipu API 请求取消: %w", err)
+			return nil, fmt.Errorf("OpenAI-compatible API 请求取消: %w", err)
 		}
 	}
 
 	if retry.MaxAttempts > 1 && shouldRetryProviderError(ctx, lastErr) {
-		return nil, fmt.Errorf("OpenAI/Zhipu API 请求失败（已尝试 %d 次）: %w", retry.MaxAttempts, lastErr)
+		return nil, fmt.Errorf("OpenAI-compatible API 请求失败（已尝试 %d 次）: %w", retry.MaxAttempts, lastErr)
 	}
-	return nil, fmt.Errorf("OpenAI/Zhipu API 请求失败: %w", lastErr)
+	return nil, fmt.Errorf("OpenAI-compatible API 请求失败: %w", lastErr)
 }
 
 func shouldRetryProviderError(ctx context.Context, err error) bool {

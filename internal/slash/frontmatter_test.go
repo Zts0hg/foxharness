@@ -13,7 +13,7 @@ argument-hint: "[file] [message]"
 allowed-tools:
   - read_file
   - bash
-model: "glm-4.5-air"
+model: "example-model"
 effort: "high"
 user-invocable: true
 disable-model-invocation: false
@@ -49,7 +49,7 @@ Second line.`)
 	if len(fm.AllowedTools) != 2 || fm.AllowedTools[0] != "read_file" || fm.AllowedTools[1] != "bash" {
 		t.Errorf("AllowedTools = %v", fm.AllowedTools)
 	}
-	if fm.Model != "glm-4.5-air" {
+	if fm.Model != "example-model" {
 		t.Errorf("Model = %q", fm.Model)
 	}
 	if fm.Effort != "high" {

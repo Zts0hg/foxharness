@@ -27,7 +27,6 @@ func registryHasTool(reg tools.Registry, name string) bool {
 }
 
 func TestBuildRegistryGatesAskUserQuestion(t *testing.T) {
-	t.Setenv("ZHIPU_API_KEY", "test-key")
 	workDir := t.TempDir()
 	store := memory.NewStore(workDir)
 	if err := store.EnsureFiles(); err != nil {

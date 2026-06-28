@@ -6,6 +6,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 )
 
 // Settings holds the user preferences read from ~/.foxharness/settings.json.
@@ -13,6 +16,7 @@ import (
 // file without dropping unknown fields added by future versions.
 type Settings struct {
 	Model string
+	LLM   llmconfig.Settings
 
 	raw json.RawMessage
 }
@@ -29,14 +33,15 @@ func Load(homeDir string) (*Settings, error) {
 
 	raw := json.RawMessage(data)
 	var parsed struct {
-		Model string `json:"model"`
+		Model string             `json:"model"`
+		LLM   llmconfig.Settings `json:"llm"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		log.Printf("[Settings] failed to parse %s: %v", path, err)
 		return &Settings{}, nil
 	}
 
-	return &Settings{Model: parsed.Model, raw: raw}, nil
+	return &Settings{Model: parsed.Model, LLM: parsed.LLM, raw: raw}, nil
 }
 
 // Save writes Settings to ~/.foxharness/settings.json atomically. It creates
@@ -78,34 +83,42 @@ func Save(homeDir string, s *Settings) error {
 	return nil
 }
 
-// ResolveModel picks the effective model from a four-level priority cascade:
-//
-//  1. cliFlag   (CLI --model argument)
-//  2. envVar    (FOX_MODEL environment variable)
-//  3. s.Model   (settings.json value)
-//  4. fallback  (built-in default passed by caller)
-func ResolveModel(cliFlag, envVar, fallback string, s *Settings) string {
-	if cliFlag != "" {
-		return cliFlag
+// SetProviderModel updates the model for an existing LLM provider profile.
+func SetProviderModel(s *Settings, providerID string, model string) error {
+	if s == nil {
+		return fmt.Errorf("settings cannot be nil")
 	}
-	if envVar != "" {
-		return envVar
+	providerID = strings.TrimSpace(providerID)
+	model = strings.TrimSpace(model)
+	if providerID == "" {
+		return fmt.Errorf("provider id cannot be empty")
 	}
-	if s != nil && s.Model != "" {
-		return s.Model
+	if model == "" {
+		return fmt.Errorf("model cannot be empty")
 	}
-	return fallback
+	if s.LLM.Providers == nil {
+		return fmt.Errorf("provider profile %q not found", providerID)
+	}
+	profile, ok := s.LLM.Providers[providerID]
+	if !ok {
+		return fmt.Errorf("provider profile %q not found", providerID)
+	}
+	profile.Model = model
+	s.LLM.Providers[providerID] = profile
+	return nil
 }
 
 // mergeRaw builds the final JSON bytes. If raw bytes from a previous load
-// exist, it patches the model field in-place to preserve unknown fields and
-// formatting. Otherwise it marshals from scratch.
+// exist, it patches known LLM fields while preserving unknown fields and
+// legacy top-level fields. Otherwise it marshals the new settings schema from
+// scratch.
 func mergeRaw(s *Settings) []byte {
 	if s.raw != nil {
 		var m map[string]json.RawMessage
 		if err := json.Unmarshal(s.raw, &m); err == nil {
-			modelJSON, _ := json.Marshal(s.Model)
-			m["model"] = modelJSON
+			if hasLLMSettings(s.LLM) {
+				m["llm"] = mergeLLMRaw(m["llm"], s.LLM)
+			}
 			out, err := json.MarshalIndent(m, "", "  ")
 			if err == nil {
 				return append(out, '\n')
@@ -113,6 +126,74 @@ func mergeRaw(s *Settings) []byte {
 		}
 	}
 
-	out, _ := json.MarshalIndent(map[string]string{"model": s.Model}, "", "  ")
+	m := map[string]any{}
+	if hasLLMSettings(s.LLM) {
+		m["llm"] = s.LLM
+	}
+	out, _ := json.MarshalIndent(m, "", "  ")
 	return append(out, '\n')
+}
+
+func hasLLMSettings(llm llmconfig.Settings) bool {
+	return llm.DefaultProvider != "" || len(llm.Providers) > 0
+}
+
+func mergeLLMRaw(raw json.RawMessage, llm llmconfig.Settings) json.RawMessage {
+	var m map[string]json.RawMessage
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &m)
+	}
+	if m == nil {
+		m = make(map[string]json.RawMessage)
+	}
+	if llm.DefaultProvider != "" {
+		defaultProviderJSON, _ := json.Marshal(llm.DefaultProvider)
+		m["default_provider"] = defaultProviderJSON
+	}
+	if len(llm.Providers) > 0 {
+		m["providers"] = mergeProvidersRaw(m["providers"], llm.Providers)
+	}
+	out, _ := json.Marshal(m)
+	return out
+}
+
+func mergeProvidersRaw(raw json.RawMessage, providers map[string]llmconfig.Profile) json.RawMessage {
+	var m map[string]json.RawMessage
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &m)
+	}
+	if m == nil {
+		m = make(map[string]json.RawMessage)
+	}
+	for id, profile := range providers {
+		m[id] = mergeProviderRaw(m[id], profile)
+	}
+	out, _ := json.Marshal(m)
+	return out
+}
+
+func mergeProviderRaw(raw json.RawMessage, profile llmconfig.Profile) json.RawMessage {
+	var m map[string]json.RawMessage
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &m)
+	}
+	if m == nil {
+		m = make(map[string]json.RawMessage)
+	}
+	setStringField(m, "protocol", profile.Protocol)
+	setStringField(m, "base_url", profile.BaseURL)
+	setStringField(m, "model", profile.Model)
+	setStringField(m, "auth", profile.Auth)
+	setStringField(m, "api_key_env", profile.APIKeyEnv)
+	setStringField(m, "api_key", profile.APIKey)
+	out, _ := json.Marshal(m)
+	return out
+}
+
+func setStringField(m map[string]json.RawMessage, name string, value string) {
+	if value == "" {
+		return
+	}
+	data, _ := json.Marshal(value)
+	m[name] = data
 }

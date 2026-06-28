@@ -93,10 +93,48 @@ Make sure `$GOPATH/bin` is in your `PATH`.
 
 ## Configure
 
-foxharness uses Zhipu BigModel's coding endpoint by default. The default provider protocol is OpenAI-compatible, and a Claude-compatible Anthropic Messages protocol adapter is also available. Set your API key before running `fox`:
+foxharness does not choose a built-in LLM provider. Configure a user-level
+provider profile in `~/.foxharness/settings.json` before running `fox`:
+
+```json
+{
+  "llm": {
+    "default_provider": "primary",
+    "providers": {
+      "primary": {
+        "protocol": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4.1",
+        "auth": "api-key",
+        "api_key_env": "OPENAI_API_KEY"
+      },
+      "local": {
+        "protocol": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "model": "qwen2.5-coder",
+        "auth": "none"
+      },
+      "zhipu": {
+        "protocol": "openai",
+        "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "model": "glm-4.5-air",
+        "auth": "api-key",
+        "api_key_env": "ZHIPU_API_KEY"
+      }
+    }
+  }
+}
+```
+
+Configuration resolves in this order: CLI flags, `FOXHARNESS_LLM_*`
+environment variables, `~/.foxharness/settings.json`, then no default. Missing
+required LLM configuration fails with a clear error.
+
+Use `api_key_env` for routine credentials so secrets stay in your shell or
+secret manager:
 
 ```bash
-export ZHIPU_API_KEY="your-api-key"
+export OPENAI_API_KEY="your-api-key"
 ```
 
 Optional retry and timeout settings:
@@ -108,19 +146,22 @@ export FOXHARNESS_LLM_RETRY_MAX_DELAY=8s
 export FOXHARNESS_LLM_REQUEST_TIMEOUT=60s
 ```
 
-### Provider Protocols
+### Provider Profiles and Protocols
 
-Use `-provider openai` for the default OpenAI-compatible Chat Completions protocol:
-
-```bash
-fox exec -provider openai "Inspect this project for potential bugs"
-```
-
-Use `-provider claude` for the Claude-compatible Anthropic Messages protocol:
+Use `-llm-provider` to switch among named profiles:
 
 ```bash
-fox exec -provider claude "Inspect this project for potential bugs"
+fox exec -llm-provider local "Inspect this project for potential bugs"
 ```
+
+Use `-protocol` only to override the compatibility adapter for a run:
+
+```bash
+fox exec -protocol claude -base-url https://api.anthropic.com -model claude-sonnet-4-20250514 -api-key-env ANTHROPIC_API_KEY "Inspect this project for potential bugs"
+```
+
+The old `-provider` flag is no longer accepted. Use `-llm-provider` for profile
+selection and `-protocol` for OpenAI/Claude compatibility.
 
 Both modes use the same internal agent messages and tools. The provider adapter translates them into the target protocol:
 
@@ -204,8 +245,13 @@ Common options:
 | Option | Description |
 | --- | --- |
 | `-C`, `-workdir` | Working directory. Defaults to `.`. |
-| `-model` | Model name. Defaults to `glm-4.5-air`. |
-| `-provider` | Provider protocol: `openai` or `claude`. Defaults to `openai`. |
+| `-llm-provider` | Named provider profile from `llm.providers`. |
+| `-protocol` | Protocol override: `openai` or `claude`. |
+| `-base-url` | API base URL override. |
+| `-model` | Model id override. |
+| `-auth` | Auth mode override: `api-key` or `none`. |
+| `-api-key-env` | Environment variable containing the API key. |
+| `-api-key` | Direct API key value; prefer `-api-key-env`. |
 | `-plan` | Enable Plan Mode. Defaults to `true`. |
 | `-thinking` | Enable legacy per-turn thinking mode when Plan Mode is not used. |
 | `-max-turns` | Maximum agent turns. Defaults to unlimited; use a positive value to cap turns. |
@@ -220,8 +266,8 @@ Examples:
 fox exec -plan=false "Inspect the code only; do not modify files"
 fox exec -continue "Fix the bugs found in the previous run"
 fox exec -session 20260517-192517-a504c5 "Continue this session and summarize the current progress"
-fox exec -model glm-4.5-air "Add tests for this project"
-fox exec -provider claude "Summarize the architecture of this project"
+fox exec -llm-provider local "Add tests for this project"
+fox exec -llm-provider primary -model gpt-4.1 "Summarize the architecture of this project"
 ```
 
 ### Autodev (Backlog Autopilot)

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 )
 
 // ---------------------------------------------------------------------------
@@ -114,6 +116,43 @@ func TestLoad(t *testing.T) {
 			t.Fatalf("Model = %q, want empty", got.Model)
 		}
 	})
+
+	t.Run("loads_llm_provider_settings", func(t *testing.T) {
+		home := t.TempDir()
+		dir := filepath.Join(home, ".foxharness")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		raw := `{
+		  "llm": {
+		    "default_provider": "primary",
+		    "providers": {
+		      "primary": {
+		        "protocol": "openai",
+		        "base_url": "https://example.test/v1",
+		        "model": "test-model",
+		        "auth": "api-key",
+		        "api_key_env": "OPENAI_KEY"
+		      }
+		    }
+		  }
+		}`
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := Load(home)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if got.LLM.DefaultProvider != "primary" {
+			t.Fatalf("DefaultProvider = %q, want primary", got.LLM.DefaultProvider)
+		}
+		profile := got.LLM.Providers["primary"]
+		if profile.Protocol != llmconfig.ProtocolOpenAI || profile.BaseURL != "https://example.test/v1" || profile.Model != "test-model" || profile.APIKeyEnv != "OPENAI_KEY" {
+			t.Fatalf("profile = %+v, want loaded LLM provider", profile)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +162,7 @@ func TestLoad(t *testing.T) {
 func TestSave(t *testing.T) {
 	t.Run("creates_directory_if_missing", func(t *testing.T) {
 		home := t.TempDir()
-		s := &Settings{Model: "glm-4-plus"}
+		s := &Settings{}
 		if err := Save(home, s); err != nil {
 			t.Fatalf("Save() error = %v", err)
 		}
@@ -135,7 +174,19 @@ func TestSave(t *testing.T) {
 
 	t.Run("writes_valid_json", func(t *testing.T) {
 		home := t.TempDir()
-		s := &Settings{Model: "glm-4-plus"}
+		s := &Settings{
+			LLM: llmconfig.Settings{
+				DefaultProvider: "primary",
+				Providers: map[string]llmconfig.Profile{
+					"primary": {
+						Protocol: llmconfig.ProtocolOpenAI,
+						BaseURL:  "https://example.test/v1",
+						Model:    "test-model",
+						Auth:     llmconfig.AuthNone,
+					},
+				},
+			},
+		}
 		if err := Save(home, s); err != nil {
 			t.Fatalf("Save() error = %v", err)
 		}
@@ -144,18 +195,23 @@ func TestSave(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var parsed map[string]string
+		var parsed struct {
+			LLM llmconfig.Settings `json:"llm"`
+		}
 		if err := json.Unmarshal(data, &parsed); err != nil {
 			t.Fatalf("invalid JSON: %v", err)
 		}
-		if parsed["model"] != "glm-4-plus" {
-			t.Fatalf("model = %q, want glm-4-plus", parsed["model"])
+		if parsed.LLM.DefaultProvider != "primary" {
+			t.Fatalf("DefaultProvider = %q, want primary", parsed.LLM.DefaultProvider)
+		}
+		if parsed.LLM.Providers["primary"].Model != "test-model" {
+			t.Fatalf("provider model = %q, want test-model", parsed.LLM.Providers["primary"].Model)
 		}
 	})
 
 	t.Run("file_permissions_0600", func(t *testing.T) {
 		home := t.TempDir()
-		s := &Settings{Model: "glm-4-plus"}
+		s := &Settings{}
 		if err := Save(home, s); err != nil {
 			t.Fatalf("Save() error = %v", err)
 		}
@@ -181,7 +237,7 @@ func TestSave(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Load, update model, save.
+		// Load, update the legacy top-level model field, save.
 		got, _ := Load(home)
 		got.Model = "glm-4-plus"
 		if err := Save(home, got); err != nil {
@@ -196,8 +252,8 @@ func TestSave(t *testing.T) {
 		if err := json.Unmarshal(data, &parsed); err != nil {
 			t.Fatalf("invalid JSON: %v", err)
 		}
-		if parsed["model"] != "glm-4-plus" {
-			t.Fatalf("model = %v, want glm-4-plus", parsed["model"])
+		if parsed["model"] != "old" {
+			t.Fatalf("model = %v, want old legacy value preserved", parsed["model"])
 		}
 		if parsed["theme"] != "dark" {
 			t.Fatalf("theme = %v, want dark (unknown field lost)", parsed["theme"])
@@ -209,7 +265,7 @@ func TestSave(t *testing.T) {
 
 	t.Run("atomic_write_no_temp_file_left", func(t *testing.T) {
 		home := t.TempDir()
-		s := &Settings{Model: "glm-4-plus"}
+		s := &Settings{}
 		if err := Save(home, s); err != nil {
 			t.Fatalf("Save() error = %v", err)
 		}
@@ -240,47 +296,111 @@ func TestSave(t *testing.T) {
 		}
 		defer os.Chmod(dir, 0755) // restore for cleanup
 
-		s := &Settings{Model: "glm-4-plus"}
+		s := &Settings{}
 		err := Save(home, s)
 		if err == nil {
 			t.Fatal("Save() should fail on read-only directory")
 		}
 	})
-}
 
-// ---------------------------------------------------------------------------
-// ResolveModel tests (Task 1.6)
-// ---------------------------------------------------------------------------
+	t.Run("writes_llm_provider_settings", func(t *testing.T) {
+		home := t.TempDir()
+		s := &Settings{
+			LLM: llmconfig.Settings{
+				DefaultProvider: "primary",
+				Providers: map[string]llmconfig.Profile{
+					"primary": {
+						Protocol:  llmconfig.ProtocolOpenAI,
+						BaseURL:   "https://example.test/v1",
+						Model:     "test-model",
+						Auth:      llmconfig.AuthAPIKey,
+						APIKeyEnv: "OPENAI_KEY",
+					},
+				},
+			},
+		}
+		if err := Save(home, s); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
 
-func TestResolveModel(t *testing.T) {
-	defaultModel := "glm-4.5-air"
+		data, err := os.ReadFile(filepath.Join(home, ".foxharness", "settings.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parsed struct {
+			LLM llmconfig.Settings `json:"llm"`
+		}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		if parsed.LLM.DefaultProvider != "primary" {
+			t.Fatalf("DefaultProvider = %q, want primary", parsed.LLM.DefaultProvider)
+		}
+		if parsed.LLM.Providers["primary"].BaseURL != "https://example.test/v1" {
+			t.Fatalf("provider = %+v, want saved provider", parsed.LLM.Providers["primary"])
+		}
+	})
 
-	cases := []struct {
-		name     string
-		cliFlag  string
-		envVar   string
-		settings *Settings
-		want     string
-	}{
-		{"all_empty_uses_default", "", "", &Settings{}, defaultModel},
-		{"nil_settings_uses_default", "", "", nil, defaultModel},
-		{"settings_model_used", "", "", &Settings{Model: "glm-4-plus"}, "glm-4-plus"},
-		{"cli_flag_wins_over_all", "glm-4-flash", "glm-4-air", &Settings{Model: "glm-4-plus"}, "glm-4-flash"},
-		{"env_var_wins_over_settings", "", "glm-4-flash", &Settings{Model: "glm-4-plus"}, "glm-4-flash"},
-		{"cli_flag_wins_over_env", "glm-4-flash", "glm-4-air", &Settings{}, "glm-4-flash"},
-		{"empty_settings_model_falls_back", "", "", &Settings{Model: ""}, defaultModel},
-		{"cli_flag_only", "glm-4-flash", "", nil, "glm-4-flash"},
-		{"env_var_only", "", "glm-4-flash", nil, "glm-4-flash"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := ResolveModel(tc.cliFlag, tc.envVar, defaultModel, tc.settings)
-			if got != tc.want {
-				t.Fatalf("ResolveModel(%q, %q, %q, %+v) = %q, want %q",
-					tc.cliFlag, tc.envVar, defaultModel, tc.settings, got, tc.want)
-			}
-		})
-	}
+	t.Run("updates_provider_model_and_preserves_unknown_fields", func(t *testing.T) {
+		home := t.TempDir()
+		dir := filepath.Join(home, ".foxharness")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		original := `{
+		  "theme": "dark",
+		  "llm": {
+		    "future_llm_field": true,
+		    "default_provider": "primary",
+		    "providers": {
+		      "primary": {
+		        "protocol": "openai",
+		        "base_url": "https://example.test/v1",
+		        "model": "old-model",
+		        "api_key_env": "OPENAI_KEY",
+		        "vendor_extra": "keep"
+		      }
+		    }
+		  }
+		}`
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(original), 0644); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := Load(home)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if err := SetProviderModel(loaded, "primary", "new-model"); err != nil {
+			t.Fatalf("SetProviderModel() error = %v", err)
+		}
+		if err := Save(home, loaded); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+
+		data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		if parsed["theme"] != "dark" {
+			t.Fatalf("theme = %v, want preserved", parsed["theme"])
+		}
+		llm := parsed["llm"].(map[string]any)
+		if llm["future_llm_field"] != true {
+			t.Fatalf("future_llm_field = %v, want preserved", llm["future_llm_field"])
+		}
+		providers := llm["providers"].(map[string]any)
+		primary := providers["primary"].(map[string]any)
+		if primary["model"] != "new-model" {
+			t.Fatalf("model = %v, want new-model", primary["model"])
+		}
+		if primary["vendor_extra"] != "keep" {
+			t.Fatalf("vendor_extra = %v, want preserved", primary["vendor_extra"])
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

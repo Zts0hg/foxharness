@@ -6,34 +6,45 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
-const zhipuClaudeBaseURL = "https://open.bigmodel.cn/api/paas/v4/"
-
 // ClaudeProvider implements LLMProvider using the Anthropic Messages protocol.
-// It can talk to Anthropic-compatible endpoints, including Zhipu's Claude-style
-// compatibility endpoint.
+// It can talk to Claude-compatible endpoints through a configured base URL.
 type ClaudeProvider struct {
 	client anthropic.Client
 	model  string
 	retry  RetryConfig
 }
 
-// NewZhipuClaudeProvider creates a ClaudeProvider configured for Zhipu's
-// Anthropic-compatible endpoint.
-func NewZhipuClaudeProvider(model string) (*ClaudeProvider, error) {
-	apiKey, err := zhipuAPIKeyFromEnv()
-	if err != nil {
-		return nil, err
-	}
+// NewClaudeProvider creates a Claude-compatible provider from resolved LLM
+// configuration.
+func NewClaudeProvider(config llmconfig.ResolvedConfig) (*ClaudeProvider, error) {
 	retry := retryConfigFromEnv()
 	clientOptions := []option.RequestOption{
-		option.WithAPIKey(apiKey),
-		option.WithBaseURL(zhipuClaudeBaseURL),
+		option.WithBaseURL(config.BaseURL),
 		option.WithMaxRetries(0),
+	}
+	switch config.Auth {
+	case llmconfig.AuthAPIKey:
+		if config.APIKey == "" {
+			return nil, fmt.Errorf("missing API key for Claude-compatible provider")
+		}
+		clientOptions = append(clientOptions,
+			option.WithAPIKey(config.APIKey),
+			option.WithHeaderDel("Authorization"),
+		)
+	case llmconfig.AuthNone:
+		clientOptions = append(clientOptions,
+			option.WithAPIKey("foxharness-auth-none"),
+			option.WithHeaderDel("X-Api-Key"),
+			option.WithHeaderDel("Authorization"),
+		)
+	default:
+		return nil, fmt.Errorf("unsupported auth %q for Claude-compatible provider", config.Auth)
 	}
 	if retry.RequestTimeout > 0 {
 		clientOptions = append(clientOptions, option.WithRequestTimeout(retry.RequestTimeout))
@@ -41,7 +52,7 @@ func NewZhipuClaudeProvider(model string) (*ClaudeProvider, error) {
 
 	return &ClaudeProvider{
 		client: anthropic.NewClient(clientOptions...),
-		model:  model,
+		model:  config.Model,
 		retry:  retry,
 	}, nil
 }
@@ -120,16 +131,16 @@ func (p *ClaudeProvider) messagesNewWithRetry(ctx context.Context, params anthro
 		}
 
 		delay := retry.delay(attempt)
-		log.Printf("[Provider] Claude/Zhipu API request failed, retrying attempt %d/%d in %s: %v", attempt+1, retry.MaxAttempts, delay, err)
+		log.Printf("[Provider] Claude-compatible API request failed, retrying attempt %d/%d in %s: %v", attempt+1, retry.MaxAttempts, delay, err)
 		if err := sleepWithContext(ctx, delay); err != nil {
-			return nil, fmt.Errorf("Claude/Zhipu API 请求取消: %w", err)
+			return nil, fmt.Errorf("Claude-compatible API 请求取消: %w", err)
 		}
 	}
 
 	if retry.MaxAttempts > 1 && shouldRetryProviderError(ctx, lastErr) {
-		return nil, fmt.Errorf("Claude/Zhipu API 请求失败（已尝试 %d 次）: %w", retry.MaxAttempts, lastErr)
+		return nil, fmt.Errorf("Claude-compatible API 请求失败（已尝试 %d 次）: %w", retry.MaxAttempts, lastErr)
 	}
-	return nil, fmt.Errorf("Claude/Zhipu API 请求失败: %w", lastErr)
+	return nil, fmt.Errorf("Claude-compatible API 请求失败: %w", lastErr)
 }
 
 func toAnthropicMessages(messages []schema.Message) ([]anthropic.MessageParam, []anthropic.TextBlockParam) {

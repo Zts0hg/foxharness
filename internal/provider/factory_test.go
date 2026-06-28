@@ -3,45 +3,78 @@ package provider
 import (
 	"strings"
 	"testing"
+
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 )
 
-func TestNewZhipuProviderMissingAPIKeyReturnsHelpfulError(t *testing.T) {
-	t.Setenv("ZHIPU_API_KEY", "")
+func TestNewProviderConstructsOpenAIProviderFromResolvedConfig(t *testing.T) {
+	got, err := NewProvider(llmconfig.ResolvedConfig{
+		Protocol: llmconfig.ProtocolOpenAI,
+		BaseURL:  "https://example.test/v1",
+		Model:    "test-model",
+		Auth:     llmconfig.AuthAPIKey,
+		APIKey:   "test-key",
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	provider, ok := got.(*OpenAIProvider)
+	if !ok {
+		t.Fatalf("NewProvider() = %T, want *OpenAIProvider", got)
+	}
+	if provider.ModelName() != "test-model" {
+		t.Fatalf("ModelName() = %q, want test-model", provider.ModelName())
+	}
+}
 
-	_, err := NewZhipuProvider(ProviderProtocolOpenAI, "test-model")
+func TestNewProviderConstructsClaudeProviderFromResolvedConfig(t *testing.T) {
+	got, err := NewProvider(llmconfig.ResolvedConfig{
+		Protocol: llmconfig.ProtocolClaude,
+		BaseURL:  "https://example.test",
+		Model:    "claude-model",
+		Auth:     llmconfig.AuthAPIKey,
+		APIKey:   "test-key",
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	provider, ok := got.(*ClaudeProvider)
+	if !ok {
+		t.Fatalf("NewProvider() = %T, want *ClaudeProvider", got)
+	}
+	if provider.ModelName() != "claude-model" {
+		t.Fatalf("ModelName() = %q, want claude-model", provider.ModelName())
+	}
+}
+
+func TestNewProviderRejectsUnsupportedProtocol(t *testing.T) {
+	_, err := NewProvider(llmconfig.ResolvedConfig{
+		Protocol: "custom",
+		BaseURL:  "https://example.test",
+		Model:    "test-model",
+		Auth:     llmconfig.AuthNone,
+	})
 	if err == nil {
-		t.Fatal("NewZhipuProvider returned nil error, want missing key error")
+		t.Fatal("NewProvider() error = nil, want unsupported protocol")
 	}
-	if !strings.Contains(err.Error(), "ZHIPU_API_KEY is not set") {
-		t.Fatalf("error = %q, want missing key message", err.Error())
-	}
-	if !strings.Contains(err.Error(), `export ZHIPU_API_KEY="your-api-key"`) {
-		t.Fatalf("error = %q, want export hint", err.Error())
+	if !strings.Contains(err.Error(), "unsupported provider protocol") {
+		t.Fatalf("error = %q, want unsupported protocol", err.Error())
 	}
 }
 
-func TestNewZhipuOpenAIProviderMissingAPIKeyDoesNotPanic(t *testing.T) {
-	t.Setenv("ZHIPU_API_KEY", "")
+func TestNewProviderDoesNotReadLegacyZhipuAPIKey(t *testing.T) {
+	t.Setenv("ZHIPU_API_KEY", "legacy-key")
 
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			t.Fatalf("NewZhipuOpenAIProvider panicked: %v", recovered)
-		}
-	}()
-	if _, err := NewZhipuOpenAIProvider("test-model"); err == nil {
-		t.Fatal("NewZhipuOpenAIProvider returned nil error, want missing key error")
+	_, err := NewProvider(llmconfig.ResolvedConfig{
+		Protocol: llmconfig.ProtocolOpenAI,
+		BaseURL:  "https://example.test/v1",
+		Model:    "test-model",
+		Auth:     llmconfig.AuthAPIKey,
+	})
+	if err == nil {
+		t.Fatal("NewProvider() error = nil, want missing API key")
 	}
-}
-
-func TestNewZhipuClaudeProviderMissingAPIKeyDoesNotPanic(t *testing.T) {
-	t.Setenv("ZHIPU_API_KEY", "")
-
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			t.Fatalf("NewZhipuClaudeProvider panicked: %v", recovered)
-		}
-	}()
-	if _, err := NewZhipuClaudeProvider("test-model"); err == nil {
-		t.Fatal("NewZhipuClaudeProvider returned nil error, want missing key error")
+	if strings.Contains(err.Error(), "ZHIPU_API_KEY") {
+		t.Fatalf("error = %q, want no legacy key guidance", err.Error())
 	}
 }

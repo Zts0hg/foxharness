@@ -2,8 +2,9 @@ package provider
 
 import (
 	"fmt"
-	"os"
 	"strings"
+
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 )
 
 const (
@@ -11,32 +12,19 @@ const (
 	ProviderProtocolClaude = "claude"
 )
 
-// NewZhipuProvider returns a Zhipu-backed provider for the requested wire
-// protocol. The model name is shared because Zhipu exposes the same model
-// behind both OpenAI-compatible and Claude-compatible APIs.
-func NewZhipuProvider(protocol string, model string) (LLMProvider, error) {
-	switch normalizeProviderProtocol(protocol) {
+// NewProvider returns an LLM provider for the resolved protocol and connection
+// fields.
+func NewProvider(config llmconfig.ResolvedConfig) (LLMProvider, error) {
+	switch normalizeProviderProtocol(config.Protocol) {
 	case ProviderProtocolOpenAI:
-		return NewZhipuOpenAIProvider(model)
+		return NewOpenAIProvider(config)
 	case ProviderProtocolClaude:
-		return NewZhipuClaudeProvider(model)
+		return NewClaudeProvider(config)
 	default:
-		return nil, fmt.Errorf("unsupported provider protocol %q; expected %q or %q", protocol, ProviderProtocolOpenAI, ProviderProtocolClaude)
+		return nil, fmt.Errorf("unsupported provider protocol %q; expected %q or %q", config.Protocol, ProviderProtocolOpenAI, ProviderProtocolClaude)
 	}
 }
 
 func normalizeProviderProtocol(protocol string) string {
-	protocol = strings.TrimSpace(strings.ToLower(protocol))
-	if protocol == "" {
-		return ProviderProtocolOpenAI
-	}
-	return protocol
-}
-
-func zhipuAPIKeyFromEnv() (string, error) {
-	apiKey := strings.TrimSpace(os.Getenv("ZHIPU_API_KEY"))
-	if apiKey == "" {
-		return "", fmt.Errorf("ZHIPU_API_KEY is not set\nexport ZHIPU_API_KEY=\"your-api-key\"")
-	}
-	return apiKey, nil
+	return strings.TrimSpace(strings.ToLower(protocol))
 }
