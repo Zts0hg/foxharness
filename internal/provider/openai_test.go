@@ -13,7 +13,6 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/schema"
-	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 )
 
@@ -288,10 +287,52 @@ func TestNewProviderOpenAIAuthNoneSendsNoCredentialHeaders(t *testing.T) {
 	}
 }
 
+func TestNewProviderOpenAIAuthNoneIgnoresOpenAIEnvironmentDefaults(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "env-openai-key")
+	t.Setenv("OPENAI_ORG_ID", "env-org")
+	t.Setenv("OPENAI_CUSTOM_HEADERS", "X-Leaked-Secret: env-secret")
+
+	requests := make(chan openAIRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body openAIRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		body.Authorization = r.Header.Get("Authorization")
+		body.XAPIKey = r.Header.Get("X-Api-Key")
+		body.Organization = r.Header.Get("OpenAI-Organization")
+		body.LeakedSecret = r.Header.Get("X-Leaked-Secret")
+		requests <- body
+		writeChatCompletion(t, w, "ok")
+	}))
+	defer server.Close()
+
+	got, err := NewProvider(llmconfig.ResolvedConfig{
+		Protocol: llmconfig.ProtocolOpenAI,
+		BaseURL:  server.URL,
+		Model:    "local-model",
+		Auth:     llmconfig.AuthNone,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	_, err = got.Generate(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	req := <-requests
+	if req.Authorization != "" || req.XAPIKey != "" || req.Organization != "" || req.LeakedSecret != "" {
+		t.Fatalf("environment defaults leaked into request headers: %+v", req)
+	}
+}
+
 type openAIRequest struct {
 	Model         string `json:"model"`
 	Authorization string
 	XAPIKey       string
+	Organization  string
+	LeakedSecret  string
 }
 
 func newTestOpenAIProvider(baseURL string, retry RetryConfig) *OpenAIProvider {
@@ -306,7 +347,7 @@ func newTestOpenAIProviderWithOptions(baseURL string, retry RetryConfig, opts ..
 	}
 	clientOptions = append(clientOptions, opts...)
 	return &OpenAIProvider{
-		client: openai.NewClient(clientOptions...),
+		client: newOpenAIClient(clientOptions...),
 		model:  "test-model",
 		retry:  retry,
 	}

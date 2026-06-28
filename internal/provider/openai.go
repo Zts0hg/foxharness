@@ -55,10 +55,18 @@ func NewOpenAIProvider(config llmconfig.ResolvedConfig) (*OpenAIProvider, error)
 	}
 
 	return &OpenAIProvider{
-		client: openai.NewClient(clientOptions...),
+		client: newOpenAIClient(clientOptions...),
 		model:  config.Model,
 		retry:  retry,
 	}, nil
+}
+
+func newOpenAIClient(options ...option.RequestOption) openai.Client {
+	// openai.NewClient prepends OPENAI_* environment defaults. Build only the
+	// chat service from explicit options so foxharness owns provider resolution.
+	client := openai.Client{Options: options}
+	client.Chat = openai.NewChatService(options...)
+	return client
 }
 
 func (p *OpenAIProvider) ProviderProtocol() string {
