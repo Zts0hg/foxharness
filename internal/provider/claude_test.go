@@ -269,6 +269,64 @@ func TestNewProviderClaudeAuthNoneSendsNoCredentialHeaders(t *testing.T) {
 	}
 }
 
+func TestNewProviderClaudeAuthNoneIgnoresAnthropicWorkloadIdentityEnv(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_PROFILE", "")
+	t.Setenv("ANTHROPIC_CREDENTIALS_FILE", "")
+	t.Setenv("ANTHROPIC_CONFIG_DIR", t.TempDir())
+	t.Setenv("ANTHROPIC_IDENTITY_TOKEN", "env-jwt")
+	t.Setenv("ANTHROPIC_FEDERATION_RULE_ID", "rule-1")
+	t.Setenv("ANTHROPIC_ORGANIZATION_ID", "org-1")
+
+	var tokenExchanges int32
+	requests := make(chan claudeRequestHeaders, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/oauth/token" {
+			atomic.AddInt32(&tokenExchanges, 1)
+			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "workload-token"})
+			return
+		}
+		var body claudeRequestBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- claudeRequestHeaders{
+			Model:         body.Model,
+			Authorization: r.Header.Get("Authorization"),
+			XAPIKey:       r.Header.Get("X-Api-Key"),
+		}
+		writeClaudeTextMessage(t, w, "ok")
+	}))
+	defer server.Close()
+
+	got, err := NewProvider(llmconfig.ResolvedConfig{
+		Protocol: llmconfig.ProtocolClaude,
+		BaseURL:  server.URL,
+		Model:    "local-claude",
+		Auth:     llmconfig.AuthNone,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	_, err = got.Generate(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	req := <-requests
+	if tokenExchanges != 0 {
+		t.Fatalf("workload identity token exchanges = %d, want 0 for auth none", tokenExchanges)
+	}
+	if req.Authorization != "" {
+		t.Fatalf("Authorization = %q, want empty for auth none", req.Authorization)
+	}
+	if req.XAPIKey != "" {
+		t.Fatalf("X-Api-Key = %q, want empty for auth none", req.XAPIKey)
+	}
+}
+
 func TestNormalizeProviderProtocol(t *testing.T) {
 	if got := normalizeProviderProtocol(""); got != "" {
 		t.Fatalf("empty protocol = %q, want empty", got)

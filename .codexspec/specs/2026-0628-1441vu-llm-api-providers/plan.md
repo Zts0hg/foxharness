@@ -1,8 +1,8 @@
 # Implementation Plan: Configurable LLM API Providers
 
-**Feature**: `.codexspec/specs/2026-0628-1441vu-llm-api-providers`  
-**Spec**: `.codexspec/specs/2026-0628-1441vu-llm-api-providers/spec.md`  
-**Date**: 2026-06-28  
+**Feature**: `.codexspec/specs/2026-0628-1441vu-llm-api-providers`
+**Spec**: `.codexspec/specs/2026-0628-1441vu-llm-api-providers/spec.md`
+**Date**: 2026-06-28
 **Status**: Draft
 
 ## Summary

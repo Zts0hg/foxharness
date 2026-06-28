@@ -1,8 +1,8 @@
 # Implementation Tasks: Configurable LLM API Providers
 
-**Feature**: `.codexspec/specs/2026-0628-1441vu-llm-api-providers`  
-**Plan**: `.codexspec/specs/2026-0628-1441vu-llm-api-providers/plan.md`  
-**Date**: 2026-06-28  
+**Feature**: `.codexspec/specs/2026-0628-1441vu-llm-api-providers`
+**Plan**: `.codexspec/specs/2026-0628-1441vu-llm-api-providers/plan.md`
+**Date**: 2026-06-28
 **Status**: Complete
 
 ## Execution Notes

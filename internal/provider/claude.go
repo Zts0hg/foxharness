@@ -25,6 +25,7 @@ type ClaudeProvider struct {
 func NewClaudeProvider(config llmconfig.ResolvedConfig) (*ClaudeProvider, error) {
 	retry := retryConfigFromEnv()
 	clientOptions := []option.RequestOption{
+		option.WithoutEnvironmentDefaults(),
 		option.WithBaseURL(config.BaseURL),
 		option.WithMaxRetries(0),
 	}
