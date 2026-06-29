@@ -158,7 +158,7 @@ func runConfig(homeDir string, subArgs []string) error {
 		Stderr:      os.Stderr,
 		StdinFD:     fd,
 		Interactive: term.IsTerminal(fd),
-		NewProvider: provider.NewProvider,
+		NewProvider: provider.NewProbeProvider,
 	}
 	return configcmd.Run(context.Background(), deps, subArgs)
 }

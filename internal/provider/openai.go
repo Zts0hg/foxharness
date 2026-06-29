@@ -29,9 +29,15 @@ type OpenAIProvider struct {
 }
 
 // NewOpenAIProvider creates an OpenAI-compatible provider from resolved LLM
-// configuration.
+// configuration, using retry settings resolved from the environment.
 func NewOpenAIProvider(config llmconfig.ResolvedConfig) (*OpenAIProvider, error) {
-	retry := retryConfigFromEnv()
+	return newOpenAIProviderWithRetry(config, retryConfigFromEnv())
+}
+
+// newOpenAIProviderWithRetry builds an OpenAI-compatible provider with an
+// explicit retry configuration, so callers such as the connectivity probe can
+// request a single attempt.
+func newOpenAIProviderWithRetry(config llmconfig.ResolvedConfig, retry RetryConfig) (*OpenAIProvider, error) {
 	clientOptions := []option.RequestOption{
 		option.WithBaseURL(config.BaseURL),
 		option.WithMaxRetries(0),

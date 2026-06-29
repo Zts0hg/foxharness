@@ -22,8 +22,17 @@ type ClaudeProvider struct {
 
 // NewClaudeProvider creates a Claude-compatible provider from resolved LLM
 // configuration.
+// NewClaudeProvider creates a Claude/Anthropic-compatible provider from
+// resolved LLM configuration, using retry settings resolved from the
+// environment.
 func NewClaudeProvider(config llmconfig.ResolvedConfig) (*ClaudeProvider, error) {
-	retry := retryConfigFromEnv()
+	return newClaudeProviderWithRetry(config, retryConfigFromEnv())
+}
+
+// newClaudeProviderWithRetry builds a Claude-compatible provider with an
+// explicit retry configuration, so callers such as the connectivity probe can
+// request a single attempt.
+func newClaudeProviderWithRetry(config llmconfig.ResolvedConfig, retry RetryConfig) (*ClaudeProvider, error) {
 	clientOptions := []option.RequestOption{
 		option.WithoutEnvironmentDefaults(),
 		option.WithBaseURL(config.BaseURL),
