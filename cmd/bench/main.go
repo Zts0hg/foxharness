@@ -19,10 +19,13 @@ import (
 	"context"
 	"flag"
 	"log"
+	"os"
 
 	"github.com/Zts0hg/foxharness/internal/benchmark"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
+	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -85,7 +88,12 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engi
 	if err := store.EnsureFiles(); err != nil {
 		return nil, nil, err
 	}
-	llmProvider, err := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	homeDir, _ := os.UserHomeDir()
+	llmConfig, err := resolveBenchmarkLLMConfig(homeDir, os.Getenv)
+	if err != nil {
+		return nil, nil, err
+	}
+	llmProvider, err := provider.NewProvider(llmConfig)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -105,10 +113,16 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engi
 		workDir,
 		composer,
 		engine.Config{
-			EnableThinking: enableThinking,
-			MaxTurns:       c.MaxTurns,
+			EnableThinking:   enableThinking,
+			MaxTurns:         c.MaxTurns,
+			ProviderProtocol: llmConfig.Protocol,
+			Model:            llmConfig.Model,
 		},
 	)
 
 	return eng, sess, nil
+}
+
+func resolveBenchmarkLLMConfig(homeDir string, lookup llmconfig.EnvLookup) (llmconfig.ResolvedConfig, error) {
+	return llmresolve.FromUserSettings(homeDir, llmconfig.CLIOverrides{}, lookup)
 }

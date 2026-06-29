@@ -93,10 +93,46 @@ go install github.com/Zts0hg/foxharness/cmd/fox@latest
 
 ## 配置
 
-foxharness 默认使用智谱 BigModel 的编程端点。默认通信协议为 OpenAI 兼容格式，同时也提供了兼容 Claude 的 Anthropic Messages 协议适配器。运行 `fox` 之前，请先设置 API 密钥：
+foxharness 不再内置默认 LLM 提供商。运行 `fox` 前，请在
+`~/.foxharness/settings.json` 中配置用户级 provider profile：
+
+```json
+{
+  "llm": {
+    "default_provider": "primary",
+    "providers": {
+      "primary": {
+        "protocol": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4.1",
+        "auth": "api-key",
+        "api_key_env": "OPENAI_API_KEY"
+      },
+      "local": {
+        "protocol": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "model": "qwen2.5-coder",
+        "auth": "none"
+      },
+      "zhipu": {
+        "protocol": "openai",
+        "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "model": "glm-4.5-air",
+        "auth": "api-key",
+        "api_key_env": "ZHIPU_API_KEY"
+      }
+    }
+  }
+}
+```
+
+配置优先级为：CLI flags、`FOXHARNESS_LLM_*` 环境变量、
+`~/.foxharness/settings.json`，最后没有内置默认值。缺少必要 LLM 配置时会直接报出可操作的配置错误。
+
+常规使用建议通过 `api_key_env` 引用密钥，避免把密钥写入项目文件：
 
 ```bash
-export ZHIPU_API_KEY="your-api-key"
+export OPENAI_API_KEY="your-api-key"
 ```
 
 可选的重试与超时配置：
@@ -108,19 +144,23 @@ export FOXHARNESS_LLM_RETRY_MAX_DELAY=8s
 export FOXHARNESS_LLM_REQUEST_TIMEOUT=60s
 ```
 
-### 协议类型
+### Provider Profile 与协议
 
-使用 `-provider openai` 采用默认的 OpenAI 兼容 Chat Completions 协议：
-
-```bash
-fox exec -provider openai "检查这个项目有没有潜在的 bug"
-```
-
-使用 `-provider claude` 采用 Claude 兼容的 Anthropic Messages 协议：
+使用 `-llm-provider` 在已命名的 profile 之间切换：
 
 ```bash
-fox exec -provider claude "检查这个项目有没有潜在的 bug"
+fox exec -llm-provider local "检查这个项目有没有潜在的 bug"
 ```
+
+使用 `-protocol` 仅覆盖本次运行使用的 OpenAI/Claude 兼容协议：
+
+```bash
+fox exec -protocol claude -base-url https://api.anthropic.com -model claude-sonnet-4-20250514 -api-key-env ANTHROPIC_API_KEY "检查这个项目有没有潜在的 bug"
+```
+
+foxharness 没有 `-provider` 参数。它出现在 flag 位置时会被当作未知 flag；
+请选择 `-llm-provider` 切换 provider profile，或用 `-protocol` 指定
+OpenAI/Claude 兼容协议。
 
 两种协议模式下，内部的 Agent 消息和工具调用完全相同，区别仅在于提供商适配器将消息转换为目标协议的格式：
 
@@ -203,8 +243,13 @@ fox -p [选项] [提示词]    # 执行单次任务并输出结果
 | 选项 | 说明 |
 | --- | --- |
 | `-C`、`-workdir` | 工作目录，默认为当前目录（`.`）。 |
-| `-model` | 模型名称，默认为 `glm-4.5-air`。 |
-| `-provider` | 协议类型：`openai` 或 `claude`，默认为 `openai`。 |
+| `-llm-provider` | 从 `llm.providers` 中选择命名 provider profile。 |
+| `-protocol` | 协议覆盖：`openai` 或 `claude`。 |
+| `-base-url` | API base URL 覆盖。 |
+| `-model` | 模型 id 覆盖。 |
+| `-auth` | 认证模式覆盖：`api-key` 或 `none`。 |
+| `-api-key-env` | 保存 API key 的环境变量名。 |
+| `-api-key` | 直接传入 API key；常规使用优先选择 `-api-key-env`。 |
 | `-plan` | 是否启用计划模式，默认为 `true`。 |
 | `-thinking` | 在未启用计划模式时，使用旧版的逐轮思考模式。 |
 | `-max-turns` | Agent 最大执行轮次。默认不限制；设为正整数可限制轮次。 |
@@ -219,8 +264,8 @@ fox -p [选项] [提示词]    # 执行单次任务并输出结果
 fox exec -plan=false "只检查代码，不要修改文件"
 fox exec -continue "修复上一轮发现的问题"
 fox exec -session 20260517-192517-a504c5 "继续这个会话，总结一下当前进展"
-fox exec -model glm-4.5-air "给这个项目补充测试"
-fox exec -provider claude "总结一下这个项目的架构"
+fox exec -llm-provider local "给这个项目补充测试"
+fox exec -llm-provider primary -model gpt-4.1 "总结一下这个项目的架构"
 ```
 
 ## 项目指令

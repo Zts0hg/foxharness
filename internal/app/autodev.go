@@ -13,6 +13,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/slash"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -91,9 +92,8 @@ func (a *coreRunnerAdapter) StagePrompt(ctx context.Context, command, args strin
 // item's worktree. Plan mode is disabled: the SDD pipeline supplies its own
 // structure, and per-run planning would fight the staged prompts.
 type appCoreRunnerFactory struct {
-	providerProtocol string
-	model            string
-	maxTurns         int
+	llmConfig llmconfig.ResolvedConfig
+	maxTurns  int
 }
 
 var _ autodev.CoreRunnerFactory = (*appCoreRunnerFactory)(nil)
@@ -101,12 +101,13 @@ var _ autodev.CoreRunnerFactory = (*appCoreRunnerFactory)(nil)
 // New implements autodev.CoreRunnerFactory.
 func (f *appCoreRunnerFactory) New(ctx context.Context, workDir, model string) (autodev.CoreRunner, error) {
 	if model == "" {
-		model = f.model
+		model = f.llmConfig.Model
 	}
+	llmConfig := f.llmConfig.WithModel(model)
 	runner, err := NewAgentRunner(ctx, AgentRunnerConfig{
 		WorkDir:        workDir,
-		Model:          model,
-		Provider:       f.providerProtocol,
+		Model:          llmConfig.Model,
+		LLM:            llmConfig,
 		EnablePlanMode: false,
 		MaxTurns:       f.maxTurns,
 	})
@@ -171,7 +172,11 @@ func buildAutodevDeps(ctx context.Context, cfg CLIConfig, reporter autodev.Repor
 	if err != nil {
 		return autodev.Deps{}, err
 	}
-	llm, err := provider.NewZhipuProvider(cfg.Provider, adCfg.Model)
+	if cfg.ResolvedLLM.Protocol == "" || cfg.ResolvedLLM.BaseURL == "" || cfg.ResolvedLLM.Model == "" {
+		return autodev.Deps{}, fmt.Errorf("missing LLM configuration: protocol, base_url, and model are required")
+	}
+	llmConfig := cfg.ResolvedLLM.WithModel(adCfg.Model)
+	llm, err := provider.NewProvider(llmConfig)
 	if err != nil {
 		return autodev.Deps{}, err
 	}
@@ -180,9 +185,8 @@ func buildAutodevDeps(ctx context.Context, cfg CLIConfig, reporter autodev.Repor
 		Config:   adCfg,
 		RepoRoot: repoRoot,
 		CoreFactory: &appCoreRunnerFactory{
-			providerProtocol: cfg.Provider,
-			model:            adCfg.Model,
-			maxTurns:         cfg.MaxTurns,
+			llmConfig: llmConfig,
+			maxTurns:  cfg.MaxTurns,
 		},
 		Engineer: autodev.NewEngineerAgent(llm, adCfg.Model, persona),
 		Git:      autodev.NewExecGitRunner(),

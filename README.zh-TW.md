@@ -93,10 +93,46 @@ go install github.com/Zts0hg/foxharness/cmd/fox@latest
 
 ## 設定
 
-foxharness 預設使用智譜 BigModel 的程式設計端點。預設通訊協定為 OpenAI 相容格式，同時也提供了相容 Claude 的 Anthropic Messages 協定介面卡。執行 `fox` 之前，請先設定 API 金鑰：
+foxharness 不再內建預設 LLM 供應商。執行 `fox` 前，請在
+`~/.foxharness/settings.json` 中設定使用者層級的 provider profile：
+
+```json
+{
+  "llm": {
+    "default_provider": "primary",
+    "providers": {
+      "primary": {
+        "protocol": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4.1",
+        "auth": "api-key",
+        "api_key_env": "OPENAI_API_KEY"
+      },
+      "local": {
+        "protocol": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "model": "qwen2.5-coder",
+        "auth": "none"
+      },
+      "zhipu": {
+        "protocol": "openai",
+        "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "model": "glm-4.5-air",
+        "auth": "api-key",
+        "api_key_env": "ZHIPU_API_KEY"
+      }
+    }
+  }
+}
+```
+
+設定優先順序為：CLI flags、`FOXHARNESS_LLM_*` 環境變數、
+`~/.foxharness/settings.json`，最後沒有內建預設值。缺少必要 LLM 設定時會直接回報可操作的設定錯誤。
+
+日常使用建議透過 `api_key_env` 引用金鑰，避免把金鑰寫入專案檔案：
 
 ```bash
-export ZHIPU_API_KEY="your-api-key"
+export OPENAI_API_KEY="your-api-key"
 ```
 
 可選的重試與逾時設定：
@@ -108,19 +144,23 @@ export FOXHARNESS_LLM_RETRY_MAX_DELAY=8s
 export FOXHARNESS_LLM_REQUEST_TIMEOUT=60s
 ```
 
-### 協定類型
+### Provider Profile 與協定
 
-使用 `-provider openai` 採用預設的 OpenAI 相容 Chat Completions 協定：
-
-```bash
-fox exec -provider openai "檢查這個專案有沒有潛在的 bug"
-```
-
-使用 `-provider claude` 採用 Claude 相容的 Anthropic Messages 協定：
+使用 `-llm-provider` 在已命名的 profile 之間切換：
 
 ```bash
-fox exec -provider claude "檢查這個專案有沒有潛在的 bug"
+fox exec -llm-provider local "檢查這個專案有沒有潛在的 bug"
 ```
+
+使用 `-protocol` 僅覆蓋本次執行使用的 OpenAI/Claude 相容協定：
+
+```bash
+fox exec -protocol claude -base-url https://api.anthropic.com -model claude-sonnet-4-20250514 -api-key-env ANTHROPIC_API_KEY "檢查這個專案有沒有潛在的 bug"
+```
+
+foxharness 沒有 `-provider` 參數。它出現在 flag 位置時會被視為未知 flag；
+請使用 `-llm-provider` 切換 provider profile，或用 `-protocol` 指定
+OpenAI/Claude 相容協定。
 
 兩種協定模式下，內部的 Agent 訊息和工具呼叫完全相同，差異僅在於供應商介面卡將訊息轉換為目標協定的格式：
 
@@ -203,8 +243,13 @@ fox -p [選項] [提示詞]    # 執行單次任務並輸出結果
 | 選項 | 說明 |
 | --- | --- |
 | `-C`、`-workdir` | 工作目錄，預設為目前目錄（`.`）。 |
-| `-model` | 模型名稱，預設為 `glm-4.5-air`。 |
-| `-provider` | 協定類型：`openai` 或 `claude`，預設為 `openai`。 |
+| `-llm-provider` | 從 `llm.providers` 中選擇命名 provider profile。 |
+| `-protocol` | 協定覆蓋：`openai` 或 `claude`。 |
+| `-base-url` | API base URL 覆蓋。 |
+| `-model` | 模型 id 覆蓋。 |
+| `-auth` | 認證模式覆蓋：`api-key` 或 `none`。 |
+| `-api-key-env` | 保存 API key 的環境變數名稱。 |
+| `-api-key` | 直接傳入 API key；日常使用優先選擇 `-api-key-env`。 |
 | `-plan` | 是否啟用規劃模式，預設為 `true`。 |
 | `-thinking` | 在未啟用規劃模式時，使用舊版的逐輪思考模式。 |
 | `-max-turns` | Agent 最大執行輪次。預設不限制；設為正整數可限制輪次。 |
@@ -219,8 +264,8 @@ fox -p [選項] [提示詞]    # 執行單次任務並輸出結果
 fox exec -plan=false "只檢查程式碼，不要修改檔案"
 fox exec -continue "修復上一輪發現的問題"
 fox exec -session 20260517-192517-a504c5 "繼續這個工作階段，總結一下目前進展"
-fox exec -model glm-4.5-air "為這個專案補充測試"
-fox exec -provider claude "總結一下這個專案的架構"
+fox exec -llm-provider local "為這個專案補充測試"
+fox exec -llm-provider primary -model gpt-4.1 "總結一下這個專案的架構"
 ```
 
 ## 專案指令

@@ -9,7 +9,6 @@
 //	FEISHU_APP_SECRET       - Feishu application secret
 //	FEISHU_VERIFICATION_TOKEN - Feishu webhook verification token
 //	FEISHU_ENCRYPT_KEY      - Feishu webhook encryption key
-//	ZHIPU_API_KEY           - Zhipu AI API key
 //
 // The server listens on :7777 for incoming Feishu webhook events.
 package main
@@ -21,6 +20,8 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/feishu"
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
+	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
@@ -31,13 +32,10 @@ func main() {
 	verificationToken := mustEnv("FEISHU_VERIFICATION_TOKEN")
 	encryptKey := mustEnv("FEISHU_ENCRYPT_KEY")
 
-	if os.Getenv("ZHIPU_API_KEY") == "" {
-		log.Fatal("请先导出 ZHIPU_API_KEY 环境变量")
-	}
-
 	workDir, _ := os.Getwd()
 
-	llmProvider, err := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	homeDir, _ := os.UserHomeDir()
+	llmProvider, err := newConfiguredLLMProvider(homeDir, os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -58,6 +56,14 @@ func main() {
 		log.Fatal(err)
 	}
 
+}
+
+func newConfiguredLLMProvider(homeDir string, lookup llmconfig.EnvLookup) (provider.LLMProvider, error) {
+	llmConfig, err := llmresolve.FromUserSettings(homeDir, llmconfig.CLIOverrides{}, lookup)
+	if err != nil {
+		return nil, err
+	}
+	return provider.NewProvider(llmConfig)
 }
 
 // mustEnv reads an environment variable and exits if it is not set.

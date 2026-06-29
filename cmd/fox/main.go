@@ -14,8 +14,9 @@
 //	-workdir    Working directory (default: current directory)
 //	-prompt     User task prompt
 //	-p, -print  Print response and exit without TUI
-//	-model      LLM model name (resolved from settings, FOX_MODEL env, or glm-4.5-air)
-//	-provider   Provider protocol: openai or claude (default: "openai")
+//	-model      LLM model id override
+//	-llm-provider  LLM provider profile id
+//	-protocol   LLM provider protocol: openai or claude
 //	-thinking   Enable legacy per-turn Thinking mode
 //	-plan       Enable Plan Mode (default: true)
 //	-max-turns  Maximum number of agent turns; 0 means unlimited (default: 0)
@@ -37,6 +38,8 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
+	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/settings"
 )
 
@@ -58,9 +61,13 @@ func main() {
 	}
 
 	homeDir, _ := os.UserHomeDir()
-	loaded, _ := settings.Load(homeDir)
-	foxModelEnv := os.Getenv("FOX_MODEL")
-	cfg.Model = settings.ResolveModel(cfg.Model, foxModelEnv, "glm-4.5-air", loaded)
+	resolvedLLM, err := resolveLLMConfig(homeDir, cfg.LLM, os.Getenv)
+	if err != nil {
+		exitWithError(err)
+	}
+	cfg.ResolvedLLM = resolvedLLM
+	cfg.Model = resolvedLLM.Model
+	cfg.LLM.Model = resolvedLLM.Model
 
 	if mode == launchAutodev {
 		// The positional argument, when present, is the backlog path.
@@ -76,8 +83,14 @@ func main() {
 	if mode == launchTUI {
 		cfg.Prompt = strings.TrimSpace(cfg.Prompt)
 		onSave := func(model string) error {
+			if resolvedLLM.SettingsProviderID == "" {
+				return nil
+			}
 			current, _ := settings.Load(homeDir)
-			current.Model = model
+			if err := settings.SetProviderModel(current, resolvedLLM.SettingsProviderID, model); err != nil {
+				log.Printf("[Settings] failed to update provider model: %v", err)
+				return err
+			}
 			if err := settings.Save(homeDir, current); err != nil {
 				log.Printf("[Settings] failed to save model: %v", err)
 				return err
@@ -141,8 +154,13 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 	fs.StringVar(&cfg.WorkDir, "workdir", ".", "working directory")
 	fs.StringVar(&cfg.WorkDir, "C", ".", "working directory")
 	fs.StringVar(&cfg.Prompt, "prompt", "", "user task prompt")
-	fs.StringVar(&cfg.Model, "model", "", "LLM model name (default: glm-4.5-air)")
-	fs.StringVar(&cfg.Provider, "provider", "openai", "provider protocol: openai or claude")
+	fs.StringVar(&cfg.Model, "model", "", "LLM model id override")
+	fs.StringVar(&cfg.LLM.ProviderID, "llm-provider", "", "LLM provider profile id")
+	fs.StringVar(&cfg.LLM.Protocol, "protocol", "", "LLM provider protocol: openai or claude")
+	fs.StringVar(&cfg.LLM.BaseURL, "base-url", "", "LLM API base URL")
+	fs.StringVar(&cfg.LLM.Auth, "auth", "", "LLM auth mode: api-key or none")
+	fs.StringVar(&cfg.LLM.APIKeyEnv, "api-key-env", "", "environment variable containing the LLM API key")
+	fs.StringVar(&cfg.LLM.APIKey, "api-key", "", "LLM API key value; prefer -api-key-env for routine use")
 	fs.BoolVar(&cfg.EnableThinking, "thinking", false, "enable legacy per-turn Thinking mode; disabled when Plan Mode succeeds")
 	fs.BoolVar(&cfg.EnablePlanMode, "plan", true, "enable Plan Mode")
 	fs.IntVar(&cfg.MaxTurns, "max-turns", 0, "maximum number of agent turns; 0 means unlimited")
@@ -170,6 +188,7 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 	if err := fs.Parse(args); err != nil {
 		return cfg, mode, err
 	}
+	cfg.LLM.Model = cfg.Model
 
 	if printMode {
 		if mode == launchAutodev {
@@ -189,6 +208,10 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 		cfg.Prompt = positionalPrompt
 	}
 	return cfg, mode, nil
+}
+
+func resolveLLMConfig(homeDir string, cli llmconfig.CLIOverrides, lookup llmconfig.EnvLookup) (llmconfig.ResolvedConfig, error) {
+	return llmresolve.FromUserSettings(homeDir, cli, lookup)
 }
 
 func readPrompt(input string) (string, error) {

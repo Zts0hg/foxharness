@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -12,7 +13,7 @@ import (
 )
 
 // OpenAIProvider implements the LLMProvider interface using the OpenAI API.
-// It supports any OpenAI-compatible endpoint, including Zhipu AI's BigModel platform.
+// It supports any OpenAI-compatible endpoint.
 //
 // The provider handles:
 //   - Message format conversion between schema and OpenAI types
@@ -27,34 +28,45 @@ type OpenAIProvider struct {
 	retry RetryConfig
 }
 
-// NewZhipuOpenAIProvider creates an OpenAIProvider configured for Zhipu AI's BigModel platform.
-//
-// The model parameter specifies which model to use (e.g., "glm-4.5-air").
-// Reads the ZHIPU_API_KEY environment variable for authentication.
-// Returns an error if ZHIPU_API_KEY is not set.
-//
-// Returns a configured OpenAIProvider ready for use with the Zhipu API.
-func NewZhipuOpenAIProvider(model string) (*OpenAIProvider, error) {
-	apiKey, err := zhipuAPIKeyFromEnv()
-	if err != nil {
-		return nil, err
-	}
-	baseUrl := "https://open.bigmodel.cn/api/coding/paas/v4"
+// NewOpenAIProvider creates an OpenAI-compatible provider from resolved LLM
+// configuration.
+func NewOpenAIProvider(config llmconfig.ResolvedConfig) (*OpenAIProvider, error) {
 	retry := retryConfigFromEnv()
 	clientOptions := []option.RequestOption{
-		option.WithAPIKey(apiKey),
-		option.WithBaseURL(baseUrl),
+		option.WithBaseURL(config.BaseURL),
 		option.WithMaxRetries(0),
+	}
+	switch config.Auth {
+	case llmconfig.AuthAPIKey:
+		if config.APIKey == "" {
+			return nil, fmt.Errorf("missing API key for OpenAI-compatible provider")
+		}
+		clientOptions = append(clientOptions, option.WithAPIKey(config.APIKey))
+	case llmconfig.AuthNone:
+		clientOptions = append(clientOptions,
+			option.WithHeaderDel("Authorization"),
+			option.WithHeaderDel("X-Api-Key"),
+		)
+	default:
+		return nil, fmt.Errorf("unsupported auth %q for OpenAI-compatible provider", config.Auth)
 	}
 	if retry.RequestTimeout > 0 {
 		clientOptions = append(clientOptions, option.WithRequestTimeout(retry.RequestTimeout))
 	}
 
 	return &OpenAIProvider{
-		client: openai.NewClient(clientOptions...),
-		model:  model,
+		client: newOpenAIClient(clientOptions...),
+		model:  config.Model,
 		retry:  retry,
 	}, nil
+}
+
+func newOpenAIClient(options ...option.RequestOption) openai.Client {
+	// openai.NewClient prepends OPENAI_* environment defaults. Build only the
+	// chat service from explicit options so foxharness owns provider resolution.
+	client := openai.Client{Options: options}
+	client.Chat = openai.NewChatService(options...)
+	return client
 }
 
 func (p *OpenAIProvider) ProviderProtocol() string {

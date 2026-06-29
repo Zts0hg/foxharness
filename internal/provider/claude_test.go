@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -180,9 +181,155 @@ func TestClaudeProviderRetriesTransientHTTPFailure(t *testing.T) {
 	}
 }
 
+func TestNewProviderClaudeUsesConfiguredConnectionAndAPIKeyAuth(t *testing.T) {
+	requests := make(chan claudeRequestHeaders, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("request path = %q, want /v1/messages", r.URL.Path)
+		}
+		var body claudeRequestBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- claudeRequestHeaders{
+			Model:         body.Model,
+			Authorization: r.Header.Get("Authorization"),
+			XAPIKey:       r.Header.Get("X-Api-Key"),
+		}
+		writeClaudeTextMessage(t, w, "ok")
+	}))
+	defer server.Close()
+
+	got, err := NewProvider(llmconfig.ResolvedConfig{
+		Protocol: llmconfig.ProtocolClaude,
+		BaseURL:  server.URL,
+		Model:    "configured-claude",
+		Auth:     llmconfig.AuthAPIKey,
+		APIKey:   "configured-key",
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	_, err = got.Generate(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	req := <-requests
+	if req.Model != "configured-claude" {
+		t.Fatalf("model = %q, want configured-claude", req.Model)
+	}
+	if req.XAPIKey != "configured-key" {
+		t.Fatalf("X-Api-Key = %q, want configured-key", req.XAPIKey)
+	}
+	if req.Authorization != "" {
+		t.Fatalf("Authorization = %q, want empty", req.Authorization)
+	}
+}
+
+func TestNewProviderClaudeAuthNoneSendsNoCredentialHeaders(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "env-anthropic-key")
+	t.Setenv("OPENAI_API_KEY", "env-openai-key")
+
+	requests := make(chan claudeRequestHeaders, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body claudeRequestBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- claudeRequestHeaders{
+			Model:         body.Model,
+			Authorization: r.Header.Get("Authorization"),
+			XAPIKey:       r.Header.Get("X-Api-Key"),
+		}
+		writeClaudeTextMessage(t, w, "ok")
+	}))
+	defer server.Close()
+
+	got, err := NewProvider(llmconfig.ResolvedConfig{
+		Protocol: llmconfig.ProtocolClaude,
+		BaseURL:  server.URL,
+		Model:    "local-claude",
+		Auth:     llmconfig.AuthNone,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	_, err = got.Generate(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	req := <-requests
+	if req.Authorization != "" {
+		t.Fatalf("Authorization = %q, want empty for auth none", req.Authorization)
+	}
+	if req.XAPIKey != "" {
+		t.Fatalf("X-Api-Key = %q, want empty for auth none", req.XAPIKey)
+	}
+}
+
+func TestNewProviderClaudeAuthNoneIgnoresAnthropicWorkloadIdentityEnv(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_PROFILE", "")
+	t.Setenv("ANTHROPIC_CREDENTIALS_FILE", "")
+	t.Setenv("ANTHROPIC_CONFIG_DIR", t.TempDir())
+	t.Setenv("ANTHROPIC_IDENTITY_TOKEN", "env-jwt")
+	t.Setenv("ANTHROPIC_FEDERATION_RULE_ID", "rule-1")
+	t.Setenv("ANTHROPIC_ORGANIZATION_ID", "org-1")
+
+	var tokenExchanges int32
+	requests := make(chan claudeRequestHeaders, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/oauth/token" {
+			atomic.AddInt32(&tokenExchanges, 1)
+			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "workload-token"})
+			return
+		}
+		var body claudeRequestBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- claudeRequestHeaders{
+			Model:         body.Model,
+			Authorization: r.Header.Get("Authorization"),
+			XAPIKey:       r.Header.Get("X-Api-Key"),
+		}
+		writeClaudeTextMessage(t, w, "ok")
+	}))
+	defer server.Close()
+
+	got, err := NewProvider(llmconfig.ResolvedConfig{
+		Protocol: llmconfig.ProtocolClaude,
+		BaseURL:  server.URL,
+		Model:    "local-claude",
+		Auth:     llmconfig.AuthNone,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	_, err = got.Generate(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	req := <-requests
+	if tokenExchanges != 0 {
+		t.Fatalf("workload identity token exchanges = %d, want 0 for auth none", tokenExchanges)
+	}
+	if req.Authorization != "" {
+		t.Fatalf("Authorization = %q, want empty for auth none", req.Authorization)
+	}
+	if req.XAPIKey != "" {
+		t.Fatalf("X-Api-Key = %q, want empty for auth none", req.XAPIKey)
+	}
+}
+
 func TestNormalizeProviderProtocol(t *testing.T) {
-	if got := normalizeProviderProtocol(""); got != ProviderProtocolOpenAI {
-		t.Fatalf("empty protocol = %q, want openai", got)
+	if got := normalizeProviderProtocol(""); got != "" {
+		t.Fatalf("empty protocol = %q, want empty", got)
 	}
 	if got := normalizeProviderProtocol(" CLAUDE "); got != ProviderProtocolClaude {
 		t.Fatalf("normalized protocol = %q, want claude", got)
@@ -204,6 +351,12 @@ type claudeRequestBody struct {
 		Description string         `json:"description"`
 		InputSchema map[string]any `json:"input_schema"`
 	} `json:"tools"`
+}
+
+type claudeRequestHeaders struct {
+	Model         string
+	Authorization string
+	XAPIKey       string
 }
 
 func newTestClaudeProvider(baseURL string, retry RetryConfig) *ClaudeProvider {

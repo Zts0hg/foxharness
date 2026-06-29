@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
 
@@ -19,7 +20,8 @@ type CLIConfig struct {
 	WorkDir         string
 	Prompt          string
 	Model           string
-	Provider        string
+	LLM             llmconfig.CLIOverrides
+	ResolvedLLM     llmconfig.ResolvedConfig
 	EnableThinking  bool
 	EnablePlanMode  bool
 	MaxTurns        int

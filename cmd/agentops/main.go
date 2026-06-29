@@ -12,7 +12,6 @@
 //	FEISHU_ENCRYPT_KEY      - Feishu webhook encryption key
 //	AGENTOPS_WORKDIR        - Working directory for agent execution
 //	AGENTOPS_LOGDIR         - Directory for log storage
-//	ZHIPU_API_KEY           - Zhipu AI API key
 //
 // The server listens on :7777 for incoming Feishu webhook events.
 package main
@@ -26,6 +25,8 @@ import (
 	"github.com/Zts0hg/foxharness/internal/agentops"
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/feishu"
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
+	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/provider"
 )
 
@@ -38,7 +39,8 @@ func main() {
 	workDir := mustEnv("AGENTOPS_WORKDIR")
 	logDir := mustEnv("AGENTOPS_LOGDIR")
 
-	llmProvider, err := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	homeDir, _ := os.UserHomeDir()
+	llmProvider, err := newConfiguredLLMProvider(homeDir, os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -70,6 +72,14 @@ func main() {
 	if err := gateway.Listen(":7777"); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func newConfiguredLLMProvider(homeDir string, lookup llmconfig.EnvLookup) (provider.LLMProvider, error) {
+	llmConfig, err := llmresolve.FromUserSettings(homeDir, llmconfig.CLIOverrides{}, lookup)
+	if err != nil {
+		return nil, err
+	}
+	return provider.NewProvider(llmConfig)
 }
 
 // mustEnv reads an environment variable and exits if it is not set.

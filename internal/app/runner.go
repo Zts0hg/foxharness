@@ -19,6 +19,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/provider"
@@ -35,7 +36,7 @@ import (
 type AgentRunnerConfig struct {
 	WorkDir         string
 	Model           string
-	Provider        string
+	LLM             llmconfig.ResolvedConfig
 	EnableThinking  bool
 	EnablePlanMode  bool
 	MaxTurns        int
@@ -54,6 +55,7 @@ type AgentRunner struct {
 	workDir          string
 	model            string
 	providerProtocol string
+	llmConfig        llmconfig.ResolvedConfig
 
 	enableThinking bool
 	enablePlanMode bool
@@ -92,7 +94,7 @@ func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
 	return AgentRunnerConfig{
 		WorkDir:         cfg.WorkDir,
 		Model:           cfg.Model,
-		Provider:        cfg.Provider,
+		LLM:             cfg.ResolvedLLM,
 		EnableThinking:  cfg.EnableThinking,
 		EnablePlanMode:  cfg.EnablePlanMode,
 		MaxTurns:        cfg.MaxTurns,
@@ -134,17 +136,16 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		}
 	}
 
-	llmProvider, err := provider.NewZhipuProvider(cfg.Provider, cfg.Model)
+	if cfg.LLM.Protocol == "" || cfg.LLM.BaseURL == "" || cfg.LLM.Model == "" {
+		return nil, fmt.Errorf("missing LLM configuration: protocol, base_url, and model are required")
+	}
+
+	llmProvider, err := provider.NewProvider(cfg.LLM)
 	if err != nil {
 		return nil, err
 	}
 
-	providerProtocol := cfg.Provider
-	if providerProtocol == "" {
-		providerProtocol = provider.ProviderProtocolOpenAI
-	} else {
-		providerProtocol = strings.ToLower(strings.TrimSpace(providerProtocol))
-	}
+	providerProtocol := strings.ToLower(strings.TrimSpace(cfg.LLM.Protocol))
 
 	slashRegistry := slash.NewRegistry(workDir)
 	if err := slashRegistry.Load(); err != nil {
@@ -153,8 +154,9 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 
 	ar := &AgentRunner{
 		workDir:          workDir,
-		model:            cfg.Model,
+		model:            cfg.LLM.Model,
 		providerProtocol: providerProtocol,
+		llmConfig:        cfg.LLM,
 		enableThinking:   cfg.EnableThinking,
 		enablePlanMode:   cfg.EnablePlanMode,
 		maxTurns:         cfg.MaxTurns,
@@ -525,7 +527,8 @@ func (r *AgentRunner) Model() string {
 }
 
 // SetModel switches the model used by future runs while preserving the current
-// provider protocol. If a run is active, the switch waits until that run ends.
+// resolved LLM connection. If a run is active, the switch waits until that run
+// ends.
 func (r *AgentRunner) SetModel(model string) error {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -536,16 +539,18 @@ func (r *AgentRunner) SetModel(model string) error {
 	defer r.runMu.Unlock()
 
 	r.mu.Lock()
-	protocol := r.providerProtocol
+	nextConfig := r.llmConfig.WithModel(model)
 	r.mu.Unlock()
 
-	llmProvider, err := provider.NewZhipuProvider(protocol, model)
+	llmProvider, err := provider.NewProvider(nextConfig)
 	if err != nil {
 		return err
 	}
 
 	r.mu.Lock()
 	r.model = model
+	r.llmConfig = nextConfig
+	r.providerProtocol = strings.ToLower(strings.TrimSpace(nextConfig.Protocol))
 	r.llmProvider = llmProvider
 	r.mu.Unlock()
 
