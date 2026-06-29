@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -339,6 +340,59 @@ func TestResolveLLMConfigDoesNotUseLegacyFallbacks(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "ZHIPU_API_KEY") || strings.Contains(err.Error(), "glm-4.5-air") {
 		t.Fatalf("error = %q, want no legacy fallback guidance", err.Error())
+	}
+}
+
+func TestSplitConfigArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want []string
+		ok   bool
+	}{
+		{name: "config_with_subargs", args: []string{"config", "default", "b"}, want: []string{"default", "b"}, ok: true},
+		{name: "config_alone", args: []string{"config"}, want: []string{}, ok: true},
+		{name: "exec_not_config", args: []string{"exec", "config"}, ok: false},
+		{name: "empty", args: []string{}, ok: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := splitConfigArgs(tc.args)
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v", ok, tc.ok)
+			}
+			if ok {
+				if len(got) != len(tc.want) {
+					t.Fatalf("subArgs = %v, want %v", got, tc.want)
+				}
+				for i := range got {
+					if got[i] != tc.want[i] {
+						t.Fatalf("subArgs = %v, want %v", got, tc.want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestReportResolveErrorHandlesNoProviderConfigured(t *testing.T) {
+	var buf bytes.Buffer
+	err := fmt.Errorf("resolve LLM configuration: %w", llmconfig.ErrNoProviderConfigured)
+	if !reportResolveError(err, &buf) {
+		t.Fatal("reportResolveError = false, want true for ErrNoProviderConfigured")
+	}
+	if !strings.Contains(buf.String(), "fox config") {
+		t.Errorf("output = %q, want to mention fox config", buf.String())
+	}
+}
+
+func TestReportResolveErrorIgnoresOtherErrors(t *testing.T) {
+	var buf bytes.Buffer
+	if reportResolveError(errors.New("missing LLM base_url"), &buf) {
+		t.Fatal("reportResolveError = true, want false for non-onboarding error")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("output = %q, want empty for non-onboarding error", buf.String())
 	}
 }
 

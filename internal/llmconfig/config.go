@@ -1,6 +1,7 @@
 package llmconfig
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -16,6 +17,12 @@ const (
 	// AuthNone disables API key resolution for no-key compatible endpoints.
 	AuthNone = "none"
 )
+
+// ErrNoProviderConfigured is returned when no LLM provider configuration is
+// supplied from settings, environment, or CLI inputs. Callers use it to offer
+// onboarding guidance (for example, pointing the user at `fox config`) instead
+// of surfacing the bare field-level error.
+var ErrNoProviderConfigured = errors.New("no LLM provider configured")
 
 // Profile contains one named LLM provider configuration from settings.
 type Profile struct {
@@ -97,6 +104,10 @@ func Resolve(settings Settings, env EnvOverrides, cli CLIOverrides, lookup EnvLo
 		lookup = func(string) string { return "" }
 	}
 
+	if hasNoConfigInput(settings, env, cli) {
+		return ResolvedConfig{}, ErrNoProviderConfigured
+	}
+
 	providerID := strings.TrimSpace(settings.DefaultProvider)
 	if strings.TrimSpace(env.ProviderID) != "" {
 		providerID = strings.TrimSpace(env.ProviderID)
@@ -145,6 +156,15 @@ func Resolve(settings Settings, env EnvOverrides, cli CLIOverrides, lookup EnvLo
 func (cfg ResolvedConfig) WithModel(model string) ResolvedConfig {
 	cfg.Model = strings.TrimSpace(model)
 	return cfg
+}
+
+// hasNoConfigInput reports whether resolution inputs are entirely empty: no
+// default provider, no configured profiles, and no environment or CLI override.
+// Only this case yields ErrNoProviderConfigured; any partial input falls
+// through to the existing field-specific validation errors.
+func hasNoConfigInput(settings Settings, env EnvOverrides, cli CLIOverrides) bool {
+	return settings.DefaultProvider == "" && len(settings.Providers) == 0 &&
+		env == EnvOverrides{} && cli == CLIOverrides{}
 }
 
 func selectedProfile(settings Settings, providerID string) (Profile, bool) {

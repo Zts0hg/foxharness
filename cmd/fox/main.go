@@ -38,9 +38,13 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
+	"github.com/Zts0hg/foxharness/internal/configcmd"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/llmresolve"
+	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/settings"
+
+	"golang.org/x/term"
 )
 
 type launchMode int
@@ -52,7 +56,16 @@ const (
 )
 
 func main() {
-	cfg, mode, err := parseArgs(os.Args[1:], os.Stderr)
+	args := os.Args[1:]
+	if subArgs, ok := splitConfigArgs(args); ok {
+		homeDir, _ := os.UserHomeDir()
+		if err := runConfig(homeDir, subArgs); err != nil {
+			exitWithError(err)
+		}
+		return
+	}
+
+	cfg, mode, err := parseArgs(args, os.Stderr)
 	if err != nil {
 		if err == flag.ErrHelp {
 			return
@@ -63,6 +76,9 @@ func main() {
 	homeDir, _ := os.UserHomeDir()
 	resolvedLLM, err := resolveLLMConfig(homeDir, cfg.LLM, os.Getenv)
 	if err != nil {
+		if reportResolveError(err, os.Stderr) {
+			os.Exit(1)
+		}
 		exitWithError(err)
 	}
 	cfg.ResolvedLLM = resolvedLLM
@@ -117,6 +133,45 @@ func main() {
 func exitWithError(err error) {
 	fmt.Fprintln(os.Stderr, err)
 	os.Exit(1)
+}
+
+// splitConfigArgs reports whether args begins with the config subcommand and
+// returns the remaining arguments as the config sub-arguments (add / list /
+// default). The config subcommand is intercepted before flag parsing so its
+// arguments are never treated as fox flags or prompt text.
+func splitConfigArgs(args []string) ([]string, bool) {
+	if len(args) > 0 && args[0] == "config" {
+		return args[1:], true
+	}
+	return nil, false
+}
+
+// runConfig builds the wizard dependencies from the real environment and runs
+// the `fox config` subcommand.
+func runConfig(homeDir string, subArgs []string) error {
+	fd := int(os.Stdin.Fd())
+	deps := configcmd.Deps{
+		HomeDir:     homeDir,
+		Env:         os.Getenv,
+		Stdin:       os.Stdin,
+		Stdout:      os.Stdout,
+		Stderr:      os.Stderr,
+		StdinFD:     fd,
+		Interactive: term.IsTerminal(fd),
+		NewProvider: provider.NewProvider,
+	}
+	return configcmd.Run(context.Background(), deps, subArgs)
+}
+
+// reportResolveError prints the first-run onboarding guidance and reports true
+// when err is the empty-configuration sentinel, signalling that the caller
+// should exit. All other resolution errors are left for the caller to surface.
+func reportResolveError(err error, w io.Writer) bool {
+	if errors.Is(err, llmconfig.ErrNoProviderConfigured) {
+		fmt.Fprintln(w, configcmd.OnboardingMessage())
+		return true
+	}
+	return false
 }
 
 // exitCodeForError maps an autodev run outcome to the documented exit
