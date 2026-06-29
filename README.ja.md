@@ -94,7 +94,23 @@ go install github.com/Zts0hg/foxharness/cmd/fox@latest
 ## 設定
 
 foxharness は組み込みの LLM provider を選びません。`fox` を実行する前に、
-ユーザー設定 `~/.foxharness/settings.json` に provider profile を設定してください：
+ユーザー設定 `~/.foxharness/settings.json` に provider profile を設定してください。
+
+最も簡単な方法は、対話式ウィザードで profile を自動書き込みすることです：
+
+```bash
+fox config
+```
+
+`fox config` は組み込みプリセット（OpenAI、Anthropic、Zhipu、DeepSeek、
+Moonshot、Qwen、MiniMax、Groq、Mistral、xAI、OpenRouter、ローカル Ollama）
+からの選択、または完全なカスタム入力を案内します。API キー環境変数の設定を
+検証し、接続テストを任意で行い、profile を保存します。`fox config list` で
+設定済み profile を一覧表示、`fox config default <名前>` で既定 provider を
+切替えできます。provider 未設定のまま `fox` を起動すると、エラーが
+`fox config` を指し示します。
+
+ファイルを直接編集することもできます：
 
 ```json
 {

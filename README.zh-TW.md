@@ -94,7 +94,22 @@ go install github.com/Zts0hg/foxharness/cmd/fox@latest
 ## 設定
 
 foxharness 不再內建預設 LLM 供應商。執行 `fox` 前，請在
-`~/.foxharness/settings.json` 中設定使用者層級的 provider profile：
+`~/.foxharness/settings.json` 中設定使用者層級的 provider profile。
+
+最便捷的方式是使用互動式精靈，它會自動寫入該 profile：
+
+```bash
+fox config
+```
+
+`fox config` 會引導你從內建預設（OpenAI、Anthropic、Zhipu、DeepSeek、
+Moonshot、Qwen、MiniMax、Groq、Mistral、xAI、OpenRouter，或本地 Ollama）
+中選擇，或填寫完全自訂的欄位；它會檢查 API Key 環境變數是否已設定，
+可選擇性地測試連線，並持久化 profile。用 `fox config list` 檢視已設定的
+profile，用 `fox config default <名稱>` 切換預設 provider。若未設定任何
+provider 就啟動 `fox`，錯誤訊息會指向 `fox config`。
+
+你也可以直接編輯該檔案：
 
 ```json
 {

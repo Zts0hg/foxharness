@@ -108,6 +108,44 @@ func SetProviderModel(s *Settings, providerID string, model string) error {
 	return nil
 }
 
+// SetProvider upserts a provider profile under llm.providers, creating the map
+// when none exists. It is the persistence entry point used by the `fox config`
+// add flow.
+func SetProvider(s *Settings, id string, profile llmconfig.Profile) error {
+	if s == nil {
+		return fmt.Errorf("settings cannot be nil")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("provider id cannot be empty")
+	}
+	if s.LLM.Providers == nil {
+		s.LLM.Providers = map[string]llmconfig.Profile{}
+	}
+	s.LLM.Providers[id] = profile
+	return nil
+}
+
+// SetDefaultProvider sets llm.default_provider after verifying that a profile
+// with the given id exists, mirroring SetProviderModel's existence check.
+func SetDefaultProvider(s *Settings, id string) error {
+	if s == nil {
+		return fmt.Errorf("settings cannot be nil")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("provider id cannot be empty")
+	}
+	if s.LLM.Providers == nil {
+		return fmt.Errorf("provider profile %q not found", id)
+	}
+	if _, ok := s.LLM.Providers[id]; !ok {
+		return fmt.Errorf("provider profile %q not found", id)
+	}
+	s.LLM.DefaultProvider = id
+	return nil
+}
+
 // mergeRaw builds the final JSON bytes. If raw bytes from a previous load
 // exist, it patches known LLM fields while preserving unknown fields and
 // legacy top-level fields. Otherwise it marshals the new settings schema from

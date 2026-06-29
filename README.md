@@ -94,7 +94,23 @@ Make sure `$GOPATH/bin` is in your `PATH`.
 ## Configure
 
 foxharness does not choose a built-in LLM provider. Configure a user-level
-provider profile in `~/.foxharness/settings.json` before running `fox`:
+provider profile in `~/.foxharness/settings.json` before running `fox`.
+
+The easiest way is the interactive wizard, which writes the profile for you:
+
+```bash
+fox config
+```
+
+`fox config` walks you through choosing a built-in provider preset (OpenAI,
+Anthropic, Zhipu, DeepSeek, Moonshot, Qwen, MiniMax, Groq, Mistral, xAI,
+OpenRouter, or a local Ollama endpoint) or entering fully custom fields. It
+verifies your API key environment variable is set, optionally tests the
+connection, and persists the profile. Use `fox config list` to show configured
+profiles and `fox config default <name>` to switch the default. If you start
+`fox` with nothing configured, the error points you to `fox config`.
+
+You can also manage profiles by editing the file directly:
 
 ```json
 {
@@ -239,6 +255,7 @@ fox [options] [prompt]       # start the interactive TUI
 fox exec [options] [prompt]  # run once and print the result
 fox -p [options] [prompt]    # run once and print the result
 fox autodev [backlog-path]   # drain the backlog autonomously (SDD pipeline per item)
+fox config [add|list|default [name]]  # interactively add/list/set-default an LLM provider
 ```
 
 Common options:
