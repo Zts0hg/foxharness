@@ -22,5 +22,8 @@ language:
 
 # Project metadata
 project:
-  ai: "codex"
+  ai: "both"
   created: "2026-04-28"
+
+workflow:
+  auto_next: true
