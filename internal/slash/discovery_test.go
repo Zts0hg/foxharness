@@ -121,6 +121,24 @@ func TestDiscoverCommands_ClaudeCommandsLoadedByDefault(t *testing.T) {
 	}
 }
 
+// TestDiscoverCommands_CodexspecBacklog characterizes the discovery of the
+// backlog-authoring skill shipped at .claude/commands/codexspec/backlog.md.
+// The discovery mechanism is generic; this test guards the codexspec:backlog
+// name/scope contract (REQ-001 of the backlog-add feature).
+func TestDiscoverCommands_CodexspecBacklog(t *testing.T) {
+	workDir := t.TempDir()
+	userHome := t.TempDir()
+	writeFile(t, filepath.Join(workDir, ".claude", "commands", "codexspec", "backlog.md"), "project claude")
+
+	_, project, err := DiscoverCommands(workDir, userHome)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(project) != 1 || project[0].Name != "codexspec:backlog" || project[0].Source != SourceClaudeProject {
+		t.Fatalf("codexspec:backlog not loaded as SourceClaudeProject: %+v", project)
+	}
+}
+
 func TestDiscoverCommands_ClaudeSkillDirectoryLoadedByDefault(t *testing.T) {
 	workDir := t.TempDir()
 	userHome := t.TempDir()
