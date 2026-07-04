@@ -22,69 +22,71 @@ Agent Runtime 解决的是“模型如何基于上下文进行多轮推理，并
 
 外部边界解决的是“系统与哪些外部资源发生交互，以及这些交互应被隔离在哪里”的问题。外部资源包括模型服务、本地项目工作区、用户级 `.foxharness` 存储，以及 Git、GitHub CLI、Feishu 等外部系统。架构上应把这些外部交互视为边界：内部运行时通过 adapter、tool 或 orchestration 层访问它们，避免把外部协议细节泄漏到核心推理循环中。
 
-## 入口与组合层
+## 核心 Agent 运行链路
 
-入口层的职责是把用户或系统请求转成统一的运行意图。这个职责可以拆成三步：先接收请求，再补齐入口侧上下文，最后把请求交给组合层。
+![A2 核心 Agent 运行链路](images/current-architecture-a2-runtime-flow.zh-CN.png)
 
-接收请求时，不同入口关心的内容不同。交互式终端入口关心输入框、侧栏、运行中事件流、slash command 交互和用户澄清；一次性命令入口关心命令行参数、stdin、stdout 和退出码；服务或评测入口关心外部事件、任务封装、结果回传和批量执行；自动化开发入口还需要关心 backlog、worktree、阶段验证和远端发布流程。
+一次普通 Agent 运行可以理解为“Runner 装配，Engine 推进，Provider 和 Tools 对外交互，Session 与观测系统记录事实”。这条链路是维护者定位问题时最重要的执行路径。
 
-补齐入口侧上下文时，入口只处理自己必须知道的信息。例如 TUI 知道如何展示 reporter 事件和提问表单，但不应该知道 Engine 如何解析工具调用；CLI 知道如何打印最终结果和 session 路径，但不应该直接操作模型协议；Feishu 入口知道消息平台的事件格式，但不应该把平台协议传入核心运行循环。
+运行从用户请求开始。请求可能来自 TUI 输入、CLI 参数、stdin、服务事件或自动化流程，但进入普通 Agent 执行时，都会先被转成一次明确的 user prompt 或 command prompt。入口层在这里结束，后续由 Runner 负责把这个请求装配成可执行运行。
 
-Runner 是普通 Agent 运行的组合边界。它持有工作目录、LLM 配置、session、memory store、slash registry、provider、checkpoint 和 user asker 等运行依赖。每次用户请求进入 Runner 后，Runner 负责准备上下文、工具注册表和 engine 配置，然后启动 Engine Loop。对于 autodev 这类需要固定流程和事实验证的能力，组合方式会变成 orchestrator 驱动 Runner，而不是入口直接调用一次普通运行。
+Runner 首先确定运行上下文。它会选择或创建 session，解析本次要使用的 LLM 配置，准备 provider，加载 slash/skill registry，确认是否有交互式 asker，并构造工具注册表。Runner 的职责不是执行推理，而是保证 Engine 启动前所有依赖都已明确。
 
-这种分层避免了入口和运行时互相污染。新增入口时，优先考虑如何适配到 Runner、Reporter 或已有 orchestrator，而不是复制一条新的 Agent 执行链路。
+Prompt/Context Composer 随后生成模型可见上下文。它把项目指令、当前 session 的工作记忆、跨会话记忆索引、最近消息、技能摘要和交互能力提示组合起来。这个阶段的输出是当前运行的上下文视图，而不是完整历史的简单拼接。
 
-## Agent Runtime
+Engine Loop 接管后进入多轮执行。每一轮都会先估算上下文预算，必要时触发 compaction；然后调用 provider 生成模型响应；再解析响应中的文本和工具调用。如果没有工具调用，Engine 产出最终文本；如果存在工具调用，Engine 通过 Tool Registry 执行工具，并把工具结果回填到后续上下文中。
 
-Agent Runtime 的核心目标是维持一个稳定的内部协议：无论底层使用 OpenAI 兼容协议、Claude 兼容协议，还是其他 provider，Engine Loop 都只处理 foxharness 内部的 message、tool definition、tool call 和 tool result。
+Provider Adapter 和 Tool Registry 是 Engine 的两个主要外部交互边界。Provider Adapter 处理模型协议差异，Tool Registry 处理本地能力和副作用。Engine 只依赖统一 schema，不直接耦合模型 API、文件系统、shell 或外部平台。
 
-一次运行进入 Agent Runtime 后，会经历上下文组装、模型调用、响应解析、工具执行和结果回填。这个循环可能重复多轮，直到模型不再请求工具、运行达到停止条件，或外部上下文取消。
-
-Prompt/Context 是模型行为的输入边界。它把项目指令、工作记忆、长期记忆索引、历史消息、技能摘要和交互能力提示组合成模型可见上下文。它关心“模型应该知道什么”，不关心“模型具体通过哪个 provider 调用”。
-
-Engine Loop 负责执行多轮 agent turn。每轮运行时，它检查上下文预算，必要时触发 compaction；调用 provider 生成模型响应；解析文本和工具调用；把工具结果回填到上下文；在没有工具调用或达到停止条件时产出最终回答。Engine 关心“如何推进一轮 Agent 执行”，不应该直接理解具体外部系统。
-
-Provider Adapter 是模型协议隔离层。OpenAI/Claude 等协议差异体现在 adapter 内部，核心运行时依赖统一 schema。这样可以在不重写 Engine 的情况下支持新的 provider 或协议变体。Tool Registry 则是本地能力隔离层，Engine 只看到工具定义和工具结果，不直接操作文件系统、shell 或外部服务。
-
-维护者调整 Agent 行为时，应先判断变更属于上下文输入、engine 控制逻辑、provider 适配，还是工具能力。这个判断比直接寻找最近的代码位置更重要，因为它决定了变更是否会破坏运行时边界。
+运行过程中，message log、transcript、metrics、trace 和 tool result persistence 会记录不同粒度的事实。message log 偏模型可见历史，transcript 偏人类可读事件流，metrics 和 trace 用于运行分析，大工具结果则通过持久化引用降低上下文压力。运行结束后，AutoMemory extraction 可以异步提取值得跨会话保留的长期知识。
 
 ## 工具与安全边界
 
-Tool Registry 是 Agent 能力的统一入口。模型看到的是工具定义，执行时进入同一个 registry 分发路径。内置工具覆盖读文件、写文件、编辑文件、执行 shell、读写 TODO、调用 skill、委托 subagent 和交互式提问等能力。
+![A3 工具与安全边界](images/current-architecture-a3-tool-boundary.zh-CN.png)
 
-工具系统可以从两个角度理解。对模型来说，工具是“可调用能力列表”；对运行时来说，工具是“受控副作用入口”。文件读写、shell、TODO、skill invocation、subagent delegation 和用户提问都属于副作用或外部交互，因此必须经过同一个工具执行边界。
+工具系统是 foxharness 从“聊天程序”变成“能操作项目的 Agent”的关键边界。模型不能直接读写文件、执行 shell 或修改 TODO；它只能提出工具调用请求，由 Engine 交给 Tool Registry 处理。
 
-工具能力必须经过控制边界。Middleware 在工具执行前介入，用于 checkpoint、工作目录约束、审批或其他安全策略。Slash/skill 命令可以通过 allowed-tools 收缩某次运行的工具面。`ask_user_question` 只应在存在交互 asker 的入口中注册，非交互运行不能暴露一个无法获得回答的工具。
+Tool Registry 同时承担两个职责。第一，它向模型暴露工具定义，让模型知道当前运行可用的能力。第二，它在执行阶段根据工具名和参数分发到具体实现，并把结果标准化为 Tool Result。工具别名也在这个边界解析，避免上层 prompt 或外部命令格式差异泄漏到工具实现中。
 
-Subagent 是工具化的委托能力，而不是新的主执行核心。它允许主 Agent 把边界清晰的子任务交给隔离运行，但依旧通过统一工具系统接入。维护者扩展工具时，应优先保证工具定义清晰、边界可控、结果可被 Engine 消化，而不是让工具绕过 registry 或直接耦合入口层。
+所有工具执行都必须经过控制边界。Middleware 在工具真正执行前运行，用于建立 checkpoint、约束工作目录、执行审批或阻止危险操作。Slash/skill 命令可以进一步通过 allowed-tools 把某次运行的工具面缩小到必要范围。这个机制让“模型能看到哪些能力”和“模型实际能执行哪些能力”保持一致且可审计。
 
-## 会话、上下文与记忆
+内置工具可以按副作用类型理解。文件工具负责读取、写入和模糊编辑项目文件；shell 工具负责本地命令执行；TODO 工具负责 session-local 任务状态；skill tool 把文件化命令和技能暴露给模型；subagent tool 允许委托边界清晰的子任务；ask_user_question tool 负责在交互入口中向人类提问。
 
-foxharness 同时维护短期上下文、session 状态和跨会话记忆。短期上下文是当前模型调用可见的内容；session 状态是一次连续对话的工作记录；AutoMemory 是多次运行之间复用的长期知识。
+不同工具的可用性取决于运行场景。非交互式运行不应该注册 `ask_user_question`，因为没有人可以回答；受限 skill 运行应该通过 allowed-tools 缩小能力范围；涉及文件修改的工具应该被 checkpoint 保护。维护者新增工具时，应先判断它引入了哪类副作用，再决定需要哪些 middleware、权限收缩和结果持久化策略。
 
-这三类状态的生命周期不同。短期上下文随着每轮模型调用被重新估算和裁剪；session 状态伴随一次连续会话存在；跨会话记忆则跨越多个 session，服务于后续任务的经验复用。区分生命周期可以避免把所有状态都塞进 prompt，也可以避免把观测日志误当成模型记忆。
+工具结果不仅返回给模型，也会进入观测链路。错误结果可能触发 recovery 提示，重复模式可能触发 reminder，工具事件会写入 transcript 和 trace。这样一来，工具系统既是能力入口，也是诊断长任务行为的重要数据来源。
 
-Session 保存会话元数据、原始模型消息、transcript、run artifacts、metrics、trace、working memory、PLAN 和 TODO。它是“这次连续工作发生了什么”的权威记录。Transcript、metrics 和 trace 主要用于观测和排查，不应被误认为模型上下文本身。
+## 上下文、会话与记忆体系
 
-Working Memory、PLAN 和 TODO 是 session-local 的工作状态。它们服务于当前会话的计划、待办和上下文连续性。AutoMemory 则是跨 session 的长期记忆层，按用户级和项目级范围保存经验、反馈、参考和项目知识，并通过索引进入后续 prompt。
+![A4 上下文、会话与记忆体系](images/current-architecture-a4-context-memory.zh-CN.png)
 
-Compaction 解决上下文窗口限制问题。它管理模型可见上下文的体积，但不应该替代 message log 或 transcript 这些原始记录。大工具结果通过持久化和引用进入上下文，避免把大量输出直接塞回模型窗口。
+foxharness 的状态体系分为三层：当前运行上下文、session 状态和跨会话记忆。这三层服务不同生命周期，不能混用。
 
-## 扩展系统
+当前运行上下文是模型本轮调用能看到的内容。它包括用户请求、项目指令、近期消息、工具定义、技能摘要、工作记忆快照和长期记忆索引。它是一个经过预算约束后的视图，因此会受到 context estimate、compaction 和 tool result truncation 影响。
 
-Slash command 和 skill 是 foxharness 的主要扩展机制。它们来自项目级和用户级文件，经过 registry 发现、frontmatter 解析、参数替换、条件激活和 executor 处理后，可以作为用户可调用命令，也可以通过 skill tool 暴露给模型。
+Session 状态是一次连续会话的权威工作记录。它保存 session metadata、message log、working memory、PLAN、TODO、run artifacts 和 checkpoints。用户多次运行同一 session 时，Runner 会从这些状态中恢复连续性。Session 状态强调“本次连续工作如何推进”，不是跨项目或跨长期周期的知识库。
 
-扩展系统的关键边界是“发现与执行”和“运行时能力”分离。Registry 负责知道有哪些命令和技能，Executor 负责把命令内容转成可运行 prompt 或 fork-mode 任务，Tool Registry 负责把模型侧的 skill invocation 纳入统一工具执行链。
+Run observability 保存的是运行事实。Transcript 面向人类阅读，展示运行中的消息和事件；metrics 记录 token 与性能数据；trace 记录 span 级调用过程；tool result references 指向被持久化的大输出。它们主要用于排查、审计和性能分析，不应该被当作模型默认记忆。
 
-Conditional activation 允许系统在满足路径或上下文条件时激活技能。它减少默认上下文负担，同时保留按需扩展能力。维护者新增扩展能力时，应注意其是否需要进入模型上下文、是否需要工具权限收缩、是否应该 fork 到 subagent，以及是否会影响 session 里的长期状态。
+AutoMemory 负责跨会话长期知识。它按用户级和项目级范围保存经验、反馈、参考和项目事实，并维护 Memory Index。后续运行通常只把索引注入 prompt，模型需要具体内容时再通过文件读取工具展开。这种设计避免把长期记忆全部塞进上下文，同时保留按需访问能力。
 
-## 自动化开发平面
+Compaction 是上下文治理机制，而不是历史删除机制。它解决模型窗口限制，但原始 message log、transcript 和 artifacts 仍保留在 session 里。维护者处理上下文问题时，应区分“模型当前看不到”和“系统没有记录”这两种不同状态。
 
-Autodev 是独立的自动化开发平面，不应被理解为普通 slash command 的简单包装。它面向无人值守地处理 backlog item，按 CodexSpec 的 requirements-first 流程驱动开发、验证、提交、推送、issue 和 PR。
+## 扩展入口与自动化平面
 
-Autodev 的核心架构是控制平面和执行平面分离。Go 控制平面负责选择 backlog item、准备隔离 worktree、驱动固定阶段、验证磁盘和远端事实、维护 ledger，并协调 Git/GitHub 远端流程。LLM 执行平面负责在 worktree 内完成实际开发操作。阶段是否完成由 Go 验证决定，而不是由模型自称完成。
+![A5 扩展入口与自动化平面](images/current-architecture-a5-extension-automation.zh-CN.png)
 
-Engineer Agent 用于无人值守场景下的澄清和纠偏。Core Agent 仍然复用现有 Agent Runtime，在隔离 worktree 中执行任务。这个设计让 autodev 可以利用现有 Agent 能力，同时避免把流程控制权交给模型。
+foxharness 的扩展能力分为普通扩展系统、多入口适配和自动化开发平面。它们都复用 Agent 能力，但控制方式不同。
+
+普通扩展系统由 slash command、skill、conditional activation、allowed-tools 和 fork mode 组成。Slash command 和 skill 来自文件系统，Registry 负责发现与合并，Executor 负责参数替换、shell 嵌入、变量处理和 fork-mode 调度。模型侧通过 skill tool 调用这些能力时，仍然进入统一工具执行链。
+
+多入口适配让同一套 Agent Runtime 可以服务不同场景。TUI 负责交互体验，CLI one-shot 负责脚本化执行，Feishu 负责聊天平台事件，AgentOps 负责事件分析，benchmark 负责评测用例。它们的共同目标不是创造新的运行时，而是把各自输入和输出适配到共享 Runner、Reporter 或专用 runner。
+
+Autodev 是更高层的自动化开发平面。它不只是一个命令，而是一个确定性 Go 控制平面加 LLM 执行平面的组合。控制平面读取 backlog，准备隔离 worktree，驱动 CodexSpec 阶段，验证磁盘和远端事实，维护 ledger，并协调 commit、push、issue 和 PR。
+
+LLM 执行平面由 Core Agent 和 Engineer Agent 协作。Core Agent 在隔离 worktree 中复用普通 Agent Runtime 完成开发操作；Engineer Agent 在无人值守场景下回答问题并提供纠偏。阶段是否完成由 Go 侧验证决定，而不是由模型自称完成。这是 autodev 与普通交互式运行最大的架构差异。
+
+维护者扩展自动化能力时，应保持控制权边界清晰：流程顺序、完成条件和远端事实验证属于确定性控制平面；代码修改、命令执行和文档撰写属于 LLM 执行平面。把这两类职责混在一起，会降低自动化流程的可恢复性和可信度。
 
 ## 维护原则
 

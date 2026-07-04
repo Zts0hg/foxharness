@@ -99,7 +99,62 @@ export_page() {
 
 export_page \
   "$root/docs/architecture/drawio/current-architecture.zh-CN.drawio" \
-  0 \
+  1 \
   "$images_dir/current-architecture-a1-system-layers.zh-CN.png"
+
+export_page \
+  "$root/docs/architecture/drawio/current-architecture.zh-CN.drawio" \
+  2 \
+  "$images_dir/current-architecture-a2-runtime-flow.zh-CN.png"
+
+export_page \
+  "$root/docs/architecture/drawio/current-architecture.zh-CN.drawio" \
+  3 \
+  "$images_dir/current-architecture-a3-tool-boundary.zh-CN.png"
+
+export_page \
+  "$root/docs/architecture/drawio/current-architecture.zh-CN.drawio" \
+  4 \
+  "$images_dir/current-architecture-a4-context-memory.zh-CN.png"
+
+export_page \
+  "$root/docs/architecture/drawio/current-architecture.zh-CN.drawio" \
+  5 \
+  "$images_dir/current-architecture-a5-extension-automation.zh-CN.png"
+
+export_page \
+  "$root/docs/architecture/drawio/evolution-architecture.zh-CN.drawio" \
+  1 \
+  "$images_dir/evolution-architecture-b1-hello-agent.zh-CN.png"
+
+export_page \
+  "$root/docs/architecture/drawio/evolution-architecture.zh-CN.drawio" \
+  2 \
+  "$images_dir/evolution-architecture-b2-tool-using-agent.zh-CN.png"
+
+export_page \
+  "$root/docs/architecture/drawio/evolution-architecture.zh-CN.drawio" \
+  3 \
+  "$images_dir/evolution-architecture-b3-session-context.zh-CN.png"
+
+export_page \
+  "$root/docs/architecture/drawio/evolution-architecture.zh-CN.drawio" \
+  4 \
+  "$images_dir/evolution-architecture-b4-tui-workbench.zh-CN.png"
+
+export_page \
+  "$root/docs/architecture/drawio/evolution-architecture.zh-CN.drawio" \
+  5 \
+  "$images_dir/evolution-architecture-b5-reliability-governance.zh-CN.png"
+
+export_page \
+  "$root/docs/architecture/drawio/evolution-architecture.zh-CN.drawio" \
+  6 \
+  "$images_dir/evolution-architecture-b6-extension-multi-entry.zh-CN.png"
+
+export_page \
+  "$root/docs/architecture/drawio/evolution-architecture.zh-CN.drawio" \
+  7 \
+  "$images_dir/evolution-architecture-b7-codexspec-autodev.zh-CN.png"
 
 echo "architecture diagram export complete"
