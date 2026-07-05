@@ -25,7 +25,7 @@
         <mxCell id="n8" value="Final Text Output&lt;br&gt;assistant message without tool calls" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#047857;fillColor=#dcfce7;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
           <mxGeometry x="560" y="690" width="380" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="e9" value="prompt / dependencies" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n3" target="n4">
+        <mxCell id="e9" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n3" target="n4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e10" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n5">
@@ -34,16 +34,16 @@
         <mxCell id="e11" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n5" target="n4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e12" value="tool calls" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n6">
+        <mxCell id="e12" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n6">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e13" value="observation" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n6" target="n4">
+        <mxCell id="e13" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n6" target="n4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e14" value="uses schema" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n4" target="n7">
+        <mxCell id="e14" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n4" target="n7">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e15" value="no tool calls" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n8">
+        <mxCell id="e15" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n8">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="n16" value="架构特征&lt;br&gt;最早可验证的核心运行时&lt;br&gt;provider 与工具均已接口化&lt;br&gt;状态只存在于单次 Run 内存中&lt;br&gt;无真实工具、session、TUI 和治理层" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#b45309;fillColor=#fef3c7;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
@@ -81,16 +81,16 @@
         <mxCell id="e8" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n3" target="n4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e9" value="request / response" style="endArrow=block;startArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n5">
+        <mxCell id="e9" value="" style="endArrow=block;startArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n5">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e10" value="tool calls" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n6">
+        <mxCell id="e10" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n6">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e11" value="tool results" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n6" target="n4">
+        <mxCell id="e11" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n6" target="n4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e12" value="side effects" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n6" target="n7">
+        <mxCell id="e12" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n6" target="n7">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="n13" value="新增边界&lt;br&gt;模型只能提出结构化工具请求&lt;br&gt;本地副作用由调度器统一执行&lt;br&gt;后续权限和观测建立在此边界上" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#b45309;fillColor=#fef3c7;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
@@ -140,10 +140,10 @@
         <mxCell id="e12" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n6" target="n7">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e13" value="restore" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n4" target="n8">
+        <mxCell id="e13" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n4" target="n8">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e14" value="persist" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n7" target="n8">
+        <mxCell id="e14" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n7" target="n8">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="n15" value="核心变化&lt;br&gt;一次性运行变成连续工程会话&lt;br&gt;当前上下文与持久 session 记录分离&lt;br&gt;项目规则进入上下文组装" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#b45309;fillColor=#fef3c7;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
@@ -181,16 +181,16 @@
         <mxCell id="e8" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n3" target="n4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e9" value="input / steering" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n5">
+        <mxCell id="e9" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n5">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e10" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n5" target="n7">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e11" value="events" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n7" target="n6">
+        <mxCell id="e11" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n7" target="n6">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e12" value="render" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n6" target="n4">
+        <mxCell id="e12" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n6" target="n4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="n13" value="架构原则&lt;br&gt;TUI 负责交互和展示&lt;br&gt;Reporter/Event Stream 解耦界面与运行时&lt;br&gt;核心 Agent 行为保持共享" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#b45309;fillColor=#fef3c7;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
@@ -228,13 +228,13 @@
         <mxCell id="e8" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n3" target="n4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e9" value="controlled tools" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n5">
+        <mxCell id="e9" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n5">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e10" value="state governance" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n4" target="n6">
+        <mxCell id="e10" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n4" target="n6">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e11" value="facts / events" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n4" target="n7">
+        <mxCell id="e11" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n4" target="n7">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="n12" value="核心变化&lt;br&gt;从能完成任务提升为长任务可控、可恢复、可诊断&lt;br&gt;治理能力成为共享基础设施" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#64748b;fillColor=#f1f5f9;fontColor=#111827;fontSize=15;fontStyle=1;spacing=8;" vertex="1" parent="1">
@@ -325,19 +325,19 @@
         <mxCell id="e8" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n3" target="n4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e9" value="stage work" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n5">
+        <mxCell id="e9" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n5">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e10" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n5" target="n7">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e11" value="remote coordination" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n6">
+        <mxCell id="e11" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n6">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e12" value="verify facts" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n4" target="n7">
+        <mxCell id="e12" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n4" target="n7">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e13" value="remote facts" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n6" target="n4">
+        <mxCell id="e13" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n6" target="n4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="n14" value="核心原则&lt;br&gt;确定性控制负责流程、验证和远端事实&lt;br&gt;智能执行负责开发操作&lt;br&gt;阶段完成由事实验证决定" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#64748b;fillColor=#f1f5f9;fontColor=#111827;fontSize=15;fontStyle=1;spacing=8;" vertex="1" parent="1">

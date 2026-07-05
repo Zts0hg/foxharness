@@ -1,15 +1,12 @@
-<?xml version="1.0" encoding="UTF-8"?>
 <mxfile host="app.diagrams.net" modified="2026-07-03T00:00:00.000Z" agent="Codex" version="22.1.2" type="device">
   <diagram id="current-a1-system-layers" name="A1 系统分层全景">
     <mxGraphModel dx="1600" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-
         <mxCell id="title" value="foxharness 当前架构：系统分层全景" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=28;fontStyle=1;fontColor=#1E293B;" vertex="1" parent="1">
           <mxGeometry x="40" y="24" width="1520" height="44" as="geometry" />
         </mxCell>
-
         <mxCell id="legend_bg" value="图例" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8FAFC;strokeColor=#CBD5E1;align=left;verticalAlign=top;fontSize=14;fontStyle=1;fontColor=#334155;spacingTop=10;spacingLeft=14;arcSize=6;" vertex="1" parent="1">
           <mxGeometry x="1180" y="84" width="360" height="125" as="geometry" />
         </mxCell>
@@ -40,7 +37,6 @@
             <mxPoint x="1265" y="190" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-
         <mxCell id="entry_bg" value="用户入口 / 调用方" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2FE;strokeColor=#0284C7;align=center;verticalAlign=top;fontSize=16;fontStyle=1;fontColor=#075985;spacingTop=12;arcSize=6;" vertex="1" parent="1">
           <mxGeometry x="60" y="100" width="1060" height="145" as="geometry" />
         </mxCell>
@@ -59,7 +55,6 @@
         <mxCell id="entry_auto" value="自动化入口&lt;br&gt;benchmark / autodev" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0284C7;fontSize=14;fontStyle=1;fontColor=#0F172A;arcSize=8;" vertex="1" parent="1">
           <mxGeometry x="860" y="160" width="200" height="58" as="geometry" />
         </mxCell>
-
         <mxCell id="app_bg" value="应用组合层 App Layer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#D97706;align=center;verticalAlign=top;fontSize=16;fontStyle=1;fontColor=#92400E;spacingTop=12;arcSize=6;" vertex="1" parent="1">
           <mxGeometry x="170" y="300" width="900" height="150" as="geometry" />
         </mxCell>
@@ -72,7 +67,6 @@
         <mxCell id="app_registry" value="Slash / Skill 注册&lt;br&gt;发现、执行、条件激活" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#D97706;fontSize=13;fontColor=#0F172A;arcSize=8;" vertex="1" parent="1">
           <mxGeometry x="720" y="360" width="230" height="60" as="geometry" />
         </mxCell>
-
         <mxCell id="runtime_bg" value="Agent Runtime 核心层" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;align=center;verticalAlign=top;fontSize=16;fontStyle=1;fontColor=#166534;spacingTop=12;arcSize=6;" vertex="1" parent="1">
           <mxGeometry x="230" y="505" width="920" height="210" as="geometry" />
         </mxCell>
@@ -91,7 +85,6 @@
         <mxCell id="runtime_guards" value="Runtime Guards&lt;br&gt;middleware / recovery / reminder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#16A34A;fontSize=12;fontColor=#0F172A;arcSize=8;" vertex="1" parent="1">
           <mxGeometry x="370" y="524" width="230" height="42" as="geometry" />
         </mxCell>
-
         <mxCell id="state_bg" value="状态 / 治理 / 观测层" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#9333EA;align=center;verticalAlign=top;fontSize=16;fontStyle=1;fontColor=#6B21A8;spacingTop=12;arcSize=6;" vertex="1" parent="1">
           <mxGeometry x="95" y="780" width="1060" height="185" as="geometry" />
         </mxCell>
@@ -110,7 +103,6 @@
         <mxCell id="state_obs" value="Tool Results / Metrics / Tracing&lt;br&gt;结果持久化与观测" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9333EA;fontSize=13;fontColor=#0F172A;arcSize=8;" vertex="1" parent="1">
           <mxGeometry x="950" y="845" width="170" height="65" as="geometry" />
         </mxCell>
-
         <mxCell id="external_bg" value="外部边界" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8FAFC;strokeColor=#64748B;align=center;verticalAlign=top;fontSize=16;fontStyle=1;fontColor=#334155;spacingTop=12;arcSize=6;" vertex="1" parent="1">
           <mxGeometry x="1230" y="300" width="300" height="665" as="geometry" />
         </mxCell>
@@ -126,7 +118,6 @@
         <mxCell id="external_services" value="外部系统&lt;br&gt;Git / gh / Feishu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#64748B;fontSize=13;fontColor=#0F172A;arcSize=8;" vertex="1" parent="1">
           <mxGeometry x="1270" y="770" width="220" height="65" as="geometry" />
         </mxCell>
-
         <mxCell id="e_entry_app_tui" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#334155;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.12;entryY=0;" edge="1" parent="1" source="entry_tui" target="app_runner">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
@@ -142,14 +133,13 @@
         <mxCell id="e_entry_app_auto" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#334155;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.9;entryY=0;" edge="1" parent="1" source="entry_auto" target="app_runner">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <mxCell id="e_app_runtime" value="装配运行时" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#334155;strokeWidth=2;endArrow=block;endFill=1;fontColor=#334155;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="app_runner" target="runtime_engine">
+        <mxCell id="e_app_runtime" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#334155;strokeWidth=2;endArrow=block;endFill=1;fontColor=#334155;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="app_runner" target="runtime_engine">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e_config_provider" value="provider 配置" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="app_config" target="runtime_provider">
+        <mxCell id="e_config_provider" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="app_config" target="runtime_provider">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e_registry_tools" value="扩展能力" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="app_registry" target="runtime_tools">
+        <mxCell id="e_registry_tools" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="app_registry" target="runtime_tools">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e_context_engine" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#334155;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="runtime_context" target="runtime_engine">
@@ -164,30 +154,27 @@
         <mxCell id="e_guards_engine" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.18;entryY=0;" edge="1" parent="1" source="runtime_guards" target="runtime_engine">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <mxCell id="e_runtime_state" value="状态读写 / 观测记录" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="runtime_engine" target="state_auto">
+        <mxCell id="e_runtime_state" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="runtime_engine" target="state_auto">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e_context_state" value="上下文来源" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=0.2;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="runtime_context" target="state_memory">
+        <mxCell id="e_context_state" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=0.2;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="runtime_context" target="state_memory">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e_tools_state" value="工具结果 / checkpoint" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=0.7;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="runtime_tools" target="state_obs">
+        <mxCell id="e_tools_state" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#64748B;strokeWidth=2;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=0.7;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="runtime_tools" target="state_obs">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <mxCell id="e_provider_llm" value="协议交互" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#7C3AED;strokeWidth=2;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#6D28D9;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="runtime_provider" target="external_llm">
+        <mxCell id="e_provider_llm" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#7C3AED;strokeWidth=2;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#6D28D9;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="runtime_provider" target="external_llm">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e_tools_workspace" value="文件 / shell" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#7C3AED;strokeWidth=2;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#6D28D9;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="runtime_tools" target="external_workspace">
+        <mxCell id="e_tools_workspace" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#7C3AED;strokeWidth=2;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#6D28D9;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="runtime_tools" target="external_workspace">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e_state_home" value="持久化" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#7C3AED;strokeWidth=2;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#6D28D9;exitX=1;exitY=0.45;entryX=0;entryY=0.5;" edge="1" parent="1" source="state_bg" target="external_home">
+        <mxCell id="e_state_home" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#7C3AED;strokeWidth=2;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#6D28D9;exitX=1;exitY=0.45;entryX=0;entryY=0.5;" edge="1" parent="1" source="state_bg" target="external_home">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e_auto_services" value="远端流程" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#7C3AED;strokeWidth=2;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#6D28D9;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="entry_auto" target="external_services">
+        <mxCell id="e_auto_services" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#7C3AED;strokeWidth=2;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#6D28D9;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="entry_auto" target="external_services">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
       </root>
     </mxGraphModel>
   </diagram>
@@ -199,53 +186,34 @@
         <mxCell id="a2_title" value="A2 核心 Agent 运行链路" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=28;fontColor=#1E293B;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="40" y="24" width="1520" height="44" as="geometry" />
         </mxCell>
-        <mxCell id="a2_user" value="用户请求
-prompt / command" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#E0F2FE;strokeColor=#0284C7;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a2_user" value="用户请求 prompt / command" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#E0F2FE;strokeColor=#0284C7;fontSize=14;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="80" y="130" width="170" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="a2_runner" value="Runner
-选择/创建 session
-解析配置
-构造运行依赖" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FEF3C7;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a2_runner" value="Runner 选择/创建 session 解析配置 构造运行依赖" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FEF3C7;strokeColor=#D97706;fontSize=14;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="330" y="110" width="260" height="110" as="geometry" />
         </mxCell>
-        <mxCell id="a2_context" value="Prompt / Context
-项目指令
-工作记忆 / 长期记忆索引
-技能摘要 / 近期消息" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a2_context" value="Prompt / Context 项目指令 工作记忆 / 长期记忆索引 技能摘要 / 近期消息" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="680" y="100" width="280" height="130" as="geometry" />
         </mxCell>
-        <mxCell id="a2_engine" value="Engine Loop
-上下文估算
-模型调用
-响应解析
-工具结果回填" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#BBF7D0;strokeColor=#15803D;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a2_engine" value="Engine Loop 上下文估算 模型调用 响应解析 工具结果回填" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#BBF7D0;strokeColor=#15803D;fontSize=14;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="1040" y="105" width="280" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="a2_provider" value="Provider Adapter
-统一 schema 到模型协议" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFFFFF;strokeColor=#16A34A;fontSize=13;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="990" y="330" width="250" height="75" as="geometry" />
+        <mxCell id="a2_provider" value="Provider Adapter 统一 schema 到模型协议" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFFFFF;strokeColor=#16A34A;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1030" y="330" width="230" height="75" as="geometry" />
         </mxCell>
-        <mxCell id="a2_llm" value="LLM Providers
-OpenAI / Claude-like" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F8FAFC;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="1280" y="330" width="210" height="75" as="geometry" />
+        <mxCell id="a2_llm" value="LLM Providers OpenAI / Claude-like" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F8FAFC;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1320" y="330" width="210" height="75" as="geometry" />
         </mxCell>
-        <mxCell id="a2_tools" value="Tool Registry
-工具定义 / 分发 / 别名解析" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFFFFF;strokeColor=#16A34A;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a2_tools" value="Tool Registry 工具定义 / 分发 / 别名解析" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFFFFF;strokeColor=#16A34A;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="760" y="330" width="250" height="75" as="geometry" />
         </mxCell>
-        <mxCell id="a2_exec" value="Tool Execution
-read / write / edit / bash
-TODO / skill / subagent / ask" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFF7ED;strokeColor=#EA580C;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a2_exec" value="Tool Execution read / write / edit / bash TODO / skill / subagent / ask" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFF7ED;strokeColor=#EA580C;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="500" y="520" width="320" height="100" as="geometry" />
         </mxCell>
-        <mxCell id="a2_records" value="Run Records
-message log / transcript
-metrics / trace / persisted results" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F3E8FF;strokeColor=#9333EA;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a2_records" value="Run Records message log / transcript metrics / trace / persisted results" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F3E8FF;strokeColor=#9333EA;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="930" y="520" width="340" height="100" as="geometry" />
         </mxCell>
-        <mxCell id="a2_memory" value="Post-run AutoMemory
-异步提取长期知识" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F0FDFA;strokeColor=#0D9488;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a2_memory" value="Post-run AutoMemory 异步提取长期知识" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F0FDFA;strokeColor=#0D9488;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="660" y="730" width="260" height="80" as="geometry" />
         </mxCell>
         <mxCell id="a2_e1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;" edge="1" parent="1" source="a2_user" target="a2_runner">
@@ -260,28 +228,38 @@ metrics / trace / persisted results" style="rounded=1;whiteSpace=wrap;html=1;arc
         <mxCell id="a2_e4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;" edge="1" parent="1" source="a2_engine" target="a2_provider">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="a2_e5" value="协议交互" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#7C3AED;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#7C3AED;" edge="1" parent="1" source="a2_provider" target="a2_llm">
+        <mxCell id="a2_e5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#7C3AED;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#7C3AED;" edge="1" parent="1" source="a2_provider" target="a2_llm">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="a2_e6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;" edge="1" parent="1" source="a2_engine" target="a2_tools">
+        <mxCell id="a2_e6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.08;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="a2_engine" target="a2_tools">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="a2_e7" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;" edge="1" parent="1" source="a2_tools" target="a2_exec">
+        <mxCell id="a2_e7" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;exitX=0.08;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="a2_tools" target="a2_exec">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="a2_e8" value="工具结果回填" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a2_exec" target="a2_engine">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="a2_e8" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=1;exitY=0.2;exitDx=0;exitDy=0;entryX=0.85;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="a2_exec" target="a2_engine">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="880" y="540" />
+              <mxPoint x="880" y="260" />
+              <mxPoint x="1280" y="260" />
+            </Array>
+          </mxGeometry>
         </mxCell>
-        <mxCell id="a2_e9" value="运行事实记录" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a2_engine" target="a2_records">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="a2_e9" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=1;exitY=0.55;exitDx=0;exitDy=0;entryX=1;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="a2_engine" target="a2_records">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1550" y="170" />
+              <mxPoint x="1550" y="555" />
+            </Array>
+          </mxGeometry>
         </mxCell>
-        <mxCell id="a2_e10" value="完成后提取" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a2_records" target="a2_memory">
+        <mxCell id="a2_e10" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a2_records" target="a2_memory">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
-
   <diagram id="current-a3-tool-boundary" name="A3 工具与安全边界">
     <mxGraphModel dx="1600" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
       <root>
@@ -290,46 +268,25 @@ metrics / trace / persisted results" style="rounded=1;whiteSpace=wrap;html=1;arc
         <mxCell id="a3_title" value="A3 工具与安全边界" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=28;fontColor=#1E293B;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="40" y="24" width="1520" height="44" as="geometry" />
         </mxCell>
-        <mxCell id="a3_engine" value="Engine Loop
-模型响应中的工具调用请求" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a3_engine" value="Engine Loop 模型响应中的工具调用请求" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=14;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="80" y="110" width="280" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="a3_registry" value="Tool Registry
-工具定义暴露
-调用分发
-别名解析" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#E0F2FE;strokeColor=#0284C7;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a3_registry" value="Tool Registry 工具定义暴露 调用分发 别名解析" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#E0F2FE;strokeColor=#0284C7;fontSize=14;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="470" y="100" width="300" height="105" as="geometry" />
         </mxCell>
-        <mxCell id="a3_control" value="Control Boundary
-Middleware Chain
-Checkpoint Guard
-Workdir Boundary
-Allowed-tools Filter
-Interactive Ask Gate" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FEF3C7;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a3_control" value="Control Boundary Middleware Chain Checkpoint Guard Workdir Boundary Allowed-tools Filter Interactive Ask Gate" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FEF3C7;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="860" y="90" width="330" height="145" as="geometry" />
         </mxCell>
-        <mxCell id="a3_cap" value="Capability Surface
-File: read / write / edit
-Shell: bash
-Session: TODO
-Extension: skill
-Delegation: subagent
-Human: ask_user_question" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFFFFF;strokeColor=#0284C7;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a3_cap" value="Capability Surface File: read / write / edit Shell: bash Session: TODO Extension: skill Delegation: subagent Human: ask_user_question" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFFFFF;strokeColor=#0284C7;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="470" y="330" width="330" height="180" as="geometry" />
         </mxCell>
-        <mxCell id="a3_workspace" value="Project Workspace
-files / shell side effects" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F8FAFC;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a3_workspace" value="Project Workspace files / shell side effects" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F8FAFC;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="160" y="610" width="260" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="a3_state" value="Session Runtime State
-TODO / checkpoints / artifacts" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F3E8FF;strokeColor=#9333EA;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a3_state" value="Session Runtime State TODO / checkpoints / artifacts" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F3E8FF;strokeColor=#9333EA;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="500" y="610" width="280" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="a3_feedback" value="Feedback to Runtime
-Tool Result → Engine Context
-Errors → Recovery Signal
-Patterns → Reminder Signal
-Events → Transcript / Trace" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F0FDFA;strokeColor=#0D9488;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a3_feedback" value="Feedback to Runtime Tool Result → Engine Context Errors → Recovery Signal Patterns → Reminder Signal Events → Transcript / Trace" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F0FDFA;strokeColor=#0D9488;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="900" y="560" width="380" height="150" as="geometry" />
         </mxCell>
         <mxCell id="a3_e1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;" edge="1" parent="1" source="a3_engine" target="a3_registry">
@@ -341,22 +298,27 @@ Events → Transcript / Trace" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8
         <mxCell id="a3_e3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;" edge="1" parent="1" source="a3_control" target="a3_cap">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="a3_e4" value="文件 / shell" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#7C3AED;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#7C3AED;" edge="1" parent="1" source="a3_cap" target="a3_workspace">
+        <mxCell id="a3_e4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#7C3AED;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#7C3AED;" edge="1" parent="1" source="a3_cap" target="a3_workspace">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="a3_e5" value="状态读写" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a3_cap" target="a3_state">
+        <mxCell id="a3_e5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="a3_cap" target="a3_state">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="a3_e6" value="结果 / 事件" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a3_cap" target="a3_feedback">
+        <mxCell id="a3_e6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a3_cap" target="a3_feedback">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="a3_e7" value="回填 / 提醒" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a3_feedback" target="a3_engine">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="a3_e7" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="a3_feedback" target="a3_engine">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1090" y="750" />
+              <mxPoint x="60" y="750" />
+              <mxPoint x="60" y="150" />
+            </Array>
+          </mxGeometry>
         </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
-
   <diagram id="current-a4-context-memory" name="A4 上下文、会话与记忆体系">
     <mxGraphModel dx="1600" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
       <root>
@@ -365,66 +327,59 @@ Events → Transcript / Trace" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8
         <mxCell id="a4_title" value="A4 上下文、会话与记忆体系" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=28;fontColor=#1E293B;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="40" y="24" width="1520" height="44" as="geometry" />
         </mxCell>
-        <mxCell id="a4_context" value="Current Run Context
-当前模型调用可见视图
-User Prompt / Project Instructions
-Recent Messages / Tool Definitions
-Working Memory Snapshot / AutoMemory Index" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#E0F2FE;strokeColor=#0284C7;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a4_context" value="Current Run Context 当前模型调用可见视图 User Prompt / Project Instructions Recent Messages / Tool Definitions Working Memory Snapshot / AutoMemory Index" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#E0F2FE;strokeColor=#0284C7;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="90" y="110" width="420" height="150" as="geometry" />
         </mxCell>
-        <mxCell id="a4_govern" value="Context Governance
-Context Estimate
-Optional Compaction
-Compact State
-Tool Result Truncation" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a4_govern" value="Context Governance Context Estimate Optional Compaction Compact State Tool Result Truncation" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="600" y="130" width="330" height="125" as="geometry" />
         </mxCell>
-        <mxCell id="a4_session" value="Session State
-连续会话工作记录
-Session Metadata / Message Log
-Working Memory / PLAN / TODO
-Run Artifacts / Checkpoints" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F3E8FF;strokeColor=#9333EA;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a4_session" value="Session State 连续会话工作记录 Session Metadata / Message Log Working Memory / PLAN / TODO Run Artifacts / Checkpoints" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F3E8FF;strokeColor=#9333EA;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="90" y="420" width="420" height="160" as="geometry" />
         </mxCell>
-        <mxCell id="a4_obs" value="Run Observability
-运行事实与诊断材料
-Transcript / Metrics / Trace
-Tool Result References" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F8FAFC;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a4_obs" value="Run Observability 运行事实与诊断材料 Transcript / Metrics / Trace Tool Result References" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F8FAFC;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="600" y="430" width="330" height="135" as="geometry" />
         </mxCell>
-        <mxCell id="a4_cross" value="Cross-session Memory
-跨运行长期知识
-User-global / Project Memory
-Feedback / Reference
-Memory Index" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F0FDFA;strokeColor=#0D9488;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a4_cross" value="Cross-session Memory 跨运行长期知识 User-global / Project Memory Feedback / Reference Memory Index" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F0FDFA;strokeColor=#0D9488;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="1040" y="300" width="360" height="170" as="geometry" />
         </mxCell>
-        <mxCell id="a4_signal" value="Completed Run Signals
-final output / tool usage" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFF7ED;strokeColor=#EA580C;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a4_signal" value="Completed Run Signals final output / tool usage" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFF7ED;strokeColor=#EA580C;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="1040" y="610" width="260" height="75" as="geometry" />
         </mxCell>
-        <mxCell id="a4_e1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;" edge="1" parent="1" source="a4_context" target="a4_govern">
+        <mxCell id="a4_e1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;exitX=1;exitY=0.08;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.45;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="a4_context" target="a4_govern">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="545" y="122" />
+              <mxPoint x="545" y="186" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="a4_e2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a4_govern" target="a4_session">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="a4_e2" value="状态写入" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a4_govern" target="a4_session">
+        <mxCell id="a4_e3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a4_govern" target="a4_obs">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="a4_e3" value="观测记录" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a4_govern" target="a4_obs">
+        <mxCell id="a4_e4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1040" y="385" as="sourcePoint" />
+            <mxPoint x="480" y="260" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="480" y="385" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="a4_e5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a4_signal" target="a4_cross">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="a4_e4" value="索引注入" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a4_cross" target="a4_context">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="a4_e5" value="运行后提取" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a4_signal" target="a4_cross">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="a4_e6" value="恢复连续性" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a4_session" target="a4_context">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="a4_e6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="300" y="420" as="sourcePoint" />
+            <mxPoint x="300" y="260" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
-
   <diagram id="current-a5-extension-automation" name="A5 扩展入口与自动化平面">
     <mxGraphModel dx="1600" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
       <root>
@@ -433,50 +388,32 @@ final output / tool usage" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fon
         <mxCell id="a5_title" value="A5 扩展入口与自动化平面" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=28;fontColor=#1E293B;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="40" y="24" width="1520" height="44" as="geometry" />
         </mxCell>
-        <mxCell id="a5_human" value="Human-facing Entry Points
-TUI / CLI one-shot / Config Wizard" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#E0F2FE;strokeColor=#0284C7;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a5_human" value="Human-facing Entry Points TUI / CLI one-shot / Config Wizard" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#E0F2FE;strokeColor=#0284C7;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="80" y="110" width="300" height="85" as="geometry" />
         </mxCell>
-        <mxCell id="a5_runner" value="Shared Runner
-普通 Agent 运行复用边界" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FEF3C7;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a5_runner" value="Shared Runner 普通 Agent 运行复用边界" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FEF3C7;strokeColor=#D97706;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="480" y="115" width="250" height="75" as="geometry" />
         </mxCell>
-        <mxCell id="a5_runtime" value="Agent Runtime
-推理 / 工具 / 状态" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a5_runtime" value="Agent Runtime 推理 / 工具 / 状态" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="820" y="115" width="230" height="75" as="geometry" />
         </mxCell>
-        <mxCell id="a5_ext" value="Extension System
-Slash Commands / Skills
-Conditional Activation
-Allowed-tools / Fork Mode
-Registry / Executor / Skill Tool" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFFFFF;strokeColor=#0284C7;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a5_ext" value="Extension System Slash Commands / Skills Conditional Activation Allowed-tools / Fork Mode Registry / Executor / Skill Tool" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFFFFF;strokeColor=#0284C7;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="170" y="310" width="380" height="165" as="geometry" />
         </mxCell>
-        <mxCell id="a5_service" value="Service / Evaluation Entry Points
-Feishu / AgentOps / Benchmark
-Adapter / Reporter / Case Runner" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F8FAFC;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="a5_service" value="Service / Evaluation Entry Points Feishu / AgentOps / Benchmark Adapter / Reporter / Case Runner" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F8FAFC;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="650" y="320" width="360" height="130" as="geometry" />
         </mxCell>
-        <mxCell id="a5_auto" value="Autodev Automation Plane
-Backlog → Go Control Plane
-Select Item / Prepare Worktree
-Drive CodexSpec Stages
-Verify Ground Truth / Maintain Ledger
-Coordinate Remote Flow" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F3E8FF;strokeColor=#9333EA;fontSize=13;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="100" y="620" width="440" height="190" as="geometry" />
+        <mxCell id="a5_auto" value="Autodev Automation Plane Backlog → Go Control Plane Select Item / Prepare Worktree Drive CodexSpec Stages Verify Ground Truth / Maintain Ledger Coordinate Remote Flow" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F3E8FF;strokeColor=#9333EA;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="85" y="590" width="430" height="190" as="geometry" />
         </mxCell>
-        <mxCell id="a5_llm" value="LLM Execution Plane
-Core Agent in isolated worktree
-Engineer Agent answers / corrections" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F0FDFA;strokeColor=#0D9488;fontSize=13;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="650" y="640" width="360" height="140" as="geometry" />
+        <mxCell id="a5_llm" value="LLM Execution Plane Core Agent in isolated worktree Engineer Agent answers / corrections" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#F0FDFA;strokeColor=#0D9488;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="650" y="660" width="360" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="a5_git" value="Git / Worktree
-branches / commits" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFFFFF;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="1130" y="585" width="240" height="80" as="geometry" />
+        <mxCell id="a5_git" value="Git / Worktree branches / commits" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFFFFF;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="555" width="240" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="a5_remote" value="GitHub CLI / Remote
-issue / PR / push" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFFFFF;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="1130" y="740" width="240" height="80" as="geometry" />
+        <mxCell id="a5_remote" value="GitHub CLI / Remote issue / PR / push" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#0F172A;fillColor=#FFFFFF;strokeColor=#64748B;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="775" width="240" height="80" as="geometry" />
         </mxCell>
         <mxCell id="a5_e1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;" edge="1" parent="1" source="a5_human" target="a5_runner">
           <mxGeometry relative="1" as="geometry" />
@@ -484,7 +421,7 @@ issue / PR / push" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#
         <mxCell id="a5_e2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;" edge="1" parent="1" source="a5_runner" target="a5_runtime">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="a5_e3" value="扩展调用" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a5_ext" target="a5_runner">
+        <mxCell id="a5_e3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#64748B;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;fontColor=#64748B;" edge="1" parent="1" source="a5_ext" target="a5_runner">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="a5_e4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;" edge="1" parent="1" source="a5_service" target="a5_runtime">
@@ -494,13 +431,29 @@ issue / PR / push" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fontColor=#
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="a5_e6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#334155;endArrow=block;endFill=1;" edge="1" parent="1" source="a5_llm" target="a5_runner">
-          <mxGeometry relative="1" as="geometry" />
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1030" y="650" />
+              <mxPoint x="1030" y="220" />
+              <mxPoint x="605" y="220" />
+            </Array>
+          </mxGeometry>
         </mxCell>
-        <mxCell id="a5_e7" value="工作区控制" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#7C3AED;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#7C3AED;" edge="1" parent="1" source="a5_auto" target="a5_git">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="a5_e7" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#7C3AED;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#7C3AED;exitX=1;exitY=0.15;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="a5_auto" target="a5_git">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="560" y="560" />
+              <mxPoint x="1080" y="595" />
+            </Array>
+          </mxGeometry>
         </mxCell>
-        <mxCell id="a5_e8" value="远端流程" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#7C3AED;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#7C3AED;" edge="1" parent="1" source="a5_auto" target="a5_remote">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="a5_e8" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;strokeColor=#7C3AED;startArrow=block;startFill=1;endArrow=block;endFill=1;fontColor=#7C3AED;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="a5_auto" target="a5_remote">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="560" y="835" />
+              <mxPoint x="1080" y="835" />
+            </Array>
+          </mxGeometry>
         </mxCell>
       </root>
     </mxGraphModel>
