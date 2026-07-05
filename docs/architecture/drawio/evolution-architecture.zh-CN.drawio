@@ -1,44 +1,56 @@
 <mxfile host="app.diagrams.net" modified="2026-07-04T00:00:00.000Z" agent="Codex" version="30.0.4" type="device">
-  <diagram id="evolution-b1-hello-agent" name="B1 Stage 0：Hello Agent Demo">
+  <diagram id="evolution-b1-hello-agent" name="B1 Stage 0：核心 Agent Loop">
     <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="950" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="n2" value="Stage 0：Hello Agent Demo&lt;br&gt;最小模型调用闭环" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;strokeColor=#1f2937;fillColor=#e5e7eb;fontColor=#111827;fontSize=18;fontStyle=1;spacing=8;" vertex="1" parent="1">
+        <mxCell id="n2" value="Stage 0：核心 Agent Loop&lt;br&gt;mock provider / mock registry 验证运行时边界" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;strokeColor=#1f2937;fillColor=#e5e7eb;fontColor=#111827;fontSize=18;fontStyle=1;spacing=8;" vertex="1" parent="1">
           <mxGeometry x="40" y="30" width="1420" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="n3" value="User Prompt&lt;br&gt;单段文本输入" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;strokeColor=#4b5563;fillColor=#f8fafc;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
-          <mxGeometry x="560" y="150" width="380" height="90" as="geometry" />
+        <mxCell id="n3" value="CLI Demo Entry&lt;br&gt;创建 mock provider&lt;br&gt;创建 mock registry&lt;br&gt;提交固定 prompt" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#64748b;fillColor=#f1f5f9;fontColor=#111827;fontSize=15;fontStyle=1;spacing=8;" vertex="1" parent="1">
+          <mxGeometry x="80" y="145" width="320" height="125" as="geometry" />
         </mxCell>
-        <mxCell id="n4" value="Minimal CLI / Demo Runner&lt;br&gt;解析 prompt&lt;br&gt;选择 provider 配置" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#64748b;fillColor=#f1f5f9;fontColor=#111827;fontSize=15;fontStyle=1;spacing=8;" vertex="1" parent="1">
-          <mxGeometry x="520" y="290" width="460" height="120" as="geometry" />
+        <mxCell id="n4" value="Agent Engine&lt;br&gt;contextHistory&lt;br&gt;turn-based loop&lt;br&gt;response parse" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#0369a1;fillColor=#e0f2fe;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
+          <mxGeometry x="520" y="130" width="460" height="155" as="geometry" />
         </mxCell>
-        <mxCell id="n5" value="Simple LLM Client&lt;br&gt;请求 / 响应" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#0369a1;fillColor=#e0f2fe;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
-          <mxGeometry x="340" y="480" width="360" height="100" as="geometry" />
+        <mxCell id="n5" value="Provider Interface&lt;br&gt;Generate(ctx, messages, tools)&lt;br&gt;mock provider simulates model response" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;strokeColor=#4b5563;fillColor=#f8fafc;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="145" width="360" height="125" as="geometry" />
         </mxCell>
-        <mxCell id="n6" value="LLM Provider&lt;br&gt;chat completion API" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;strokeColor=#4b5563;fillColor=#f8fafc;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
-          <mxGeometry x="820" y="480" width="360" height="100" as="geometry" />
+        <mxCell id="n6" value="Tools Registry Interface&lt;br&gt;GetAvailableTools&lt;br&gt;Execute(toolCall)&lt;br&gt;mock registry returns observation" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#7c3aed;fillColor=#ede9fe;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
+          <mxGeometry x="250" y="410" width="420" height="140" as="geometry" />
         </mxCell>
-        <mxCell id="n7" value="Final Text Output&lt;br&gt;打印回答" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#047857;fillColor=#dcfce7;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
+        <mxCell id="n7" value="Schema Boundary&lt;br&gt;Message&lt;br&gt;ToolCall&lt;br&gt;ToolDefinition&lt;br&gt;ToolResult" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#047857;fillColor=#dcfce7;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
+          <mxGeometry x="830" y="410" width="380" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="n8" value="Final Text Output&lt;br&gt;assistant message without tool calls" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#047857;fillColor=#dcfce7;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
           <mxGeometry x="560" y="690" width="380" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="e8" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n3" target="n4">
+        <mxCell id="e9" value="prompt / dependencies" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n3" target="n4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e9" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n5">
+        <mxCell id="e10" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n5">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e10" value="provider protocol" style="endArrow=block;startArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n5" target="n6">
+        <mxCell id="e11" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n5" target="n4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e11" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n5" target="n7">
+        <mxCell id="e12" value="tool calls" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n6">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="n12" value="架构特征&lt;br&gt;一次请求 + 一次模型响应&lt;br&gt;无工具、会话、记忆和治理&lt;br&gt;运行逻辑容易与 provider 耦合" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#b45309;fillColor=#fef3c7;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
-          <mxGeometry x="80" y="705" width="360" height="130" as="geometry" />
+        <mxCell id="e13" value="observation" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n6" target="n4">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="n13" value="图例&lt;br&gt;实线：主要控制流&lt;br&gt;虚线：状态 / 观测 / 治理&lt;br&gt;双向：外部协议交互" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#9ca3af;fillColor=#ffffff;fontColor=#374151;fontSize=13;spacing=8;" vertex="1" parent="1">
-          <mxGeometry x="1120" y="735" width="300" height="120" as="geometry" />
+        <mxCell id="e14" value="uses schema" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;dashed=1;dashPattern=6 4;strokeColor=#6b7280;" edge="1" parent="1" source="n4" target="n7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" value="no tool calls" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#374151;fontSize=12;fontColor=#374151;" edge="1" parent="1" source="n4" target="n8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="n16" value="架构特征&lt;br&gt;最早可验证的核心运行时&lt;br&gt;provider 与工具均已接口化&lt;br&gt;状态只存在于单次 Run 内存中&lt;br&gt;无真实工具、session、TUI 和治理层" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#b45309;fillColor=#fef3c7;fontColor=#111827;fontSize=14;spacing=8;" vertex="1" parent="1">
+          <mxGeometry x="70" y="690" width="390" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="n17" value="图例&lt;br&gt;实线：主要控制流&lt;br&gt;虚线：接口/状态/观测关系" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;strokeColor=#9ca3af;fillColor=#ffffff;fontColor=#374151;fontSize=13;spacing=8;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="715" width="300" height="100" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
