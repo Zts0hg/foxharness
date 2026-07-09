@@ -10,80 +10,92 @@ import (
 
 var markdownRenderers sync.Map
 
-var tuiMarkdownStyle = ansi.StyleConfig{
-	BlockQuote: ansi.StyleBlock{
-		Indent:      uintPtr(1),
-		IndentToken: stringPtr("│ "),
-	},
-	List: ansi.StyleList{
-		LevelIndent: 2,
-	},
-	Heading: ansi.StyleBlock{
-		StylePrimitive: ansi.StylePrimitive{
-			Bold:        boolPtr(true),
-			Color:       stringPtr(amberHiHex),
-			BlockSuffix: "\n",
-		},
-	},
-	H1: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "# "}},
-	H2: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "## "}},
-	H3: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "### "}},
-	H4: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "#### "}},
-	H5: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "##### "}},
-	H6: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "###### "}},
-	Strong: ansi.StylePrimitive{
-		Bold: boolPtr(true),
-	},
-	Emph: ansi.StylePrimitive{
-		Italic: boolPtr(true),
-	},
-	Strikethrough: ansi.StylePrimitive{
-		CrossedOut: boolPtr(true),
-	},
-	HorizontalRule: ansi.StylePrimitive{
-		Color:  stringPtr(amberDividerHex),
-		Format: "\n--------\n",
-	},
-	Item: ansi.StylePrimitive{
-		BlockPrefix: "• ",
-	},
-	Enumeration: ansi.StylePrimitive{
-		BlockPrefix: ". ",
-	},
-	Task: ansi.StyleTask{
-		Ticked:   "[✓] ",
-		Unticked: "[ ] ",
-	},
-	Link: ansi.StylePrimitive{
-		Color:     stringPtr(amberHiHex),
-		Underline: boolPtr(true),
-	},
-	LinkText: ansi.StylePrimitive{
-		Color: stringPtr(amberHiHex),
-		Bold:  boolPtr(true),
-	},
-	Code: ansi.StyleBlock{
-		StylePrimitive: ansi.StylePrimitive{
-			Prefix:          " ",
-			Suffix:          " ",
-			Color:           stringPtr(amberWarnHex),
-			BackgroundColor: stringPtr(amberPanelHex),
-		},
-	},
-	CodeBlock: ansi.StyleCodeBlock{
-		StyleBlock: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{
-				Color: stringPtr(amberHiHex),
-			},
+var tuiMarkdownStyle = markdownStyleForTheme(builtInThemes[defaultThemeName])
+
+func applyMarkdownTheme(theme tuiTheme) {
+	tuiMarkdownStyle = markdownStyleForTheme(theme)
+	markdownRenderers.Range(func(key, value any) bool {
+		markdownRenderers.Delete(key)
+		return true
+	})
+}
+
+func markdownStyleForTheme(theme tuiTheme) ansi.StyleConfig {
+	return ansi.StyleConfig{
+		BlockQuote: ansi.StyleBlock{
 			Indent:      uintPtr(1),
-			IndentToken: stringPtr("  "),
+			IndentToken: stringPtr("│ "),
 		},
-	},
-	Table: ansi.StyleTable{
-		CenterSeparator: stringPtr("|"),
-		ColumnSeparator: stringPtr("|"),
-		RowSeparator:    stringPtr("-"),
-	},
+		List: ansi.StyleList{
+			LevelIndent: 2,
+		},
+		Heading: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				Bold:        boolPtr(true),
+				Color:       stringPtr(theme.accentHi),
+				BlockSuffix: "\n",
+			},
+		},
+		H1: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "# "}},
+		H2: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "## "}},
+		H3: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "### "}},
+		H4: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "#### "}},
+		H5: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "##### "}},
+		H6: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "###### "}},
+		Strong: ansi.StylePrimitive{
+			Bold: boolPtr(true),
+		},
+		Emph: ansi.StylePrimitive{
+			Italic: boolPtr(true),
+		},
+		Strikethrough: ansi.StylePrimitive{
+			CrossedOut: boolPtr(true),
+		},
+		HorizontalRule: ansi.StylePrimitive{
+			Color:  stringPtr(theme.divider),
+			Format: "\n--------\n",
+		},
+		Item: ansi.StylePrimitive{
+			BlockPrefix: "• ",
+		},
+		Enumeration: ansi.StylePrimitive{
+			BlockPrefix: ". ",
+		},
+		Task: ansi.StyleTask{
+			Ticked:   "[✓] ",
+			Unticked: "[ ] ",
+		},
+		Link: ansi.StylePrimitive{
+			Color:     stringPtr(theme.accentHi),
+			Underline: boolPtr(true),
+		},
+		LinkText: ansi.StylePrimitive{
+			Color: stringPtr(theme.accentHi),
+			Bold:  boolPtr(true),
+		},
+		Code: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{
+				Prefix:          " ",
+				Suffix:          " ",
+				Color:           stringPtr(theme.warn),
+				BackgroundColor: stringPtr(theme.panel),
+			},
+		},
+		CodeBlock: ansi.StyleCodeBlock{
+			StyleBlock: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{
+					Color: stringPtr(theme.accentHi),
+				},
+				Indent:      uintPtr(1),
+				IndentToken: stringPtr("  "),
+			},
+		},
+		Table: ansi.StyleTable{
+			CenterSeparator: stringPtr("|"),
+			ColumnSeparator: stringPtr("|"),
+			RowSeparator:    stringPtr("-"),
+		},
+	}
 }
 
 func renderMarkdown(text string, width int) string {

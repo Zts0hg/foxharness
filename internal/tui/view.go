@@ -842,7 +842,12 @@ func renderCommandEntry(e entry, width int, expanded bool) string {
 	if title == "" {
 		title = "Result"
 	}
-	header := fitLine(commandLabelStyle.Render(title), width)
+	headerStyle := commandLabelStyle
+	if e.err {
+		headerStyle = errorLabelStyle
+		title = "FAILED " + title
+	}
+	header := fitLine(headerStyle.Render(title), width)
 	bodyWidth := max(width-2, 20)
 	var body string
 	if isShellCommandEntry(e) {
@@ -1274,13 +1279,20 @@ func (m Model) renderFooter(width int) string {
 }
 
 func (m Model) renderStatusBar(width int) string {
-	parts := []string{
-		statusModelStyle.Bold(true).Render("FOXHARNESS"),
-		statusProjectStyle.Render(m.modelName),
-		statusProjectStyle.Render(m.project),
-		mutedStyle.Render("git ") + statusProjectStyle.Render(m.gitBranch),
-		mutedStyle.Render("Context ") + statusModelStyle.Render(normalizeContextUsage(m.contextUsage)),
-		mutedStyle.Render("sid ") + statusFaintStyle.Render(m.sessionID),
+	items := m.statuslineItems
+	if len(items) == 0 {
+		items = defaultStatuslineItems
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		part := m.renderStatuslineItem(item)
+		if strings.TrimSpace(xansi.Strip(part)) == "" {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		parts = append(parts, statusProjectStyle.Render(m.modelName))
 	}
 	separator := " " + statusFaintStyle.Render("│") + " "
 	return footerStyle.Width(width).Render(fitLine(strings.Join(parts, separator), width))

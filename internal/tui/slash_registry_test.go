@@ -172,10 +172,14 @@ func TestModel_BuiltinCommandsUnaffectedByRegistry(t *testing.T) {
 	m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, slash.NewExecutor())
 
 	m, _ = update(t, m, keyRunes("/clear"))
-	m, _ = update(t, m, keyEnter())
+	m, cmd := update(t, m, keyEnter())
 
-	if len(m.entries) != 0 {
-		t.Errorf("/clear should still wipe entries, got %d", len(m.entries))
+	if cmd == nil {
+		t.Fatal("/clear returned nil cmd, want built-in new-session command")
+	}
+	m, _ = update(t, m, cmd())
+	if m.sessionID != "sess-new" {
+		t.Errorf("/clear sessionID = %q, want sess-new", m.sessionID)
 	}
 }
 
@@ -284,8 +288,8 @@ func TestModel_BuiltinTabCompletionDoesNotAddArgumentSpace(t *testing.T) {
 	m, _ = update(t, m, keyRunes("/"))
 	m, _ = update(t, m, keyTab())
 
-	if got := string(m.input); got != "/session" {
-		t.Fatalf("builtin input after tab = %q, want /session without trailing space", got)
+	if got := string(m.input); got != "/status" {
+		t.Fatalf("builtin input after tab = %q, want /status without trailing space", got)
 	}
 }
 

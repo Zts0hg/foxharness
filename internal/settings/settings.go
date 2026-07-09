@@ -17,8 +17,15 @@ import (
 type Settings struct {
 	Model string
 	LLM   llmconfig.Settings
+	TUI   TUISettings
 
 	raw json.RawMessage
+}
+
+// TUISettings contains persisted terminal UI preferences.
+type TUISettings struct {
+	Theme      string   `json:"theme,omitempty"`
+	Statusline []string `json:"statusline,omitempty"`
 }
 
 // Load reads ~/.foxharness/settings.json. If the file is missing, malformed,
@@ -35,13 +42,14 @@ func Load(homeDir string) (*Settings, error) {
 	var parsed struct {
 		Model string             `json:"model"`
 		LLM   llmconfig.Settings `json:"llm"`
+		TUI   TUISettings        `json:"tui"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		log.Printf("[Settings] failed to parse %s: %v", path, err)
 		return &Settings{}, nil
 	}
 
-	return &Settings{Model: parsed.Model, LLM: parsed.LLM, raw: raw}, nil
+	return &Settings{Model: parsed.Model, LLM: parsed.LLM, TUI: parsed.TUI, raw: raw}, nil
 }
 
 // Save writes Settings to ~/.foxharness/settings.json atomically. It creates
@@ -157,6 +165,9 @@ func mergeRaw(s *Settings) []byte {
 			if hasLLMSettings(s.LLM) {
 				m["llm"] = mergeLLMRaw(m["llm"], s.LLM)
 			}
+			if hasTUISettings(s.TUI) {
+				m["tui"] = mergeTUIRaw(m["tui"], s.TUI)
+			}
 			out, err := json.MarshalIndent(m, "", "  ")
 			if err == nil {
 				return append(out, '\n')
@@ -168,12 +179,19 @@ func mergeRaw(s *Settings) []byte {
 	if hasLLMSettings(s.LLM) {
 		m["llm"] = s.LLM
 	}
+	if hasTUISettings(s.TUI) {
+		m["tui"] = s.TUI
+	}
 	out, _ := json.MarshalIndent(m, "", "  ")
 	return append(out, '\n')
 }
 
 func hasLLMSettings(llm llmconfig.Settings) bool {
 	return llm.DefaultProvider != "" || len(llm.Providers) > 0
+}
+
+func hasTUISettings(tui TUISettings) bool {
+	return tui.Theme != "" || len(tui.Statusline) > 0
 }
 
 func mergeLLMRaw(raw json.RawMessage, llm llmconfig.Settings) json.RawMessage {
@@ -190,6 +208,23 @@ func mergeLLMRaw(raw json.RawMessage, llm llmconfig.Settings) json.RawMessage {
 	}
 	if len(llm.Providers) > 0 {
 		m["providers"] = mergeProvidersRaw(m["providers"], llm.Providers)
+	}
+	out, _ := json.Marshal(m)
+	return out
+}
+
+func mergeTUIRaw(raw json.RawMessage, tui TUISettings) json.RawMessage {
+	var m map[string]json.RawMessage
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &m)
+	}
+	if m == nil {
+		m = make(map[string]json.RawMessage)
+	}
+	setStringField(m, "theme", tui.Theme)
+	if len(tui.Statusline) > 0 {
+		statuslineJSON, _ := json.Marshal(tui.Statusline)
+		m["statusline"] = statuslineJSON
 	}
 	out, _ := json.Marshal(m)
 	return out

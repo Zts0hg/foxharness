@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
@@ -151,6 +152,35 @@ func TestLoad(t *testing.T) {
 		profile := got.LLM.Providers["primary"]
 		if profile.Protocol != llmconfig.ProtocolOpenAI || profile.BaseURL != "https://example.test/v1" || profile.Model != "test-model" || profile.APIKeyEnv != "OPENAI_KEY" {
 			t.Fatalf("profile = %+v, want loaded LLM provider", profile)
+		}
+	})
+
+	t.Run("loads_tui_settings", func(t *testing.T) {
+		home := t.TempDir()
+		dir := filepath.Join(home, ".foxharness")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		raw := `{
+		  "tui": {
+		    "theme": "mono",
+		    "statusline": ["model", "project", "queued"]
+		  }
+		}`
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := Load(home)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if got.TUI.Theme != "mono" {
+			t.Fatalf("TUI.Theme = %q, want mono", got.TUI.Theme)
+		}
+		wantStatusline := []string{"model", "project", "queued"}
+		if !reflect.DeepEqual(got.TUI.Statusline, wantStatusline) {
+			t.Fatalf("TUI.Statusline = %#v, want %#v", got.TUI.Statusline, wantStatusline)
 		}
 	})
 }
@@ -399,6 +429,92 @@ func TestSave(t *testing.T) {
 		}
 		if primary["vendor_extra"] != "keep" {
 			t.Fatalf("vendor_extra = %v, want preserved", primary["vendor_extra"])
+		}
+	})
+
+	t.Run("writes_tui_settings", func(t *testing.T) {
+		home := t.TempDir()
+		s := &Settings{
+			TUI: TUISettings{
+				Theme:      "codex",
+				Statusline: []string{"model", "project", "git-branch"},
+			},
+		}
+		if err := Save(home, s); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+
+		data, err := os.ReadFile(filepath.Join(home, ".foxharness", "settings.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parsed struct {
+			TUI TUISettings `json:"tui"`
+		}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		if parsed.TUI.Theme != "codex" {
+			t.Fatalf("theme = %q, want codex", parsed.TUI.Theme)
+		}
+		wantStatusline := []string{"model", "project", "git-branch"}
+		if !reflect.DeepEqual(parsed.TUI.Statusline, wantStatusline) {
+			t.Fatalf("statusline = %#v, want %#v", parsed.TUI.Statusline, wantStatusline)
+		}
+	})
+
+	t.Run("updates_tui_settings_and_preserves_unknown_fields", func(t *testing.T) {
+		home := t.TempDir()
+		dir := filepath.Join(home, ".foxharness")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		original := `{
+		  "future_top": "keep",
+		  "theme": "legacy-top-level",
+		  "tui": {
+		    "future_tui": true,
+		    "theme": "amber",
+		    "statusline": ["model"]
+		  }
+		}`
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(original), 0644); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := Load(home)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		loaded.TUI.Theme = "codex"
+		loaded.TUI.Statusline = []string{"project", "context-used"}
+		if err := Save(home, loaded); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+
+		data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		if parsed["future_top"] != "keep" {
+			t.Fatalf("future_top = %v, want preserved", parsed["future_top"])
+		}
+		if parsed["theme"] != "legacy-top-level" {
+			t.Fatalf("top-level theme = %v, want preserved", parsed["theme"])
+		}
+		tui := parsed["tui"].(map[string]any)
+		if tui["future_tui"] != true {
+			t.Fatalf("future_tui = %v, want preserved", tui["future_tui"])
+		}
+		if tui["theme"] != "codex" {
+			t.Fatalf("tui.theme = %v, want codex", tui["theme"])
+		}
+		statusline := tui["statusline"].([]any)
+		if got := []any{statusline[0], statusline[1]}; !reflect.DeepEqual(got, []any{"project", "context-used"}) {
+			t.Fatalf("tui.statusline = %#v, want [project context-used]", statusline)
 		}
 	})
 }
