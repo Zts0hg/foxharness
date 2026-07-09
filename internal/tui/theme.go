@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -128,6 +129,12 @@ func applyTheme(name string) string {
 	cSelectionBg = lipgloss.Color(theme.selectionBg)
 	cSelectionFg = lipgloss.Color(theme.selectionFg)
 	rebuildStyles()
+	selector.ApplyPalette(selector.Palette{
+		Title:    cAccentHi,
+		Cursor:   cWarn,
+		Muted:    cTextMuted,
+		Selected: cAccent,
+	})
 	applyMarkdownTheme(theme)
 	return theme.name
 }
@@ -185,4 +192,5 @@ func rebuildStyles() {
 	sidebarTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	sidebarFocusedTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(cWarn)
 	sidebarDividerStyle = lipgloss.NewStyle().Foreground(cTextVeryDim)
+	askFocusedStyle = lipgloss.NewStyle().Foreground(cAccentHi)
 }

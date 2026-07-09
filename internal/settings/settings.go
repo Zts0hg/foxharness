@@ -42,14 +42,65 @@ func Load(homeDir string) (*Settings, error) {
 	var parsed struct {
 		Model string             `json:"model"`
 		LLM   llmconfig.Settings `json:"llm"`
-		TUI   TUISettings        `json:"tui"`
+		TUI   json.RawMessage    `json:"tui"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		log.Printf("[Settings] failed to parse %s: %v", path, err)
 		return &Settings{}, nil
 	}
 
-	return &Settings{Model: parsed.Model, LLM: parsed.LLM, TUI: parsed.TUI, raw: raw}, nil
+	return &Settings{Model: parsed.Model, LLM: parsed.LLM, TUI: parseTUISettings(path, parsed.TUI), raw: raw}, nil
+}
+
+func parseTUISettings(path string, raw json.RawMessage) TUISettings {
+	if len(raw) == 0 || string(raw) == "null" {
+		return TUISettings{}
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		log.Printf("[Settings] failed to parse tui settings in %s: %v", path, err)
+		return TUISettings{}
+	}
+
+	var tui TUISettings
+	if rawTheme, ok := fields["theme"]; ok {
+		if err := json.Unmarshal(rawTheme, &tui.Theme); err != nil {
+			log.Printf("[Settings] ignored invalid tui.theme in %s: %v", path, err)
+			tui.Theme = ""
+		}
+	}
+	if rawStatusline, ok := fields["statusline"]; ok {
+		items, err := parseTUIStatusline(rawStatusline)
+		if err != nil {
+			log.Printf("[Settings] ignored invalid tui.statusline in %s: %v", path, err)
+		} else {
+			tui.Statusline = items
+		}
+	}
+	return tui
+}
+
+func parseTUIStatusline(raw json.RawMessage) ([]string, error) {
+	var items []string
+	if err := json.Unmarshal(raw, &items); err == nil {
+		return items, nil
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return nil, err
+	}
+	parts := strings.FieldsFunc(text, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out, nil
 }
 
 // Save writes Settings to ~/.foxharness/settings.json atomically. It creates

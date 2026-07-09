@@ -183,6 +183,97 @@ func TestLoad(t *testing.T) {
 			t.Fatalf("TUI.Statusline = %#v, want %#v", got.TUI.Statusline, wantStatusline)
 		}
 	})
+
+	t.Run("string_statusline_settings_do_not_drop_llm_settings", func(t *testing.T) {
+		home := t.TempDir()
+		dir := filepath.Join(home, ".foxharness")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		raw := `{
+		  "llm": {
+		    "default_provider": "primary",
+		    "providers": {
+		      "primary": {
+		        "protocol": "openai",
+		        "base_url": "https://example.test/v1",
+		        "model": "test-model",
+		        "auth": "none"
+		      }
+		    }
+		  },
+		  "tui": {
+		    "theme": "mono",
+		    "statusline": "model,project"
+		  }
+		}`
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := Load(home)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if got.LLM.DefaultProvider != "primary" {
+			t.Fatalf("DefaultProvider = %q, want primary", got.LLM.DefaultProvider)
+		}
+		if got.LLM.Providers["primary"].Model != "test-model" {
+			t.Fatalf("provider model = %q, want test-model", got.LLM.Providers["primary"].Model)
+		}
+		if got.TUI.Theme != "mono" {
+			t.Fatalf("TUI.Theme = %q, want mono", got.TUI.Theme)
+		}
+		wantStatusline := []string{"model", "project"}
+		if !reflect.DeepEqual(got.TUI.Statusline, wantStatusline) {
+			t.Fatalf("TUI.Statusline = %#v, want %#v", got.TUI.Statusline, wantStatusline)
+		}
+	})
+
+	t.Run("invalid_tui_field_does_not_drop_llm_or_valid_tui_fields", func(t *testing.T) {
+		home := t.TempDir()
+		dir := filepath.Join(home, ".foxharness")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		raw := `{
+		  "llm": {
+		    "default_provider": "primary",
+		    "providers": {
+		      "primary": {
+		        "protocol": "openai",
+		        "base_url": "https://example.test/v1",
+		        "model": "test-model",
+		        "auth": "none"
+		      }
+		    }
+		  },
+		  "tui": {
+		    "theme": "mono",
+		    "statusline": 42
+		  }
+		}`
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := Load(home)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if got.LLM.DefaultProvider != "primary" {
+			t.Fatalf("DefaultProvider = %q, want primary", got.LLM.DefaultProvider)
+		}
+		if got.LLM.Providers["primary"].Model != "test-model" {
+			t.Fatalf("provider model = %q, want test-model", got.LLM.Providers["primary"].Model)
+		}
+		if got.TUI.Theme != "mono" {
+			t.Fatalf("TUI.Theme = %q, want mono", got.TUI.Theme)
+		}
+		if len(got.TUI.Statusline) != 0 {
+			t.Fatalf("TUI.Statusline = %#v, want ignored invalid statusline", got.TUI.Statusline)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

@@ -1365,6 +1365,24 @@ func TestThemeCommandReportsPersistenceError(t *testing.T) {
 	}
 }
 
+func TestApplyThemeUpdatesOverlayStyles(t *testing.T) {
+	t.Cleanup(func() { applyTheme(defaultThemeName) })
+
+	applyTheme("mono")
+	if got := askFocusedStyle.GetForeground(); got != cAccentHi {
+		t.Fatalf("ask focused foreground = %q, want current accent highlight %q", got, cAccentHi)
+	}
+
+	view := selector.New([]checkpoint.SelectableMessage{{
+		Seq:     7,
+		Content: "restore this",
+	}}, &tuiCheckpointer{}).View()
+	wantTitle := lipgloss.NewStyle().Bold(true).Foreground(cAccentHi).Render("Rewind")
+	if !strings.Contains(view, wantTitle) {
+		t.Fatalf("selector title did not use current theme highlight %q:\n%s", cAccentHi, view)
+	}
+}
+
 func TestModelSlashCommandCompact(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
