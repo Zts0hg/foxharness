@@ -17,6 +17,22 @@ var (
 	selectorSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ffc56b"))
 )
 
+// Palette contains the theme colors used by the selector overlay.
+type Palette struct {
+	Title    lipgloss.Color
+	Cursor   lipgloss.Color
+	Muted    lipgloss.Color
+	Selected lipgloss.Color
+}
+
+// ApplyPalette rebuilds selector styles from the active TUI theme.
+func ApplyPalette(p Palette) {
+	selectorTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(p.Title)
+	selectorCursorStyle = lipgloss.NewStyle().Foreground(p.Cursor)
+	selectorMutedStyle = lipgloss.NewStyle().Foreground(p.Muted)
+	selectorSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(p.Selected)
+}
+
 // View renders the selector.
 func (m Model) View() string {
 	switch m.state {

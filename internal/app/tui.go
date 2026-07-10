@@ -25,13 +25,18 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 	defer restoreLogs()
 
 	asker := attachInteractiveAsker(runner)
+	homeDir, _ := os.UserHomeDir()
 
 	return tui.Run(ctx, runner, tui.Config{
-		Model:         cfg.Model,
-		InitialPrompt: cfg.Prompt,
-		Registry:      runner.SlashRegistry(),
-		Executor:      runner.SlashExecutor(),
-		Asker:         asker,
+		Model:             cfg.Model,
+		InitialPrompt:     cfg.Prompt,
+		HomeDir:           homeDir,
+		ProviderID:        cfg.ResolvedLLM.ProviderID,
+		ProviderProfileID: cfg.ResolvedLLM.SettingsProviderID,
+		ProviderProtocol:  cfg.ResolvedLLM.Protocol,
+		Registry:          runner.SlashRegistry(),
+		Executor:          runner.SlashExecutor(),
+		Asker:             asker,
 		Autodev: func(runCtx context.Context, backlogPath string, reporter autodev.Reporter) error {
 			autodevCfg := cfg
 			autodevCfg.Prompt = backlogPath

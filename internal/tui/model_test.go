@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -560,6 +561,13 @@ func TestToolCallRenderingUsesReferenceStyleLabels(t *testing.T) {
 	}
 }
 
+func TestToolInvocationMalformedKnownArgsFallsBackSafely(t *testing.T) {
+	got := formatToolInvocation("read_file", "{not-json")
+	if !strings.Contains(got, "read_file") || !strings.Contains(got, "{not-json") {
+		t.Fatalf("malformed known tool args fallback = %q, want tool name and raw args", got)
+	}
+}
+
 func TestToolResultRenderingUsesTreePrefix(t *testing.T) {
 	rendered := renderEntry(entry{
 		role:  "tool",
@@ -673,6 +681,27 @@ func TestCtrlOTogglesShellCommandOutputExpansion(t *testing.T) {
 	}
 }
 
+func TestShellCommandFailureRenderingUsesErrorState(t *testing.T) {
+	failed := renderCommandEntry(entry{
+		role:  "command",
+		title: "Shell: !false",
+		body:  "exit status 1",
+		err:   true,
+	}, 80, true)
+	succeeded := renderCommandEntry(entry{
+		role:  "command",
+		title: "Shell: !false",
+		body:  "exit status 1",
+	}, 80, true)
+
+	if failed == succeeded {
+		t.Fatalf("failed shell command rendering matches success rendering:\n%s", failed)
+	}
+	if !strings.Contains(stripANSI(failed), "exit status 1") {
+		t.Fatalf("failed shell command rendering lost output:\n%s", failed)
+	}
+}
+
 func TestShellCommandRenderingPreservesWhitespace(t *testing.T) {
 	rendered := stripANSI(renderCommandEntry(entry{
 		role:  "command",
@@ -721,7 +750,7 @@ func TestAssistantMessagesRenderMarkdown(t *testing.T) {
 	}, 100)
 	plainRendered := stripANSI(rendered)
 
-	for _, forbidden := range []string{"**Sunday", "**.", "- current day"} {
+	for _, forbidden := range []string{"**Sunday", "**."} {
 		if strings.Contains(plainRendered, forbidden) {
 			t.Fatalf("rendered assistant markdown contains raw markdown %q:\n%s", forbidden, rendered)
 		}
@@ -984,22 +1013,31 @@ func TestModelSlashCommands(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("/help returned unexpected command")
 	}
-	if !entriesContain(m.entries, "command", "/session") ||
-		!entriesContain(m.entries, "command", "show current session paths") {
+	if !entriesContain(m.entries, "command", "/status") ||
+		!entriesContain(m.entries, "command", "show session status overview") ||
+		!entriesContain(m.entries, "command", "/session") {
 		t.Fatalf("/help did not render commands: %#v", m.entries)
 	}
 
 	m, _ = update(t, m, keyRunes("/session"))
 	m, _ = update(t, m, keyEnter())
-	if !entriesContain(m.entries, "command", "ID       sess-1") ||
-		!entriesContain(m.entries, "command", "Dir      /tmp/sess-1") {
-		t.Fatalf("/session did not render session details: %#v", m.entries)
+	if !entriesContain(m.entries, "command", "Session") ||
+		!entriesContain(m.entries, "command", "Runtime") ||
+		!entriesContain(m.entries, "command", "Capabilities") {
+		t.Fatalf("/session did not render status overview: %#v", m.entries)
 	}
 
 	m, _ = update(t, m, keyRunes("/clear"))
-	m, _ = update(t, m, keyEnter())
-	if len(m.entries) != 0 {
-		t.Fatalf("/clear entries len = %d, want 0", len(m.entries))
+	m, cmd = update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatalf("/clear command is nil, want new-session command")
+	}
+	m, _ = update(t, m, cmd())
+	if m.sessionID != "sess-new" {
+		t.Fatalf("/clear sessionID = %q, want sess-new", m.sessionID)
+	}
+	if !entriesContain(m.entries, "command", "ID       sess-new") {
+		t.Fatalf("/clear did not render new session details: %#v", m.entries)
 	}
 
 	m, _ = update(t, m, keyRunes("/new"))
@@ -1013,6 +1051,419 @@ func TestModelSlashCommands(t *testing.T) {
 	}
 	if !entriesContain(m.entries, "command", "ID       sess-new") {
 		t.Fatalf("/new did not render switch message: %#v", m.entries)
+	}
+}
+
+func TestStatusCommandRendersGroupedOverview(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{
+		ProviderID:        "openai",
+		ProviderProfileID: "primary",
+		ProviderProtocol:  "openai",
+	})
+	m.queuedPrompts = []string{"queued follow-up"}
+	m.sidebarVisible = false
+
+	m, _ = update(t, m, keyRunes("/status"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/status returned command, want nil")
+	}
+
+	plain := stripANSI(renderEntry(m.entries[len(m.entries)-1], 100))
+	for _, want := range []string{
+		"Status",
+		"Session",
+		"ID",
+		"sess-1",
+		"Dir",
+		"/tmp/sess-1",
+		"Workdir",
+		"/tmp/work",
+		"Git",
+		"Model",
+		"Provider",
+		"openai",
+		"Profile",
+		"primary",
+		"Plan Mode",
+		"Runtime",
+		"Queued Prompts",
+		"1",
+		"Context",
+		"7%",
+		"UI",
+		"Theme",
+		"codex",
+		"Statusline",
+		"model, project, git-branch, context-used",
+		"Sidebar",
+		"hidden",
+		"Capabilities",
+		"Rewind",
+		"Ask User",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("/status missing %q:\n%s", want, plain)
+		}
+	}
+}
+
+func TestStatusCommandReportsInlineProviderWithoutProfile(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{
+		ProviderID:       "typo",
+		ProviderProtocol: "openai",
+	})
+
+	m, _ = update(t, m, keyRunes("/status"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/status returned command, want nil")
+	}
+
+	lines := strings.Split(stripANSI(renderEntry(m.entries[len(m.entries)-1], 100)), "\n")
+	if !lineContainsAll(lines, "Profile", "inline") {
+		t.Fatalf("/status did not report inline profile:\n%s", strings.Join(lines, "\n"))
+	}
+	if lineContainsAll(lines, "Profile", "typo") {
+		t.Fatalf("/status reported provider id as profile:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+func TestSessionCommandAliasesStatusOverview(t *testing.T) {
+	runner := newFakeRunner()
+	statusModel := NewModel(context.Background(), runner, Config{})
+	statusModel, _ = update(t, statusModel, keyRunes("/status"))
+	statusModel, _ = update(t, statusModel, keyEnter())
+
+	runner = newFakeRunner()
+	sessionModel := NewModel(context.Background(), runner, Config{})
+	sessionModel, _ = update(t, sessionModel, keyRunes("/session"))
+	sessionModel, _ = update(t, sessionModel, keyEnter())
+
+	if len(statusModel.entries) == 0 || len(sessionModel.entries) == 0 {
+		t.Fatalf("missing status/session entries: %#v %#v", statusModel.entries, sessionModel.entries)
+	}
+	statusEntry := statusModel.entries[len(statusModel.entries)-1]
+	sessionEntry := sessionModel.entries[len(sessionModel.entries)-1]
+	if statusEntry.title != sessionEntry.title || statusEntry.body != sessionEntry.body {
+		t.Fatalf("/session not alias of /status:\nstatus=%#v\nsession=%#v", statusEntry, sessionEntry)
+	}
+}
+
+func TestDeferredSlashCommandsRemainUnsupported(t *testing.T) {
+	for _, command := range []string{"/review", "/vim", "/keymap"} {
+		t.Run(command, func(t *testing.T) {
+			runner := newFakeRunner()
+			m := NewModel(context.Background(), runner, Config{})
+
+			m, _ = update(t, m, keyRunes(command))
+			m, cmd := update(t, m, keyEnter())
+			if cmd != nil {
+				t.Fatalf("%s returned command, want nil", command)
+			}
+			if !entriesContain(m.entries, "error", "Unknown command: "+command) {
+				t.Fatalf("%s did not render unsupported command error: %#v", command, m.entries)
+			}
+		})
+	}
+}
+
+func TestStatuslineDefaultsRenderConfiguredItems(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	plain := stripANSI(m.renderStatusBar(120))
+	for _, want := range []string{
+		"fake-model",
+		"work",
+		"git",
+		"Context 7%",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("default statusline missing %q:\n%s", want, plain)
+		}
+	}
+	for _, forbidden := range []string{"sid sess-1", "Run State", "plan mode"} {
+		if strings.Contains(plain, forbidden) {
+			t.Fatalf("default statusline contains non-default item %q:\n%s", forbidden, plain)
+		}
+	}
+
+	m.statuslineItems = []string{"plan-mode"}
+	plain = stripANSI(m.renderStatusBar(120))
+	if !strings.Contains(plain, "plan mode off") {
+		t.Fatalf("configured plan-mode statusline missing explicit plan state:\n%s", plain)
+	}
+}
+
+func TestStatuslineCommandListsAvailableItemsAndDefaults(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/statusline"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/statusline returned command, want nil")
+	}
+
+	plain := stripANSI(renderEntry(m.entries[len(m.entries)-1], 120))
+	for _, want := range []string{
+		"Statusline",
+		"Current",
+		"model, project, git-branch, context-used",
+		"Default",
+		"Available",
+		"plan-mode",
+		"run-state",
+		"Usage: /statusline set <items>",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("/statusline help missing %q:\n%s", want, plain)
+		}
+	}
+}
+
+func TestStatuslineSetPersistsOrderedItems(t *testing.T) {
+	home := t.TempDir()
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	m, _ = update(t, m, keyRunes("/statusline set theme, queued session-id"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/statusline set returned command, want nil")
+	}
+
+	wantItems := []string{"theme", "queued", "session-id"}
+	if !reflect.DeepEqual(m.statuslineItems, wantItems) {
+		t.Fatalf("statuslineItems = %#v, want %#v", m.statuslineItems, wantItems)
+	}
+	plain := stripANSI(m.renderStatusBar(120))
+	for _, want := range []string{"theme codex", "queued 0", "sid sess-1"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("configured statusline missing %q:\n%s", want, plain)
+		}
+	}
+	tui := readTUISettingsMap(t, home)
+	if !reflect.DeepEqual(tui["statusline"], []any{"theme", "queued", "session-id"}) {
+		t.Fatalf("persisted statusline = %#v, want ordered items", tui["statusline"])
+	}
+}
+
+func TestStatuslineDefaultRestoresAndPersistsDefaults(t *testing.T) {
+	home := t.TempDir()
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+	m.statuslineItems = []string{"theme", "queued"}
+
+	m, _ = update(t, m, keyRunes("/statusline default"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/statusline default returned command, want nil")
+	}
+
+	if !reflect.DeepEqual(m.statuslineItems, defaultStatuslineItems) {
+		t.Fatalf("statuslineItems = %#v, want defaults %#v", m.statuslineItems, defaultStatuslineItems)
+	}
+	tui := readTUISettingsMap(t, home)
+	if !reflect.DeepEqual(tui["statusline"], []any{"model", "project", "git-branch", "context-used"}) {
+		t.Fatalf("persisted defaults = %#v", tui["statusline"])
+	}
+}
+
+func TestStatuslineRejectsShellHookLikeInputWithoutWriting(t *testing.T) {
+	home := t.TempDir()
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+	before := append([]string(nil), m.statuslineItems...)
+
+	m, _ = update(t, m, keyRunes("/statusline set shell:/tmp/statusline.sh"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/statusline invalid returned command, want nil")
+	}
+
+	if !reflect.DeepEqual(m.statuslineItems, before) {
+		t.Fatalf("statuslineItems changed on invalid input: %#v want %#v", m.statuslineItems, before)
+	}
+	if !entriesContain(m.entries, "error", "Unknown statusline item") {
+		t.Fatalf("missing invalid statusline error: %#v", m.entries)
+	}
+	if _, err := os.Stat(settingsJSONPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("settings file exists after invalid statusline input: %v", err)
+	}
+}
+
+func TestThemeCommandAppliesBuiltInThemeAndPersists(t *testing.T) {
+	home := t.TempDir()
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	m, _ = update(t, m, keyRunes("/theme mono"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/theme returned command, want nil")
+	}
+
+	if m.themeName != "mono" {
+		t.Fatalf("themeName = %q, want mono", m.themeName)
+	}
+	if !entriesContain(m.entries, "command", "Theme set to mono") {
+		t.Fatalf("missing theme command entry: %#v", m.entries)
+	}
+	tui := readTUISettingsMap(t, home)
+	if tui["theme"] != "mono" {
+		t.Fatalf("persisted theme = %#v, want mono", tui["theme"])
+	}
+}
+
+func TestThemeCommandRejectsInvalidThemeWithoutPersisting(t *testing.T) {
+	home := t.TempDir()
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	m, _ = update(t, m, keyRunes("/theme solarized"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/theme invalid returned command, want nil")
+	}
+
+	if m.themeName != defaultThemeName {
+		t.Fatalf("themeName = %q, want default %q", m.themeName, defaultThemeName)
+	}
+	if !entriesContain(m.entries, "error", "Unknown theme") {
+		t.Fatalf("missing invalid theme error: %#v", m.entries)
+	}
+	if _, err := os.Stat(settingsJSONPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("settings file exists after invalid theme: %v", err)
+	}
+}
+
+func TestNewModelRestoresThemeAndStatuslineFromSettings(t *testing.T) {
+	home := t.TempDir()
+	writeTestFile(t, home, ".foxharness/settings.json", `{
+	  "tui": {
+	    "theme": "mono",
+	    "statusline": ["theme", "queued"]
+	  }
+	}`)
+	runner := newFakeRunner()
+
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	if m.themeName != "mono" {
+		t.Fatalf("themeName = %q, want mono", m.themeName)
+	}
+	wantItems := []string{"theme", "queued"}
+	if !reflect.DeepEqual(m.statuslineItems, wantItems) {
+		t.Fatalf("statuslineItems = %#v, want %#v", m.statuslineItems, wantItems)
+	}
+	plain := stripANSI(m.renderStatusBar(120))
+	for _, want := range []string{"theme mono", "queued 0"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("restored statusline missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "fake-model") {
+		t.Fatalf("restored statusline rendered non-configured model item:\n%s", plain)
+	}
+}
+
+func TestNewModelMigratesOldDefaultStatuslineWithoutPlanMode(t *testing.T) {
+	home := t.TempDir()
+	writeTestFile(t, home, ".foxharness/settings.json", `{
+	  "tui": {
+	    "statusline": ["model", "project", "git-branch", "context-used", "plan-mode"]
+	  }
+	}`)
+	runner := newFakeRunner()
+
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	if !reflect.DeepEqual(m.statuslineItems, defaultStatuslineItems) {
+		t.Fatalf("statuslineItems = %#v, want migrated defaults %#v", m.statuslineItems, defaultStatuslineItems)
+	}
+	if strings.Contains(stripANSI(m.renderStatusBar(120)), "plan mode") {
+		t.Fatalf("old default statusline should not keep plan-mode by default:\n%s", stripANSI(m.renderStatusBar(120)))
+	}
+}
+
+func TestThemeCommandReportsPersistenceError(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".foxharness"), []byte("not a directory"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	m, _ = update(t, m, keyRunes("/theme mono"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/theme returned command, want nil")
+	}
+
+	if m.themeName != defaultThemeName {
+		t.Fatalf("themeName = %q, want unchanged default %q", m.themeName, defaultThemeName)
+	}
+	if !entriesContain(m.entries, "error", "save settings") {
+		t.Fatalf("missing settings persistence error: %#v", m.entries)
+	}
+}
+
+func TestThemeCommandReportsMissingHomeDir(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/theme mono"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/theme returned command, want nil")
+	}
+
+	if m.themeName != defaultThemeName {
+		t.Fatalf("themeName = %q, want unchanged default %q", m.themeName, defaultThemeName)
+	}
+	if !entriesContain(m.entries, "error", "home directory unavailable") {
+		t.Fatalf("missing home-dir persistence error: %#v", m.entries)
+	}
+}
+
+func TestStatuslineSetReportsMissingHomeDir(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	before := append([]string(nil), m.statuslineItems...)
+
+	m, _ = update(t, m, keyRunes("/statusline set theme,queued"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/statusline returned command, want nil")
+	}
+
+	if !reflect.DeepEqual(m.statuslineItems, before) {
+		t.Fatalf("statuslineItems = %#v, want unchanged %#v", m.statuslineItems, before)
+	}
+	if !entriesContain(m.entries, "error", "home directory unavailable") {
+		t.Fatalf("missing home-dir persistence error: %#v", m.entries)
+	}
+}
+
+func TestApplyThemeUpdatesOverlayStyles(t *testing.T) {
+	t.Cleanup(func() { applyTheme(defaultThemeName) })
+
+	applyTheme("mono")
+	if got := askFocusedStyle.GetForeground(); got != cAccentHi {
+		t.Fatalf("ask focused foreground = %q, want current accent highlight %q", got, cAccentHi)
+	}
+
+	view := selector.New([]checkpoint.SelectableMessage{{
+		Seq:     7,
+		Content: "restore this",
+	}}, &tuiCheckpointer{}).View()
+	wantTitle := lipgloss.NewStyle().Bold(true).Foreground(cAccentHi).Render("Rewind")
+	if !strings.Contains(view, wantTitle) {
+		t.Fatalf("selector title did not use current theme highlight %q:\n%s", cAccentHi, view)
 	}
 }
 
@@ -1316,7 +1767,7 @@ func TestModelSlashSuggestionsAndTabCompletion(t *testing.T) {
 	m, _ = update(t, m, keyRunes("/"))
 	view := m.View()
 	plainView := stripANSI(view)
-	for _, want := range []string{"❯", "/session", "/clear", "/new", "/model", "/cancel", "/sidebar", "/help", "/exit"} {
+	for _, want := range []string{"❯", "/status", "/session", "/clear", "/new", "/model", "/theme", "/statusline", "/cancel", "/sidebar", "/help", "/exit"} {
 		if !strings.Contains(plainView, want) {
 			t.Fatalf("view missing slash dropdown item %q:\n%s", want, view)
 		}
@@ -1329,17 +1780,17 @@ func TestModelSlashSuggestionsAndTabCompletion(t *testing.T) {
 	if got := string(m.input); got != "/" {
 		t.Fatalf("down in slash menu changed input = %q, want /", got)
 	}
-	if command, ok := m.selectedSlashCommand(); !ok || command.Name != "/clear" {
-		t.Fatalf("selected slash command after down = %#v, %v; want /clear", command, ok)
+	if command, ok := m.selectedSlashCommand(); !ok || command.Name != "/session" {
+		t.Fatalf("selected slash command after down = %#v, %v; want /session", command, ok)
 	}
 	m, _ = update(t, m, keyUp())
-	if command, ok := m.selectedSlashCommand(); !ok || command.Name != "/session" {
-		t.Fatalf("selected slash command after up = %#v, %v; want /session", command, ok)
+	if command, ok := m.selectedSlashCommand(); !ok || command.Name != "/status" {
+		t.Fatalf("selected slash command after up = %#v, %v; want /status", command, ok)
 	}
 
 	m, _ = update(t, m, keyTab())
-	if got := string(m.input); got != "/session" {
-		t.Fatalf("input after tab = %q, want /session", got)
+	if got := string(m.input); got != "/status" {
+		t.Fatalf("input after tab = %q, want /status", got)
 	}
 }
 
@@ -1505,6 +1956,33 @@ func TestTranscriptDragSelectionClampsOutsideBounds(t *testing.T) {
 
 	if *copied != "alpha " {
 		t.Fatalf("copied = %q, want %q", *copied, "alpha ")
+	}
+}
+
+func TestInputDragSelectionCopiesInputText(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.input = []rune("alpha beta gamma")
+	m.inputCursor = len(m.input)
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	copied := ""
+	m.copySelection = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	y, x := inputTextOrigin(m)
+	start := x + len("alpha ")
+	end := start + len("beta")
+	m, _ = update(t, m, tea.MouseMsg{X: start, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m, _ = update(t, m, tea.MouseMsg{X: end, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	m, _ = update(t, m, tea.MouseMsg{X: end, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+
+	if copied != "beta" {
+		t.Fatalf("copied = %q, want beta", copied)
+	}
+	if m.status != "Selection copied" {
+		t.Fatalf("status = %q, want Selection copied", m.status)
 	}
 }
 
@@ -1874,6 +2352,22 @@ func TestSlashDropdownUsesForegroundOnlySelection(t *testing.T) {
 	rendered := m.renderSlashSuggestions(72)
 	if strings.Contains(rendered, "\x1b[48;") {
 		t.Fatalf("slash dropdown rendered background color escapes, want foreground colors only:\n%s", rendered)
+	}
+}
+
+func TestFitLinePreservesANSIResetWhenTruncated(t *testing.T) {
+	styled := markdownStyleRenderer.NewStyle().Foreground(cWarn).Render(strings.Repeat("x", 80))
+
+	got := fitLine(styled, 12)
+
+	if lipgloss.Width(got) > 12 {
+		t.Fatalf("fitLine width = %d, want <= 12: %q", lipgloss.Width(got), got)
+	}
+	if !strings.HasSuffix(stripANSI(got), "...") {
+		t.Fatalf("fitLine stripped output = %q, want truncation suffix", stripANSI(got))
+	}
+	if !strings.Contains(got, "\x1b[0m") {
+		t.Fatalf("fitLine truncated styled text without ANSI reset: %q", got)
 	}
 }
 
@@ -2946,7 +3440,7 @@ func TestModelViewContainsSessionAndInput(t *testing.T) {
 
 	view := m.View()
 	plainView := stripANSI(view)
-	for _, want := range []string{"SYSTEM session", "Interactive session started. Type /help for commands.", "FOXHARNESS", "fake-model", "git -", "Context 7%", "sid sess-1", "> ▌ ask anything, or /help for commands"} {
+	for _, want := range []string{"SYSTEM session", "Interactive session started. Type /help for commands.", "fake-model", "work", "git -", "Context 7%", "> ▌ ask anything, or /help for commands"} {
 		if !strings.Contains(plainView, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -3930,6 +4424,11 @@ func renderedInputContentRows(m Model) []string {
 	return rows
 }
 
+func inputTextOrigin(m Model) (int, int) {
+	x := viewPaddingLeft + inputStyle.GetHorizontalFrameSize()/2 + lipgloss.Width("> ")
+	return m.inputContentY(), x
+}
+
 func longPastedInputSample() string {
 	return strings.Join([]string{
 		"Intro paragraph with enough words to soft wrap in a narrow terminal viewport.",
@@ -4072,6 +4571,27 @@ func writeTestFile(t *testing.T, root string, rel string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+func settingsJSONPath(home string) string {
+	return filepath.Join(home, ".foxharness", "settings.json")
+}
+
+func readTUISettingsMap(t *testing.T, home string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(settingsJSONPath(home))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	tui, ok := parsed["tui"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings missing tui object: %#v", parsed)
+	}
+	return tui
 }
 
 func numberedLines(prefix string, count int) string {

@@ -16,6 +16,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/settings"
 	"github.com/Zts0hg/foxharness/internal/slash"
 	"github.com/Zts0hg/foxharness/internal/tools"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
@@ -63,6 +64,11 @@ type Runner interface {
 type Config struct {
 	Model         string
 	InitialPrompt string
+	HomeDir       string
+
+	ProviderID        string
+	ProviderProfileID string
+	ProviderProtocol  string
 
 	// Registry, when non-nil, attaches a file-based slash command registry
 	// to the TUI so that prompt commands from .foxharness/ and .claude/
@@ -123,12 +129,15 @@ const (
 )
 
 var slashCommands = []slashCommand{
-	{Name: "/session", Description: "show current session paths"},
-	{Name: "/clear", Description: "clear the visible transcript"},
+	{Name: "/status", Description: "show session status overview"},
+	{Name: "/session", Description: "alias for /status"},
+	{Name: "/clear", Description: "alias for /new"},
 	{Name: "/rewind", Description: "restore a previous checkpoint"},
 	{Name: "/checkpoint", Description: "alias for /rewind"},
 	{Name: "/new", Description: "start a fresh session"},
 	{Name: "/model", Description: "show or switch the active model"},
+	{Name: "/theme", Description: "show or switch the TUI theme", ArgumentHint: "[name]"},
+	{Name: "/statusline", Description: "configure statusline items", ArgumentHint: "[set <items>|default]"},
 	{Name: "/compact", Description: "compact context", ArgumentHint: "<optional custom instructions>"},
 	{Name: "/autodev", Description: "drain the backlog autonomously", ArgumentHint: "[backlog-path]"},
 	{Name: "/cancel", Description: "cancel the active run"},
@@ -138,6 +147,10 @@ var slashCommands = []slashCommand{
 }
 
 var workingFrames = []string{"•", "◦", "●", "◌"}
+
+const defaultThemeName = "codex"
+
+var defaultStatuslineItems = []string{"model", "project", "git-branch", "context-used"}
 
 type selectionPoint struct {
 	line int
@@ -149,6 +162,7 @@ type selectionArea string
 const (
 	selectionAreaTranscript selectionArea = "transcript"
 	selectionAreaSidebar    selectionArea = "sidebar"
+	selectionAreaInput      selectionArea = "input"
 )
 
 type selectionState struct {
@@ -216,6 +230,14 @@ type Model struct {
 	gitBranch    string
 	contextUsage string
 	planMode     bool
+	homeDir      string
+
+	providerID        string
+	providerProfileID string
+	providerProtocol  string
+
+	themeName       string
+	statuslineItems []string
 
 	checkpointer   checkpoint.Checkpointer
 	rewindSelector *selector.Model
@@ -245,6 +267,17 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		modelName = runner.Model()
 	}
 	entries, inputHistory, status := initialSessionState(runner)
+	themeName := defaultThemeName
+	statuslineItems := append([]string(nil), defaultStatuslineItems...)
+	if strings.TrimSpace(cfg.HomeDir) != "" {
+		if loaded, err := settings.Load(cfg.HomeDir); err == nil {
+			if isBuiltInTheme(loaded.TUI.Theme) {
+				themeName = normalizeThemeName(loaded.TUI.Theme)
+			}
+			statuslineItems = normalizeSavedStatuslineItems(loaded.TUI.Statusline)
+		}
+	}
+	themeName = applyTheme(themeName)
 	return Model{
 		ctx:               ctx,
 		runner:            runner,
@@ -261,6 +294,12 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		fileSelection:     -1,
 		fileMentions:      loadFileMentions(runner.WorkDir()),
 		status:            status,
+		homeDir:           cfg.HomeDir,
+		providerID:        cfg.ProviderID,
+		providerProfileID: cfg.ProviderProfileID,
+		providerProtocol:  cfg.ProviderProtocol,
+		themeName:         themeName,
+		statuslineItems:   statuslineItems,
 		sessionID:         runner.SessionID(),
 		modelName:         modelName,
 		project:           projectFolderName(runner.WorkDir()),
@@ -463,7 +502,11 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.cachedLayout = &layout
 	}
 	if m.selection.dragging && !isWheelMouse(msg) {
-		if m.selection.area == selectionAreaSidebar {
+		switch m.selection.area {
+		case selectionAreaInput:
+			next, _ := m.handleInputSelectionMouse(msg)
+			return next, nil
+		case selectionAreaSidebar:
 			next, _ := m.handleSidebarSelectionMouse(msg)
 			return next, nil
 		}
@@ -485,6 +528,10 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return next, nil
 		}
 		return m, nil
+	}
+
+	if next, ok := m.handleInputSelectionMouse(msg); ok {
+		return next, nil
 	}
 
 	if next, ok := m.handleTranscriptSelectionMouse(msg); ok {
@@ -617,6 +664,58 @@ func (m Model) handleSidebarSelectionMouse(msg tea.MouseMsg) (Model, bool) {
 	return m, false
 }
 
+func (m Model) handleInputSelectionMouse(msg tea.MouseMsg) (Model, bool) {
+	if isWheelMouse(msg) {
+		return m, false
+	}
+
+	switch {
+	case msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress:
+		point, ok := m.inputPointAt(msg.X, msg.Y, false)
+		if !ok {
+			return m, false
+		}
+		m.selection = selectionState{
+			anchor:   point,
+			focus:    point,
+			active:   true,
+			dragging: true,
+			area:     selectionAreaInput,
+		}
+		return m, true
+
+	case m.selection.dragging && m.selection.area == selectionAreaInput && msg.Action == tea.MouseActionMotion:
+		point, ok := m.inputPointAt(msg.X, msg.Y, true)
+		if !ok {
+			return m, true
+		}
+		m.selection.focus = point
+		return m, true
+
+	case m.selection.dragging && m.selection.area == selectionAreaInput && msg.Action == tea.MouseActionRelease:
+		point, ok := m.inputPointAt(msg.X, msg.Y, true)
+		if ok {
+			m.selection.focus = point
+		}
+		m.selection.dragging = false
+		text := m.selectedText()
+		if strings.TrimSpace(text) == "" {
+			m.clearSelection()
+			return m, true
+		}
+		if m.copySelection != nil {
+			if err := m.copySelection(text); err != nil {
+				m.status = "Copy failed: " + err.Error()
+			} else {
+				m.status = "Selection copied"
+			}
+		}
+		return m, true
+	}
+
+	return m, false
+}
+
 func (m Model) transcriptPointAt(x int, y int, clamp bool) (selectionPoint, bool) {
 	_, bodyHeight := m.contentDimensions()
 	var layout transcriptLayout
@@ -679,12 +778,49 @@ func (m Model) sidebarPointAt(x int, y int, clamp bool) (selectionPoint, bool) {
 	return selectionPoint{line: localY, col: col}, true
 }
 
+func (m Model) inputPointAt(x int, y int, clamp bool) (selectionPoint, bool) {
+	rows := m.inputRenderRows()
+	displayRows := m.inputDisplayRows(rows)
+	if len(displayRows) == 0 {
+		return selectionPoint{}, false
+	}
+
+	contentY := m.inputContentY()
+	localY := y - contentY
+	if clamp {
+		localY = max(0, min(localY, len(displayRows)-1))
+	} else if localY < 0 || localY >= len(displayRows) {
+		return selectionPoint{}, false
+	}
+
+	displayRow := displayRows[localY]
+	if displayRow.marker != "" {
+		return selectionPoint{}, false
+	}
+	prefixWidth := xansi.StringWidth("  ")
+	if localY == 0 {
+		prefixWidth = xansi.StringWidth(inputPromptText(m))
+	}
+	localX := x - viewPaddingLeft - prefixWidth
+	rowText := string(m.input[displayRow.row.start:displayRow.row.end])
+	rowWidth := xansi.StringWidth(rowText)
+	if clamp {
+		localX = max(0, min(localX, rowWidth))
+	} else if localX < 0 || localX > rowWidth {
+		return selectionPoint{}, false
+	}
+	return selectionPoint{line: displayRow.index, col: localX}, true
+}
+
 func (m *Model) clearSelection() {
 	m.selection = selectionState{}
 }
 
 func (m Model) selectedText() string {
-	if m.selection.area == selectionAreaSidebar {
+	switch m.selection.area {
+	case selectionAreaInput:
+		return m.selectedInputText()
+	case selectionAreaSidebar:
 		return m.selectedSidebarText()
 	}
 	return m.selectedTranscriptText()
@@ -704,6 +840,14 @@ func (m Model) selectedSidebarText() string {
 	}
 	layout := m.sidebarLayout(m.sidebarWidth(), m.transcriptHeight())
 	return selectedTextFromLines(layout.plainLines, m.selection)
+}
+
+func (m Model) selectedInputText() string {
+	if !m.selection.active {
+		return ""
+	}
+	rows := m.inputRenderRows()
+	return selectedInputTextFromRows(m.input, rows, m.selection)
 }
 
 func (m Model) transcriptHeight() int {
@@ -736,6 +880,45 @@ func selectedTextFromLines(lines []string, selection selectionState) string {
 	out := make([]string, 0, end.line-start.line+1)
 	for line := start.line; line <= end.line; line++ {
 		plain := strings.TrimRight(lines[line], " \t")
+		width := xansi.StringWidth(plain)
+		left, right := 0, width
+		if line == start.line {
+			left = min(max(start.col, 0), width)
+		}
+		if line == end.line {
+			right = min(max(end.col, 0), width)
+		}
+		if right < left {
+			right = left
+		}
+		out = append(out, xansi.Cut(plain, left, right))
+	}
+	return strings.Join(out, "\n")
+}
+
+func selectedInputTextFromRows(input []rune, rows []inputRenderRow, selection selectionState) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	start, end := normalizedSelection(selection)
+	if start.line < 0 {
+		start.line = 0
+	}
+	if end.line < 0 || start.line >= len(rows) {
+		return ""
+	}
+	if end.line >= len(rows) {
+		end.line = len(rows) - 1
+		end.col = xansi.StringWidth(string(input[rows[end.line].start:rows[end.line].end]))
+	}
+	if start.line == end.line && start.col == end.col {
+		return ""
+	}
+
+	out := make([]string, 0, end.line-start.line+1)
+	for line := start.line; line <= end.line; line++ {
+		row := rows[line]
+		plain := string(input[row.start:row.end])
 		width := xansi.StringWidth(plain)
 		left, right := 0, width
 		if line == start.line {
@@ -2056,20 +2239,9 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.appendCommandEntry("Commands", slashCommandHelp())
 		m.status = "Help"
 		return m, nil
-	case "/session":
-		m.appendCommandEntry("Session", formatSessionRows(
-			m.runner.SessionID(),
-			m.runner.SessionDir(),
-			m.runner.WorkDir(),
-			m.runner.Model(),
-		))
-		m.status = "Session details"
-		return m, nil
-	case "/clear":
-		m.entries = nil
-		m.cachedLayout = nil
-		m.status = "Transcript cleared"
-		m.scrollOffset = 0
+	case "/status", "/session":
+		m.appendCommandEntry("Status", m.formatStatusOverview())
+		m.status = "Status"
 		return m, nil
 	case "/rewind", "/checkpoint":
 		return m.openRewindSelector()
@@ -2095,6 +2267,10 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.appendCommandEntry("Model", fmt.Sprintf("Switched model to %s", m.modelName))
 		m.status = fmt.Sprintf("Model switched to %s", m.modelName)
 		return m, nil
+	case "/theme":
+		return m.handleThemeCommand(fields)
+	case "/statusline":
+		return m.handleStatuslineCommand(text, fields)
 	case "/sidebar":
 		mode := "toggle"
 		if len(fields) > 1 {
@@ -2137,7 +2313,7 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.spinnerFrame = 0
 		m.status = "Compacting context"
 		return m, compactNowCmd(m.ctx, m.runner, customInstructions)
-	case "/new":
+	case "/clear", "/new":
 		if m.running {
 			m.status = "Cannot create a new session while a run is active"
 			return m, nil
@@ -2172,6 +2348,118 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.status = "Unknown command"
 		return m, nil
 	}
+}
+
+func (m Model) handleThemeCommand(fields []string) (tea.Model, tea.Cmd) {
+	if len(fields) == 1 {
+		m.appendCommandEntry("Theme", fmt.Sprintf(
+			"Current: %s\nAvailable: %s\nUsage: /theme <name>",
+			m.themeName,
+			strings.Join(builtInThemeNames(), ", "),
+		))
+		m.status = "Theme"
+		return m, nil
+	}
+	if len(fields) != 2 {
+		m.appendEntry("error", "invalid command", "Usage: /theme <name>", true)
+		m.status = "Invalid theme command"
+		return m, nil
+	}
+	nextTheme := normalizeThemeName(fields[1])
+	if !isBuiltInTheme(nextTheme) {
+		m.appendEntry("error", "unknown theme", fmt.Sprintf("Unknown theme: %s\nAvailable: %s", fields[1], strings.Join(builtInThemeNames(), ", ")), true)
+		m.status = "Unknown theme"
+		return m, nil
+	}
+	previousTheme := m.themeName
+	m.themeName = applyTheme(nextTheme)
+	if err := m.saveTUISettings(); err != nil {
+		m.themeName = applyTheme(previousTheme)
+		m.appendEntry("error", "theme save failed", fmt.Sprintf("save settings: %v", err), true)
+		m.status = "Theme save failed"
+		return m, nil
+	}
+	m.appendCommandEntry("Theme", fmt.Sprintf("Theme set to %s", m.themeName))
+	m.status = fmt.Sprintf("Theme set to %s", m.themeName)
+	return m, nil
+}
+
+func (m Model) handleStatuslineCommand(text string, fields []string) (tea.Model, tea.Cmd) {
+	if len(fields) == 1 {
+		m.appendCommandEntry("Statusline", m.formatStatuslineHelp())
+		m.status = "Statusline"
+		return m, nil
+	}
+	subcommand := strings.ToLower(fields[1])
+	switch subcommand {
+	case "default":
+		if len(fields) != 2 {
+			m.appendEntry("error", "invalid command", "Usage: /statusline default", true)
+			m.status = "Invalid statusline command"
+			return m, nil
+		}
+		previousItems := append([]string(nil), m.statuslineItems...)
+		m.statuslineItems = append([]string(nil), defaultStatuslineItems...)
+		if err := m.saveTUISettings(); err != nil {
+			m.statuslineItems = previousItems
+			m.appendEntry("error", "statusline save failed", fmt.Sprintf("save settings: %v", err), true)
+			m.status = "Statusline save failed"
+			return m, nil
+		}
+		m.appendCommandEntry("Statusline", "Statusline reset to default: "+statuslineItemsText(m.statuslineItems))
+		m.status = "Statusline reset"
+		return m, nil
+	case "set":
+		rawItems := commandArgsAfter(text, fields[0], fields[1])
+		items, err := parseStatuslineItems(rawItems)
+		if err != nil {
+			m.appendEntry("error", "invalid statusline", err.Error(), true)
+			m.status = "Invalid statusline"
+			return m, nil
+		}
+		previousItems := append([]string(nil), m.statuslineItems...)
+		m.statuslineItems = items
+		if err := m.saveTUISettings(); err != nil {
+			m.statuslineItems = previousItems
+			m.appendEntry("error", "statusline save failed", fmt.Sprintf("save settings: %v", err), true)
+			m.status = "Statusline save failed"
+			return m, nil
+		}
+		m.appendCommandEntry("Statusline", "Statusline set to: "+statuslineItemsText(m.statuslineItems))
+		m.status = "Statusline updated"
+		return m, nil
+	default:
+		m.appendEntry("error", "invalid command", "Usage: /statusline [set <items>|default]", true)
+		m.status = "Invalid statusline command"
+		return m, nil
+	}
+}
+
+func (m Model) formatStatuslineHelp() string {
+	return fmt.Sprintf(
+		"Current: %s\nDefault: %s\nAvailable: %s\nUsage: /statusline set <items>\nUsage: /statusline default",
+		statuslineItemsText(m.statuslineItems),
+		statuslineItemsText(defaultStatuslineItems),
+		statuslineItemsText(statuslineAvailableItems()),
+	)
+}
+
+func commandArgsAfter(text string, command string, subcommand string) string {
+	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), command))
+	return strings.TrimSpace(strings.TrimPrefix(rest, subcommand))
+}
+
+func (m Model) saveTUISettings() error {
+	if strings.TrimSpace(m.homeDir) == "" {
+		return fmt.Errorf("home directory unavailable")
+	}
+	loaded, err := settings.Load(m.homeDir)
+	if err != nil {
+		return err
+	}
+	loaded.TUI.Theme = m.themeName
+	loaded.TUI.Statusline = append([]string(nil), m.statuslineItems...)
+	return settings.Save(m.homeDir, loaded)
 }
 
 func (m Model) openRewindSelector() (tea.Model, tea.Cmd) {
@@ -2591,6 +2879,143 @@ func formatSessionRows(sessionID, sessionDir, workDir, model string) string {
 		lines = append(lines, fmt.Sprintf("%-*s  %s", labelWidth, row.label, row.value))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m Model) formatStatusOverview() string {
+	provider, profile := m.providerStatusFields()
+	groups := []statusGroup{
+		{
+			name: "Session",
+			rows: []statusRow{
+				{label: "ID", value: unavailableIfEmpty(m.runner.SessionID())},
+				{label: "Dir", value: unavailableIfEmpty(m.runner.SessionDir())},
+				{label: "Workdir", value: unavailableIfEmpty(m.runner.WorkDir())},
+				{label: "Git", value: unavailableIfEmpty(m.gitBranch)},
+			},
+		},
+		{
+			name: "Model",
+			rows: []statusRow{
+				{label: "Provider", value: provider},
+				{label: "Profile", value: profile},
+				{label: "Model", value: unavailableIfEmpty(m.runner.Model())},
+				{label: "Plan Mode", value: onOff(m.planMode)},
+			},
+		},
+		{
+			name: "Runtime",
+			rows: []statusRow{
+				{label: "Run State", value: m.runStateLabel()},
+				{label: "Queued Prompts", value: strconv.Itoa(len(m.queuedPrompts))},
+				{label: "Context", value: normalizeContextUsage(m.contextUsage)},
+			},
+		},
+		{
+			name: "UI",
+			rows: []statusRow{
+				{label: "Theme", value: unavailableIfEmpty(m.themeName)},
+				{label: "Statusline", value: strings.Join(m.statuslineItems, ", ")},
+				{label: "Sidebar", value: m.sidebarStatusLabel()},
+			},
+		},
+		{
+			name: "Capabilities",
+			rows: []statusRow{
+				{label: "Rewind", value: enabledDisabled(m.checkpointer != nil)},
+				{label: "File Slash", value: enabledDisabled(m.slashRegistry != nil)},
+				{label: "Ask User", value: enabledDisabled(m.asker != nil)},
+			},
+		},
+	}
+	return renderStatusGroups(groups)
+}
+
+type statusGroup struct {
+	name string
+	rows []statusRow
+}
+
+type statusRow struct {
+	label string
+	value string
+}
+
+func renderStatusGroups(groups []statusGroup) string {
+	sections := make([]string, 0, len(groups))
+	for _, group := range groups {
+		labelWidth := 0
+		for _, row := range group.rows {
+			if len(row.label) > labelWidth {
+				labelWidth = len(row.label)
+			}
+		}
+		lines := []string{group.name}
+		for _, row := range group.rows {
+			lines = append(lines, fmt.Sprintf("  %-*s  %s", labelWidth, row.label, row.value))
+		}
+		sections = append(sections, strings.Join(lines, "\n"))
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+func (m Model) providerStatusFields() (string, string) {
+	provider := strings.TrimSpace(m.providerProtocol)
+	if provider == "" {
+		provider = strings.TrimSpace(m.providerID)
+	}
+	if provider == "" {
+		provider = "unavailable"
+	}
+	profile := strings.TrimSpace(m.providerProfileID)
+	if profile == "" && (strings.TrimSpace(m.providerID) != "" || strings.TrimSpace(m.providerProtocol) != "") {
+		profile = "inline"
+	}
+	if profile == "" {
+		profile = "unavailable"
+	}
+	return provider, profile
+}
+
+func (m Model) runStateLabel() string {
+	if m.running {
+		if strings.TrimSpace(m.status) != "" {
+			return strings.TrimSpace(m.status)
+		}
+		return "running"
+	}
+	return "idle"
+}
+
+func (m Model) sidebarStatusLabel() string {
+	if m.sidebarFocused {
+		return "focused"
+	}
+	if m.sidebarVisible {
+		return "shown"
+	}
+	return "hidden"
+}
+
+func unavailableIfEmpty(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unavailable"
+	}
+	return value
+}
+
+func enabledDisabled(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+func onOff(enabled bool) string {
+	if enabled {
+		return "on"
+	}
+	return "off"
 }
 
 func initialSessionState(runner Runner) ([]entry, []string, string) {

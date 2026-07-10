@@ -408,6 +408,9 @@ func (m Model) selectionArea() selectionArea {
 	if m.selection.area == selectionAreaSidebar {
 		return selectionAreaSidebar
 	}
+	if m.selection.area == selectionAreaInput {
+		return selectionAreaInput
+	}
 	return selectionAreaTranscript
 }
 
@@ -842,7 +845,12 @@ func renderCommandEntry(e entry, width int, expanded bool) string {
 	if title == "" {
 		title = "Result"
 	}
-	header := fitLine(commandLabelStyle.Render(title), width)
+	headerStyle := commandLabelStyle
+	if e.err {
+		headerStyle = errorLabelStyle
+		title = "FAILED " + title
+	}
+	header := fitLine(headerStyle.Render(title), width)
 	bodyWidth := max(width-2, 20)
 	var body string
 	if isShellCommandEntry(e) {
@@ -921,9 +929,10 @@ func isToolResultPair(prev entry, current entry) bool {
 
 func (m Model) renderInput(width int) string {
 	bang := m.hasBangPrefix() && m.inputPastePreviewLabel() == ""
-	prompt := lipgloss.NewStyle().Foreground(cAccentHi).Render("> ")
+	promptText := inputPromptText(m)
+	prompt := lipgloss.NewStyle().Foreground(cAccentHi).Render(promptText)
 	if bang {
-		prompt = lipgloss.NewStyle().Bold(true).Foreground(cWarn).Render("! ")
+		prompt = lipgloss.NewStyle().Bold(true).Foreground(cWarn).Render(promptText)
 	}
 
 	// In bang mode the leading '!' is absorbed into the prompt, so render
@@ -981,6 +990,10 @@ func (m Model) renderInputRows(prompt string, cursor string) string {
 			continue
 		}
 		row := displayRow.row
+		if m.selection.active && m.selection.area == selectionAreaInput {
+			lines = append(lines, prefix+m.renderInputRowText(row, displayRow.index, textStyle))
+			continue
+		}
 		hasCursor := cursor != "" && cursor != " " && m.inputCursor >= row.start && m.inputCursor <= row.end
 		if hasCursor && displayRow.index+1 < len(rows) && m.inputCursor == row.end && rows[displayRow.index+1].start == m.inputCursor {
 			hasCursor = false
@@ -1007,6 +1020,48 @@ func (m Model) renderInputRows(prompt string, cursor string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func inputPromptText(m Model) string {
+	if m.hasBangPrefix() && m.inputPastePreviewLabel() == "" {
+		return "! "
+	}
+	return "> "
+}
+
+func (m Model) renderInputRowText(row inputRenderRow, rowIndex int, textStyle lipgloss.Style) string {
+	text := string(m.input[row.start:row.end])
+	if !m.selection.active || m.selection.area != selectionAreaInput {
+		return textStyle.Render(text)
+	}
+	start, end := normalizedSelection(m.selection)
+	if rowIndex < start.line || rowIndex > end.line {
+		return textStyle.Render(text)
+	}
+	width := xansi.StringWidth(text)
+	left, right := 0, width
+	if rowIndex == start.line {
+		left = min(max(start.col, 0), width)
+	}
+	if rowIndex == end.line {
+		right = min(max(end.col, 0), width)
+	}
+	if right <= left {
+		return textStyle.Render(text)
+	}
+	before := xansi.Cut(text, 0, left)
+	selected := xansi.Cut(text, left, right)
+	after := xansi.Cut(text, right, width)
+	return textStyle.Render(before) + selectionStyle.Render(selected) + textStyle.Render(after)
+}
+
+func (m Model) inputContentY() int {
+	_, bodyHeight := m.contentDimensions()
+	y := viewPaddingTop + bodyHeight
+	if notice := m.renderRunningNotice(m.innerWidth()); notice != "" {
+		y += 1 + lipgloss.Height(notice)
+	}
+	return y + inputStyle.GetVerticalFrameSize()/2
 }
 
 type inputDisplayRow struct {
@@ -1274,13 +1329,20 @@ func (m Model) renderFooter(width int) string {
 }
 
 func (m Model) renderStatusBar(width int) string {
-	parts := []string{
-		statusModelStyle.Bold(true).Render("FOXHARNESS"),
-		statusProjectStyle.Render(m.modelName),
-		statusProjectStyle.Render(m.project),
-		mutedStyle.Render("git ") + statusProjectStyle.Render(m.gitBranch),
-		mutedStyle.Render("Context ") + statusModelStyle.Render(normalizeContextUsage(m.contextUsage)),
-		mutedStyle.Render("sid ") + statusFaintStyle.Render(m.sessionID),
+	items := m.statuslineItems
+	if len(items) == 0 {
+		items = defaultStatuslineItems
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		part := m.renderStatuslineItem(item)
+		if strings.TrimSpace(xansi.Strip(part)) == "" {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		parts = append(parts, statusProjectStyle.Render(m.modelName))
 	}
 	separator := " " + statusFaintStyle.Render("│") + " "
 	return footerStyle.Width(width).Render(fitLine(strings.Join(parts, separator), width))
@@ -1396,11 +1458,7 @@ func fitLine(s string, width int) string {
 	if lipgloss.Width(s) <= width {
 		return s
 	}
-	runes := []rune(s)
-	for len(runes) > 0 && lipgloss.Width(string(runes))+3 > width {
-		runes = runes[:len(runes)-1]
-	}
-	return string(runes) + "..."
+	return xansi.Truncate(s, max(width, 0), "...")
 }
 
 func formatDuration(d time.Duration) string {
