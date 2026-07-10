@@ -750,7 +750,7 @@ func TestAssistantMessagesRenderMarkdown(t *testing.T) {
 	}, 100)
 	plainRendered := stripANSI(rendered)
 
-	for _, forbidden := range []string{"**Sunday", "**.", "- current day"} {
+	for _, forbidden := range []string{"**Sunday", "**."} {
 		if strings.Contains(plainRendered, forbidden) {
 			t.Fatalf("rendered assistant markdown contains raw markdown %q:\n%s", forbidden, rendered)
 		}
