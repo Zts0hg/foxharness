@@ -1096,7 +1096,7 @@ func TestStatusCommandRendersGroupedOverview(t *testing.T) {
 		"Theme",
 		"codex",
 		"Statusline",
-		"model, project, git-branch, context-used, plan-mode",
+		"model, project, git-branch, context-used",
 		"Sidebar",
 		"hidden",
 		"Capabilities",
@@ -1180,16 +1180,21 @@ func TestStatuslineDefaultsRenderConfiguredItems(t *testing.T) {
 		"work",
 		"git",
 		"Context 7%",
-		"plan mode off",
 	} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("default statusline missing %q:\n%s", want, plain)
 		}
 	}
-	for _, forbidden := range []string{"sid sess-1", "Run State"} {
+	for _, forbidden := range []string{"sid sess-1", "Run State", "plan mode"} {
 		if strings.Contains(plain, forbidden) {
 			t.Fatalf("default statusline contains non-default item %q:\n%s", forbidden, plain)
 		}
+	}
+
+	m.statuslineItems = []string{"plan-mode"}
+	plain = stripANSI(m.renderStatusBar(120))
+	if !strings.Contains(plain, "plan mode off") {
+		t.Fatalf("configured plan-mode statusline missing explicit plan state:\n%s", plain)
 	}
 }
 
@@ -1207,9 +1212,10 @@ func TestStatuslineCommandListsAvailableItemsAndDefaults(t *testing.T) {
 	for _, want := range []string{
 		"Statusline",
 		"Current",
-		"model, project, git-branch, context-used, plan-mode",
+		"model, project, git-branch, context-used",
 		"Default",
 		"Available",
+		"plan-mode",
 		"run-state",
 		"Usage: /statusline set <items>",
 	} {
@@ -1262,7 +1268,7 @@ func TestStatuslineDefaultRestoresAndPersistsDefaults(t *testing.T) {
 		t.Fatalf("statuslineItems = %#v, want defaults %#v", m.statuslineItems, defaultStatuslineItems)
 	}
 	tui := readTUISettingsMap(t, home)
-	if !reflect.DeepEqual(tui["statusline"], []any{"model", "project", "git-branch", "context-used", "plan-mode"}) {
+	if !reflect.DeepEqual(tui["statusline"], []any{"model", "project", "git-branch", "context-used"}) {
 		t.Fatalf("persisted defaults = %#v", tui["statusline"])
 	}
 }
@@ -1362,6 +1368,25 @@ func TestNewModelRestoresThemeAndStatuslineFromSettings(t *testing.T) {
 	}
 	if strings.Contains(plain, "fake-model") {
 		t.Fatalf("restored statusline rendered non-configured model item:\n%s", plain)
+	}
+}
+
+func TestNewModelMigratesOldDefaultStatuslineWithoutPlanMode(t *testing.T) {
+	home := t.TempDir()
+	writeTestFile(t, home, ".foxharness/settings.json", `{
+	  "tui": {
+	    "statusline": ["model", "project", "git-branch", "context-used", "plan-mode"]
+	  }
+	}`)
+	runner := newFakeRunner()
+
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	if !reflect.DeepEqual(m.statuslineItems, defaultStatuslineItems) {
+		t.Fatalf("statuslineItems = %#v, want migrated defaults %#v", m.statuslineItems, defaultStatuslineItems)
+	}
+	if strings.Contains(stripANSI(m.renderStatusBar(120)), "plan mode") {
+		t.Fatalf("old default statusline should not keep plan-mode by default:\n%s", stripANSI(m.renderStatusBar(120)))
 	}
 }
 
@@ -1931,6 +1956,33 @@ func TestTranscriptDragSelectionClampsOutsideBounds(t *testing.T) {
 
 	if *copied != "alpha " {
 		t.Fatalf("copied = %q, want %q", *copied, "alpha ")
+	}
+}
+
+func TestInputDragSelectionCopiesInputText(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.input = []rune("alpha beta gamma")
+	m.inputCursor = len(m.input)
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	copied := ""
+	m.copySelection = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	y, x := inputTextOrigin(m)
+	start := x + len("alpha ")
+	end := start + len("beta")
+	m, _ = update(t, m, tea.MouseMsg{X: start, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m, _ = update(t, m, tea.MouseMsg{X: end, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	m, _ = update(t, m, tea.MouseMsg{X: end, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+
+	if copied != "beta" {
+		t.Fatalf("copied = %q, want beta", copied)
+	}
+	if m.status != "Selection copied" {
+		t.Fatalf("status = %q, want Selection copied", m.status)
 	}
 }
 
@@ -4354,6 +4406,11 @@ func renderedInputContentRows(m Model) []string {
 		}
 	}
 	return rows
+}
+
+func inputTextOrigin(m Model) (int, int) {
+	x := viewPaddingLeft + inputStyle.GetHorizontalFrameSize()/2 + lipgloss.Width("> ")
+	return m.inputContentY(), x
 }
 
 func longPastedInputSample() string {

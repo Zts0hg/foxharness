@@ -20,6 +20,8 @@ var allStatuslineItems = []string{
 	"sidebar",
 }
 
+var legacyDefaultStatuslineItems = []string{"model", "project", "git-branch", "context-used", "plan-mode"}
+
 func statuslineAvailableItems() []string {
 	items := append([]string(nil), allStatuslineItems...)
 	sort.Strings(items)
@@ -39,6 +41,9 @@ func parseStatuslineItems(input string) ([]string, error) {
 func normalizeSavedStatuslineItems(items []string) []string {
 	normalized, err := normalizeStatuslineItems(items, true)
 	if err != nil || len(normalized) == 0 {
+		return append([]string(nil), defaultStatuslineItems...)
+	}
+	if statuslineItemsEqual(normalized, legacyDefaultStatuslineItems) {
 		return append([]string(nil), defaultStatuslineItems...)
 	}
 	return normalized
@@ -103,4 +108,16 @@ func statuslineItemsText(items []string) string {
 		return ""
 	}
 	return strings.Join(items, ", ")
+}
+
+func statuslineItemsEqual(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }

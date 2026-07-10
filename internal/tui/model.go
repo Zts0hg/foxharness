@@ -150,7 +150,7 @@ var workingFrames = []string{"•", "◦", "●", "◌"}
 
 const defaultThemeName = "codex"
 
-var defaultStatuslineItems = []string{"model", "project", "git-branch", "context-used", "plan-mode"}
+var defaultStatuslineItems = []string{"model", "project", "git-branch", "context-used"}
 
 type selectionPoint struct {
 	line int
@@ -162,6 +162,7 @@ type selectionArea string
 const (
 	selectionAreaTranscript selectionArea = "transcript"
 	selectionAreaSidebar    selectionArea = "sidebar"
+	selectionAreaInput      selectionArea = "input"
 )
 
 type selectionState struct {
@@ -501,7 +502,11 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.cachedLayout = &layout
 	}
 	if m.selection.dragging && !isWheelMouse(msg) {
-		if m.selection.area == selectionAreaSidebar {
+		switch m.selection.area {
+		case selectionAreaInput:
+			next, _ := m.handleInputSelectionMouse(msg)
+			return next, nil
+		case selectionAreaSidebar:
 			next, _ := m.handleSidebarSelectionMouse(msg)
 			return next, nil
 		}
@@ -523,6 +528,10 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return next, nil
 		}
 		return m, nil
+	}
+
+	if next, ok := m.handleInputSelectionMouse(msg); ok {
+		return next, nil
 	}
 
 	if next, ok := m.handleTranscriptSelectionMouse(msg); ok {
@@ -655,6 +664,58 @@ func (m Model) handleSidebarSelectionMouse(msg tea.MouseMsg) (Model, bool) {
 	return m, false
 }
 
+func (m Model) handleInputSelectionMouse(msg tea.MouseMsg) (Model, bool) {
+	if isWheelMouse(msg) {
+		return m, false
+	}
+
+	switch {
+	case msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress:
+		point, ok := m.inputPointAt(msg.X, msg.Y, false)
+		if !ok {
+			return m, false
+		}
+		m.selection = selectionState{
+			anchor:   point,
+			focus:    point,
+			active:   true,
+			dragging: true,
+			area:     selectionAreaInput,
+		}
+		return m, true
+
+	case m.selection.dragging && m.selection.area == selectionAreaInput && msg.Action == tea.MouseActionMotion:
+		point, ok := m.inputPointAt(msg.X, msg.Y, true)
+		if !ok {
+			return m, true
+		}
+		m.selection.focus = point
+		return m, true
+
+	case m.selection.dragging && m.selection.area == selectionAreaInput && msg.Action == tea.MouseActionRelease:
+		point, ok := m.inputPointAt(msg.X, msg.Y, true)
+		if ok {
+			m.selection.focus = point
+		}
+		m.selection.dragging = false
+		text := m.selectedText()
+		if strings.TrimSpace(text) == "" {
+			m.clearSelection()
+			return m, true
+		}
+		if m.copySelection != nil {
+			if err := m.copySelection(text); err != nil {
+				m.status = "Copy failed: " + err.Error()
+			} else {
+				m.status = "Selection copied"
+			}
+		}
+		return m, true
+	}
+
+	return m, false
+}
+
 func (m Model) transcriptPointAt(x int, y int, clamp bool) (selectionPoint, bool) {
 	_, bodyHeight := m.contentDimensions()
 	var layout transcriptLayout
@@ -717,12 +778,49 @@ func (m Model) sidebarPointAt(x int, y int, clamp bool) (selectionPoint, bool) {
 	return selectionPoint{line: localY, col: col}, true
 }
 
+func (m Model) inputPointAt(x int, y int, clamp bool) (selectionPoint, bool) {
+	rows := m.inputRenderRows()
+	displayRows := m.inputDisplayRows(rows)
+	if len(displayRows) == 0 {
+		return selectionPoint{}, false
+	}
+
+	contentY := m.inputContentY()
+	localY := y - contentY
+	if clamp {
+		localY = max(0, min(localY, len(displayRows)-1))
+	} else if localY < 0 || localY >= len(displayRows) {
+		return selectionPoint{}, false
+	}
+
+	displayRow := displayRows[localY]
+	if displayRow.marker != "" {
+		return selectionPoint{}, false
+	}
+	prefixWidth := xansi.StringWidth("  ")
+	if localY == 0 {
+		prefixWidth = xansi.StringWidth(inputPromptText(m))
+	}
+	localX := x - viewPaddingLeft - prefixWidth
+	rowText := string(m.input[displayRow.row.start:displayRow.row.end])
+	rowWidth := xansi.StringWidth(rowText)
+	if clamp {
+		localX = max(0, min(localX, rowWidth))
+	} else if localX < 0 || localX > rowWidth {
+		return selectionPoint{}, false
+	}
+	return selectionPoint{line: displayRow.index, col: localX}, true
+}
+
 func (m *Model) clearSelection() {
 	m.selection = selectionState{}
 }
 
 func (m Model) selectedText() string {
-	if m.selection.area == selectionAreaSidebar {
+	switch m.selection.area {
+	case selectionAreaInput:
+		return m.selectedInputText()
+	case selectionAreaSidebar:
 		return m.selectedSidebarText()
 	}
 	return m.selectedTranscriptText()
@@ -742,6 +840,14 @@ func (m Model) selectedSidebarText() string {
 	}
 	layout := m.sidebarLayout(m.sidebarWidth(), m.transcriptHeight())
 	return selectedTextFromLines(layout.plainLines, m.selection)
+}
+
+func (m Model) selectedInputText() string {
+	if !m.selection.active {
+		return ""
+	}
+	rows := m.inputRenderRows()
+	return selectedInputTextFromRows(m.input, rows, m.selection)
 }
 
 func (m Model) transcriptHeight() int {
@@ -774,6 +880,45 @@ func selectedTextFromLines(lines []string, selection selectionState) string {
 	out := make([]string, 0, end.line-start.line+1)
 	for line := start.line; line <= end.line; line++ {
 		plain := strings.TrimRight(lines[line], " \t")
+		width := xansi.StringWidth(plain)
+		left, right := 0, width
+		if line == start.line {
+			left = min(max(start.col, 0), width)
+		}
+		if line == end.line {
+			right = min(max(end.col, 0), width)
+		}
+		if right < left {
+			right = left
+		}
+		out = append(out, xansi.Cut(plain, left, right))
+	}
+	return strings.Join(out, "\n")
+}
+
+func selectedInputTextFromRows(input []rune, rows []inputRenderRow, selection selectionState) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	start, end := normalizedSelection(selection)
+	if start.line < 0 {
+		start.line = 0
+	}
+	if end.line < 0 || start.line >= len(rows) {
+		return ""
+	}
+	if end.line >= len(rows) {
+		end.line = len(rows) - 1
+		end.col = xansi.StringWidth(string(input[rows[end.line].start:rows[end.line].end]))
+	}
+	if start.line == end.line && start.col == end.col {
+		return ""
+	}
+
+	out := make([]string, 0, end.line-start.line+1)
+	for line := start.line; line <= end.line; line++ {
+		row := rows[line]
+		plain := string(input[row.start:row.end])
 		width := xansi.StringWidth(plain)
 		left, right := 0, width
 		if line == start.line {
