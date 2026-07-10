@@ -121,9 +121,67 @@ Tasks follow the approved plan phases and the project constitution's mandatory T
 - **Verification**: Review report has no verified defects and `go test ./...` still passes after any fixes.
 - **Covers**: NFR-001, NFR-002, NFR-003, NFR-004; Plan: Phase 5, Verification Strategy
 
+## Phase 6: Markdown Rendering Parity Addendum
+
+### T012 - Add Failing Tests For Codex-Style Markdown Rendering
+
+- **Status**: Complete
+- **Outcome**: `internal/tui` has focused tests that fail under the glamour-only renderer for Codex-style headings, lists, blockquotes, inline code, links, code blocks, markdown-fenced table unwrapping, width-aware table layout, and table key/value fallback.
+- **Paths**: `internal/tui/markdown_test.go`, `internal/tui/model_test.go`
+- **Dependencies**: T011
+- **Verification**: Initial red run of `go test ./internal/tui -run 'CodexMarkdown|Markdown|Table|CodeBlock|Link'` failed for bullet style, link destination display, code block wrapping, markdown-fenced table rendering, and narrow table fallback gaps; follow-up RED checks caught missing horizontal rule rendering, ANSI reset leakage across wrapped styled text, and relative local link normalization before implementation.
+- **Covers**: REQ-010, REQ-013, NFR-002, NFR-004; Plan: Phase 4A, C8
+
+### T013 - Implement Codex-Style Markdown Renderer
+
+- **Status**: Complete
+- **Outcome**: Assistant markdown transcript rendering uses a TUI-local Codex-style renderer for the T012 parity scope while preserving theme application and existing transcript rendering behavior.
+- **Paths**: `internal/tui/markdown.go`, `internal/tui/markdown_test.go`, `internal/tui/model_test.go`
+- **Dependencies**: T012
+- **Verification**: `go test -count=1 ./internal/tui -run 'CodexMarkdown|AssistantMessagesRenderMarkdown|Markdown|Table|CodeBlock|Link'` passes.
+- **Covers**: REQ-010, REQ-013, NFR-001, NFR-002, NFR-004; Plan: Phase 4A, C8
+
+### T014 - Verify Markdown Parity Addendum
+
+- **Status**: Complete
+- **Outcome**: Focused markdown tests, full TUI package tests, and the repository test suite pass after the renderer replacement.
+- **Paths**: repository root
+- **Dependencies**: T013
+- **Verification**: `gofmt -w internal/tui/markdown.go internal/tui/model_test.go internal/tui/markdown_test.go`, `go test -count=1 ./internal/tui -run 'CodexMarkdown|AssistantMessagesRenderMarkdown|Markdown|Table|CodeBlock|Link'`, `go test -count=1 ./internal/tui`, and `go test ./...` pass.
+- **Covers**: REQ-010, REQ-013, NFR-002, NFR-004; Plan: Phase 4A, Phase 5, Verification Strategy
+
+## Phase 7: Input Selection And Plan-Mode Placement Follow-Up
+
+### T015 - Add Failing Tests For Input Selection And Default Plan-Mode Placement
+
+- **Status**: Complete
+- **Outcome**: Focused TUI tests prove input-box drag selection should copy selected prompt text, default statusline should omit `plan-mode`, explicit `plan-mode` statusline configuration should remain supported, old saved default statusline values should migrate, and `/statusline default` should persist the reduced default item set.
+- **Paths**: `internal/tui/model_test.go`
+- **Dependencies**: T014
+- **Verification**: Initial red run of `go test -count=1 ./internal/tui -run 'TestStatuslineDefaultsRenderConfiguredItems|TestStatuslineCommandListsAvailableItemsAndDefaults|TestStatuslineDefaultRestoresAndPersistsDefaults|TestInputDragSelectionCopiesInputText'` failed for default `plan-mode` duplication, persisted defaults, and missing input drag-to-copy behavior; follow-up RED check `TestNewModelMigratesOldDefaultStatuslineWithoutPlanMode` caught old saved default migration.
+- **Covers**: REQ-007, REQ-014, NFR-002, NFR-004; Plan: Phase 4B, C4A
+
+### T016 - Implement Input Selection And Default Statusline Adjustment
+
+- **Status**: Complete
+- **Outcome**: The TUI supports input-box drag selection/copy through the existing clipboard path, highlights selected prompt text, keeps existing transcript/sidebar mouse behavior, removes `plan-mode` from the default statusline, and preserves explicit `plan-mode` configuration.
+- **Paths**: `internal/tui/model.go`, `internal/tui/view.go`, `internal/tui/model_test.go`
+- **Dependencies**: T015
+- **Verification**: Focused statusline/input selection tests pass after implementation.
+- **Covers**: REQ-007, REQ-014, NFR-002, NFR-004; Plan: Phase 4B, C4A
+
+### T017 - Verify Input Selection Follow-Up
+
+- **Status**: Complete
+- **Outcome**: Full TUI package tests, repository tests, and vet pass after the input selection and statusline default changes.
+- **Paths**: repository root
+- **Dependencies**: T016
+- **Verification**: `gofmt -w internal/tui/model.go internal/tui/view.go internal/tui/model_test.go`, `go test -count=1 ./internal/tui`, `go test ./...`, and `go vet ./...` pass.
+- **Covers**: REQ-007, REQ-014, NFR-002, NFR-004; Plan: Phase 4B, Phase 5, Verification Strategy
+
 ## Dependency Summary
 
-T001 -> T002 -> T003 -> T004 -> T005 -> T006 -> T007 -> T008 -> T009 -> T010 -> T011
+T001 -> T002 -> T003 -> T004 -> T005 -> T006 -> T007 -> T008 -> T009 -> T010 -> T011 -> T012 -> T013 -> T014 -> T015 -> T016 -> T017
 
 The sequence is intentionally linear because each implementation phase builds on the previous phase's model/settings surface, and the constitution requires tests before behavior changes.
 
@@ -137,24 +195,30 @@ The sequence is intentionally linear because each implementation phase builds on
 | REQ-004 | T003, T004, T010 |
 | REQ-005 | T002, T005, T006, T010 |
 | REQ-006 | T002, T005, T006, T010 |
-| REQ-007 | T002, T005, T006, T010 |
+| REQ-007 | T002, T005, T006, T010, T015, T016, T017 |
 | REQ-008 | T002, T005, T006, T010 |
 | REQ-009 | T001, T002, T005, T006, T010 |
-| REQ-010 | T005, T006, T007, T008, T010 |
+| REQ-010 | T005, T006, T007, T008, T010, T012, T013, T014 |
 | REQ-011 | T007, T008, T010 |
 | REQ-012 | T003, T004, T010 |
-| NFR-001 | T004, T006, T011 |
-| NFR-002 | T001, T002, T003, T004, T005, T006, T007, T008, T009, T010, T011 |
+| REQ-013 | T012, T013, T014 |
+| REQ-014 | T015, T016, T017 |
+| NFR-001 | T004, T006, T011, T013 |
+| NFR-002 | T001, T002, T003, T004, T005, T006, T007, T008, T009, T010, T011, T012, T013, T014, T015, T016, T017 |
 | NFR-003 | T001, T002, T005, T006, T010, T011 |
-| NFR-004 | T003, T004, T005, T006, T007, T008, T010, T011 |
+| NFR-004 | T003, T004, T005, T006, T007, T008, T010, T011, T012, T013, T014, T015, T016, T017 |
 | C1 / Phase 1 | T001, T002 |
 | C2 | T004 |
 | C3 / Phase 3 | T005, T006 |
 | C4 / Phase 3 | T005, T006 |
+| C4A / Phase 4B | T015, T016, T017 |
 | C5 / Phase 2-3 | T003, T004, T005, T006 |
 | C6 / Phase 2 | T003, T004 |
 | C7 / Phase 4 | T007, T008 |
-| Phase 5 / Verification Strategy | T009, T010, T011 |
+| C8 / Phase 4A | T012, T013, T014 |
+| Phase 5 / Verification Strategy | T009, T010, T011, T014 |
+| Phase 6 / Markdown Parity Addendum | T012, T013, T014 |
+| Phase 7 / Input Selection Follow-Up | T015, T016, T017 |
 
 ## Unmapped Tasks
 

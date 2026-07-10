@@ -131,9 +131,9 @@ quotes needed to resolve later interpretation disputes.
   - `session-id`
   - `theme`
   - `sidebar`
-- **Default Enabled Items**: `model`, `project`, `git-branch`, `context-used`, `plan-mode`.
+- **Default Enabled Items**: `model`, `project`, `git-branch`, `context-used`.
 - **Alternatives Rejected**: Enabling `run-state` by default.
-- **Reason**: The item set covers the useful first-phase statusline fields while keeping the default line compact.
+- **Reason**: The item set covers the useful first-phase statusline fields while keeping the default line compact. `plan-mode` remains available but is not enabled by default because the bottom keybind row is the authoritative plan-mode placement.
 - **User Evidence**: User agreed to the proposed item set and specified that the default enabled set should add `project` and remove `run-state`.
 
 ### DEC-007: Theme Scope Is Built-In Themes Only
@@ -151,6 +151,22 @@ quotes needed to resolve later interpretation disputes.
 - **Alternatives Rejected**: Introducing full per-tool lifecycle state in the first phase.
 - **Reason**: Enhanced entry-based rendering can deliver Codex/Claude-style summaries, folding, progress, and error presentation with lower implementation risk and without broad core event model changes.
 - **User Evidence**: User confirmed: "First use enhanced entry-based."
+
+### DEC-009: Markdown Rendering Requires Codex-Style Structural Parity
+
+- **Status**: confirmed
+- **Decision**: Complete the first-phase markdown rendering alignment in the current feature branch, using Codex CLI's markdown renderer as the behavioral baseline for static transcript output. The parity scope includes headings, lists, blockquotes, inline code, emphasis/strong/strikethrough, links, fenced and indented code blocks, horizontal rules, task markers, markdown fences containing tables, and width-aware table rendering.
+- **Alternatives Rejected**: Deferring markdown parity to a later feature branch; keeping the current glamour-only renderer as sufficient for first-phase alignment.
+- **Reason**: Markdown rendering style is already part of the confirmed overlapping UI behavior, and the current implementation only provides general markdown readability rather than Codex-style output.
+- **User Evidence**: User agreed to continue in the current feature branch and requested "按照 TDD 进行 markdown 渲染更的完整复刻" with spec/plan/tasks synchronization.
+
+### DEC-010: Input Selection And Single Plan-Mode Placement
+
+- **Status**: confirmed
+- **Decision**: Input text in the active prompt box must support drag selection and copy using the same TUI clipboard path as transcript/sidebar selection. The default statusline must omit `plan-mode` so plan state appears only in the bottom keybind row by default; saved statusline values equal to the previous default set must migrate to the new default, while `/statusline set plan-mode` remains supported for users who explicitly want it.
+- **Alternatives Rejected**: Disabling mouse tracking globally, which would regress wheel scrolling and transcript/sidebar drag-to-copy; keeping `plan-mode` enabled by default in both statusline and bottom keybind row.
+- **Reason**: Existing mouse tracking intercepts terminal-native selection, so the TUI must provide input selection itself. Showing plan mode in two places is redundant; the user prefers the bottom indicator.
+- **User Evidence**: User reported inability to select/copy input-box text and asked to keep only the bottom `[plan mode on]` indicator.
 
 ## Out of Scope
 
@@ -221,3 +237,15 @@ No superseded entries yet.
 - **Summary Presented**: Proposed improving tool call display through enhanced entry-based rendering in the first phase rather than introducing a full per-tool lifecycle state model.
 - **User Confirmation**: User confirmed the enhanced entry-based approach.
 - **Entries Confirmed**: DEC-008
+
+### Session 2026-07-10 CST
+
+- **Summary Presented**: Identified that the current glamour-based markdown renderer is not a complete Codex-style reproduction, and proposed continuing in the current feature branch with TDD-driven markdown parity rather than deferring to another branch.
+- **User Confirmation**: User agreed to complete the markdown rendering reproduction with TDD and asked to synchronize spec, plan, and tasks as needed.
+- **Entries Confirmed**: DEC-009
+
+### Session 2026-07-10 Input/Statusline Follow-Up CST
+
+- **Summary Presented**: Proposed preserving mouse tracking while adding input-box drag-to-copy, and removing `plan-mode` from the default statusline while keeping it available as an explicit `/statusline` item.
+- **User Confirmation**: User confirmed this approach.
+- **Entries Confirmed**: DEC-010

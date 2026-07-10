@@ -17,7 +17,7 @@ Language: English, per .codexspec/config.yml language.document.
 - Codex CLI remains the primary baseline and Claude Code is supplemental only. Covers: REQ-001
 - Foxharness-only workflows and fox Esc semantics remain preserved. Covers: REQ-002
 - Confirmed slash command conflict resolutions are represented without adding deferred commands. Covers: REQ-003, REQ-012
-- `/status`, `/statusline`, `/theme`, persistence, and entry-based rendering are fully specified. Covers: REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009, REQ-010, REQ-011
+- `/status`, `/statusline`, `/theme`, persistence, markdown rendering parity, and entry-based rendering are fully specified. Covers: REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009, REQ-010, REQ-011, REQ-013
 - The implementation remains bounded to TUI, app wiring, and settings persistence. Covers: NFR-001, NFR-004
 
 No open requirement blocks planning.
@@ -27,7 +27,7 @@ No open requirement blocks planning.
 - `internal/tui/model.go` owns the Bubble Tea model, slash command dispatch, queueing, Esc handling, sidebar state, plan mode state, and runtime snapshots. Covers: REQ-002, REQ-003, REQ-004, REQ-010, NFR-004
 - `internal/tui/view.go` owns global lipgloss styles, status/footer rendering, transcript entry rendering, tool result folding, shell output folding, queued prompt previews, slash suggestions, and file mention suggestions. Covers: REQ-006, REQ-007, REQ-010, REQ-011
 - `internal/tui/reporter.go` already converts tool events into entry-based `tool` transcript rows and has safe summary fallback logic. Covers: REQ-011
-- `internal/tui/markdown.go` uses a cached glamour renderer keyed only by width today; theme-aware markdown will need theme-aware cache invalidation or cache keys. Covers: REQ-008, REQ-010
+- `internal/tui/markdown.go` uses a cached glamour renderer keyed only by width today; Codex-style parity requires replacing or bypassing that renderer with a TUI-local markdown renderer whose behavior is covered by focused tests. Covers: REQ-008, REQ-010, REQ-013
 - `internal/settings/settings.go` already reads and atomically writes `~/.foxharness/settings.json` while preserving unknown raw JSON fields for existing LLM settings. Covers: REQ-009, NFR-003
 - `internal/app/tui.go` is the narrow app-to-TUI construction point and can pass home directory and resolved provider display metadata without changing the agent runner core. Covers: REQ-004, REQ-009, NFR-001
 - `internal/tui/model_test.go` already has fake runner coverage for slash commands, queueing, Esc behavior, model switching, plan mode, sidebar, tool rendering, and shell output folding. Covers: REQ-002, REQ-003, REQ-010, REQ-011, NFR-004
@@ -51,7 +51,7 @@ Covers: REQ-004, REQ-009, REQ-012, NFR-001, NFR-004
 {
   "tui": {
     "theme": "codex",
-    "statusline": ["model", "project", "git-branch", "context-used", "plan-mode"]
+    "statusline": ["model", "project", "git-branch", "context-used"]
   }
 }
 ```
@@ -91,6 +91,14 @@ Covers: REQ-001, REQ-008, REQ-010, REQ-012
 **Rationale**: The confirmed approach is enhanced entry-based rendering, not a full lifecycle state model.
 **Trade-off**: The TUI will not show a complete per-tool lifecycle timeline in this phase.
 Covers: REQ-010, REQ-011, NFR-001, NFR-004
+
+### PLD-006: Replace Glamour-Only Markdown Rendering With A TUI-Local Codex-Style Renderer
+
+**Decision**: Implement assistant transcript markdown through a TUI-local renderer based on existing Go markdown/syntax dependencies rather than tuning glamour styles further.
+**Evidence**: Codex CLI uses a custom markdown pipeline with explicit behavior for headings, lists, code blocks, links, and tables; the current glamour renderer can make markdown readable but cannot reproduce those semantics precisely.
+**Rationale**: A local renderer gives tests direct control over plain-text layout and ANSI styling while keeping the implementation inside `internal/tui`.
+**Trade-off**: The first parity pass targets static transcript rendering. Streaming commit boundaries and full terminal hyperlink metadata remain implementation details unless a later test exposes a user-visible gap.
+Covers: REQ-010, REQ-013, NFR-001, NFR-002, NFR-004
 
 ## Components And Interfaces
 
@@ -141,7 +149,19 @@ Represent statusline items as ordered declarative names with render functions:
 - `sidebar`: shown/hidden/focused
 
 Normalize settings and commands by trimming whitespace, rejecting unknown items, removing duplicates while preserving order, and falling back to defaults when the saved list is empty or fully invalid.
+Treat saved statusline values that exactly match the previous default set including `plan-mode` as the new default set, while preserving user-customized lists that explicitly include `plan-mode`.
 Covers: REQ-005, REQ-006, REQ-007, REQ-010, NFR-004
+
+### C4A: Input Selection Copy
+
+Extend the existing transcript/sidebar selection model with an `input` selection area:
+
+- Map mouse coordinates inside the rendered input box to input row/column points.
+- Highlight selected prompt text while selection is active.
+- Copy selected prompt text through the existing clipboard function on mouse release.
+- Preserve existing wheel scrolling and transcript/sidebar drag-to-copy behavior by keeping mouse tracking enabled.
+
+Covers: REQ-014, NFR-002, NFR-004
 
 ### C5: Slash Command Behavior
 
@@ -180,6 +200,21 @@ Keep existing entry rendering and add targeted refinements:
 
 Covers: REQ-010, REQ-011, NFR-004
 
+### C8: Codex-Style Markdown Renderer
+
+Replace `renderMarkdown` with a focused renderer that:
+
+- Preserves Codex-style heading markers while styling heading levels distinctly.
+- Uses Codex-style list markers and indentation for ordered, unordered, nested, loose, and task-list items.
+- Renders blockquotes with `> ` prefixes, including nested blockquotes and blockquotes inside lists.
+- Renders inline code as foreground-only code styling, not padded background pills.
+- Renders web links as `label (destination)` and local file links as normalized target paths relative to the runner working directory when possible.
+- Renders fenced and indented code blocks without wrapping code lines and applies terminal code styling.
+- Unwraps markdown fences containing tables so those tables render structurally.
+- Renders tables as width-aware aligned rows with readable fallback key/value records when a grid would be unreadable.
+
+Covers: REQ-010, REQ-013, NFR-004
+
 ## Implementation Phases
 
 ### Phase 1: Settings Persistence TDD
@@ -204,8 +239,9 @@ Covers: REQ-002, REQ-003, REQ-004, REQ-012, NFR-002, NFR-004
 
 Write failing TUI/settings tests for:
 
-- Default statusline items are `model`, `project`, `git-branch`, `context-used`, `plan-mode`.
+- Default statusline items are `model`, `project`, `git-branch`, `context-used`.
 - `run-state` is available but not default-enabled.
+- `plan-mode` is available but not default-enabled because the bottom keybind row is the default plan-mode surface.
 - `/statusline set ...` persists ordered valid items and rejects unknown/shell-hook-like input without writing.
 - `/statusline default` restores defaults.
 - `/theme <name>` applies and persists a built-in theme.
@@ -226,6 +262,16 @@ Write or extend focused view tests for:
 Implement only localized view/reporter refinements needed by the failing tests.
 Covers: REQ-010, REQ-011, NFR-002, NFR-004
 
+### Phase 4A: Markdown Rendering Parity TDD
+
+Write failing tests for Codex-style markdown output covering headings, lists, blockquotes, inline styles, links, code blocks, markdown-fenced tables, width-aware table layout, and table key/value fallback. Implement `C8` incrementally until the focused renderer tests and existing transcript rendering tests pass.
+Covers: REQ-010, REQ-013, NFR-002, NFR-004
+
+### Phase 4B: Input Selection And Plan-Mode Placement TDD
+
+Write failing TUI tests proving prompt-box drag selection copies the selected input text, default statusline output omits `plan-mode`, and explicit `/statusline set plan-mode` still renders plan mode. Implement `C4A` and default statusline changes until the focused tests and full TUI package tests pass.
+Covers: REQ-007, REQ-014, NFR-002, NFR-004
+
 ### Phase 5: Verification And Review Loop
 
 Run `gofmt -w` on changed Go files, then `go test ./...`. After implementation, perform code review focused on regressions, missed requirements, persistence safety, and TDD coverage. Verify each finding against the code before fixing. Repeat review/fix/test until the review reports no verified defects.
@@ -236,6 +282,7 @@ Covers: NFR-002, NFR-003, NFR-004
 - Unit tests:
   - `go test ./internal/settings`
   - `go test ./internal/tui`
+  - `go test ./internal/tui -run 'Markdown|Table|CodeBlock|Link'`
 - Full suite:
   - `go test ./...`
 - Manual inspection through rendered strings where appropriate:
@@ -250,6 +297,7 @@ Covers: NFR-002, NFR-003, NFR-004
 ## Risks And Trade-Offs
 
 - Global lipgloss styles and markdown renderer cache can leak theme state between tests if not reset through `NewModel` or explicit test cleanup. Mitigation: apply the resolved theme during model construction and key or clear markdown cache on theme changes. Covers: REQ-008, REQ-010, NFR-004
+- Reproducing Codex's complete markdown renderer can become large if treated as a direct port. Mitigation: implement behavior test-first against the confirmed static transcript scope and keep streaming/hyperlink metadata out of the first parity pass unless a visible acceptance test requires it. Covers: REQ-010, REQ-013, NFR-001, NFR-002, NFR-004
 - Provider/profile display is metadata-only in this phase. Mitigation: pass resolved config from `internal/app/tui.go` and render explicit unavailable/inline states when fields are absent. Covers: REQ-004, NFR-001
 - Text command configuration is less rich than an interactive picker. Mitigation: keep commands declarative, persistent, testable, and compatible with a future picker. Covers: REQ-005, REQ-009, NFR-004
 - Existing tests may assert old `/session` or `/clear` semantics. Mitigation: update tests to the confirmed new command conflict resolutions. Covers: REQ-003, NFR-002
@@ -267,13 +315,15 @@ Covers: NFR-002, NFR-003, NFR-004
 | REQ-007 | PLD-002, PLD-003, C1, C4, Phase 3 |
 | REQ-008 | PLD-002, PLD-003, PLD-004, C1, C3, C5, Phase 3 |
 | REQ-009 | PLD-001, PLD-002, PLD-003, C1, C2, C5, Phase 1, Phase 3 |
-| REQ-010 | PLD-004, PLD-005, C3, C4, C7, Phase 3, Phase 4 |
+| REQ-010 | PLD-004, PLD-005, PLD-006, C3, C4, C7, C8, Phase 3, Phase 4, Phase 4A |
 | REQ-011 | PLD-005, C7, Phase 4 |
+| REQ-013 | Fidelity Check, PLD-006, C8, Phase 4A, Verification Strategy |
+| REQ-014 | C4A, Phase 4B, Verification Strategy |
 | REQ-012 | PLD-001, PLD-004, C5, C6, Phase 2 |
-| NFR-001 | PLD-001, PLD-003, PLD-005, C2, C5, C6 |
-| NFR-002 | Existing Repository Constraints, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5 |
+| NFR-001 | PLD-001, PLD-003, PLD-005, PLD-006, C2, C5, C6 |
+| NFR-002 | Existing Repository Constraints, Phase 1, Phase 2, Phase 3, Phase 4, Phase 4A, Phase 4B, Phase 5 |
 | NFR-003 | PLD-002, C1, Phase 1, Phase 3, Phase 5 |
-| NFR-004 | Existing Repository Constraints, PLD-001, PLD-003, PLD-005, C2, C3, C4, C6, C7, Verification Strategy |
+| NFR-004 | Existing Repository Constraints, PLD-001, PLD-003, PLD-005, PLD-006, C2, C3, C4, C4A, C6, C7, C8, Verification Strategy |
 
 ## Unresolved Items
 

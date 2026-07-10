@@ -109,8 +109,8 @@ As a TUI user, I want tool calls, shell output, and queued prompts to be summari
 - **REQ-006**: `/statusline` MUST support the initial item set `model`, `project`, `git-branch`, `run-state`, `plan-mode`, `context-used`, `queued`, `session-id`, `theme`, and `sidebar`.
   - Sources: DEC-006
 
-- **REQ-007**: The default enabled `/statusline` items MUST be `model`, `project`, `git-branch`, `context-used`, and `plan-mode`; `run-state` MUST be available but not enabled by default.
-  - Sources: DEC-006
+- **REQ-007**: The default enabled `/statusline` items MUST be `model`, `project`, `git-branch`, and `context-used`; `plan-mode` and `run-state` MUST be available but not enabled by default. Saved statusline values that exactly match the previous default set including `plan-mode` MUST be treated as the new default set.
+  - Sources: DEC-006, DEC-010
 
 - **REQ-008**: `/theme` MUST provide a built-in theme collection in the first phase and MUST NOT support custom theme files in the first implementation.
   - Sources: DEC-004, DEC-007, OUT-004
@@ -119,7 +119,13 @@ As a TUI user, I want tool calls, shell output, and queued prompts to be summari
   - Sources: CON-003, DEC-003, DEC-006, DEC-007
 
 - **REQ-010**: The TUI MUST align overlapping rendering behavior with the Codex baseline, including theme/palette application, markdown style, tool call summary/collapse/error presentation, shell output collapse/truncation, queued prompt preview, slash command menu hints, file mention suggestions, footer layout, and contextual status indicators.
-  - Sources: DEC-004
+  - Sources: DEC-004, DEC-009
+
+- **REQ-013**: Assistant markdown transcript rendering MUST reproduce Codex-style static markdown behavior for headings, lists, blockquotes, inline code, emphasis/strong/strikethrough, links, fenced and indented code blocks, horizontal rules, task markers, markdown fences containing tables, and width-aware table rendering. Web links MUST display the label followed by the destination, local file links MUST display the normalized target path, and tables MUST prefer aligned row rendering while falling back to readable key/value records when width makes grid output unreadable.
+  - Sources: DEC-009
+
+- **REQ-014**: The active input box MUST support mouse drag selection and copy through the TUI clipboard path, matching transcript/sidebar selection behavior for selected text and copy feedback.
+  - Sources: DEC-010
 
 - **REQ-011**: Tool call presentation MUST be implemented in the first phase by enhancing the existing entry-based TUI rendering model rather than introducing a complete per-tool lifecycle state model.
   - Sources: DEC-004, DEC-008
@@ -159,6 +165,8 @@ As a TUI user, I want tool calls, shell output, and queued prompts to be summari
 - If `~/.foxharness/settings.json` cannot be written, the TUI must show a clear error and keep the in-memory session usable.
 - If a statusline item cannot produce a value, the statusline must remain renderable and either omit that item or show an appropriate unavailable placeholder.
 - If an enhanced tool summary cannot parse known tool arguments, it must fall back to a generic, safe summary rather than hiding the entry.
+- Markdown rendering must not expose raw markdown delimiters for supported inline styles, must preserve visible heading markers and list markers according to Codex style, must render markdown-fenced tables as tables, and must keep code block content readable without wrapping code lines.
+- The default statusline must not duplicate plan mode when the bottom keybind row already shows `[ plan mode on/off ]`, and input drag selection must copy selected prompt text without breaking existing transcript/sidebar selection.
 
 ## Out of Scope
 
@@ -206,6 +214,8 @@ No open questions remain for the first-phase specification.
 | DEC-006 | REQ-006, REQ-007, REQ-009 | Statusline item set and defaults covered. |
 | DEC-007 | REQ-008, REQ-009 | Built-in theme scope covered. |
 | DEC-008 | REQ-011, NFR-001, NFR-004 | Entry-based tool rendering approach covered. |
+| DEC-009 | REQ-010, REQ-013 | Codex-style markdown rendering parity covered. |
+| DEC-010 | REQ-007, REQ-014 | Input selection and single default plan-mode placement covered. |
 | OUT-001 | REQ-005, Out of Scope | Claude-style shell hook excluded. |
 | OUT-002 | REQ-003, Out of Scope | Review, Vim, and keymap excluded. |
 | OUT-003 | REQ-012, Out of Scope | Ecosystem features excluded. |
