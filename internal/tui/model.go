@@ -2306,7 +2306,7 @@ func commandArgsAfter(text string, command string, subcommand string) string {
 
 func (m Model) saveTUISettings() error {
 	if strings.TrimSpace(m.homeDir) == "" {
-		return nil
+		return fmt.Errorf("home directory unavailable")
 	}
 	loaded, err := settings.Load(m.homeDir)
 	if err != nil {
@@ -2822,8 +2822,8 @@ func (m Model) providerStatusFields() (string, string) {
 		provider = "unavailable"
 	}
 	profile := strings.TrimSpace(m.providerProfileID)
-	if profile == "" && strings.TrimSpace(m.providerID) != "" {
-		profile = strings.TrimSpace(m.providerID)
+	if profile == "" && (strings.TrimSpace(m.providerID) != "" || strings.TrimSpace(m.providerProtocol) != "") {
+		profile = "inline"
 	}
 	if profile == "" {
 		profile = "unavailable"

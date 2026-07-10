@@ -1109,6 +1109,28 @@ func TestStatusCommandRendersGroupedOverview(t *testing.T) {
 	}
 }
 
+func TestStatusCommandReportsInlineProviderWithoutProfile(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{
+		ProviderID:       "typo",
+		ProviderProtocol: "openai",
+	})
+
+	m, _ = update(t, m, keyRunes("/status"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/status returned command, want nil")
+	}
+
+	lines := strings.Split(stripANSI(renderEntry(m.entries[len(m.entries)-1], 100)), "\n")
+	if !lineContainsAll(lines, "Profile", "inline") {
+		t.Fatalf("/status did not report inline profile:\n%s", strings.Join(lines, "\n"))
+	}
+	if lineContainsAll(lines, "Profile", "typo") {
+		t.Fatalf("/status reported provider id as profile:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
 func TestSessionCommandAliasesStatusOverview(t *testing.T) {
 	runner := newFakeRunner()
 	statusModel := NewModel(context.Background(), runner, Config{})
@@ -1362,6 +1384,43 @@ func TestThemeCommandReportsPersistenceError(t *testing.T) {
 	}
 	if !entriesContain(m.entries, "error", "save settings") {
 		t.Fatalf("missing settings persistence error: %#v", m.entries)
+	}
+}
+
+func TestThemeCommandReportsMissingHomeDir(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/theme mono"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/theme returned command, want nil")
+	}
+
+	if m.themeName != defaultThemeName {
+		t.Fatalf("themeName = %q, want unchanged default %q", m.themeName, defaultThemeName)
+	}
+	if !entriesContain(m.entries, "error", "home directory unavailable") {
+		t.Fatalf("missing home-dir persistence error: %#v", m.entries)
+	}
+}
+
+func TestStatuslineSetReportsMissingHomeDir(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	before := append([]string(nil), m.statuslineItems...)
+
+	m, _ = update(t, m, keyRunes("/statusline set theme,queued"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("/statusline returned command, want nil")
+	}
+
+	if !reflect.DeepEqual(m.statuslineItems, before) {
+		t.Fatalf("statuslineItems = %#v, want unchanged %#v", m.statuslineItems, before)
+	}
+	if !entriesContain(m.entries, "error", "home directory unavailable") {
+		t.Fatalf("missing home-dir persistence error: %#v", m.entries)
 	}
 }
 

@@ -4,8 +4,8 @@
 Language: English, per .codexspec/config.yml language.document.
 -->
 
-**Feature ID**: `2026-0709-2113sj`  
-**Input**: `.codexspec/specs/2026-0709-2113sj-tui-interaction-compatibility/plan.md`  
+**Feature ID**: `2026-0709-2113sj`
+**Input**: `.codexspec/specs/2026-0709-2113sj-tui-interaction-compatibility/plan.md`
 **Status**: Draft
 
 ## Task Groups

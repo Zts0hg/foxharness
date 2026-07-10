@@ -4,10 +4,10 @@
 Language: English, per .codexspec/config.yml language.document.
 -->
 
-**Feature ID**: `2026-0709-2113sj`  
-**Feature Branch**: `main-latest-20260709`  
-**Created**: 2026-07-09  
-**Status**: Draft  
+**Feature ID**: `2026-0709-2113sj`
+**Feature Branch**: `main-latest-20260709`
+**Created**: 2026-07-09
+**Status**: Draft
 **Input**: `.codexspec/specs/2026-0709-2113sj-tui-interaction-compatibility/requirements.md`
 
 ## Context
