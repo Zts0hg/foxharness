@@ -1458,11 +1458,7 @@ func fitLine(s string, width int) string {
 	if lipgloss.Width(s) <= width {
 		return s
 	}
-	runes := []rune(s)
-	for len(runes) > 0 && lipgloss.Width(string(runes))+3 > width {
-		runes = runes[:len(runes)-1]
-	}
-	return string(runes) + "..."
+	return xansi.Truncate(s, max(width, 0), "...")
 }
 
 func formatDuration(d time.Duration) string {

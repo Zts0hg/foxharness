@@ -2355,6 +2355,22 @@ func TestSlashDropdownUsesForegroundOnlySelection(t *testing.T) {
 	}
 }
 
+func TestFitLinePreservesANSIResetWhenTruncated(t *testing.T) {
+	styled := markdownStyleRenderer.NewStyle().Foreground(cWarn).Render(strings.Repeat("x", 80))
+
+	got := fitLine(styled, 12)
+
+	if lipgloss.Width(got) > 12 {
+		t.Fatalf("fitLine width = %d, want <= 12: %q", lipgloss.Width(got), got)
+	}
+	if !strings.HasSuffix(stripANSI(got), "...") {
+		t.Fatalf("fitLine stripped output = %q, want truncation suffix", stripANSI(got))
+	}
+	if !strings.Contains(got, "\x1b[0m") {
+		t.Fatalf("fitLine truncated styled text without ANSI reset: %q", got)
+	}
+}
+
 func TestHelpCommandRendersCommandsOnSeparateLines(t *testing.T) {
 	rendered := renderEntry(entry{
 		role:  "command",
