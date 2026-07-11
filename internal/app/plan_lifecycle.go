@@ -108,6 +108,13 @@ func (l *planLifecycle) GetAvailableTools() []schema.ToolDefinition {
 
 func (l *planLifecycle) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
 	registry, phase := l.registryAndPhase()
+	if phase == planLifecycleFormal && call.Name == "submit_plan" && l.transitionPending() {
+		return schema.ToolResult{
+			ToolCallID: call.ID,
+			Output:     "submit_plan cannot be called again after a plan was approved in this turn",
+			IsError:    true,
+		}
+	}
 	result := registry.Execute(ctx, call)
 	if phase == planLifecycleChecklist && call.Name == "update_todo" && !result.IsError {
 		next := planLifecycleDefault
@@ -118,6 +125,12 @@ func (l *planLifecycle) Execute(ctx context.Context, call schema.ToolCall) schem
 		l.mu.Unlock()
 	}
 	return result
+}
+
+func (l *planLifecycle) transitionPending() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.pending != nil
 }
 
 func (l *planLifecycle) IsParallelSafe(toolName string) bool {

@@ -75,4 +75,3 @@ None in the final specification.
 - Warning root causes: 0
 - Minor root causes: 0
 - Formula: No defects = 100
-

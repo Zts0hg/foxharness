@@ -12,9 +12,11 @@ import (
 
 func TestComposeFormalPlanGuidanceOverridesMutationInstructions(t *testing.T) {
 	workDir := t.TempDir()
+	memoryPath := filepath.Join(workDir, "working_memory.md")
 	prompt, err := NewComposer(workDir).
 		WithCollaborationMode(collaboration.ModeFormalPlan).
-		WithReadOnlyMemory(filepath.Join(workDir, "working_memory.md")).
+		WithMemory(memoryPath).
+		WithAutoMemory(automemory.NewStore(t.TempDir(), workDir)).
 		Compose("plan a risky refactor")
 	if err != nil {
 		t.Fatalf("Compose() error = %v", err)
@@ -27,6 +29,10 @@ func TestComposeFormalPlanGuidanceOverridesMutationInstructions(t *testing.T) {
 		"read-only",
 		"submit_plan",
 		"update_todo",
+		"Before approval, working_memory.md is read-only",
+		"After approval, resume normal working_memory.md maintenance",
+		"Before approval, persistent memory is read-only",
+		"After approval, resume normal persistent memory maintenance",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("Formal prompt missing %q:\n%s", want, prompt)
@@ -37,6 +43,11 @@ func TestComposeFormalPlanGuidanceOverridesMutationInstructions(t *testing.T) {
 	}
 	if strings.Contains(prompt, "subagent session") {
 		t.Fatalf("Formal main-run prompt mislabeled working memory as subagent state:\n%s", prompt)
+	}
+	for _, forbidden := range []string{"read-only in this run", "read-only for this run", "include the update in your final report"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("Formal prompt retained whole-run read-only guidance %q:\n%s", forbidden, prompt)
+		}
 	}
 }
 

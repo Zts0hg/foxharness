@@ -41,7 +41,7 @@ const (
 // Runner is the app-facing runtime required by the TUI. It is intentionally
 // small so tests can exercise the UI without calling a real model.
 type Runner interface {
-	Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error)
+	RunInCollaborationMode(ctx context.Context, prompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
 	NewSession(ctx context.Context) (string, error)
 	SessionID() string
 	SessionDir() string
@@ -183,6 +183,11 @@ type inputPastePreview struct {
 	lineCount int
 }
 
+type queuedPrompt struct {
+	text string
+	mode collaboration.Mode
+}
+
 type Model struct {
 	ctx           context.Context
 	runner        Runner
@@ -204,7 +209,7 @@ type Model struct {
 	slashSelection     int
 	fileSelection      int
 	fileMentions       []fileMention
-	queuedPrompts      []string
+	queuedPrompts      []queuedPrompt
 
 	entries            []entry
 	status             string
@@ -1834,7 +1839,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		m.resetCompletions()
 		if m.running && isQueuedModelCommand(text) {
 			m.addInputHistory(text)
-			m.queuedPrompts = append(m.queuedPrompts, text)
+			m.queuePrompt(text)
 			m.status = fmt.Sprintf("Queued %d message%s", len(m.queuedPrompts), pluralS(len(m.queuedPrompts)))
 			return m, nil
 		}
@@ -1847,7 +1852,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		m.clearInputPastePreview()
 		m.resetHistoryNavigation()
 		m.resetCompletions()
-		m.queuedPrompts = append(m.queuedPrompts, text)
+		m.queuePrompt(text)
 		m.status = fmt.Sprintf("Queued %d message%s", len(m.queuedPrompts), pluralS(len(m.queuedPrompts)))
 		return m, nil
 	}
@@ -1896,6 +1901,10 @@ func (m Model) submitBangCommand(text string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startPrompt(text string) (tea.Model, tea.Cmd) {
+	return m.startPromptInCollaborationMode(text, m.collaborationMode)
+}
+
+func (m Model) startPromptInCollaborationMode(text string, mode collaboration.Mode) (tea.Model, tea.Cmd) {
 	m.scrollOffset = 0
 	m.running = true
 	m.runStartedAt = m.nowTime()
@@ -1905,22 +1914,22 @@ func (m Model) startPrompt(text string) (tea.Model, tea.Cmd) {
 
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
-	return m, runPromptCmd(runCtx, m.runner, text, m.events)
+	return m, runPromptCmd(runCtx, m.runner, text, mode, m.events)
 }
 
 func (m Model) startNextQueuedPrompt() (tea.Model, tea.Cmd) {
 	for len(m.queuedPrompts) > 0 {
-		text := m.queuedPrompts[0]
-		m.queuedPrompts = append([]string(nil), m.queuedPrompts[1:]...)
-		if isModelCommand(text) {
-			next, cmd := m.handleSlashCommand(text)
+		queued := m.queuedPrompts[0]
+		m.queuedPrompts = append([]queuedPrompt(nil), m.queuedPrompts[1:]...)
+		if isModelCommand(queued.text) {
+			next, cmd := m.handleSlashCommand(queued.text)
 			m = next.(Model)
 			if cmd != nil {
 				return m, cmd
 			}
 			continue
 		}
-		next, cmd := m.startPrompt(text)
+		next, cmd := m.startPromptInCollaborationMode(queued.text, queued.mode)
 		typed := next.(Model)
 		if len(typed.queuedPrompts) > 0 {
 			typed.status = fmt.Sprintf("Running queued message; %d queued", len(typed.queuedPrompts))
@@ -1930,6 +1939,13 @@ func (m Model) startNextQueuedPrompt() (tea.Model, tea.Cmd) {
 		return typed, cmd
 	}
 	return m, nil
+}
+
+func (m *Model) queuePrompt(text string) {
+	m.queuedPrompts = append(m.queuedPrompts, queuedPrompt{
+		text: text,
+		mode: collaboration.Normalize(m.collaborationMode),
+	})
 }
 
 func (m *Model) addInputHistory(text string) {
@@ -2570,7 +2586,7 @@ func (m Model) executePromptCommand(cmd *slash.Command, args string, displayProm
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
 	sessionID := m.runner.SessionID()
-	return m, executePromptCommandCmd(runCtx, exec, cmd, args, sessionID, displayPrompt)
+	return m, executePromptCommandCmd(runCtx, exec, cmd, args, sessionID, displayPrompt, m.collaborationMode)
 }
 
 // promptCommandReadyMsg is emitted by the executor goroutine once
@@ -2579,16 +2595,23 @@ func (m Model) executePromptCommand(cmd *slash.Command, args string, displayProm
 // whether to start an inline run, render a fork report, or surface an
 // error.
 type promptCommandReadyMsg struct {
-	cmdName       string
-	displayPrompt string
-	result        slash.ExecutionResult
-	err           error
+	cmdName           string
+	displayPrompt     string
+	collaborationMode collaboration.Mode
+	result            slash.ExecutionResult
+	err               error
 }
 
-func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *slash.Command, args, sessionID, displayPrompt string) tea.Cmd {
+func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *slash.Command, args, sessionID, displayPrompt string, mode collaboration.Mode) tea.Cmd {
 	return func() tea.Msg {
 		res, err := exec.Execute(ctx, cmd, args, sessionID)
-		return promptCommandReadyMsg{cmdName: cmd.Name, displayPrompt: displayPrompt, result: res, err: err}
+		return promptCommandReadyMsg{
+			cmdName:           cmd.Name,
+			displayPrompt:     displayPrompt,
+			collaborationMode: collaboration.Normalize(mode),
+			result:            res,
+			err:               err,
+		}
 	}
 }
 
@@ -2630,10 +2653,10 @@ func (m Model) handlePromptCommandReady(msg promptCommandReadyMsg) (tea.Model, t
 	// The prepare-stage runCtx is no longer relevant — derive a fresh
 	// run context so Ctrl+C cancellation maps to the run, not to the
 	// already-finished prepare phase.
-	return m.runInlinePromptCommand(msg.result, msg.displayPrompt)
+	return m.runInlinePromptCommand(msg.result, msg.displayPrompt, msg.collaborationMode)
 }
 
-func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPrompt string) (tea.Model, tea.Cmd) {
+func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPrompt string, mode collaboration.Mode) (tea.Model, tea.Cmd) {
 	text := result.Content
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
@@ -2654,10 +2677,10 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPromp
 		}
 		m.status = "Running (restricted)"
 		allowedCopy := append([]string(nil), result.AllowedTools...)
-		return m, runRestrictedPromptCmd(runCtx, rr, text, displayPrompt, allowedCopy, result.AfterHook, m.events)
+		return m, runRestrictedPromptCmd(runCtx, rr, text, displayPrompt, allowedCopy, mode, result.AfterHook, m.events)
 	}
 	m.status = "Running"
-	return m, runPromptCmdWithAfter(runCtx, m.runner, text, displayPrompt, result.AfterHook, m.events)
+	return m, runPromptCmdWithAfter(runCtx, m.runner, text, displayPrompt, mode, result.AfterHook, m.events)
 }
 
 // restrictedRunner is the optional interface a Runner implements to
@@ -2665,30 +2688,30 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPromp
 // satisfies it; test mocks may omit it and the TUI degrades gracefully
 // to a hard error so allowed-tools is never silently ignored.
 type restrictedRunner interface {
-	RunRestricted(ctx context.Context, prompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error)
-}
-
-type displayRunner interface {
-	RunWithDisplay(ctx context.Context, prompt string, displayPrompt string, reporter engine.Reporter) (*engine.RunResult, error)
+	RunRestrictedInCollaborationMode(ctx context.Context, prompt string, allowedTools []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
 }
 
 type restrictedDisplayRunner interface {
-	RunRestrictedWithDisplay(ctx context.Context, prompt string, displayPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error)
+	RunRestrictedWithDisplayInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, allowedTools []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
+}
+
+type collaborationDisplayRunner interface {
+	RunWithDisplayInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
 }
 
 type projectInputHistoryRunner interface {
 	ProjectInputHistory(limit int) ([]string, error)
 }
 
-func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, displayPrompt string, allowed []string, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, displayPrompt string, allowed []string, mode collaboration.Mode, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
 		var result *engine.RunResult
 		var err error
 		if displayRunner, ok := runner.(restrictedDisplayRunner); ok && strings.TrimSpace(displayPrompt) != "" {
-			result, err = displayRunner.RunRestrictedWithDisplay(ctx, prompt, displayPrompt, allowed, reporter)
+			result, err = displayRunner.RunRestrictedWithDisplayInCollaborationMode(ctx, prompt, displayPrompt, allowed, mode, reporter)
 		} else {
-			result, err = runner.RunRestricted(ctx, prompt, allowed, reporter)
+			result, err = runner.RunRestrictedInCollaborationMode(ctx, prompt, allowed, mode, reporter)
 		}
 		if afterHook != nil {
 			afterHook(ctx)
@@ -2697,15 +2720,15 @@ func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt
 	}
 }
 
-func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, displayPrompt string, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, displayPrompt string, mode collaboration.Mode, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
 		var result *engine.RunResult
 		var err error
-		if displayRunner, ok := runner.(displayRunner); ok && strings.TrimSpace(displayPrompt) != "" {
-			result, err = displayRunner.RunWithDisplay(ctx, prompt, displayPrompt, reporter)
+		if displayRunner, ok := runner.(collaborationDisplayRunner); ok && strings.TrimSpace(displayPrompt) != "" {
+			result, err = displayRunner.RunWithDisplayInCollaborationMode(ctx, prompt, displayPrompt, mode, reporter)
 		} else {
-			result, err = runner.Run(ctx, prompt, reporter)
+			result, err = runner.RunInCollaborationMode(ctx, prompt, mode, reporter)
 		}
 		if afterHook != nil {
 			afterHook(ctx)
@@ -3373,10 +3396,10 @@ type shellCommandFinishedMsg struct {
 	result  tools.BashCommandResult
 }
 
-func runPromptCmd(ctx context.Context, runner Runner, prompt string, events chan<- tea.Msg) tea.Cmd {
+func runPromptCmd(ctx context.Context, runner Runner, prompt string, mode collaboration.Mode, events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
-		result, err := runner.Run(ctx, prompt, reporter)
+		result, err := runner.RunInCollaborationMode(ctx, prompt, mode, reporter)
 		return runFinishedMsg{result: result, err: err}
 	}
 }

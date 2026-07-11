@@ -1223,7 +1223,7 @@ func renderWorkingBar(frame int, width int) string {
 	return b.String()
 }
 
-func queuedPromptNoticeLines(prompts []string, width int) []string {
+func queuedPromptNoticeLines(prompts []queuedPrompt, width int) []string {
 	if len(prompts) == 0 {
 		return nil
 	}
@@ -1233,7 +1233,7 @@ func queuedPromptNoticeLines(prompts []string, width int) []string {
 	for i := 0; i < count; i++ {
 		prefix := fmt.Sprintf("  %d. ", i+1)
 		messageWidth := max(lineWidth-lipgloss.Width(prefix), 1)
-		message := strings.Join(strings.Fields(prompts[i]), " ")
+		message := strings.Join(strings.Fields(prompts[i].text), " ")
 		lines = append(lines, prefix+xansi.Truncate(message, messageWidth, "..."))
 	}
 	if remaining := len(prompts) - count; remaining > 0 {

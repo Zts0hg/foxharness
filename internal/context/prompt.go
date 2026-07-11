@@ -159,7 +159,12 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		parts = append(parts, section("Session Working Memory", workingMemoryBody(memory, c.relToWorkDir(c.memoryPath), c.memoryRO)))
+		parts = append(parts, section("Session Working Memory", workingMemoryBody(
+			memory,
+			c.relToWorkDir(c.memoryPath),
+			c.memoryRO,
+			c.collaborationMode == collaboration.ModeFormalPlan,
+		)))
 	}
 
 	if c.skillListFn != nil {
@@ -261,12 +266,27 @@ func readOnlyWorkingMemoryGuidance(relPath string) string {
 	return b.String()
 }
 
+func formalPlanWorkingMemoryGuidance(relPath string) string {
+	var b strings.Builder
+	b.WriteString("Before approval, working_memory.md is read-only. Use its current contents for planning context, but do not edit the file.\n")
+	fmt.Fprintf(&b, "After approval, resume normal working_memory.md maintenance at relative path %q with write_file or edit_file once the lifecycle exposes those tools. Maintain these sections:\n", relPath)
+	b.WriteString("- Goal: what the user ultimately wants from this session.\n")
+	b.WriteString("- Known Facts: facts you have confirmed this session.\n")
+	b.WriteString("- Current Plan: the approach you are taking.\n")
+	b.WriteString("- Next Step: the immediate next action.\n")
+	b.WriteString("Current contents:")
+	return b.String()
+}
+
 // workingMemoryBody combines the maintenance guidance with the file's current
 // contents.
-func workingMemoryBody(current, relPath string, readOnly bool) string {
+func workingMemoryBody(current, relPath string, readOnly bool, formalPlan bool) string {
 	current = strings.TrimSpace(current)
 	if current == "" {
 		current = "(empty)"
+	}
+	if formalPlan {
+		return formalPlanWorkingMemoryGuidance(relPath) + "\n\n" + current
 	}
 	if readOnly {
 		return readOnlyWorkingMemoryGuidance(relPath) + "\n\n" + current
@@ -284,7 +304,12 @@ func (c *Composer) persistentMemoryBody() string {
 	projectRel := c.relToWorkDir(c.autoMemory.ProjectDir())
 
 	guidance := automemory.MainMemoryGuidance(userRel, projectRel)
-	if c.autoMemoryRO {
+	if c.collaborationMode == collaboration.ModeFormalPlan {
+		guidance = strings.TrimSpace(`
+Before approval, persistent memory is read-only. You may inspect relevant memories with read_file, but do not create, update, delete, or otherwise persist memory files.
+After approval, resume normal persistent memory maintenance once the lifecycle exposes write tools. The write instructions below apply only after approval.
+`) + "\n\n" + guidance
+	} else if c.autoMemoryRO {
 		guidance = automemory.ReadOnlyMemoryGuidance(userRel, projectRel)
 	}
 	if index == "" {

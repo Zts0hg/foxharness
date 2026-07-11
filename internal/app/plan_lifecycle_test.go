@@ -24,6 +24,18 @@ type revisingPlanReviewer struct {
 	plans []string
 }
 
+type approveThenContinuePlanReviewer struct {
+	plans []string
+}
+
+func (r *approveThenContinuePlanReviewer) ReviewPlan(ctx context.Context, planMarkdown string) (tools.PlanReview, error) {
+	r.plans = append(r.plans, planMarkdown)
+	if len(r.plans) == 1 {
+		return tools.PlanReview{Decision: tools.PlanApproved}, nil
+	}
+	return tools.PlanReview{Decision: tools.PlanContinuePlanning}, nil
+}
+
 func (r *revisingPlanReviewer) ReviewPlan(ctx context.Context, planMarkdown string) (tools.PlanReview, error) {
 	r.plans = append(r.plans, planMarkdown)
 	if len(r.plans) == 1 {
@@ -126,8 +138,9 @@ func TestFormalPlanLifecycleContinuesInOneRunAndGatesImplementation(t *testing.T
 	provider := &formalLifecycleProvider{plan: plan}
 	reviewer := &approvingPlanReviewer{}
 	runner, sess, store := newFormalLifecycleRunner(t, provider, reviewer)
+	runner.SetCollaborationMode(collaboration.ModeDefault)
 
-	result, err := runner.Run(context.Background(), "change the project", nil)
+	result, err := runner.RunInCollaborationMode(context.Background(), "change the project", collaboration.ModeFormalPlan, nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -155,6 +168,19 @@ func TestFormalPlanLifecycleContinuesInOneRunAndGatesImplementation(t *testing.T
 	for _, want := range []string{"Formal Plan", "Do not create or modify project files", "Git state", "read-only", "submit_plan"} {
 		if !strings.Contains(systemPrompt, want) {
 			t.Fatalf("Formal system prompt missing %q:\n%s", want, systemPrompt)
+		}
+	}
+	for _, want := range []string{
+		"Before approval, working_memory.md is read-only",
+		"After approval, resume normal working_memory.md maintenance",
+	} {
+		if !strings.Contains(systemPrompt, want) {
+			t.Fatalf("Formal system prompt missing lifecycle-scoped memory guidance %q:\n%s", want, systemPrompt)
+		}
+	}
+	for _, forbidden := range []string{"read-only in this run", "include the update in your final report"} {
+		if strings.Contains(systemPrompt, forbidden) {
+			t.Fatalf("Formal system prompt retained whole-run read-only guidance %q:\n%s", forbidden, systemPrompt)
 		}
 	}
 
@@ -206,6 +232,37 @@ func TestFormalPlanRestrictedRunRejectsMissingRequiredToolsBeforeModelCall(t *te
 	}
 	if got := provider.count(); got != 0 {
 		t.Fatalf("provider calls = %d, want 0 after preflight rejection", got)
+	}
+}
+
+func TestPlanLifecycleRejectsAdditionalSubmissionAfterApprovalIsPending(t *testing.T) {
+	store := memory.NewStore(t.TempDir())
+	reviewer := &approveThenContinuePlanReviewer{}
+	lifecycle := newPlanLifecycle(nil, tools.NewRegistry(), tools.NewRegistry(), nil)
+	formal := tools.NewRegistry()
+	formal.Register(tools.NewSubmitPlanTool(store, reviewer, lifecycle.approve))
+	lifecycle.setFormalRegistry(formal)
+
+	firstPlan := "# Approved plan\n\n- Implement safely"
+	first := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID: "first", Name: "submit_plan",
+		Arguments: lifecycleArgs(map[string]string{"plan_markdown": firstPlan}),
+	})
+	if first.IsError {
+		t.Fatalf("first submit_plan result = %#v", first)
+	}
+	second := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID: "second", Name: "submit_plan",
+		Arguments: lifecycleArgs(map[string]string{"plan_markdown": "# Unapproved replacement"}),
+	})
+	if !second.IsError {
+		t.Fatalf("second submit_plan result = %#v, want rejection while approval transition is pending", second)
+	}
+	if len(reviewer.plans) != 1 || reviewer.plans[0] != firstPlan {
+		t.Fatalf("reviewed plans = %#v, want only approved first plan", reviewer.plans)
+	}
+	if data, err := os.ReadFile(store.PlanPath()); err != nil || string(data) != firstPlan {
+		t.Fatalf("PLAN.md = %q, err=%v, want approved first plan", data, err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/slash"
 )
@@ -14,15 +15,17 @@ type restrictedFakeRunner struct {
 	*fakeRunner
 	restrictedRuns   []string
 	restrictedAllow  []string
+	restrictedModes  []collaboration.Mode
 	restrictedResult *engine.RunResult
 }
 
-func (r *restrictedFakeRunner) RunRestricted(ctx context.Context, prompt string, allowed []string, reporter engine.Reporter) (*engine.RunResult, error) {
+func (r *restrictedFakeRunner) RunRestrictedInCollaborationMode(ctx context.Context, prompt string, allowed []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
 	r.restrictedRuns = append(r.restrictedRuns, prompt)
 	r.restrictedAllow = append([]string(nil), allowed...)
+	r.restrictedModes = append(r.restrictedModes, collaboration.Normalize(mode))
 	// Emit a minimal run lifecycle through the reporter so the TUI's
 	// channelReporter pipeline completes — without delegating to the
-	// underlying fakeRunner.Run (which would mutate fakeRunner.runs and
+	// underlying fakeRunner.RunInCollaborationMode (which would mutate fakeRunner.runs and
 	// hide whether the unrestricted path was used).
 	runID := "restricted-1"
 	reporter.OnRunStart(ctx, r.fakeRunner.sessionID, runID)
@@ -320,6 +323,7 @@ func TestModel_AllowedTools_RoutesToRunRestricted(t *testing.T) {
 		},
 	})
 	m := NewModel(context.Background(), runner, Config{}).WithRegistry(r, slash.NewExecutor())
+	m, _ = update(t, m, keyShiftTab())
 
 	m, _ = update(t, m, keyRunes("/scan"))
 	m = drivePromptCommand(t, m)
@@ -332,6 +336,9 @@ func TestModel_AllowedTools_RoutesToRunRestricted(t *testing.T) {
 	}
 	if len(runner.restrictedAllow) != 1 || runner.restrictedAllow[0] != "read_file" {
 		t.Errorf("allowedTools = %v", runner.restrictedAllow)
+	}
+	if len(runner.restrictedModes) != 1 || runner.restrictedModes[0] != collaboration.ModeFormalPlan {
+		t.Errorf("collaboration modes = %v, want Formal Plan", runner.restrictedModes)
 	}
 	// Regular Run path must NOT be called when restriction applies.
 	if len(runner.fakeRunner.runs) != 0 {
