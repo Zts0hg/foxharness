@@ -36,11 +36,22 @@ func TestParseArgsDefaultsToTUI(t *testing.T) {
 	if cfg.LLM.Protocol != "" {
 		t.Fatalf("LLM.Protocol = %q, want empty", cfg.LLM.Protocol)
 	}
-	if !cfg.EnablePlanMode {
-		t.Fatal("EnablePlanMode = false, want true")
-	}
 	if cfg.MaxTurns != 0 {
 		t.Fatalf("MaxTurns = %d, want 0 for unlimited", cfg.MaxTurns)
+	}
+}
+
+func TestParseArgsRejectsRemovedPlanFlag(t *testing.T) {
+	for _, args := range [][]string{{"-plan"}, {"-plan=false"}, {"--plan"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			_, _, err := parseArgs(args, io.Discard)
+			if err == nil {
+				t.Fatal("parseArgs returned nil error, want unknown flag error")
+			}
+			if !strings.Contains(err.Error(), "flag provided but not defined") {
+				t.Fatalf("error = %q, want unknown flag error", err.Error())
+			}
+		})
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
@@ -38,7 +39,6 @@ type AgentRunnerConfig struct {
 	Model           string
 	LLM             llmconfig.ResolvedConfig
 	EnableThinking  bool
-	EnablePlanMode  bool
 	MaxTurns        int
 	SessionID       string
 	ContinueSession bool
@@ -57,9 +57,9 @@ type AgentRunner struct {
 	providerProtocol string
 	llmConfig        llmconfig.ResolvedConfig
 
-	enableThinking bool
-	enablePlanMode bool
-	maxTurns       int
+	enableThinking    bool
+	collaborationMode collaboration.Mode
+	maxTurns          int
 
 	onModelChange func(model string) error
 
@@ -96,7 +96,6 @@ func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
 		Model:           cfg.Model,
 		LLM:             cfg.ResolvedLLM,
 		EnableThinking:  cfg.EnableThinking,
-		EnablePlanMode:  cfg.EnablePlanMode,
 		MaxTurns:        cfg.MaxTurns,
 		SessionID:       cfg.SessionID,
 		ContinueSession: cfg.ContinueSession,
@@ -153,21 +152,21 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 	}
 
 	ar := &AgentRunner{
-		workDir:          workDir,
-		model:            cfg.LLM.Model,
-		providerProtocol: providerProtocol,
-		llmConfig:        cfg.LLM,
-		enableThinking:   cfg.EnableThinking,
-		enablePlanMode:   cfg.EnablePlanMode,
-		maxTurns:         cfg.MaxTurns,
-		onModelChange:    cfg.OnModelChange,
-		store:            store,
-		autoMemory:       autoMem,
-		manager:          manager,
-		llmProvider:      llmProvider,
-		currentSession:   sess,
-		checkpointer:     cp,
-		slashRegistry:    slashRegistry,
+		workDir:           workDir,
+		model:             cfg.LLM.Model,
+		providerProtocol:  providerProtocol,
+		llmConfig:         cfg.LLM,
+		enableThinking:    cfg.EnableThinking,
+		collaborationMode: collaboration.ModeDefault,
+		maxTurns:          cfg.MaxTurns,
+		onModelChange:     cfg.OnModelChange,
+		store:             store,
+		autoMemory:        autoMem,
+		manager:           manager,
+		llmProvider:       llmProvider,
+		currentSession:    sess,
+		checkpointer:      cp,
+		slashRegistry:     slashRegistry,
 	}
 	ar.slashExecutor = slash.NewExecutor(
 		slash.WithWorkDir(workDir),
@@ -300,7 +299,7 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	store := r.store
 	autoMem := r.autoMemory
 	enableThinking := r.enableThinking
-	enablePlanMode := r.enablePlanMode
+	collaborationMode := collaboration.Normalize(r.collaborationMode)
 	llmProvider := r.llmProvider
 	cp := r.checkpointer
 	providerProtocol := r.providerProtocol
@@ -316,7 +315,7 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 		return nil, fmt.Errorf("创建 session state 快照失败: %w", err)
 	}
 
-	if enablePlanMode {
+	if collaborationMode == collaboration.ModeFormalPlan {
 		planner := memory.NewPlanner(llmProvider, store)
 		if err := planner.BuildPlan(ctx, userPrompt); err != nil {
 			log.Printf("[PlanMode] 生成计划失败，将回退到旧版本每轮 Thinking: %v", err)
@@ -492,6 +491,7 @@ func (r *AgentRunner) NewSession(ctx context.Context) (string, error) {
 	r.currentSession = sess
 	r.store = store
 	r.checkpointer = checkpoint.New(checkpoint.Config{SessionDir: sess.RootDir})
+	r.collaborationMode = collaboration.ModeDefault
 	if checkpointDisabledFromEnv() {
 		r.checkpointer.SetDisabled(true)
 	}
@@ -723,16 +723,18 @@ func (r *AgentRunner) Checkpointer() checkpoint.Checkpointer {
 	return r.checkpointer
 }
 
-func (r *AgentRunner) PlanMode() bool {
+// CollaborationMode returns the mode selected for the next submitted task.
+func (r *AgentRunner) CollaborationMode() collaboration.Mode {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.enablePlanMode
+	return collaboration.Normalize(r.collaborationMode)
 }
 
-func (r *AgentRunner) SetPlanMode(enabled bool) {
+// SetCollaborationMode changes the mode used by the next submitted task.
+func (r *AgentRunner) SetCollaborationMode(mode collaboration.Mode) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.enablePlanMode = enabled
+	r.collaborationMode = collaboration.Normalize(mode)
 }
 
 // CompactNow performs a user-initiated compaction of the current session's

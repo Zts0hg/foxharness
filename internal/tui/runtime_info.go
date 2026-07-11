@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Zts0hg/foxharness/internal/collaboration"
 )
 
 const gitBranchTimeout = 500 * time.Millisecond
@@ -16,6 +18,7 @@ func (m *Model) refreshRuntimeInfo() {
 	m.project = projectFolderName(m.runner.WorkDir())
 	m.gitBranch = gitBranchForWorkDir(m.runner.WorkDir())
 	m.contextUsage = normalizeContextUsage(m.runner.ContextUsage())
+	m.collaborationMode = collaboration.Normalize(m.runner.CollaborationMode())
 }
 
 func projectFolderName(workDir string) string {

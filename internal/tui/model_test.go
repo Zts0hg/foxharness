@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -31,25 +32,25 @@ type fakeRunner struct {
 	workDir    string
 	model      string
 
-	runs            []string
-	runErr          error
-	runErrs         []error
-	setModelErr     error
-	newErr          error
-	nextRunID       int
-	planMode        bool
-	contextUsage    string
-	history         []session.MessageRecord
-	historyErr      error
-	truncatedSeq    int64
-	restoreStateSeq int64
-	restoreStateOK  bool
-	restoreStateErr error
-	checkpointer    checkpoint.Checkpointer
-	compactResult   *compaction.CompactResult
-	compactErr      error
-	compactInstr    string
-	memoryIndex     string
+	runs              []string
+	runErr            error
+	runErrs           []error
+	setModelErr       error
+	newErr            error
+	nextRunID         int
+	collaborationMode collaboration.Mode
+	contextUsage      string
+	history           []session.MessageRecord
+	historyErr        error
+	truncatedSeq      int64
+	restoreStateSeq   int64
+	restoreStateOK    bool
+	restoreStateErr   error
+	checkpointer      checkpoint.Checkpointer
+	compactResult     *compaction.CompactResult
+	compactErr        error
+	compactInstr      string
+	memoryIndex       string
 }
 
 // AutoMemoryIndex satisfies the Runner interface for the test double; tests that
@@ -112,6 +113,7 @@ func (r *fakeRunner) NewSession(ctx context.Context) (string, error) {
 	}
 	r.sessionID = "sess-new"
 	r.sessionDir = "/tmp/sess-new"
+	r.collaborationMode = collaboration.ModeDefault
 	return r.sessionID, nil
 }
 
@@ -177,12 +179,12 @@ func (r *fakeRunner) Checkpointer() checkpoint.Checkpointer {
 	return r.checkpointer
 }
 
-func (r *fakeRunner) PlanMode() bool {
-	return r.planMode
+func (r *fakeRunner) CollaborationMode() collaboration.Mode {
+	return collaboration.Normalize(r.collaborationMode)
 }
 
-func (r *fakeRunner) SetPlanMode(enabled bool) {
-	r.planMode = enabled
+func (r *fakeRunner) SetCollaborationMode(mode collaboration.Mode) {
+	r.collaborationMode = collaboration.Normalize(mode)
 }
 
 func (r *fakeRunner) CompactNow(ctx context.Context, customInstructions string) (*compaction.CompactResult, error) {
@@ -2423,16 +2425,16 @@ func TestSessionCommandRendersPlainAlignedRows(t *testing.T) {
 func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
-	if m.planMode {
-		t.Fatalf("initial planMode = true, want false")
+	if m.collaborationMode.PlanEnabled() {
+		t.Fatalf("initial collaboration mode = %q, want Default", m.collaborationMode)
 	}
 	if !strings.Contains(m.View(), "plan mode off") || !strings.Contains(m.View(), "shift + tab to cycle") {
 		t.Fatalf("plan mode off hint missing:\n%s", m.View())
 	}
 
 	m, _ = update(t, m, keyShiftTab())
-	if !m.planMode || !runner.planMode {
-		t.Fatalf("plan mode was not enabled: model=%v runner=%v", m.planMode, runner.planMode)
+	if !m.collaborationMode.PlanEnabled() || !runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("plan mode was not enabled: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
 	}
 	if m.status != "Plan mode enabled" {
 		t.Fatalf("status = %q, want Plan mode enabled", m.status)
@@ -2445,8 +2447,8 @@ func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	}
 
 	m, _ = update(t, m, keyShiftTab())
-	if m.planMode || runner.planMode {
-		t.Fatalf("plan mode was not disabled: model=%v runner=%v", m.planMode, runner.planMode)
+	if m.collaborationMode.PlanEnabled() || runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("plan mode was not disabled: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
 	}
 	if m.status != "Plan mode disabled" {
 		t.Fatalf("status = %q, want Plan mode disabled", m.status)
@@ -2456,14 +2458,60 @@ func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	}
 }
 
+func TestModelPlanCommandsAreIdempotent(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/plan"))
+	m, _ = update(t, m, keyEnter())
+	if !m.collaborationMode.PlanEnabled() || !runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("/plan did not enable Formal Plan: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
+	}
+
+	m, _ = update(t, m, keyRunes("/plan"))
+	m, _ = update(t, m, keyEnter())
+	if !m.collaborationMode.PlanEnabled() || !runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("repeated /plan changed Formal Plan: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
+	}
+
+	m, _ = update(t, m, keyRunes("/plan off"))
+	m, _ = update(t, m, keyEnter())
+	if m.collaborationMode.PlanEnabled() || runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("/plan off did not select Default: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
+	}
+
+	m, _ = update(t, m, keyRunes("/plan off"))
+	m, _ = update(t, m, keyEnter())
+	if m.collaborationMode.PlanEnabled() || runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("repeated /plan off changed Default: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
+	}
+}
+
+func TestModelNewSessionResetsPlanModeSelection(t *testing.T) {
+	runner := newFakeRunner()
+	runner.collaborationMode = collaboration.ModeFormalPlan
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/new"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatal("/new command is nil")
+	}
+	m, _ = update(t, m, cmd())
+
+	if m.collaborationMode.PlanEnabled() || runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("new session retained Formal Plan: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
+	}
+}
+
 func TestModelTogglesPlanModeWhileRunningForNextRun(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
 	m.running = true
 
 	m, _ = update(t, m, keyShiftTab())
-	if !m.planMode || !runner.planMode {
-		t.Fatalf("plan mode was not enabled while running: model=%v runner=%v", m.planMode, runner.planMode)
+	if !m.collaborationMode.PlanEnabled() || !runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("plan mode was not enabled while running: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
 	}
 	if m.status != "Plan mode enabled for next run" {
 		t.Fatalf("status = %q, want next-run plan mode status", m.status)

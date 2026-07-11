@@ -1350,7 +1350,7 @@ func (m Model) renderStatusBar(width int) string {
 
 func (m Model) renderKeybinds(width int) string {
 	plan := mutedStyle.Render("[ plan mode off ]")
-	if m.planMode {
+	if m.collaborationMode.PlanEnabled() {
 		plan = planModeStyle.Render("[ plan mode on ]")
 	}
 	hint := statusFaintStyle.Render("shift + tab to cycle")
@@ -1359,13 +1359,6 @@ func (m Model) renderKeybinds(width int) string {
 		pad = 1
 	}
 	return footerStyle.Width(width).Render(fitLine(plan+strings.Repeat(" ", pad)+hint, width))
-}
-
-func planModeText(enabled bool) string {
-	if !enabled {
-		return ""
-	}
-	return planModeStyle.Render("plan mode on")
 }
 
 func labelStyle(e entry) lipgloss.Style {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -55,8 +56,8 @@ type Runner interface {
 	TruncateMessageHistory(seq int64) error
 	RestoreSessionStateBeforeMessage(seq int64) (bool, error)
 	Checkpointer() checkpoint.Checkpointer
-	PlanMode() bool
-	SetPlanMode(enabled bool)
+	CollaborationMode() collaboration.Mode
+	SetCollaborationMode(mode collaboration.Mode)
 	CompactNow(ctx context.Context, customInstructions string) (*compaction.CompactResult, error)
 }
 
@@ -135,6 +136,7 @@ var slashCommands = []slashCommand{
 	{Name: "/rewind", Description: "restore a previous checkpoint"},
 	{Name: "/checkpoint", Description: "alias for /rewind"},
 	{Name: "/new", Description: "start a fresh session"},
+	{Name: "/plan", Description: "enter or leave Formal Plan mode", ArgumentHint: "[off]"},
 	{Name: "/model", Description: "show or switch the active model"},
 	{Name: "/theme", Description: "show or switch the TUI theme", ArgumentHint: "[name]"},
 	{Name: "/statusline", Description: "configure statusline items", ArgumentHint: "[set <items>|default]"},
@@ -224,13 +226,13 @@ type Model struct {
 	mouseTailID   uint64
 	selection     selectionState
 
-	sessionID    string
-	modelName    string
-	project      string
-	gitBranch    string
-	contextUsage string
-	planMode     bool
-	homeDir      string
+	sessionID         string
+	modelName         string
+	project           string
+	gitBranch         string
+	contextUsage      string
+	collaborationMode collaboration.Mode
+	homeDir           string
 
 	providerID        string
 	providerProfileID string
@@ -305,7 +307,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		project:           projectFolderName(runner.WorkDir()),
 		gitBranch:         gitBranchForWorkDir(runner.WorkDir()),
 		contextUsage:      normalizeContextUsage(runner.ContextUsage()),
-		planMode:          runner.PlanMode(),
+		collaborationMode: collaboration.Normalize(runner.CollaborationMode()),
 		checkpointer:      runner.Checkpointer(),
 		asker:             cfg.Asker,
 		autodevLauncher:   cfg.Autodev,
@@ -1156,7 +1158,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.insertInputNewline()
 		return m, nil
 	case "shift+tab":
-		return m.togglePlanMode()
+		return m.toggleFormalPlan()
 	case "tab":
 		if m.hasSlashMenu() {
 			m.completeSlashCommand()
@@ -1698,10 +1700,18 @@ func (m Model) maxFocusedSidebarOffset() int {
 	return maxSidebarScrollOffset(m.sidebarDocuments[m.sidebarFocusIndex], sidebarContentWidth(width), heights[m.sidebarFocusIndex])
 }
 
-func (m Model) togglePlanMode() (tea.Model, tea.Cmd) {
-	m.planMode = !m.planMode
-	m.runner.SetPlanMode(m.planMode)
-	if m.planMode {
+func (m Model) toggleFormalPlan() (tea.Model, tea.Cmd) {
+	mode := collaboration.ModeFormalPlan
+	if m.collaborationMode == collaboration.ModeFormalPlan {
+		mode = collaboration.ModeDefault
+	}
+	return m.selectCollaborationMode(mode)
+}
+
+func (m Model) selectCollaborationMode(mode collaboration.Mode) (tea.Model, tea.Cmd) {
+	m.collaborationMode = collaboration.Normalize(mode)
+	m.runner.SetCollaborationMode(m.collaborationMode)
+	if m.collaborationMode == collaboration.ModeFormalPlan {
 		if m.running {
 			m.status = "Plan mode enabled for next run"
 		} else {
@@ -2266,6 +2276,16 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.refreshRuntimeInfo()
 		m.appendCommandEntry("Model", fmt.Sprintf("Switched model to %s", m.modelName))
 		m.status = fmt.Sprintf("Model switched to %s", m.modelName)
+		return m, nil
+	case "/plan":
+		if len(fields) == 1 {
+			return m.selectCollaborationMode(collaboration.ModeFormalPlan)
+		}
+		if len(fields) == 2 && strings.EqualFold(fields[1], "off") {
+			return m.selectCollaborationMode(collaboration.ModeDefault)
+		}
+		m.appendEntry("error", "invalid command", "Usage: /plan [off]", true)
+		m.status = "Invalid plan command"
 		return m, nil
 	case "/theme":
 		return m.handleThemeCommand(fields)
@@ -2899,7 +2919,7 @@ func (m Model) formatStatusOverview() string {
 				{label: "Provider", value: provider},
 				{label: "Profile", value: profile},
 				{label: "Model", value: unavailableIfEmpty(m.runner.Model())},
-				{label: "Plan Mode", value: onOff(m.planMode)},
+				{label: "Plan Mode", value: onOff(m.collaborationMode.PlanEnabled())},
 			},
 		},
 		{

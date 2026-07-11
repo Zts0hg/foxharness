@@ -87,7 +87,7 @@ func (m Model) renderStatuslineItem(item string) string {
 	case "run-state":
 		return mutedStyle.Render("run ") + statusProjectStyle.Render(m.runStateLabel())
 	case "plan-mode":
-		return statusProjectStyle.Render("plan mode " + onOff(m.planMode))
+		return statusProjectStyle.Render("plan mode " + onOff(m.collaborationMode.PlanEnabled()))
 	case "context-used":
 		return mutedStyle.Render("Context ") + statusModelStyle.Render(normalizeContextUsage(m.contextUsage))
 	case "queued":
