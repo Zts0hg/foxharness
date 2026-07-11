@@ -7,7 +7,50 @@ import (
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
+	"github.com/Zts0hg/foxharness/internal/collaboration"
 )
+
+func TestComposeFormalPlanGuidanceOverridesMutationInstructions(t *testing.T) {
+	workDir := t.TempDir()
+	prompt, err := NewComposer(workDir).
+		WithCollaborationMode(collaboration.ModeFormalPlan).
+		WithReadOnlyMemory(filepath.Join(workDir, "working_memory.md")).
+		Compose("plan a risky refactor")
+	if err != nil {
+		t.Fatalf("Compose() error = %v", err)
+	}
+	for _, want := range []string{
+		"Formal Plan",
+		"override the general execution guidance",
+		"Do not create or modify project files",
+		"Do not change Git state",
+		"read-only",
+		"submit_plan",
+		"update_todo",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("Formal prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Use read_todo and update_todo to inspect and maintain Session TODO.md.") {
+		t.Fatalf("Formal prompt retained conflicting default TODO guidance:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "subagent session") {
+		t.Fatalf("Formal main-run prompt mislabeled working memory as subagent state:\n%s", prompt)
+	}
+}
+
+func TestComposeDefaultOmitsFormalPlanGuidance(t *testing.T) {
+	prompt, err := NewComposer(t.TempDir()).
+		WithCollaborationMode(collaboration.ModeDefault).
+		Compose("implement a change")
+	if err != nil {
+		t.Fatalf("Compose() error = %v", err)
+	}
+	if strings.Contains(prompt, "Formal Plan Collaboration Mode") {
+		t.Fatalf("Default prompt contains Formal Plan guidance:\n%s", prompt)
+	}
+}
 
 func TestComposeInteractiveAskGuidance(t *testing.T) {
 	workDir := t.TempDir()

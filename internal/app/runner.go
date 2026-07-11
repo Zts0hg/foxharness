@@ -77,7 +77,8 @@ type AgentRunner struct {
 	slashRegistry  *slash.Registry
 	slashExecutor  *slash.Executor
 
-	userAsker tools.UserAsker
+	userAsker    tools.UserAsker
+	planReviewer tools.PlanReviewer
 
 	pendingMu          sync.Mutex
 	pendingActivations []string
@@ -306,6 +307,11 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	model := r.model
 	maxTurns := r.maxTurns
 	r.mu.Unlock()
+	if collaborationMode == collaboration.ModeFormalPlan && len(allowedTools) > 0 {
+		if err := validateFormalPlanAllowedTools(allowedTools); err != nil {
+			return nil, err
+		}
+	}
 
 	nextSeq, err := session.NewMessageLog(sess).NextSeq()
 	if err != nil {
@@ -315,27 +321,25 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 		return nil, fmt.Errorf("创建 session state 快照失败: %w", err)
 	}
 
-	if collaborationMode == collaboration.ModeFormalPlan {
-		planner := memory.NewPlanner(llmProvider, store)
-		if err := planner.BuildPlan(ctx, userPrompt); err != nil {
-			log.Printf("[PlanMode] 生成计划失败，将回退到旧版本每轮 Thinking: %v", err)
-			enableThinking = true
-		} else {
-			log.Printf("[PlanMode] 计划已生成，本次任务关闭每轮 Thinking")
-			enableThinking = false
-		}
-	}
-
 	r.mu.Lock()
 	registry := r.slashRegistry
 	interactiveAsk := r.userAsker != nil
 	r.mu.Unlock()
 
 	composer := prompt.NewComposer(r.workDir).
-		WithMemory(sess.MemoryPath()).
+		WithCollaborationMode(collaborationMode).
 		WithInteractiveAsk(interactiveAsk)
+	if collaborationMode == collaboration.ModeFormalPlan {
+		composer = composer.WithReadOnlyMemory(sess.MemoryPath())
+	} else {
+		composer = composer.WithMemory(sess.MemoryPath())
+	}
 	if autoMem != nil {
-		composer = composer.WithAutoMemory(autoMem)
+		if collaborationMode == collaboration.ModeFormalPlan {
+			composer = composer.WithReadOnlyAutoMemory(autoMem)
+		} else {
+			composer = composer.WithAutoMemory(autoMem)
+		}
 	}
 	if registry != nil {
 		contextWindow := compaction.NewModelRegistry().Lookup(model)
@@ -365,6 +369,11 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	}
 
 	toolRegistry := r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID)
+	var planRun *planLifecycle
+	if collaborationMode == collaboration.ModeFormalPlan {
+		planRun = r.buildPlanLifecycle(sess, store, toolRegistry)
+		toolRegistry = planRun
+	}
 	if len(allowedTools) > 0 {
 		toolRegistry = slash.NewFilteredRegistry(toolRegistry, allowedTools)
 		log.Printf("[slash] restricting next run to allowed tools: %v", allowedTools)
@@ -391,6 +400,16 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 		onToolCalled = memoryHook
 	}
 
+	nextTurnReminders := r.drainPendingActivations
+	var completionGate func() string
+	if planRun != nil {
+		nextTurnReminders = func() []string {
+			reminders := planRun.drainReminders()
+			return append(reminders, r.drainPendingActivations()...)
+		}
+		completionGate = planRun.completionReminder
+	}
+
 	eng := engine.NewAgentEngine(
 		llmProvider,
 		toolRegistry,
@@ -405,7 +424,8 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 			DisplayPrompt:     displayPrompt,
 			OnUserMessageID:   setCurrentMessageID,
 			OnToolCalled:      onToolCalled,
-			NextTurnReminders: r.drainPendingActivations,
+			NextTurnReminders: nextTurnReminders,
+			CompletionGate:    completionGate,
 			OnContextEstimate: func(usedTokens, contextWindow int) {
 				atomic.StoreInt64(&r.contextUsedTokens, int64(usedTokens))
 				atomic.StoreInt64(&r.contextWindowTokens, int64(contextWindow))
@@ -919,6 +939,31 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 	return registry
 }
 
+func (r *AgentRunner) buildPlanLifecycle(sess *session.Session, store *memory.Store, defaultRegistry tools.Registry) *planLifecycle {
+	r.mu.Lock()
+	userAsker := r.userAsker
+	planReviewer := r.planReviewer
+	r.mu.Unlock()
+
+	checklistRegistry := tools.NewRegistry()
+	checklistRegistry.Register(tools.NewReadFileTool(r.workDir))
+	checklistRegistry.Register(tools.NewBashTool(r.workDir))
+	checklistRegistry.Register(tools.NewAskUserQuestionTool(userAsker))
+	checklistRegistry.Register(tools.NewReadTodoTool(sess.RootDir))
+	checklistRegistry.Register(tools.NewUpdateTodoTool(sess.RootDir))
+
+	lifecycle := newPlanLifecycle(nil, checklistRegistry, defaultRegistry, func() {
+		r.SetCollaborationMode(collaboration.ModeDefault)
+	})
+	formalRegistry := tools.NewRegistry()
+	formalRegistry.Register(tools.NewReadFileTool(r.workDir))
+	formalRegistry.Register(tools.NewBashTool(r.workDir))
+	formalRegistry.Register(tools.NewAskUserQuestionTool(userAsker))
+	formalRegistry.Register(tools.NewSubmitPlanTool(store, planReviewer, lifecycle.approve))
+	lifecycle.setFormalRegistry(formalRegistry)
+	return lifecycle
+}
+
 // SetUserAsker installs the interactive asker used by the ask_user_question
 // tool. The TUI calls this before running prompts; leaving it unset (nil) keeps
 // the tool out of the registry for non-interactive runs.
@@ -926,6 +971,13 @@ func (r *AgentRunner) SetUserAsker(asker tools.UserAsker) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.userAsker = asker
+}
+
+// SetPlanReviewer installs the interactive reviewer used by submit_plan.
+func (r *AgentRunner) SetPlanReviewer(reviewer tools.PlanReviewer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.planReviewer = reviewer
 }
 
 func checkpointDisabledFromEnv() bool {

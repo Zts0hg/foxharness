@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
+	"github.com/Zts0hg/foxharness/internal/collaboration"
 )
 
 // AutoMemoryStore supplies the cross-session persistent memory injected into the
@@ -32,13 +33,14 @@ type AutoMemoryStore interface {
 // project-level AGENTS.md, persistent memory, referenced skills, and session
 // working memory.
 type Composer struct {
-	workDir        string
-	memoryPath     string
-	memoryRO       bool
-	skillListFn    func() string
-	interactiveAsk bool
-	autoMemory     AutoMemoryStore
-	autoMemoryRO   bool
+	workDir           string
+	memoryPath        string
+	memoryRO          bool
+	skillListFn       func() string
+	interactiveAsk    bool
+	collaborationMode collaboration.Mode
+	autoMemory        AutoMemoryStore
+	autoMemoryRO      bool
 }
 
 // WithSkillList registers a function that returns the formatted list of
@@ -105,6 +107,14 @@ func (c *Composer) WithInteractiveAsk(enabled bool) *Composer {
 	return &clone
 }
 
+// WithCollaborationMode returns a copy configured with mode-specific system
+// guidance. Unknown values normalize to Default.
+func (c *Composer) WithCollaborationMode(mode collaboration.Mode) *Composer {
+	clone := *c
+	clone.collaborationMode = collaboration.Normalize(mode)
+	return &clone
+}
+
 // Compose assembles the full system prompt string by loading AGENTS.md,
 // resolving $name skill references found in the user prompt, and appending
 // session working memory when available.
@@ -112,10 +122,17 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 	parts := []string{
 		baseSystemPrompt(),
 	}
+	if c.collaborationMode == collaboration.ModeFormalPlan {
+		parts = append(parts, section("Formal Plan Collaboration Mode", formalPlanGuidance()))
+	}
 	if c.interactiveAsk {
 		parts = append(parts, section("Asking the User", askGuidance()))
 	}
-	parts = append(parts, section("Session Plan and Todo Files", memoryInstructions()))
+	memoryGuidance := memoryInstructions()
+	if c.collaborationMode == collaboration.ModeFormalPlan {
+		memoryGuidance = formalPlanMemoryInstructions()
+	}
+	parts = append(parts, section("Session Plan and Todo Files", memoryGuidance))
 
 	if c.autoMemory != nil {
 		parts = append(parts, section("Persistent Memory", c.persistentMemoryBody()))
@@ -170,6 +187,26 @@ func askGuidance() string {
 `)
 }
 
+func formalPlanGuidance() string {
+	return strings.TrimSpace(`
+These Formal Plan instructions override the general execution guidance until the user approves a submitted plan.
+
+Before approval:
+- Work only on understanding, read-only exploration, clarification, and a complete implementation proposal.
+- Do not create or modify project files, including generated files, configuration, tests, or source code.
+- Do not change Git state: do not checkout or switch branches, commit, clean, reset, stage, stash, merge, rebase, or otherwise mutate the repository.
+- Do not run commands whose purpose is to implement the solution or cause other side effects.
+- Bash is available only for read-only repository, Git, system, environment, network-status, and feasibility inspection. This is an instruction boundary, not a security sandbox.
+- Use ask_user_question when a material user decision is required.
+- When exploration and clarification are complete, call submit_plan with one complete Markdown proposal. Do not edit PLAN.md directly and do not submit incremental plan fragments.
+
+After submit_plan:
+- If the user continues planning or supplies feedback, remain read-only, incorporate that feedback, and submit a complete replacement proposal when ready.
+- If the user approves, the runtime transitions this same task to Default mode and supplies the complete approved plan again.
+- After approval, read-only revalidation is allowed, but before any implementation action you must derive an ordered, executable, verifiable checklist from the approved plan and successfully call update_todo with the complete TODO.md content.
+`)
+}
+
 func memoryInstructions() string {
 	return strings.TrimSpace(`
 Session-scoped files (they perish with the session):
@@ -181,6 +218,21 @@ Rules:
 - Use read_todo and update_todo to inspect and maintain Session TODO.md.
 - Do not use bash, write_file, or edit_file to modify Session TODO.md.
 - Do not dump raw logs or large file contents into these files.
+`)
+}
+
+func formalPlanMemoryInstructions() string {
+	return strings.TrimSpace(`
+Session-scoped files (they perish with the session):
+- Session PLAN.md stores the latest complete proposal submitted through submit_plan.
+- Session TODO.md stores the execution checklist created after approval.
+
+Rules:
+- Before approval, do not modify PLAN.md or TODO.md directly and do not use update_todo.
+- submit_plan is the only mechanism that may replace Session PLAN.md.
+- Revision feedback does not edit PLAN.md; respond with a complete replacement through submit_plan.
+- After approval, use update_todo to initialize and maintain Session TODO.md. It never edits PLAN.md.
+- Do not use bash, write_file, or edit_file to modify either session artifact.
 `)
 }
 
@@ -203,7 +255,7 @@ func workingMemoryGuidance(relPath string) string {
 
 func readOnlyWorkingMemoryGuidance(relPath string) string {
 	var b strings.Builder
-	b.WriteString("working_memory.md is this subagent session's scratchpad. It is read-only in this run because the available tools do not include working-memory write access.\n")
+	b.WriteString("working_memory.md is this run's session scratchpad. It is read-only in this run because the available tools do not include working-memory write access.\n")
 	fmt.Fprintf(&b, "Use the current contents below for context. If the scratchpad should change, include the update in your final report instead of editing the file at relative path %q.\n", relPath)
 	b.WriteString("Current contents:")
 	return b.String()

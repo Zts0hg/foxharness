@@ -66,7 +66,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 - **Verification**: Focused `internal/tools` and `internal/engine` tests pass, followed by existing engine reporter/TODO-gate regression tests.
 - **Covers**: REQ-003, REQ-008, REQ-009, NFR-004, NFR-005; Plan: Phase 3, PLD-002, PLD-003, C3, C4
 
-### T007 - [ ] Add Failing Tests For Formal Lifecycle Registries And Prompt Guidance
+### T007 - [x] Add Failing Tests For Formal Lifecycle Registries And Prompt Guidance
 
 - **Outcome**: App/context tests define the required canonical Formal tools, forbidden tool absence, compatible ask alias, restricted-command preflight, high-priority file/Git/side-effect prohibitions, revision staying Formal, turn-delayed approval, checklist gating, full approved-plan reinjection, successful TODO transition, same-batch denial, and one-run/one-user-message continuity.
 - **Paths**: `internal/context/prompt_test.go`, `internal/app/plan_lifecycle_test.go`, `internal/app/runner_test.go`
@@ -74,7 +74,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 - **Verification**: Focused context/app tests fail for missing lifecycle registry, prompt mode option, reminder, and registry transitions.
 - **Covers**: REQ-003, REQ-004, REQ-005, REQ-007, REQ-008, REQ-009, REQ-010, NFR-001, NFR-002, NFR-004, NFR-005; Plan: Phase 3, PLD-002, PLD-003, PLD-006, PLD-007, C3-C5, C7
 
-### T008 - [ ] Implement The Same-Run Formal Lifecycle And Prompt Contract
+### T008 - [x] Implement The Same-Run Formal Lifecycle And Prompt Contract
 
 - **Outcome**: Formal runs use a private formal/checklist/default registry state machine, approval selects Default but commits active tools next turn, approved plan reminders survive compaction, checklist initialization precedes full Default tools, restricted incompatible Formal runs fail before model invocation, and Default runs retain the existing direct registry path.
 - **Paths**: `internal/app/plan_lifecycle.go`, `internal/app/runner.go`, `internal/context/prompt.go`, tests from T007
