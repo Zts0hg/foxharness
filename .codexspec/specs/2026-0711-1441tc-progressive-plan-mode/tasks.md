@@ -50,7 +50,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 
 ## Phase 3: Turn Lifecycle, Completion Gate, And Formal Prompt
 
-### T005 - [ ] Add Failing Engine Tests For Turn-Aware Registries And Completion Gates
+### T005 - [x] Add Failing Engine Tests For Turn-Aware Registries And Completion Gates
 
 - **Outcome**: Engine/tool tests define one `BeginTurn` call before each turn's tool discovery, delegation through filtered registries, one blocking completion reminder, successful continuation after gate satisfaction, and deterministic error after repeated unsatisfied no-tool responses.
 - **Paths**: `internal/tools/filter_test.go`, `internal/engine/loop_test.go`
@@ -58,7 +58,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 - **Verification**: Focused engine/tools tests fail because the optional turn and completion hooks do not yet exist.
 - **Covers**: REQ-003, REQ-008, REQ-009, NFR-004, NFR-005; Plan: Phase 3, PLD-002, PLD-003, C3, C4
 
-### T006 - [ ] Implement Engine Turn And Completion Hooks
+### T006 - [x] Implement Engine Turn And Completion Hooks
 
 - **Outcome**: Registries may implement `BeginTurn`; filtered registries preserve it; the engine invokes it once per turn before tool definitions and supports a bounded run-local completion gate without changing provider or session schemas.
 - **Paths**: `internal/tools/registry.go`, `internal/tools/filter.go`, `internal/engine/config.go`, `internal/engine/loop.go`, tests from T005

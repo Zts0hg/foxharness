@@ -36,16 +36,145 @@ type sequencedProvider struct {
 	responses []*provider.GenerateResponse
 	call      int
 	seen      [][]schema.Message
+	seenTools [][]string
 }
 
 func (p *sequencedProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
 	p.seen = append(p.seen, append([]schema.Message(nil), messages...))
+	names := make([]string, 0, len(availableTools))
+	for _, definition := range availableTools {
+		names = append(names, definition.Name)
+	}
+	p.seenTools = append(p.seenTools, names)
 	idx := p.call
 	if idx >= len(p.responses) {
 		idx = len(p.responses) - 1
 	}
 	p.call++
 	return p.responses[idx], nil
+}
+
+type engineTurnRegistry struct {
+	tools.Registry
+	turns int
+}
+
+func (r *engineTurnRegistry) BeginTurn() {
+	r.turns++
+	r.Register(&bigOutputTool{name: "turn_tool", output: "ok"})
+}
+
+func TestEngineBeginsRegistryTurnBeforeToolDiscovery(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	registry := &engineTurnRegistry{Registry: tools.NewRegistry()}
+	p := &sequencedProvider{responses: []*provider.GenerateResponse{
+		{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID:        "call-turn",
+				Name:      "turn_tool",
+				Arguments: json.RawMessage(`{}`),
+			}},
+		}},
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+	}}
+	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
+
+	if _, err := eng.RunWithReporter(context.Background(), sess, "test", nil); err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if registry.turns != 2 {
+		t.Fatalf("BeginTurn calls = %d, want 2", registry.turns)
+	}
+	if len(p.seenTools) != 2 || !containsString(p.seenTools[0], "turn_tool") {
+		t.Fatalf("provider tool surfaces = %#v, want turn_tool on first call", p.seenTools)
+	}
+}
+
+func TestEngineCompletionGateInjectsReminderThenAllowsCompletion(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	p := &sequencedProvider{responses: []*provider.GenerateResponse{
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "premature"}},
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+	}}
+	gateCalls := 0
+	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{
+		MaxTurns: 3,
+		CompletionGate: func() string {
+			gateCalls++
+			if gateCalls == 1 {
+				return "submit_plan is still required"
+			}
+			return ""
+		},
+	})
+
+	result, err := eng.RunWithReporter(context.Background(), sess, "test", nil)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if result.FinalMessage != "done" || p.call != 2 {
+		t.Fatalf("result = %#v, provider calls = %d, want done after 2", result, p.call)
+	}
+	if len(p.seen) < 2 || !messagesContain(p.seen[1], "submit_plan is still required") {
+		t.Fatalf("second call missing completion reminder: %#v", p.seen)
+	}
+}
+
+func TestEngineCompletionGateFailsAfterRepeatedUnsatisfiedFinal(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	p := &sequencedProvider{responses: []*provider.GenerateResponse{
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "premature"}},
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "still premature"}},
+	}}
+	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{
+		MaxTurns:       3,
+		CompletionGate: func() string { return "update_todo is still required" },
+	})
+
+	result, err := eng.RunWithReporter(context.Background(), sess, "test", nil)
+	if err == nil || !strings.Contains(err.Error(), "completion gate remained unsatisfied") {
+		t.Fatalf("RunWithReporter() error = %v, want unsatisfied completion gate", err)
+	}
+	if result == nil || p.call != 2 {
+		t.Fatalf("result = %#v, provider calls = %d, want partial result after 2", result, p.call)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func messagesContain(messages []schema.Message, want string) bool {
+	for _, message := range messages {
+		if strings.Contains(message.Content, want) {
+			return true
+		}
+	}
+	return false
 }
 
 type usageReportingProvider struct {

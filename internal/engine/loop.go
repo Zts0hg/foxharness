@@ -414,6 +414,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	final := ""
 	todoUpdated := false
 	todoGateReminderSent := false
+	completionGateReminderSent := false
 
 	for {
 		turnCount++
@@ -441,6 +442,9 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			turnSpan.End(status, attrs)
 		}
 
+		if turnAware, ok := e.registry.(tools.TurnAwareRegistry); ok {
+			turnAware.BeginTurn()
+		}
 		availableTools := e.registry.GetAvailableTools()
 		toolTokens := estimateToolTokens(estimator, availableTools)
 
@@ -632,6 +636,38 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		}
 
 		if len(actionResponse.ToolCalls) == 0 {
+			if e.config.CompletionGate != nil {
+				if reminder := strings.TrimSpace(e.config.CompletionGate()); reminder != "" {
+					if completionGateReminderSent {
+						wrapped := fmt.Errorf("completion gate remained unsatisfied after reminder: %s", reminder)
+						finishTurn("error", map[string]any{"error": wrapped.Error()})
+						markRunError(wrapped)
+						return &RunResult{
+							FinalMessage: final,
+							SessionID:    sess.ID,
+							RunID:        run.ID,
+							MetricsPath:  run.MetricsPath(),
+							TracePath:    run.TracePath(),
+						}, wrapped
+					}
+					completionGateReminderSent = true
+					contextHistory = append(contextHistory, schema.Message{
+						Role:    schema.RoleUser,
+						Content: "[Runtime System Reminder]\n\n" + reminder,
+					})
+					_ = transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
+						"turn":    turnCount,
+						"message": reminder,
+						"source":  "completion_gate",
+					})
+					finishTurn("ok", map[string]any{
+						"tool_calls": 0,
+						"final":      false,
+						"blocked_by": "completion_gate",
+					})
+					continue
+				}
+			}
 			if reminder := e.todoCompletionReminder(sess); reminder != "" && !todoUpdated {
 				if todoGateReminderSent {
 					wrapped := fmt.Errorf("TODO.md still has incomplete checklist items after TODO completion reminder")

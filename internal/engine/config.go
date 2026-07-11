@@ -56,6 +56,11 @@ type Config struct {
 	// access to the new skill within the run that activated it.
 	NextTurnReminders func() []string
 
+	// CompletionGate may block a no-tool final response by returning a runtime
+	// reminder that describes the still-required action. The engine retries once
+	// and fails deterministically if a later final response remains blocked.
+	CompletionGate func() string
+
 	// OnContextEstimate is called at the start of each turn with the
 	// estimated token usage and context window size. The TUI uses this
 	// to display accurate context utilization during a run, since the

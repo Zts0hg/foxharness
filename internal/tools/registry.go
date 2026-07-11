@@ -57,6 +57,12 @@ type Registry interface {
 	IsParallelSafe(toolName string) bool
 }
 
+// TurnAwareRegistry performs an optional lifecycle transition immediately
+// before the engine discovers tools for a new model turn.
+type TurnAwareRegistry interface {
+	BeginTurn()
+}
+
 // BaseTool defines the core interface that all tools must implement.
 // Tools provide name, definition, and execution logic.
 type BaseTool interface {
