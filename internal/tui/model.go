@@ -86,6 +86,9 @@ type Config struct {
 	// is never offered to the model.
 	Asker *Asker
 
+	// PlanReviewer, when non-nil, enables submit_plan confirmation and revision.
+	PlanReviewer *PlanReviewer
+
 	// Autodev, when non-nil, launches the backlog autopilot for the
 	// /autodev builtin. internal/app injects it so the tui -> autodev
 	// dependency stays one-way.
@@ -247,6 +250,9 @@ type Model struct {
 	asker   *Asker
 	askForm *askForm
 
+	planReviewer *PlanReviewer
+	planForm     *planReviewForm
+
 	sidebarVisible       bool
 	sidebarFocused       bool
 	terminalFocused      bool
@@ -310,6 +316,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		collaborationMode: collaboration.Normalize(runner.CollaborationMode()),
 		checkpointer:      runner.Checkpointer(),
 		asker:             cfg.Asker,
+		planReviewer:      cfg.PlanReviewer,
 		autodevLauncher:   cfg.Autodev,
 		entries:           entries,
 		sidebarVisible:    true,
@@ -323,6 +330,9 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{waitForRunEvent(m.ctx, m.events), runningTickCmd()}
 	if m.asker != nil {
 		cmds = append(cmds, listenForAsk(m.ctx, m.asker))
+	}
+	if m.planReviewer != nil {
+		cmds = append(cmds, listenForPlanReview(m.ctx, m.planReviewer))
 	}
 	return tea.Batch(cmds...)
 }
@@ -389,6 +399,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askDoneMsg:
 		return m.handleAskDone()
+
+	case planReviewMsg:
+		m.planForm = newPlanReviewForm(msg.req)
+		return m, nil
+
+	case planReviewDoneMsg:
+		return m.handlePlanReviewDone()
 
 	case promptCommandReadyMsg:
 		return m.handlePromptCommandReady(msg)
@@ -1059,7 +1076,35 @@ func (m Model) handleAskDone() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handlePlanReviewDone() (tea.Model, tea.Cmd) {
+	if m.planForm == nil {
+		return m, nil
+	}
+	result := planReviewResult{
+		review:    m.planForm.review,
+		cancelled: m.planForm.cancelled,
+	}
+	if result.review.Decision == tools.PlanApproved && !result.cancelled {
+		m.collaborationMode = collaboration.ModeDefault
+		m.runner.SetCollaborationMode(collaboration.ModeDefault)
+		m.status = "Plan approved; continuing in Default mode"
+	} else if result.cancelled {
+		m.status = "Plan review cancelled; Formal Plan remains active"
+	} else {
+		m.status = "Continuing Formal Plan"
+	}
+	m.planForm.req.reply <- result
+	m.planForm = nil
+	if m.planReviewer != nil {
+		return m, listenForPlanReview(m.ctx, m.planReviewer)
+	}
+	return m, nil
+}
+
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.planForm != nil {
+		return m, m.planForm.update(msg)
+	}
 	if m.askForm != nil {
 		return m, m.askForm.update(msg)
 	}

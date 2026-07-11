@@ -84,7 +84,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 
 ## Phase 4: TUI Plan Review Experience
 
-### T009 - [ ] Add Failing Tests For The Plan Reviewer Bridge And Inline Form
+### T009 - [x] Add Failing Tests For The Plan Reviewer Bridge And Inline Form
 
 - **Outcome**: Tests define blocking request/reply behavior, context cancellation, exact source retention, Markdown display origin, plan scrolling, approve/continue selection, optional revision feedback, cancel-without-approval, listener re-arming, approval footer reset, and no interference with ask/rewind/input controls.
 - **Paths**: `internal/tui/plan_reviewer_test.go`, `internal/tui/planform_test.go`, `internal/tui/planform_integration_test.go`, `internal/tui/model_test.go`
@@ -92,7 +92,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 - **Verification**: `go test ./internal/tui` fails for missing reviewer/form integration and approval state synchronization.
 - **Covers**: REQ-001, REQ-002, REQ-003, REQ-006, REQ-007, REQ-008, NFR-002, NFR-004, NFR-005; Plan: Phase 4, PLD-005, C6
 
-### T010 - [ ] Implement The Plan Reviewer Bridge, Form, And App Wiring
+### T010 - [x] Implement The Plan Reviewer Bridge, Form, And App Wiring
 
 - **Outcome**: The TUI keeps the transcript visible while reviewing the exact submitted plan, supports bounded scrolling and approval/revision controls, returns decisions to the blocked tool, re-arms listeners, resets selected mode on approval, and wires both `UserAsker` and `PlanReviewer` through `RunTUI`.
 - **Paths**: `internal/tui/plan_reviewer.go`, `internal/tui/planform.go`, `internal/tui/model.go`, `internal/tui/view.go`, `internal/tui/reporter.go`, `internal/app/tui.go`, tests from T009

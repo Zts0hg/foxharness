@@ -150,6 +150,25 @@ func (m Model) View() string {
 		}
 		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 	}
+	if m.planForm != nil {
+		formHeight := max(min(m.height/2, 18), 10)
+		card := inputStyle.Width(width).Render(m.planForm.view(width, formHeight))
+		chrome := outerStyle.GetVerticalFrameSize() +
+			lipgloss.Height(card) + 1 +
+			1 +
+			lipgloss.Height(m.renderStatusBar(width)) +
+			lipgloss.Height(m.renderKeybinds(width))
+		bodyHeight := max(m.height-chrome, 1)
+		parts := []string{
+			m.renderMainArea(bodyHeight),
+			"",
+			card,
+			"",
+			m.renderStatusBar(width),
+			m.renderKeybinds(width),
+		}
+		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	}
 
 	if m.askForm != nil {
 		// Render the question inline at the bottom (replacing the input band),
