@@ -1,9 +1,8 @@
 // Package agentops provides an automated incident-analysis agent that receives
 // tasks from team IM (e.g. Feishu), searches local service logs, and runs an
-// LLM-powered engine loop to diagnose root causes and propose fixes.  It
-// integrates plan generation, context compaction, sub-agent delegation, and a
-// danger-action approval middleware so that high-risk operations require human
-// confirmation before execution.
+// LLM-powered engine loop to diagnose root causes and propose fixes. It
+// integrates context compaction, sub-agent delegation, and a danger-action
+// approval middleware so that high-risk operations require human confirmation.
 package agentops
 
 import (
@@ -34,9 +33,8 @@ type Messenger interface {
 }
 
 // Runner orchestrates a single AgentOps incident-analysis task.  It creates a
-// session, generates an execution plan, wires up tools (log search, file I/O,
-// bash, sub-agent) with a danger-action approval middleware, and drives the
-// engine loop to completion.
+// session, wires up tools (log search, file I/O, bash, sub-agent) with a
+// danger-action approval middleware, and drives the engine loop to completion.
 type Runner struct {
 	provider      provider.LLMProvider
 	workDir       string
@@ -97,14 +95,6 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 	}
 
 	taskPrompt := BuildPrompt(task)
-	enableThinking := false
-	planner := memory.NewPlanner(r.provider, store)
-	if err := planner.BuildPlan(ctx, taskPrompt); err != nil {
-		log.Printf("[AgentOps][PlanMode] 生成计划失败, 将会退到旧版每轮 Thinking: %v", err)
-		enableThinking = true
-	} else {
-		log.Printf("[AgentOps][PlanMode] 计划已生成，本次任务关闭每轮 Thinking")
-	}
 
 	autoStore := automemory.NewStore(r.sessions.HomeDir(), r.workDir)
 	hooks := automemory.NewPerRunHooks(r.provider, autoStore, r.workDir)
@@ -119,9 +109,8 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 		r.workDir,
 		composer,
 		engine.Config{
-			EnableThinking: enableThinking,
-			MaxTurns:       24,
-			OnToolCalled:   hooks.RecordCallback(tracker),
+			MaxTurns:     24,
+			OnToolCalled: hooks.RecordCallback(tracker),
 		},
 	)
 	compCfg := compaction.DefaultCompactionConfig()

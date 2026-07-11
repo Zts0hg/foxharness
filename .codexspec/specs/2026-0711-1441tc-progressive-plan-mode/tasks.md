@@ -102,7 +102,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 
 ## Phase 5: Automatic Planner Migration Across Entry Points
 
-### T011 - [ ] Add Failing Migration Tests For Default Entry Points
+### T011 - [x] Add Failing Migration Tests For Default Entry Points
 
 - **Outcome**: Tests prove one-shot CLI, shared AgentRunner, AgentOps, and benchmark perform no Planner pre-pass; AgentOps and benchmark expose TODO tools; Feishu retains its registry/no-preplan behavior; and the Autodev SDD adapter still creates ordinary Default core runners.
 - **Paths**: `internal/app/runner_test.go`, `internal/app/autodev_test.go`, `internal/agentops/runner_test.go`, `internal/feishu/runner_test.go`, `cmd/bench/main_test.go`, `cmd/fox/main_test.go`
@@ -110,7 +110,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 - **Verification**: Focused package tests expose remaining Planner invocations and the benchmark's missing TODO tools.
 - **Covers**: REQ-011, REQ-012, REQ-013, NFR-003, NFR-004, NFR-005; Plan: Phase 5, PLD-008, C7
 
-### T012 - [ ] Finish Legacy Planner Removal And Align Entry-Point Registries
+### T012 - [x] Finish Legacy Planner Removal And Align Entry-Point Registries
 
 - **Outcome**: Verify the shared runner pre-pass was replaced by T008, remove the remaining AgentOps and benchmark pre-passes, add benchmark `read_todo`/`update_todo`, delete the now-unreferenced Planner implementation/tests and stale Plan comments, and preserve Feishu/Autodev behavior.
 - **Paths**: `internal/app/runner.go`, `internal/app/cli.go`, `internal/app/autodev.go`, `internal/agentops/runner.go`, `cmd/bench/main.go`, `internal/memory/plan.go` (delete), `internal/memory/plan_test.go` (delete), tests from T011

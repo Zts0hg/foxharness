@@ -868,3 +868,34 @@ func TestOneShotRunAwaitsExtraction(t *testing.T) {
 		t.Fatalf("extraction not awaited: Generate calls = %d, want >= %d", got, want)
 	}
 }
+
+func TestDefaultRunnerUsesOnePrimaryModelCallWithoutPlannerPrepass(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	store := memory.NewSessionStore(workDir, sess.RootDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	provider := &immediateCountingProvider{}
+	runner := &AgentRunner{
+		workDir:           workDir,
+		model:             "fake-model",
+		collaborationMode: collaboration.ModeDefault,
+		maxTurns:          3,
+		store:             store,
+		manager:           manager,
+		llmProvider:       provider,
+		currentSession:    sess,
+	}
+
+	if _, err := runner.Run(context.Background(), "answer directly", nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := provider.count(); got != 1 {
+		t.Fatalf("primary provider calls = %d, want 1", got)
+	}
+}
