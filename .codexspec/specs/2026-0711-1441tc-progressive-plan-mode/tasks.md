@@ -120,7 +120,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 
 ## Phase 6: Rewind Regression, Full Verification, And Review
 
-### T013 - [ ] Add End-To-End Lifecycle And Rewind Regression Tests
+### T013 - [x] Add End-To-End Lifecycle And Rewind Regression Tests
 
 - **Outcome**: Deterministic acceptance tests cover submit-revise-resubmit-approve, exact latest PLAN, approved-plan TODO derivation before a fake implementation call, and restoration of pre-message PLAN/TODO through existing state history and runner rewind APIs.
 - **Paths**: `internal/app/plan_lifecycle_test.go`, `internal/memory/state_history_test.go`, `internal/tui/model_test.go`
@@ -128,7 +128,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 - **Verification**: New focused tests pass when earlier phases are complete. Any uncovered integration/rewind failure is recorded before T014 changes the implicated production path.
 - **Covers**: REQ-006, REQ-007, REQ-008, REQ-009, REQ-014, NFR-002, NFR-004, NFR-005; Plan: Phase 6, C8, Verification Strategy
 
-### T014 - [ ] Close Lifecycle/Rewind Integration Gaps And Refactor Green
+### T014 - [x] Close Lifecycle/Rewind Integration Gaps And Refactor Green
 
 - **Outcome**: Any T013 integration gaps are fixed without changing product semantics; the same pre-user-message snapshot restores both plan proposal and execution checklist; lifecycle interfaces and synchronization are refactored for readability while focused tests remain green.
 - **Paths**: Only production/test files implicated by T013, primarily `internal/app`, `internal/memory`, and `internal/tui`
@@ -136,7 +136,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 - **Verification**: Focused lifecycle, state-history, and TUI rewind tests pass with `-count=1`.
 - **Covers**: REQ-006, REQ-007, REQ-008, REQ-009, REQ-014, NFR-002, NFR-004, NFR-005; Plan: Phase 6, C8, Verification Strategy
 
-### T015 - [ ] Format And Run Static Migration Checks
+### T015 - [x] Format And Run Static Migration Checks
 
 - **Outcome**: All changed Go files are gofmt-formatted and no production `EnablePlanMode`, legacy Plan accessor, registered `-plan`, `NewPlanner`, or `BuildPlan` remains.
 - **Paths**: All changed Go files and repository root
@@ -144,7 +144,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 - **Verification**: `gofmt -w` on changed Go files; planned `rg` migration checks return no prohibited production matches.
 - **Covers**: REQ-011, REQ-012, NFR-003, NFR-004; Plan: Phase 6, Verification Strategy
 
-### T016 - [ ] Run Focused And Full Test Suites
+### T016 - [x] Run Focused And Full Test Suites
 
 - **Outcome**: Every focused package suite and `go test ./...` pass from a clean test cache where relevant.
 - **Paths**: Repository root

@@ -20,6 +20,21 @@ type approvingPlanReviewer struct {
 	plans []string
 }
 
+type revisingPlanReviewer struct {
+	plans []string
+}
+
+func (r *revisingPlanReviewer) ReviewPlan(ctx context.Context, planMarkdown string) (tools.PlanReview, error) {
+	r.plans = append(r.plans, planMarkdown)
+	if len(r.plans) == 1 {
+		return tools.PlanReview{
+			Decision: tools.PlanContinuePlanning,
+			Feedback: "Add an explicit rollback verification step.",
+		}, nil
+	}
+	return tools.PlanReview{Decision: tools.PlanApproved}, nil
+}
+
 func (r *approvingPlanReviewer) ReviewPlan(ctx context.Context, planMarkdown string) (tools.PlanReview, error) {
 	r.plans = append(r.plans, planMarkdown)
 	return tools.PlanReview{Decision: tools.PlanApproved}, nil
@@ -219,4 +234,101 @@ func lifecycleMessagesContain(messages []schema.Message, want string) bool {
 		}
 	}
 	return false
+}
+
+type revisionLifecycleProvider struct {
+	calls        int
+	firstPlan    string
+	revisedPlan  string
+	seen         [][]schema.Message
+	toolSurfaces [][]string
+}
+
+func (p *revisionLifecycleProvider) Generate(ctx context.Context, messages []schema.Message, definitions []schema.ToolDefinition) (*providerpkg.GenerateResponse, error) {
+	p.seen = append(p.seen, append([]schema.Message(nil), messages...))
+	names := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		names = append(names, definition.Name)
+	}
+	p.toolSurfaces = append(p.toolSurfaces, names)
+
+	call := p.calls
+	p.calls++
+	switch call {
+	case 0:
+		return &providerpkg.GenerateResponse{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID: "first-plan", Name: "submit_plan",
+				Arguments: lifecycleArgs(map[string]string{"plan_markdown": p.firstPlan}),
+			}},
+		}}, nil
+	case 1:
+		return &providerpkg.GenerateResponse{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID: "revised-plan", Name: "submit_plan",
+				Arguments: lifecycleArgs(map[string]string{"plan_markdown": p.revisedPlan}),
+			}},
+		}}, nil
+	case 2:
+		return &providerpkg.GenerateResponse{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID: "revision-todo", Name: "update_todo",
+				Arguments: lifecycleArgs(map[string]string{"content": "# TODO\n\n- [ ] Implement revised plan\n- [ ] Verify rollback\n"}),
+			}},
+		}}, nil
+	default:
+		return &providerpkg.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "ready"}}, nil
+	}
+}
+
+func TestFormalPlanRevisionAndRewindRestorePreMessageArtifacts(t *testing.T) {
+	provider := &revisionLifecycleProvider{
+		firstPlan:   "# First plan\n\n- Implement directly",
+		revisedPlan: "# Revised plan\n\n- Implement\n- Verify rollback",
+	}
+	reviewer := &revisingPlanReviewer{}
+	runner, _, store := newFormalLifecycleRunner(t, provider, reviewer)
+	if err := store.ReplacePlan("# Previous session plan"); err != nil {
+		t.Fatalf("seed PLAN.md: %v", err)
+	}
+	if err := os.WriteFile(store.TodoPath(), []byte("# TODO\n\n- [x] Previous task\n"), 0644); err != nil {
+		t.Fatalf("seed TODO.md: %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), "prepare a reviewed change", nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == nil || result.FinalMessage != "ready" || provider.calls != 4 {
+		t.Fatalf("result = %#v, calls=%d", result, provider.calls)
+	}
+	if len(reviewer.plans) != 2 || reviewer.plans[0] != provider.firstPlan || reviewer.plans[1] != provider.revisedPlan {
+		t.Fatalf("reviewed plans = %#v", reviewer.plans)
+	}
+	if !lifecycleMessagesContain(provider.seen[1], "Add an explicit rollback verification step.") {
+		t.Fatalf("revision feedback missing from planning context: %#v", provider.seen[1])
+	}
+	assertLifecycleToolSurface(t, provider.toolSurfaces[1], []string{"submit_plan"}, []string{"write_file", "update_todo"})
+	assertLifecycleToolSurface(t, provider.toolSurfaces[2], []string{"update_todo"}, []string{"write_file", "submit_plan"})
+
+	if data, err := os.ReadFile(store.PlanPath()); err != nil || string(data) != provider.revisedPlan {
+		t.Fatalf("latest PLAN.md = %q, err=%v", data, err)
+	}
+	if data, err := os.ReadFile(store.TodoPath()); err != nil || !strings.Contains(string(data), "Verify rollback") {
+		t.Fatalf("latest TODO.md = %q, err=%v", data, err)
+	}
+
+	restored, err := runner.RestoreSessionStateBeforeMessage(0)
+	if err != nil || !restored {
+		t.Fatalf("RestoreSessionStateBeforeMessage() = (%v, %v), want (true, nil)", restored, err)
+	}
+	if data, err := os.ReadFile(store.PlanPath()); err != nil || string(data) != "# Previous session plan" {
+		t.Fatalf("restored PLAN.md = %q, err=%v", data, err)
+	}
+	if data, err := os.ReadFile(store.TodoPath()); err != nil || string(data) != "# TODO\n\n- [x] Previous task\n" {
+		t.Fatalf("restored TODO.md = %q, err=%v", data, err)
+	}
 }

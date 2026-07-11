@@ -26,10 +26,10 @@ func TestStateHistorySnapshotIsFirstWriteWins(t *testing.T) {
 		t.Fatalf("RestoreBeforeMessage() error = %v", err)
 	}
 
-	if got := readTestFile(t, store.PlanPath()); got != "old plan" {
+	if got := readStateTestFile(t, store.PlanPath()); got != "old plan" {
 		t.Fatalf("PLAN.md = %q, want old plan", got)
 	}
-	if got := readTestFile(t, store.TodoPath()); got != "old todo" {
+	if got := readStateTestFile(t, store.TodoPath()); got != "old todo" {
 		t.Fatalf("TODO.md = %q, want old todo", got)
 	}
 }
@@ -64,6 +64,15 @@ func writeStateTestFile(t *testing.T, root string, rel string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func readStateTestFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
 }
 
 func TestStateHistoryMissingSnapshot(t *testing.T) {
