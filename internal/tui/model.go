@@ -2604,11 +2604,20 @@ type promptCommandReadyMsg struct {
 
 func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *slash.Command, args, sessionID, displayPrompt string, mode collaboration.Mode) tea.Cmd {
 	return func() tea.Msg {
+		mode = collaboration.Normalize(mode)
+		if mode == collaboration.ModeFormalPlan && strings.EqualFold(strings.TrimSpace(cmd.Frontmatter.Context), "fork") {
+			return promptCommandReadyMsg{
+				cmdName:           cmd.Name,
+				displayPrompt:     displayPrompt,
+				collaborationMode: mode,
+				err:               fmt.Errorf("fork-mode prompt commands are unavailable in Formal Plan mode; use /plan off before running this command"),
+			}
+		}
 		res, err := exec.Execute(ctx, cmd, args, sessionID)
 		return promptCommandReadyMsg{
 			cmdName:           cmd.Name,
 			displayPrompt:     displayPrompt,
-			collaborationMode: collaboration.Normalize(mode),
+			collaborationMode: mode,
 			result:            res,
 			err:               err,
 		}

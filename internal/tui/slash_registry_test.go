@@ -19,6 +19,15 @@ type restrictedFakeRunner struct {
 	restrictedResult *engine.RunResult
 }
 
+type recordingTUIForkRunner struct {
+	calls int
+}
+
+func (r *recordingTUIForkRunner) Run(context.Context, string, string, []string) (string, error) {
+	r.calls++
+	return "fork report", nil
+}
+
 func (r *restrictedFakeRunner) RunRestrictedInCollaborationMode(ctx context.Context, prompt string, allowed []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
 	r.restrictedRuns = append(r.restrictedRuns, prompt)
 	r.restrictedAllow = append([]string(nil), allowed...)
@@ -121,6 +130,30 @@ func TestModel_FileBasedCommand_DispatchesThroughExecutor(t *testing.T) {
 	}
 	if !strings.Contains(runner.runs[0], "Review: pr-9") {
 		t.Errorf("runner received %q, want substring 'Review: pr-9'", runner.runs[0])
+	}
+}
+
+func TestModel_FormalPlanRejectsForkedPromptCommandBeforeExecution(t *testing.T) {
+	runner := newFakeRunner()
+	runner.collaborationMode = collaboration.ModeFormalPlan
+	registry := newRegistryWithPromptCommandFrontmatter(t, "forked", "Inspect and modify", slash.Frontmatter{
+		Context: "fork",
+	})
+	forkRunner := &recordingTUIForkRunner{}
+	executor := slash.NewExecutor(slash.WithForkRunner(forkRunner))
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, executor)
+
+	m, _ = update(t, m, keyRunes("/forked"))
+	m = drivePromptCommand(t, m)
+
+	if forkRunner.calls != 0 {
+		t.Fatalf("fork runner calls = %d, want 0 in Formal Plan mode", forkRunner.calls)
+	}
+	if m.status != "Command failed" || !entriesContain(m.entries, "error", "Formal Plan") {
+		t.Fatalf("formal fork rejection not surfaced: status=%q entries=%#v", m.status, m.entries)
+	}
+	if len(runner.runs) != 0 {
+		t.Fatalf("top-level runner unexpectedly executed after fork rejection: %#v", runner.runs)
 	}
 }
 

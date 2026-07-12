@@ -159,6 +159,46 @@ func TestEngineCompletionGateFailsAfterRepeatedUnsatisfiedFinal(t *testing.T) {
 	}
 }
 
+func TestEngineCompletionGateGrantsRetryWhenReminderChanges(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	p := &sequencedProvider{responses: []*provider.GenerateResponse{
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "plan missing"}},
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "checklist missing"}},
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+	}}
+	reminders := []string{
+		"submit_plan is still required",
+		"update_todo is now required",
+		"",
+	}
+	gateCalls := 0
+	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{
+		MaxTurns: 4,
+		CompletionGate: func() string {
+			reminder := reminders[gateCalls]
+			gateCalls++
+			return reminder
+		},
+	})
+
+	result, err := eng.RunWithReporter(context.Background(), sess, "test", nil)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if result == nil || result.FinalMessage != "done" || p.call != 3 {
+		t.Fatalf("result = %#v, provider calls = %d, want done after both gate retries", result, p.call)
+	}
+	if len(p.seen) < 3 || !messagesContain(p.seen[1], reminders[0]) || !messagesContain(p.seen[2], reminders[1]) {
+		t.Fatalf("provider history missing phase-specific reminders: %#v", p.seen)
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

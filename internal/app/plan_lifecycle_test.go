@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	providerpkg "github.com/Zts0hg/foxharness/internal/provider"
@@ -263,6 +264,72 @@ func TestPlanLifecycleRejectsAdditionalSubmissionAfterApprovalIsPending(t *testi
 	}
 	if data, err := os.ReadFile(store.PlanPath()); err != nil || string(data) != firstPlan {
 		t.Fatalf("PLAN.md = %q, err=%v, want approved first plan", data, err)
+	}
+}
+
+func TestPlanLifecycleRejectsAdditionalSubmissionAfterContinuePlanningInSameTurn(t *testing.T) {
+	store := memory.NewStore(t.TempDir())
+	reviewer := &revisingPlanReviewer{}
+	lifecycle := newPlanLifecycle(nil, tools.NewRegistry(), tools.NewRegistry(), nil)
+	formal := tools.NewRegistry()
+	formal.Register(tools.NewSubmitPlanTool(store, reviewer, lifecycle.approve))
+	lifecycle.setFormalRegistry(formal)
+
+	firstPlan := "# First proposal\n\n- Inspect current behavior"
+	first := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID: "first", Name: "submit_plan",
+		Arguments: lifecycleArgs(map[string]string{"plan_markdown": firstPlan}),
+	})
+	if first.IsError {
+		t.Fatalf("first submit_plan result = %#v", first)
+	}
+	second := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID: "second", Name: "submit_plan",
+		Arguments: lifecycleArgs(map[string]string{"plan_markdown": "# Premature replacement"}),
+	})
+	if !second.IsError {
+		t.Fatalf("second submit_plan result = %#v, want same-turn rejection", second)
+	}
+	if len(reviewer.plans) != 1 || reviewer.plans[0] != firstPlan {
+		t.Fatalf("reviewed plans = %#v, want only the first same-turn proposal", reviewer.plans)
+	}
+	if data, err := os.ReadFile(store.PlanPath()); err != nil || string(data) != firstPlan {
+		t.Fatalf("PLAN.md = %q, err=%v, want first proposal", data, err)
+	}
+
+	lifecycle.BeginTurn()
+	revisedPlan := "# Revised proposal\n\n- Incorporate the user's feedback"
+	third := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID: "third", Name: "submit_plan",
+		Arguments: lifecycleArgs(map[string]string{"plan_markdown": revisedPlan}),
+	})
+	if third.IsError {
+		t.Fatalf("next-turn submit_plan result = %#v, want revision to be allowed", third)
+	}
+	if len(reviewer.plans) != 2 || reviewer.plans[1] != revisedPlan {
+		t.Fatalf("reviewed plans after next turn = %#v", reviewer.plans)
+	}
+}
+
+func TestFormalPlanRunSkipsMemoryExtractionUntilPlanIsApproved(t *testing.T) {
+	provider := &immediateCountingProvider{}
+	runner, _, _ := newFormalLifecycleRunner(t, provider, &approvingPlanReviewer{})
+	runner.autoMemory = automemory.NewStore(t.TempDir(), runner.WorkDir())
+
+	extractionCalls := 0
+	runner.extractionFire = func(*session.Session, string, *automemory.Tracker) {
+		extractionCalls++
+	}
+
+	result, err := runner.RunInCollaborationMode(context.Background(), "plan without approval", collaboration.ModeFormalPlan, nil)
+	if err == nil || !strings.Contains(err.Error(), "completion gate remained unsatisfied") {
+		t.Fatalf("RunInCollaborationMode() error = %v, want unapproved completion-gate failure", err)
+	}
+	if result == nil {
+		t.Fatal("RunInCollaborationMode() result = nil, want partial failed result")
+	}
+	if extractionCalls != 0 {
+		t.Fatalf("memory extraction calls = %d, want 0 before plan approval", extractionCalls)
 	}
 }
 

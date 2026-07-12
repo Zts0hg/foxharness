@@ -473,7 +473,8 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	// is fire-and-forget and runs out-of-band; it never affects the run result.
 	// The launch itself is panic-guarded so a misbehaving hook can never disturb
 	// the returned result.
-	if hooks != nil && result != nil {
+	memoryExtractionAllowed := planRun == nil || planRun.memoryExtractionAllowed()
+	if hooks != nil && result != nil && memoryExtractionAllowed {
 		func() {
 			defer func() {
 				if rec := recover(); rec != nil {

@@ -414,7 +414,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	final := ""
 	todoUpdated := false
 	todoGateReminderSent := false
-	completionGateReminderSent := false
+	completionGateReminderSent := ""
 
 	for {
 		turnCount++
@@ -638,7 +638,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		if len(actionResponse.ToolCalls) == 0 {
 			if e.config.CompletionGate != nil {
 				if reminder := strings.TrimSpace(e.config.CompletionGate()); reminder != "" {
-					if completionGateReminderSent {
+					if completionGateReminderSent == reminder {
 						wrapped := fmt.Errorf("completion gate remained unsatisfied after reminder: %s", reminder)
 						finishTurn("error", map[string]any{"error": wrapped.Error()})
 						markRunError(wrapped)
@@ -650,7 +650,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 							TracePath:    run.TracePath(),
 						}, wrapped
 					}
-					completionGateReminderSent = true
+					completionGateReminderSent = reminder
 					contextHistory = append(contextHistory, schema.Message{
 						Role:    schema.RoleUser,
 						Content: "[Runtime System Reminder]\n\n" + reminder,

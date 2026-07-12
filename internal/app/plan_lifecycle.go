@@ -39,9 +39,11 @@ type planLifecycle struct {
 	checklistRegistry tools.Registry
 	defaultRegistry   tools.Registry
 
-	approvedPlan   string
-	reminderQueued bool
-	onApproved     func()
+	approvedPlan      string
+	approved          bool
+	reminderQueued    bool
+	submittedThisTurn bool
+	onApproved        func()
 }
 
 func newPlanLifecycle(formal, checklist, defaultRegistry tools.Registry, onApproved func()) *planLifecycle {
@@ -69,6 +71,7 @@ func (l *planLifecycle) approve(planMarkdown string) {
 	}
 	l.pending = &next
 	l.approvedPlan = planMarkdown
+	l.approved = true
 	l.reminderQueued = true
 	onApproved := l.onApproved
 	l.mu.Unlock()
@@ -83,6 +86,7 @@ func (l *planLifecycle) approve(planMarkdown string) {
 func (l *planLifecycle) BeginTurn() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.submittedThisTurn = false
 	if l.pending == nil {
 		return
 	}
@@ -108,11 +112,17 @@ func (l *planLifecycle) GetAvailableTools() []schema.ToolDefinition {
 
 func (l *planLifecycle) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
 	registry, phase := l.registryAndPhase()
-	if phase == planLifecycleFormal && call.Name == "submit_plan" && l.transitionPending() {
-		return schema.ToolResult{
-			ToolCallID: call.ID,
-			Output:     "submit_plan cannot be called again after a plan was approved in this turn",
-			IsError:    true,
+	if phase == planLifecycleFormal && call.Name == "submit_plan" {
+		l.mu.Lock()
+		alreadySubmitted := l.submittedThisTurn
+		l.submittedThisTurn = true
+		l.mu.Unlock()
+		if alreadySubmitted {
+			return schema.ToolResult{
+				ToolCallID: call.ID,
+				Output:     "submit_plan cannot be called more than once in the same turn",
+				IsError:    true,
+			}
 		}
 	}
 	result := registry.Execute(ctx, call)
@@ -127,10 +137,10 @@ func (l *planLifecycle) Execute(ctx context.Context, call schema.ToolCall) schem
 	return result
 }
 
-func (l *planLifecycle) transitionPending() bool {
+func (l *planLifecycle) memoryExtractionAllowed() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.pending != nil
+	return l.approved
 }
 
 func (l *planLifecycle) IsParallelSafe(toolName string) bool {
