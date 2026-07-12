@@ -150,13 +150,13 @@ Covers: REQ-006, REQ-007, REQ-008, NFR-002, NFR-005
 
 ### PLD-006: Reinject The Complete Approved Plan After Compaction
 
-**Decision**: On approval, the Formal lifecycle queues a one-shot runtime reminder containing the complete approved plan and the `update_todo`-before-implementation instruction. The runner combines this source with existing skill-activation reminders. The engine injects it after turn compaction, before the first checklist-gate model call.
+**Decision**: After approval, the Formal lifecycle emits a runtime reminder containing the complete approved plan and the `update_todo`-before-implementation instruction on every checklist-gate turn until `update_todo` succeeds. The engine injects it after turn compaction and therefore refreshes the exact plan before each checklist-gate model call. Pending skill-activation reminders remain queued until the active outer registry actually exposes the `skill` tool.
 
 **Evidence**: The original `submit_plan` arguments remain in model-visible history, but turn compaction may summarize them before the post-approval call. `NextTurnReminders` already injects runtime context after compaction.
 
-**Rationale**: This guarantees the complete approved proposal is available for semantic TODO derivation without runtime Markdown parsing or a second run.
+**Rationale**: This guarantees the complete approved proposal remains available for semantic TODO derivation even when read-only revalidation spans multiple turns or later compaction summarizes older history, without runtime Markdown parsing or a second run.
 
-**Trade-off**: The approved plan appears both in the prior tool arguments and one runtime reminder for that boundary turn.
+**Trade-off**: The approved plan may appear repeatedly during the short checklist-gate phase, but the repetition ends immediately after successful TODO initialization.
 
 Covers: REQ-008, REQ-009, NFR-005
 
@@ -236,7 +236,7 @@ Covers: REQ-003, REQ-005, REQ-008, REQ-009, REQ-010, NFR-001, NFR-005
 
 Add an optional run-local completion-gate callback to `engine.Config`. Before accepting a no-tool final response, the engine asks the gate for a blocking reminder. It injects one reminder and retries; a repeated unsatisfied final response returns a deterministic error, matching the bounded behavior of the existing TODO completion gate. The Formal lifecycle uses it to require `submit_plan` before approval and `update_todo` after approval.
 
-Compose lifecycle one-shot reminders with `AgentRunner.drainPendingActivations` rather than replacing skill reminders. No provider, wire schema, transcript schema, or public session format changes.
+Compose persistent checklist-gate plan reminders with pending skill activations rather than replacing them. Drain skill notifications only when the active outer registry exposes `skill`, so Formal/checklist phases and stricter `allowed-tools` decorators cannot consume a notification before the corresponding tool is callable. No provider, wire schema, transcript schema, or public session format changes.
 
 Covers: REQ-006, REQ-008, REQ-009, NFR-005
 
@@ -254,6 +254,7 @@ Update `internal/tui` as follows:
 - Keep primary-input `Shift+Tab` as the mode toggle; sidebar-local `Shift+Tab` and all Esc behavior remain unchanged.
 - While a run is active, mode controls update only the next-submission selection and corresponding footer text.
 - Add a `PlanReviewer` request/reply bridge and inline `planReviewForm` that displays the exact submitted source, renders Markdown for reading, supports scrolling, and returns approval or revision feedback.
+- Reject file-based prompt commands with embedded shell, `hooks.before`, or `hooks.after` before the executor runs while Formal Plan mode is selected; retain side-effect-free inline commands and the existing fork rejection.
 - On approval, update the selected mode/footer to Default while the same run continues.
 - Refresh sidebar PLAN content through the existing document reload path; do not add direct editing.
 - Update `/status` and the bottom mode row to read collaboration-mode state.
@@ -293,7 +294,8 @@ Write failing registry, engine, prompt, and runner tests proving:
 - All four required canonical Formal tools are visible and explicit write/TODO tools are absent; compatibility aliases do not weaken the surface.
 - General editing instructions are overridden by Formal read-only guidance.
 - Revision remains Formal; approval transitions only at the next turn.
-- The complete plan is reinjected after compaction.
+- The complete plan is reinjected after compaction on every checklist-gate turn until `update_todo` succeeds.
+- Skill activation notifications remain queued until the current tool surface exposes `skill`.
 - The checklist gate blocks explicit implementation tools and final completion until `update_todo` succeeds.
 - A same-batch write after `submit_plan` or `update_todo` is denied, while the next eligible turn receives the new surface.
 - The entire approve-to-implementation flow uses one run and one original user message.
@@ -304,7 +306,7 @@ Covers: REQ-003, REQ-004, REQ-005, REQ-007, REQ-008, REQ-009, REQ-010, NFR-001, 
 
 ### Phase 4: TUI Controls And Confirmation TDD
 
-Write failing TUI tests for Default initialization, idempotent `/plan` and `/plan off`, primary-input Shift+Tab, active-run deferral, unchanged Esc/sidebar behavior, exact plan form source, scrolling, revision feedback, approval mode reset, cancellation without approval, and re-arming the review listener. Implement the bridge/form and app wiring, then update reporter summaries and status displays only as needed by those tests.
+Write failing TUI tests for Default initialization, idempotent `/plan` and `/plan off`, primary-input Shift+Tab, active-run deferral, unchanged Esc/sidebar behavior, exact plan form source, scrolling, revision feedback, approval mode reset, cancellation without approval, re-arming the review listener, and rejection of side-effectful file-command preparation before executor dispatch. Implement the bridge/form and app wiring, then update reporter summaries and status displays only as needed by those tests.
 
 Covers: REQ-001, REQ-002, REQ-003, REQ-006, REQ-007, REQ-008, NFR-002, NFR-004, NFR-005
 
@@ -344,7 +346,9 @@ Covers: REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, 
 
 - **Bash can still mutate state in Formal or checklist-gate phases.** Mitigation: retain the confirmed explicit read-only instructions and document/test the boundary as behavioral, not secure. Covers: REQ-004, NFR-001
 - **A fixed system prompt spans multiple phases.** Mitigation: use explicit conditional lifecycle instructions and concrete registry gating; test the exact prompt and each phase's definitions. Covers: REQ-004, REQ-005, REQ-008, REQ-009
-- **Compaction could otherwise hide the submitted proposal.** Mitigation: inject the complete approved plan through the existing post-compaction reminder point. Covers: REQ-008, REQ-009
+- **Compaction could otherwise hide the submitted proposal.** Mitigation: inject the complete approved plan through the existing post-compaction reminder point on every checklist-gate turn until TODO initialization succeeds. Covers: REQ-008, REQ-009
+- **Slash-command preparation or completion hooks could mutate state before plan approval.** Mitigation: reject embedded shell, `hooks.before`, and `hooks.after` in Formal file-command preparation before calling the executor. Covers: REQ-004, NFR-001
+- **Conditional skill activation can precede skill-tool visibility.** Mitigation: retain activation notices until the active outer registry exposes `skill`, including under lifecycle and `allowed-tools` decorators. Covers: REQ-005, REQ-009
 - **A model may request multiple tools in one response.** Mitigation: commit tool-surface transitions only at `BeginTurn`, so same-batch calls remain constrained by the surface advertised for that turn. Covers: REQ-005, REQ-009, NFR-005
 - **Formal planning consumes turns from the existing run limit.** Mitigation: keep existing limit semantics and deterministic repeated-gate failure instead of an unbounded loop; TUI defaults remain unlimited. Covers: REQ-008, NFR-005
 - **Direct `-plan` removal breaks existing scripts.** Mitigation: test ordinary flag-parser failure and update usage text; no compatibility alias is added. Covers: REQ-011, NFR-003

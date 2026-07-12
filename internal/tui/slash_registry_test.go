@@ -157,6 +157,65 @@ func TestModel_FormalPlanRejectsForkedPromptCommandBeforeExecution(t *testing.T)
 	}
 }
 
+func TestModel_FormalPlanRejectsSideEffectfulInlinePromptPreparation(t *testing.T) {
+	tests := []struct {
+		name    string
+		command func(marker string) (string, slash.Frontmatter)
+	}{
+		{
+			name: "embedded shell",
+			command: func(marker string) (string, slash.Frontmatter) {
+				return "Inspect !`touch " + marker + "`", slash.Frontmatter{}
+			},
+		},
+		{
+			name: "before hook",
+			command: func(marker string) (string, slash.Frontmatter) {
+				return "Inspect", slash.Frontmatter{
+					Hooks: &slash.FrontmatterHooks{Before: "touch " + marker},
+				}
+			},
+		},
+		{
+			name: "after hook",
+			command: func(marker string) (string, slash.Frontmatter) {
+				return "Inspect", slash.Frontmatter{
+					Hooks: &slash.FrontmatterHooks{After: "touch " + marker},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			marker := workDir + "/prepare.marker"
+			body, frontmatter := tt.command(marker)
+			frontmatter.UserInvocable = true
+
+			runner := newFakeRunner()
+			runner.workDir = workDir
+			runner.collaborationMode = collaboration.ModeFormalPlan
+			registry := newRegistryWithPromptCommandFrontmatter(t, "inspect", body, frontmatter)
+			executor := slash.NewExecutor(slash.WithWorkDir(workDir))
+			m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, executor)
+
+			m, _ = update(t, m, keyRunes("/inspect"))
+			m = drivePromptCommand(t, m)
+
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("Formal Plan preparation created marker before approval: %v", err)
+			}
+			if m.status != "Command failed" || !entriesContain(m.entries, "error", "Formal Plan") {
+				t.Fatalf("side-effectful preparation rejection not surfaced: status=%q entries=%#v", m.status, m.entries)
+			}
+			if len(runner.runs) != 0 {
+				t.Fatalf("runner unexpectedly executed after preparation rejection: %#v", runner.runs)
+			}
+		})
+	}
+}
+
 func TestModel_FileBasedCommand_RendersOriginalInput(t *testing.T) {
 	runner := newFakeRunner()
 	registry := newRegistryWithPromptCommand(t, "review", "Review: $ARGUMENTS")

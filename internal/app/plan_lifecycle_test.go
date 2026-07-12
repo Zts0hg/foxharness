@@ -29,6 +29,22 @@ type approveThenContinuePlanReviewer struct {
 	plans []string
 }
 
+type lifecycleNamedTool struct {
+	name string
+}
+
+func (t *lifecycleNamedTool) Name() string {
+	return t.name
+}
+
+func (t *lifecycleNamedTool) Definition() schema.ToolDefinition {
+	return schema.ToolDefinition{Name: t.name, InputSchema: map[string]any{"type": "object"}}
+}
+
+func (t *lifecycleNamedTool) Execute(context.Context, json.RawMessage) (string, error) {
+	return "ok", nil
+}
+
 func (r *approveThenContinuePlanReviewer) ReviewPlan(ctx context.Context, planMarkdown string) (tools.PlanReview, error) {
 	r.plans = append(r.plans, planMarkdown)
 	if len(r.plans) == 1 {
@@ -220,6 +236,86 @@ func TestFormalPlanLifecycleContinuesInOneRunAndGatesImplementation(t *testing.T
 	}
 	if userPrompts != 1 || len(runIDs) != 1 || !runIDs[result.RunID] {
 		t.Fatalf("message continuity: user prompts=%d run IDs=%v result run=%s", userPrompts, runIDs, result.RunID)
+	}
+}
+
+func TestPlanLifecycleRepeatsApprovedPlanUntilChecklistIsInitialized(t *testing.T) {
+	checklist := tools.NewRegistry()
+	checklist.Register(tools.NewUpdateTodoTool(t.TempDir()))
+	lifecycle := newPlanLifecycle(tools.NewRegistry(), checklist, tools.NewRegistry(), nil)
+	plan := "# Approved plan\n\n1. Inspect.\n2. Implement.\n3. Verify."
+
+	lifecycle.approve(plan)
+	lifecycle.BeginTurn()
+	for turn := 1; turn <= 2; turn++ {
+		reminders := lifecycle.runtimeReminders()
+		if len(reminders) != 1 || !strings.Contains(reminders[0], plan) {
+			t.Fatalf("checklist turn %d reminders = %#v, want complete approved plan", turn, reminders)
+		}
+		lifecycle.BeginTurn()
+	}
+
+	result := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID:   "todo",
+		Name: "update_todo",
+		Arguments: lifecycleArgs(map[string]string{
+			"content": "# TODO\n\n- [ ] Implement\n- [ ] Verify\n",
+		}),
+	})
+	if result.IsError {
+		t.Fatalf("update_todo result = %#v", result)
+	}
+	lifecycle.BeginTurn()
+	if reminders := lifecycle.runtimeReminders(); len(reminders) != 0 {
+		t.Fatalf("Default phase reminders = %#v, want approved plan reminder retired", reminders)
+	}
+}
+
+func TestPlanLifecycleDefersSkillRemindersUntilSkillToolIsAvailable(t *testing.T) {
+	checklist := tools.NewRegistry()
+	checklist.Register(tools.NewUpdateTodoTool(t.TempDir()))
+	defaultRegistry := tools.NewRegistry()
+	defaultRegistry.Register(&lifecycleNamedTool{name: "skill"})
+	lifecycle := newPlanLifecycle(tools.NewRegistry(), checklist, defaultRegistry, nil)
+	runner := &AgentRunner{pendingActivations: []string{"A new skill became available: `go-review`"}}
+
+	if reminders := runner.planRunReminders(lifecycle, lifecycle); len(reminders) != 0 {
+		t.Fatalf("Formal reminders = %#v, want skill notification deferred", reminders)
+	}
+	if len(runner.pendingActivations) != 1 {
+		t.Fatalf("Formal phase consumed pending skill notifications: %#v", runner.pendingActivations)
+	}
+
+	plan := "# Approved plan\n\n- Implement\n- Verify"
+	lifecycle.approve(plan)
+	lifecycle.BeginTurn()
+	reminders := runner.planRunReminders(lifecycle, lifecycle)
+	joined := strings.Join(reminders, "\n")
+	if !strings.Contains(joined, plan) || strings.Contains(joined, "go-review") {
+		t.Fatalf("checklist reminders = %#v, want plan without unavailable skill notification", reminders)
+	}
+	if len(runner.pendingActivations) != 1 {
+		t.Fatalf("checklist phase consumed pending skill notifications: %#v", runner.pendingActivations)
+	}
+
+	result := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID:   "todo",
+		Name: "update_todo",
+		Arguments: lifecycleArgs(map[string]string{
+			"content": "# TODO\n\n- [ ] Implement\n- [ ] Verify\n",
+		}),
+	})
+	if result.IsError {
+		t.Fatalf("update_todo result = %#v", result)
+	}
+	lifecycle.BeginTurn()
+	reminders = runner.planRunReminders(lifecycle, lifecycle)
+	joined = strings.Join(reminders, "\n")
+	if !strings.Contains(joined, "go-review") || strings.Contains(joined, plan) {
+		t.Fatalf("Default reminders = %#v, want deferred skill notification without plan", reminders)
+	}
+	if len(runner.pendingActivations) != 0 {
+		t.Fatalf("Default phase retained delivered skill notifications: %#v", runner.pendingActivations)
 	}
 }
 

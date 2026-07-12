@@ -18,7 +18,6 @@
 //	-llm-provider  LLM provider profile id
 //	-protocol   LLM provider protocol: openai or claude
 //	-thinking   Enable legacy per-turn Thinking mode
-//	-plan       Enable Plan Mode (default: true)
 //	-max-turns  Maximum number of agent turns; 0 means unlimited (default: 0)
 //	-session    Resume a specific session ID
 //	-continue   Resume the latest CLI session

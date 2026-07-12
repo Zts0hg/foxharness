@@ -225,6 +225,26 @@ func (r *AgentRunner) drainPendingActivations() []string {
 	return out
 }
 
+func (r *AgentRunner) planRunReminders(planRun *planLifecycle, activeRegistry tools.Registry) []string {
+	reminders := planRun.runtimeReminders()
+	if !registryExposesTool(activeRegistry, "skill") {
+		return reminders
+	}
+	return append(reminders, r.drainPendingActivations()...)
+}
+
+func registryExposesTool(registry tools.Registry, name string) bool {
+	if registry == nil {
+		return false
+	}
+	for _, definition := range registry.GetAvailableTools() {
+		if definition.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // currentSubagentManager returns a freshly-built subagent.Manager bound to
 // the runner's current LLM provider. Built per-call so a /model switch is
 // immediately reflected in fork-mode skills without rebuilding the
@@ -428,8 +448,7 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	var completionGate func() string
 	if planRun != nil {
 		nextTurnReminders = func() []string {
-			reminders := planRun.drainReminders()
-			return append(reminders, r.drainPendingActivations()...)
+			return r.planRunReminders(planRun, toolRegistry)
 		}
 		completionGate = planRun.completionReminder
 	}

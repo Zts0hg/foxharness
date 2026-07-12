@@ -105,6 +105,7 @@ As a FoxHarness user across supported entry points, I want normal tasks to start
 - Revision feedback does not mutate `PLAN.md` by itself; only a successful complete `submit_plan` replacement changes the proposal artifact.
 - If `update_todo` fails after approval, the error is returned to the Agent and implementation actions remain deferred until checklist initialization succeeds.
 - Read-only Bash exploration is permitted by instruction, but no sandbox or command classifier guarantees that a shell command is non-mutating.
+- A file-based slash command that would execute embedded shell, `hooks.before`, or `hooks.after` outside the agent tool registry is rejected before preparation in Formal Plan mode; side-effect-free inline prompt commands remain available.
 
 ## Requirements
 
@@ -134,7 +135,7 @@ As a FoxHarness user across supported entry points, I want normal tasks to start
 - **REQ-008**: Approving a proposal MUST switch the session to Default mode and continue the same task in the same conversation context without requiring a new user prompt. Choosing to continue planning MUST leave Formal Plan mode active and MUST NOT begin implementation.
   - Sources: NEED-001, DEC-005, DEC-007
 
-- **REQ-009**: The Default-mode continuation after approval MUST include the complete approved plan. Before its first implementation action, the Agent MUST derive ordered, executable, and verifiable checklist items from that plan and successfully call `update_todo` to replace session-local `TODO.md`. Read-only revalidation MAY precede the checklist update.
+- **REQ-009**: The Default-mode continuation after approval MUST include the complete approved plan, and the runtime MUST keep the complete plan available on every checklist-gate model call until `update_todo` succeeds, including after compaction. Before its first implementation action, the Agent MUST derive ordered, executable, and verifiable checklist items from that plan and successfully call `update_todo` to replace session-local `TODO.md`. Read-only revalidation MAY precede the checklist update.
   - Sources: DEC-005, DEC-006, DEC-008
 
 - **REQ-010**: `update_todo` MUST remain the sole execution checklist tool and MUST manage only session-local `TODO.md`. The feature MUST NOT introduce `update_plan`; `submit_plan` MUST manage only the session-local `PLAN.md` proposal.
@@ -201,7 +202,7 @@ As a FoxHarness user across supported entry points, I want normal tasks to start
 - **SC-001**: Deterministic TUI tests cover every confirmed Default/Formal Plan transition, including idempotent commands, active-run deferral, approval, continued planning, and unchanged `Esc` behavior.
 - **SC-002**: Deterministic tool-registry tests verify that all four required Formal Plan tools are visible and that `write_file`, `edit_file`, and `update_todo` are absent.
 - **SC-003**: Submission and revision tests verify byte-for-byte agreement between the latest successful `submit_plan` payload, persisted `PLAN.md`, and displayed confirmation content.
-- **SC-004**: Approval-continuation tests verify that `update_todo` succeeds with checklist content derived from the approved plan before the first implementation tool call.
+- **SC-004**: Approval-continuation tests verify that the complete approved plan remains available across repeated checklist-gate turns and that `update_todo` succeeds with checklist content derived from that plan before the first implementation tool call.
 - **SC-005**: Repository tests and static searches find no production invocation of the legacy `Planner.BuildPlan`, no `EnablePlanMode` field or accessor, and no registered `-plan` flag.
 - **SC-006**: Existing session storage, snapshot, `/rewind`, Feishu, and Autodev regression tests continue to pass.
 

@@ -152,7 +152,7 @@ Tasks follow the approved plan's six implementation phases and the project const
 - **Verification**: Commands in the plan's Verification Strategy pass, followed by `go test ./...`.
 - **Covers**: REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009, REQ-010, REQ-011, REQ-012, REQ-013, REQ-014, NFR-001, NFR-002, NFR-003, NFR-004, NFR-005; Plan: Phase 6, Verification Strategy
 
-### T017 - [ ] Perform Final Code Review And Fix Verified Findings
+### T017 - [x] Perform Final Code Review And Fix Verified Findings
 
 - **Outcome**: Changed analyzable code is reviewed for correctness, requirement fidelity, concurrency, error handling, TDD evidence, and Go documentation; eligible verified findings are fixed test-first and the final full suite remains green.
 - **Paths**: Changed analyzable Go files outside `.codexspec/specs`

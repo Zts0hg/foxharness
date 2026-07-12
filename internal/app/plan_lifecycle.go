@@ -41,7 +41,6 @@ type planLifecycle struct {
 
 	approvedPlan      string
 	approved          bool
-	reminderQueued    bool
 	submittedThisTurn bool
 	onApproved        func()
 }
@@ -72,7 +71,6 @@ func (l *planLifecycle) approve(planMarkdown string) {
 	l.pending = &next
 	l.approvedPlan = planMarkdown
 	l.approved = true
-	l.reminderQueued = true
 	onApproved := l.onApproved
 	l.mu.Unlock()
 
@@ -193,13 +191,12 @@ func (l *planLifecycle) completionReminder() string {
 	}
 }
 
-func (l *planLifecycle) drainReminders() []string {
+func (l *planLifecycle) runtimeReminders() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if !l.reminderQueued {
+	if l.phase != planLifecycleChecklist || l.approvedPlan == "" {
 		return nil
 	}
-	l.reminderQueued = false
 	return []string{approvedPlanReminder(l.approvedPlan)}
 }
 
