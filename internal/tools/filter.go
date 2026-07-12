@@ -71,3 +71,10 @@ func (f *filteredRegistry) IsParallelSafe(toolName string) bool {
 	}
 	return f.base.IsParallelSafe(toolName)
 }
+
+// BeginTurn forwards the optional turn boundary to the wrapped registry.
+func (f *filteredRegistry) BeginTurn() {
+	if turnAware, ok := f.base.(TurnAwareRegistry); ok {
+		turnAware.BeginTurn()
+	}
+}

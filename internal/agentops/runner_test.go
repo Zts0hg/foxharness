@@ -1,16 +1,83 @@
 package agentops
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/automemory"
+	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
+
+type agentOpsSurfaceProvider struct {
+	mu       sync.Mutex
+	surfaces [][]string
+}
+
+func (p *agentOpsSurfaceProvider) Generate(ctx context.Context, messages []schema.Message, definitions []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	names := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		names = append(names, definition.Name)
+	}
+	p.mu.Lock()
+	p.surfaces = append(p.surfaces, names)
+	p.mu.Unlock()
+	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "analysis complete"}}, nil
+}
+
+func (p *agentOpsSurfaceProvider) firstSurface() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.surfaces) == 0 {
+		return nil
+	}
+	return append([]string(nil), p.surfaces[0]...)
+}
+
+type recordingAgentOpsMessenger struct{}
+
+func (recordingAgentOpsMessenger) SendText(ctx context.Context, chatID, text string) error {
+	return nil
+}
+
+func TestAgentOpsFirstModelCallUsesPrimaryRegistryWithoutPlannerPrepass(t *testing.T) {
+	workDir := t.TempDir()
+	provider := &agentOpsSurfaceProvider{}
+	runner := NewRunner(provider, workDir, t.TempDir(), recordingAgentOpsMessenger{}, approval.NewStore())
+	runner.sessions = session.NewManagerWithHome(workDir, t.TempDir())
+
+	err := runner.run(context.Background(), Task{
+		TaskID:   "task-1",
+		ChatID:   "chat-1",
+		SenderID: "user-1",
+		Text:     "inspect the incident",
+	})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	first := provider.firstSurface()
+	if len(first) == 0 {
+		t.Fatalf("first model call tools = %#v, want primary AgentOps registry without Planner prepass", first)
+	}
+	want := map[string]bool{"log_search": false, "read_todo": false, "update_todo": false}
+	for _, name := range first {
+		if _, ok := want[name]; ok {
+			want[name] = true
+		}
+	}
+	for name, found := range want {
+		if !found {
+			t.Fatalf("first model call tools = %#v, missing %s", first, name)
+		}
+	}
+}
 
 func TestRunnerBuildRegistryIncludesTodoTools(t *testing.T) {
 	runner := &Runner{workDir: t.TempDir()}

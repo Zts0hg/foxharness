@@ -122,6 +122,8 @@ func formatToolInvocation(toolName string, args string) string {
 		return "Read TODO"
 	case "update_todo":
 		return "Update TODO"
+	case "submit_plan":
+		return "Submit plan"
 	case "delegate_task":
 		if task := fields["task"]; task != "" {
 			return "Task (" + truncateInline(task, 80) + ")"

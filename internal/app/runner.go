@@ -16,6 +16,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
@@ -38,7 +39,6 @@ type AgentRunnerConfig struct {
 	Model           string
 	LLM             llmconfig.ResolvedConfig
 	EnableThinking  bool
-	EnablePlanMode  bool
 	MaxTurns        int
 	SessionID       string
 	ContinueSession bool
@@ -57,9 +57,9 @@ type AgentRunner struct {
 	providerProtocol string
 	llmConfig        llmconfig.ResolvedConfig
 
-	enableThinking bool
-	enablePlanMode bool
-	maxTurns       int
+	enableThinking    bool
+	collaborationMode collaboration.Mode
+	maxTurns          int
 
 	onModelChange func(model string) error
 
@@ -77,7 +77,8 @@ type AgentRunner struct {
 	slashRegistry  *slash.Registry
 	slashExecutor  *slash.Executor
 
-	userAsker tools.UserAsker
+	userAsker    tools.UserAsker
+	planReviewer tools.PlanReviewer
 
 	pendingMu          sync.Mutex
 	pendingActivations []string
@@ -96,7 +97,6 @@ func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
 		Model:           cfg.Model,
 		LLM:             cfg.ResolvedLLM,
 		EnableThinking:  cfg.EnableThinking,
-		EnablePlanMode:  cfg.EnablePlanMode,
 		MaxTurns:        cfg.MaxTurns,
 		SessionID:       cfg.SessionID,
 		ContinueSession: cfg.ContinueSession,
@@ -153,21 +153,21 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 	}
 
 	ar := &AgentRunner{
-		workDir:          workDir,
-		model:            cfg.LLM.Model,
-		providerProtocol: providerProtocol,
-		llmConfig:        cfg.LLM,
-		enableThinking:   cfg.EnableThinking,
-		enablePlanMode:   cfg.EnablePlanMode,
-		maxTurns:         cfg.MaxTurns,
-		onModelChange:    cfg.OnModelChange,
-		store:            store,
-		autoMemory:       autoMem,
-		manager:          manager,
-		llmProvider:      llmProvider,
-		currentSession:   sess,
-		checkpointer:     cp,
-		slashRegistry:    slashRegistry,
+		workDir:           workDir,
+		model:             cfg.LLM.Model,
+		providerProtocol:  providerProtocol,
+		llmConfig:         cfg.LLM,
+		enableThinking:    cfg.EnableThinking,
+		collaborationMode: collaboration.ModeDefault,
+		maxTurns:          cfg.MaxTurns,
+		onModelChange:     cfg.OnModelChange,
+		store:             store,
+		autoMemory:        autoMem,
+		manager:           manager,
+		llmProvider:       llmProvider,
+		currentSession:    sess,
+		checkpointer:      cp,
+		slashRegistry:     slashRegistry,
 	}
 	ar.slashExecutor = slash.NewExecutor(
 		slash.WithWorkDir(workDir),
@@ -225,6 +225,26 @@ func (r *AgentRunner) drainPendingActivations() []string {
 	return out
 }
 
+func (r *AgentRunner) planRunReminders(planRun *planLifecycle, activeRegistry tools.Registry) []string {
+	reminders := planRun.runtimeReminders()
+	if !registryExposesTool(activeRegistry, "skill") {
+		return reminders
+	}
+	return append(reminders, r.drainPendingActivations()...)
+}
+
+func registryExposesTool(registry tools.Registry, name string) bool {
+	if registry == nil {
+		return false
+	}
+	for _, definition := range registry.GetAvailableTools() {
+		if definition.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // currentSubagentManager returns a freshly-built subagent.Manager bound to
 // the runner's current LLM provider. Built per-call so a /model switch is
 // immediately reflected in fork-mode skills without rebuilding the
@@ -267,13 +287,25 @@ func (r *AgentRunner) SlashExecutor() *slash.Executor {
 
 // Run executes one prompt as a new run in the current session.
 func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, "", nil, reporter)
+	return r.runInternal(ctx, userPrompt, "", nil, nil, reporter)
+}
+
+// RunInCollaborationMode executes one prompt in the mode captured when the
+// user submitted it without changing the mode selected for later submissions.
+func (r *AgentRunner) RunInCollaborationMode(ctx context.Context, userPrompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
+	return r.runInternal(ctx, userPrompt, "", nil, collaborationModeOverride(mode), reporter)
 }
 
 // RunWithDisplay executes one prompt while storing a separate human-facing
 // prompt for transcript and history views.
 func (r *AgentRunner) RunWithDisplay(ctx context.Context, userPrompt string, displayPrompt string, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, displayPrompt, nil, reporter)
+	return r.runInternal(ctx, userPrompt, displayPrompt, nil, nil, reporter)
+}
+
+// RunWithDisplayInCollaborationMode is RunWithDisplay with an immutable mode
+// captured at user submission time.
+func (r *AgentRunner) RunWithDisplayInCollaborationMode(ctx context.Context, userPrompt string, displayPrompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
+	return r.runInternal(ctx, userPrompt, displayPrompt, nil, collaborationModeOverride(mode), reporter)
 }
 
 // RunRestricted executes one prompt with the tool registry filtered down
@@ -283,15 +315,32 @@ func (r *AgentRunner) RunWithDisplay(ctx context.Context, userPrompt string, dis
 //
 // allowedTools must be non-empty; pass nil/empty to Run instead.
 func (r *AgentRunner) RunRestricted(ctx context.Context, userPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, "", allowedTools, reporter)
+	return r.runInternal(ctx, userPrompt, "", allowedTools, nil, reporter)
+}
+
+// RunRestrictedInCollaborationMode is RunRestricted with an immutable mode
+// captured at user submission time.
+func (r *AgentRunner) RunRestrictedInCollaborationMode(ctx context.Context, userPrompt string, allowedTools []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
+	return r.runInternal(ctx, userPrompt, "", allowedTools, collaborationModeOverride(mode), reporter)
 }
 
 // RunRestrictedWithDisplay is the restricted variant of RunWithDisplay.
 func (r *AgentRunner) RunRestrictedWithDisplay(ctx context.Context, userPrompt string, displayPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, displayPrompt, allowedTools, reporter)
+	return r.runInternal(ctx, userPrompt, displayPrompt, allowedTools, nil, reporter)
 }
 
-func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displayPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
+// RunRestrictedWithDisplayInCollaborationMode combines display text, a tool
+// allow-list, and the immutable mode captured at user submission time.
+func (r *AgentRunner) RunRestrictedWithDisplayInCollaborationMode(ctx context.Context, userPrompt string, displayPrompt string, allowedTools []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
+	return r.runInternal(ctx, userPrompt, displayPrompt, allowedTools, collaborationModeOverride(mode), reporter)
+}
+
+func collaborationModeOverride(mode collaboration.Mode) *collaboration.Mode {
+	normalized := collaboration.Normalize(mode)
+	return &normalized
+}
+
+func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displayPrompt string, allowedTools []string, modeOverride *collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
 	r.runMu.Lock()
 	defer r.runMu.Unlock()
 
@@ -300,13 +349,21 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	store := r.store
 	autoMem := r.autoMemory
 	enableThinking := r.enableThinking
-	enablePlanMode := r.enablePlanMode
+	collaborationMode := collaboration.Normalize(r.collaborationMode)
 	llmProvider := r.llmProvider
 	cp := r.checkpointer
 	providerProtocol := r.providerProtocol
 	model := r.model
 	maxTurns := r.maxTurns
 	r.mu.Unlock()
+	if modeOverride != nil {
+		collaborationMode = collaboration.Normalize(*modeOverride)
+	}
+	if collaborationMode == collaboration.ModeFormalPlan && len(allowedTools) > 0 {
+		if err := validateFormalPlanAllowedTools(allowedTools); err != nil {
+			return nil, err
+		}
+	}
 
 	nextSeq, err := session.NewMessageLog(sess).NextSeq()
 	if err != nil {
@@ -316,25 +373,15 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 		return nil, fmt.Errorf("创建 session state 快照失败: %w", err)
 	}
 
-	if enablePlanMode {
-		planner := memory.NewPlanner(llmProvider, store)
-		if err := planner.BuildPlan(ctx, userPrompt); err != nil {
-			log.Printf("[PlanMode] 生成计划失败，将回退到旧版本每轮 Thinking: %v", err)
-			enableThinking = true
-		} else {
-			log.Printf("[PlanMode] 计划已生成，本次任务关闭每轮 Thinking")
-			enableThinking = false
-		}
-	}
-
 	r.mu.Lock()
 	registry := r.slashRegistry
 	interactiveAsk := r.userAsker != nil
 	r.mu.Unlock()
 
 	composer := prompt.NewComposer(r.workDir).
-		WithMemory(sess.MemoryPath()).
-		WithInteractiveAsk(interactiveAsk)
+		WithCollaborationMode(collaborationMode).
+		WithInteractiveAsk(interactiveAsk).
+		WithMemory(sess.MemoryPath())
 	if autoMem != nil {
 		composer = composer.WithAutoMemory(autoMem)
 	}
@@ -366,6 +413,11 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	}
 
 	toolRegistry := r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID)
+	var planRun *planLifecycle
+	if collaborationMode == collaboration.ModeFormalPlan {
+		planRun = r.buildPlanLifecycle(sess, store, toolRegistry)
+		toolRegistry = planRun
+	}
 	if len(allowedTools) > 0 {
 		toolRegistry = slash.NewFilteredRegistry(toolRegistry, allowedTools)
 		log.Printf("[slash] restricting next run to allowed tools: %v", allowedTools)
@@ -392,6 +444,15 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 		onToolCalled = memoryHook
 	}
 
+	nextTurnReminders := r.drainPendingActivations
+	var completionGate func() string
+	if planRun != nil {
+		nextTurnReminders = func() []string {
+			return r.planRunReminders(planRun, toolRegistry)
+		}
+		completionGate = planRun.completionReminder
+	}
+
 	eng := engine.NewAgentEngine(
 		llmProvider,
 		toolRegistry,
@@ -406,7 +467,8 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 			DisplayPrompt:     displayPrompt,
 			OnUserMessageID:   setCurrentMessageID,
 			OnToolCalled:      onToolCalled,
-			NextTurnReminders: r.drainPendingActivations,
+			NextTurnReminders: nextTurnReminders,
+			CompletionGate:    completionGate,
 			OnContextEstimate: func(usedTokens, contextWindow int) {
 				atomic.StoreInt64(&r.contextUsedTokens, int64(usedTokens))
 				atomic.StoreInt64(&r.contextWindowTokens, int64(contextWindow))
@@ -430,7 +492,8 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	// is fire-and-forget and runs out-of-band; it never affects the run result.
 	// The launch itself is panic-guarded so a misbehaving hook can never disturb
 	// the returned result.
-	if hooks != nil && result != nil {
+	memoryExtractionAllowed := planRun == nil || planRun.memoryExtractionAllowed()
+	if hooks != nil && result != nil && memoryExtractionAllowed {
 		func() {
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -492,6 +555,7 @@ func (r *AgentRunner) NewSession(ctx context.Context) (string, error) {
 	r.currentSession = sess
 	r.store = store
 	r.checkpointer = checkpoint.New(checkpoint.Config{SessionDir: sess.RootDir})
+	r.collaborationMode = collaboration.ModeDefault
 	if checkpointDisabledFromEnv() {
 		r.checkpointer.SetDisabled(true)
 	}
@@ -723,16 +787,18 @@ func (r *AgentRunner) Checkpointer() checkpoint.Checkpointer {
 	return r.checkpointer
 }
 
-func (r *AgentRunner) PlanMode() bool {
+// CollaborationMode returns the mode selected for the next submitted task.
+func (r *AgentRunner) CollaborationMode() collaboration.Mode {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.enablePlanMode
+	return collaboration.Normalize(r.collaborationMode)
 }
 
-func (r *AgentRunner) SetPlanMode(enabled bool) {
+// SetCollaborationMode changes the mode used by the next submitted task.
+func (r *AgentRunner) SetCollaborationMode(mode collaboration.Mode) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.enablePlanMode = enabled
+	r.collaborationMode = collaboration.Normalize(mode)
 }
 
 // CompactNow performs a user-initiated compaction of the current session's
@@ -917,6 +983,31 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 	return registry
 }
 
+func (r *AgentRunner) buildPlanLifecycle(sess *session.Session, store *memory.Store, defaultRegistry tools.Registry) *planLifecycle {
+	r.mu.Lock()
+	userAsker := r.userAsker
+	planReviewer := r.planReviewer
+	r.mu.Unlock()
+
+	checklistRegistry := tools.NewRegistry()
+	checklistRegistry.Register(tools.NewReadFileTool(r.workDir))
+	checklistRegistry.Register(tools.NewBashTool(r.workDir))
+	checklistRegistry.Register(tools.NewAskUserQuestionTool(userAsker))
+	checklistRegistry.Register(tools.NewReadTodoTool(sess.RootDir))
+	checklistRegistry.Register(tools.NewUpdateTodoTool(sess.RootDir))
+
+	lifecycle := newPlanLifecycle(nil, checklistRegistry, defaultRegistry, func() {
+		r.SetCollaborationMode(collaboration.ModeDefault)
+	})
+	formalRegistry := tools.NewRegistry()
+	formalRegistry.Register(tools.NewReadFileTool(r.workDir))
+	formalRegistry.Register(tools.NewBashTool(r.workDir))
+	formalRegistry.Register(tools.NewAskUserQuestionTool(userAsker))
+	formalRegistry.Register(tools.NewSubmitPlanTool(store, planReviewer, lifecycle.approve))
+	lifecycle.setFormalRegistry(formalRegistry)
+	return lifecycle
+}
+
 // SetUserAsker installs the interactive asker used by the ask_user_question
 // tool. The TUI calls this before running prompts; leaving it unset (nil) keeps
 // the tool out of the registry for non-interactive runs.
@@ -924,6 +1015,13 @@ func (r *AgentRunner) SetUserAsker(asker tools.UserAsker) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.userAsker = asker
+}
+
+// SetPlanReviewer installs the interactive reviewer used by submit_plan.
+func (r *AgentRunner) SetPlanReviewer(reviewer tools.PlanReviewer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.planReviewer = reviewer
 }
 
 func checkpointDisabledFromEnv() bool {

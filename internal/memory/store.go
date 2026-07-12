@@ -61,6 +61,39 @@ func (s *Store) EnsureFiles() error {
 	return nil
 }
 
+// ReplacePlan atomically replaces the session-local PLAN.md with content.
+// Content is written byte-for-byte without newline or whitespace changes.
+func (s *Store) ReplacePlan(content string) error {
+	path := s.PlanPath()
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create PLAN.md directory: %w", err)
+	}
+
+	tmp, err := os.CreateTemp(dir, ".PLAN-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary PLAN.md: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if err := tmp.Chmod(0644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to set temporary PLAN.md permissions: %w", err)
+	}
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to write temporary PLAN.md: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary PLAN.md: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to replace PLAN.md: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) planDir() string {
 	if s.sessionDir != "" {
 		return s.sessionDir

@@ -18,7 +18,6 @@
 //	-llm-provider  LLM provider profile id
 //	-protocol   LLM provider protocol: openai or claude
 //	-thinking   Enable legacy per-turn Thinking mode
-//	-plan       Enable Plan Mode (default: true)
 //	-max-turns  Maximum number of agent turns; 0 means unlimited (default: 0)
 //	-session    Resume a specific session ID
 //	-continue   Resume the latest CLI session
@@ -216,8 +215,7 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 	fs.StringVar(&cfg.LLM.Auth, "auth", "", "LLM auth mode: api-key or none")
 	fs.StringVar(&cfg.LLM.APIKeyEnv, "api-key-env", "", "environment variable containing the LLM API key")
 	fs.StringVar(&cfg.LLM.APIKey, "api-key", "", "LLM API key value; prefer -api-key-env for routine use")
-	fs.BoolVar(&cfg.EnableThinking, "thinking", false, "enable legacy per-turn Thinking mode; disabled when Plan Mode succeeds")
-	fs.BoolVar(&cfg.EnablePlanMode, "plan", true, "enable Plan Mode")
+	fs.BoolVar(&cfg.EnableThinking, "thinking", false, "enable legacy per-turn Thinking mode")
 	fs.IntVar(&cfg.MaxTurns, "max-turns", 0, "maximum number of agent turns; 0 means unlimited")
 	fs.StringVar(&cfg.SessionID, "session", "", "resume a specific session ID")
 	fs.StringVar(&cfg.SessionID, "r", "", "resume a specific session ID")

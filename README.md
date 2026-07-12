@@ -22,7 +22,7 @@ The default binary command is `fox`.
 - Session continuity: multiple runs can share one session and one raw message history.
 - Project instructions: automatically loads `AGENTS.md` from the current workspace.
 - Skills and slash commands: loads foxharness files under `.foxharness/` and Claude Code-compatible files under `.claude/`.
-- Plan mode: can generate and use `PLAN.md`, `TODO.md`, and `MEMORY.md`.
+- Formal Plan mode: explicitly plan, revise, and approve a proposal before implementation; plan and checklist artifacts stay session-local.
 - Tool execution: file reading, file writing, fuzzy edit, bash, and delegated subagent tasks.
 - Local trace data: stores transcripts, metrics, traces, and run metadata under `~/.foxharness`.
 
@@ -227,7 +227,7 @@ echo "Run the tests and explain any failures" | fox exec -
 Inside the TUI:
 
 - `Enter`: send the current message.
-- `Shift+Tab`: toggle Plan Mode for future runs.
+- `Shift+Tab`: switch between Default and Formal Plan mode for the next submission.
 - `Up` / `Down`: navigate within multiline input; at the beginning or end, switch through input history.
 - `PgUp` / `PgDown` or mouse wheel: scroll the conversation.
 - Drag over transcript text: copy the selection to the macOS clipboard.
@@ -244,6 +244,7 @@ Slash commands:
 | `/session` | Show current session paths. |
 | `/clear` | Clear the visible transcript. |
 | `/new` | Start a fresh session. |
+| `/plan` | Enter Formal Plan mode; use `/plan off` to return to Default. |
 | `/cancel` | Cancel the active run. |
 | `/help` | Show available commands. |
 | `/exit` | Quit the TUI. |
@@ -270,8 +271,7 @@ Common options:
 | `-auth` | Auth mode override: `api-key` or `none`. |
 | `-api-key-env` | Environment variable containing the API key. |
 | `-api-key` | Direct API key value; prefer `-api-key-env`. |
-| `-plan` | Enable Plan Mode. Defaults to `true`. |
-| `-thinking` | Enable legacy per-turn thinking mode when Plan Mode is not used. |
+| `-thinking` | Enable legacy per-turn thinking mode. |
 | `-max-turns` | Maximum agent turns. Defaults to unlimited; use a positive value to cap turns. |
 | `-c`, `-continue` | Resume the latest CLI session. |
 | `-r`, `-session` | Resume a specific session ID. |
@@ -281,7 +281,7 @@ Common options:
 Examples:
 
 ```bash
-fox exec -plan=false "Inspect the code only; do not modify files"
+fox exec "Inspect the code only; do not modify files"
 fox exec -continue "Fix the bugs found in the previous run"
 fox exec -session 20260517-192517-a504c5 "Continue this session and summarize the current progress"
 fox exec -llm-provider local "Add tests for this project"
@@ -434,6 +434,8 @@ messages.jsonl
 session.json
 transcript.jsonl
 working_memory.md
+PLAN.md
+TODO.md
 runs/<run-id>/run.json
 runs/<run-id>/metrics.jsonl
 runs/<run-id>/trace.jsonl
@@ -441,15 +443,9 @@ runs/<run-id>/trace.jsonl
 
 This means a user can start a task, inspect the answer, and then continue with a follow-up message in the same session.
 
-Plan Mode may create or update these files in the project root:
-
-```text
-PLAN.md
-TODO.md
-MEMORY.md
-```
-
-If you want these files to stay local, add them to your project's `.gitignore`.
+Formal Plan mode stores the latest submitted proposal in the session's
+`PLAN.md`. After approval, the execution checklist is stored in the same
+session's `TODO.md`; neither artifact is written to the project root.
 
 ## Development
 

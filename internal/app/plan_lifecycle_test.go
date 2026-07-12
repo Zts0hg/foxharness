@@ -1,0 +1,554 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Zts0hg/foxharness/internal/automemory"
+	"github.com/Zts0hg/foxharness/internal/collaboration"
+	"github.com/Zts0hg/foxharness/internal/memory"
+	providerpkg "github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/tools"
+)
+
+type approvingPlanReviewer struct {
+	plans []string
+}
+
+type revisingPlanReviewer struct {
+	plans []string
+}
+
+type approveThenContinuePlanReviewer struct {
+	plans []string
+}
+
+type lifecycleNamedTool struct {
+	name string
+}
+
+func (t *lifecycleNamedTool) Name() string {
+	return t.name
+}
+
+func (t *lifecycleNamedTool) Definition() schema.ToolDefinition {
+	return schema.ToolDefinition{Name: t.name, InputSchema: map[string]any{"type": "object"}}
+}
+
+func (t *lifecycleNamedTool) Execute(context.Context, json.RawMessage) (string, error) {
+	return "ok", nil
+}
+
+func (r *approveThenContinuePlanReviewer) ReviewPlan(ctx context.Context, planMarkdown string) (tools.PlanReview, error) {
+	r.plans = append(r.plans, planMarkdown)
+	if len(r.plans) == 1 {
+		return tools.PlanReview{Decision: tools.PlanApproved}, nil
+	}
+	return tools.PlanReview{Decision: tools.PlanContinuePlanning}, nil
+}
+
+func (r *revisingPlanReviewer) ReviewPlan(ctx context.Context, planMarkdown string) (tools.PlanReview, error) {
+	r.plans = append(r.plans, planMarkdown)
+	if len(r.plans) == 1 {
+		return tools.PlanReview{
+			Decision: tools.PlanContinuePlanning,
+			Feedback: "Add an explicit rollback verification step.",
+		}, nil
+	}
+	return tools.PlanReview{Decision: tools.PlanApproved}, nil
+}
+
+func (r *approvingPlanReviewer) ReviewPlan(ctx context.Context, planMarkdown string) (tools.PlanReview, error) {
+	r.plans = append(r.plans, planMarkdown)
+	return tools.PlanReview{Decision: tools.PlanApproved}, nil
+}
+
+type formalLifecycleProvider struct {
+	calls        int
+	toolSurfaces [][]string
+	seen         [][]schema.Message
+	plan         string
+}
+
+func (p *formalLifecycleProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*providerpkg.GenerateResponse, error) {
+	names := make([]string, 0, len(availableTools))
+	for _, definition := range availableTools {
+		names = append(names, definition.Name)
+	}
+	p.toolSurfaces = append(p.toolSurfaces, names)
+	p.seen = append(p.seen, append([]schema.Message(nil), messages...))
+
+	call := p.calls
+	p.calls++
+	switch call {
+	case 0:
+		return &providerpkg.GenerateResponse{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{
+				{ID: "submit", Name: "submit_plan", Arguments: lifecycleArgs(map[string]string{"plan_markdown": p.plan})},
+				{ID: "early-write-1", Name: "write_file", Arguments: lifecycleArgs(map[string]string{"path": "too-early-1.txt", "content": "bad"})},
+			},
+		}}, nil
+	case 1:
+		return &providerpkg.GenerateResponse{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{
+				{ID: "todo", Name: "update_todo", Arguments: lifecycleArgs(map[string]string{"content": "# TODO\n\n- [ ] Implement the approved change\n"})},
+				{ID: "early-write-2", Name: "write_file", Arguments: lifecycleArgs(map[string]string{"path": "too-early-2.txt", "content": "bad"})},
+			},
+		}}, nil
+	case 2:
+		return &providerpkg.GenerateResponse{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{
+				{ID: "implementation", Name: "write_file", Arguments: lifecycleArgs(map[string]string{"path": "implemented.txt", "content": "done"})},
+			},
+		}}, nil
+	default:
+		return &providerpkg.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "implemented"}}, nil
+	}
+}
+
+func lifecycleArgs(value interface{}) json.RawMessage {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+func newFormalLifecycleRunner(t *testing.T, provider providerpkg.LLMProvider, reviewer tools.PlanReviewer) (*AgentRunner, *session.Session, *memory.Store) {
+	t.Helper()
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	store := memory.NewSessionStore(workDir, sess.RootDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	runner := &AgentRunner{
+		workDir:           workDir,
+		model:             "fake-model",
+		providerProtocol:  "openai",
+		collaborationMode: collaboration.ModeFormalPlan,
+		maxTurns:          8,
+		store:             store,
+		manager:           manager,
+		llmProvider:       provider,
+		currentSession:    sess,
+		planReviewer:      reviewer,
+	}
+	return runner, sess, store
+}
+
+func TestFormalPlanLifecycleContinuesInOneRunAndGatesImplementation(t *testing.T) {
+	plan := "# Approved plan\n\n1. Inspect current behavior.\n2. Implement and test."
+	provider := &formalLifecycleProvider{plan: plan}
+	reviewer := &approvingPlanReviewer{}
+	runner, sess, store := newFormalLifecycleRunner(t, provider, reviewer)
+	runner.SetCollaborationMode(collaboration.ModeDefault)
+
+	result, err := runner.RunInCollaborationMode(context.Background(), "change the project", collaboration.ModeFormalPlan, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == nil || result.FinalMessage != "implemented" || provider.calls != 4 {
+		t.Fatalf("result = %#v, provider calls = %d, want implemented after 4 calls", result, provider.calls)
+	}
+
+	assertLifecycleToolSurface(t, provider.toolSurfaces[0],
+		[]string{"read_file", "bash", "ask_user_question", "submit_plan"},
+		[]string{"write_file", "edit_file", "update_todo"})
+	assertLifecycleToolSurface(t, provider.toolSurfaces[1],
+		[]string{"read_file", "bash", "ask_user_question", "read_todo", "update_todo"},
+		[]string{"write_file", "edit_file", "submit_plan"})
+	assertLifecycleToolSurface(t, provider.toolSurfaces[2],
+		[]string{"read_file", "write_file", "edit_file", "update_todo"},
+		[]string{"submit_plan"})
+
+	if len(provider.seen) < 2 || !lifecycleMessagesContain(provider.seen[1], plan) {
+		t.Fatalf("post-approval context missing complete approved plan: %#v", provider.seen)
+	}
+	if len(provider.seen[0]) == 0 {
+		t.Fatal("first provider call received no system prompt")
+	}
+	systemPrompt := provider.seen[0][0].Content
+	for _, want := range []string{"Formal Plan", "Do not create or modify project files", "Git state", "read-only", "submit_plan"} {
+		if !strings.Contains(systemPrompt, want) {
+			t.Fatalf("Formal system prompt missing %q:\n%s", want, systemPrompt)
+		}
+	}
+	for _, want := range []string{
+		"Before approval, working_memory.md is read-only",
+		"After approval, resume normal working_memory.md maintenance",
+	} {
+		if !strings.Contains(systemPrompt, want) {
+			t.Fatalf("Formal system prompt missing lifecycle-scoped memory guidance %q:\n%s", want, systemPrompt)
+		}
+	}
+	for _, forbidden := range []string{"read-only in this run", "include the update in your final report"} {
+		if strings.Contains(systemPrompt, forbidden) {
+			t.Fatalf("Formal system prompt retained whole-run read-only guidance %q:\n%s", forbidden, systemPrompt)
+		}
+	}
+
+	for _, path := range []string{"too-early-1.txt", "too-early-2.txt"} {
+		if _, err := os.Stat(filepath.Join(runner.WorkDir(), path)); !os.IsNotExist(err) {
+			t.Fatalf("phase-ineligible write created %s: %v", path, err)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(runner.WorkDir(), "implemented.txt")); err != nil || string(data) != "done" {
+		t.Fatalf("implemented file = %q, err=%v", data, err)
+	}
+	if data, err := os.ReadFile(store.PlanPath()); err != nil || string(data) != plan {
+		t.Fatalf("PLAN.md = %q, err=%v, want exact approved plan", data, err)
+	}
+	if data, err := os.ReadFile(store.TodoPath()); err != nil || !strings.Contains(string(data), "Implement the approved change") {
+		t.Fatalf("TODO.md = %q, err=%v", data, err)
+	}
+	if len(reviewer.plans) != 1 || reviewer.plans[0] != plan {
+		t.Fatalf("reviewer plans = %#v, want exact approved plan", reviewer.plans)
+	}
+	if got := runner.CollaborationMode(); got != collaboration.ModeDefault {
+		t.Fatalf("runner collaboration mode = %q, want Default after approval", got)
+	}
+
+	records, err := session.NewMessageLog(sess).LoadRecords()
+	if err != nil {
+		t.Fatalf("LoadRecords() error = %v", err)
+	}
+	userPrompts := 0
+	runIDs := map[string]bool{}
+	for _, record := range records {
+		runIDs[record.RunID] = true
+		if record.Message.Role == schema.RoleUser && record.Message.ToolCallID == "" {
+			userPrompts++
+		}
+	}
+	if userPrompts != 1 || len(runIDs) != 1 || !runIDs[result.RunID] {
+		t.Fatalf("message continuity: user prompts=%d run IDs=%v result run=%s", userPrompts, runIDs, result.RunID)
+	}
+}
+
+func TestPlanLifecycleRepeatsApprovedPlanUntilChecklistIsInitialized(t *testing.T) {
+	checklist := tools.NewRegistry()
+	checklist.Register(tools.NewUpdateTodoTool(t.TempDir()))
+	lifecycle := newPlanLifecycle(tools.NewRegistry(), checklist, tools.NewRegistry(), nil)
+	plan := "# Approved plan\n\n1. Inspect.\n2. Implement.\n3. Verify."
+
+	lifecycle.approve(plan)
+	lifecycle.BeginTurn()
+	for turn := 1; turn <= 2; turn++ {
+		reminders := lifecycle.runtimeReminders()
+		if len(reminders) != 1 || !strings.Contains(reminders[0], plan) {
+			t.Fatalf("checklist turn %d reminders = %#v, want complete approved plan", turn, reminders)
+		}
+		lifecycle.BeginTurn()
+	}
+
+	result := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID:   "todo",
+		Name: "update_todo",
+		Arguments: lifecycleArgs(map[string]string{
+			"content": "# TODO\n\n- [ ] Implement\n- [ ] Verify\n",
+		}),
+	})
+	if result.IsError {
+		t.Fatalf("update_todo result = %#v", result)
+	}
+	lifecycle.BeginTurn()
+	if reminders := lifecycle.runtimeReminders(); len(reminders) != 0 {
+		t.Fatalf("Default phase reminders = %#v, want approved plan reminder retired", reminders)
+	}
+}
+
+func TestPlanLifecycleDefersSkillRemindersUntilSkillToolIsAvailable(t *testing.T) {
+	checklist := tools.NewRegistry()
+	checklist.Register(tools.NewUpdateTodoTool(t.TempDir()))
+	defaultRegistry := tools.NewRegistry()
+	defaultRegistry.Register(&lifecycleNamedTool{name: "skill"})
+	lifecycle := newPlanLifecycle(tools.NewRegistry(), checklist, defaultRegistry, nil)
+	runner := &AgentRunner{pendingActivations: []string{"A new skill became available: `go-review`"}}
+
+	if reminders := runner.planRunReminders(lifecycle, lifecycle); len(reminders) != 0 {
+		t.Fatalf("Formal reminders = %#v, want skill notification deferred", reminders)
+	}
+	if len(runner.pendingActivations) != 1 {
+		t.Fatalf("Formal phase consumed pending skill notifications: %#v", runner.pendingActivations)
+	}
+
+	plan := "# Approved plan\n\n- Implement\n- Verify"
+	lifecycle.approve(plan)
+	lifecycle.BeginTurn()
+	reminders := runner.planRunReminders(lifecycle, lifecycle)
+	joined := strings.Join(reminders, "\n")
+	if !strings.Contains(joined, plan) || strings.Contains(joined, "go-review") {
+		t.Fatalf("checklist reminders = %#v, want plan without unavailable skill notification", reminders)
+	}
+	if len(runner.pendingActivations) != 1 {
+		t.Fatalf("checklist phase consumed pending skill notifications: %#v", runner.pendingActivations)
+	}
+
+	result := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID:   "todo",
+		Name: "update_todo",
+		Arguments: lifecycleArgs(map[string]string{
+			"content": "# TODO\n\n- [ ] Implement\n- [ ] Verify\n",
+		}),
+	})
+	if result.IsError {
+		t.Fatalf("update_todo result = %#v", result)
+	}
+	lifecycle.BeginTurn()
+	reminders = runner.planRunReminders(lifecycle, lifecycle)
+	joined = strings.Join(reminders, "\n")
+	if !strings.Contains(joined, "go-review") || strings.Contains(joined, plan) {
+		t.Fatalf("Default reminders = %#v, want deferred skill notification without plan", reminders)
+	}
+	if len(runner.pendingActivations) != 0 {
+		t.Fatalf("Default phase retained delivered skill notifications: %#v", runner.pendingActivations)
+	}
+}
+
+func TestFormalPlanRestrictedRunRejectsMissingRequiredToolsBeforeModelCall(t *testing.T) {
+	provider := &immediateCountingProvider{}
+	runner, _, _ := newFormalLifecycleRunner(t, provider, &approvingPlanReviewer{})
+
+	_, err := runner.RunRestricted(context.Background(), "plan this", []string{"read_file"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "Formal Plan") {
+		t.Fatalf("RunRestricted() error = %v, want missing Formal Plan tools", err)
+	}
+	if got := provider.count(); got != 0 {
+		t.Fatalf("provider calls = %d, want 0 after preflight rejection", got)
+	}
+}
+
+func TestPlanLifecycleRejectsAdditionalSubmissionAfterApprovalIsPending(t *testing.T) {
+	store := memory.NewStore(t.TempDir())
+	reviewer := &approveThenContinuePlanReviewer{}
+	lifecycle := newPlanLifecycle(nil, tools.NewRegistry(), tools.NewRegistry(), nil)
+	formal := tools.NewRegistry()
+	formal.Register(tools.NewSubmitPlanTool(store, reviewer, lifecycle.approve))
+	lifecycle.setFormalRegistry(formal)
+
+	firstPlan := "# Approved plan\n\n- Implement safely"
+	first := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID: "first", Name: "submit_plan",
+		Arguments: lifecycleArgs(map[string]string{"plan_markdown": firstPlan}),
+	})
+	if first.IsError {
+		t.Fatalf("first submit_plan result = %#v", first)
+	}
+	second := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID: "second", Name: "submit_plan",
+		Arguments: lifecycleArgs(map[string]string{"plan_markdown": "# Unapproved replacement"}),
+	})
+	if !second.IsError {
+		t.Fatalf("second submit_plan result = %#v, want rejection while approval transition is pending", second)
+	}
+	if len(reviewer.plans) != 1 || reviewer.plans[0] != firstPlan {
+		t.Fatalf("reviewed plans = %#v, want only approved first plan", reviewer.plans)
+	}
+	if data, err := os.ReadFile(store.PlanPath()); err != nil || string(data) != firstPlan {
+		t.Fatalf("PLAN.md = %q, err=%v, want approved first plan", data, err)
+	}
+}
+
+func TestPlanLifecycleRejectsAdditionalSubmissionAfterContinuePlanningInSameTurn(t *testing.T) {
+	store := memory.NewStore(t.TempDir())
+	reviewer := &revisingPlanReviewer{}
+	lifecycle := newPlanLifecycle(nil, tools.NewRegistry(), tools.NewRegistry(), nil)
+	formal := tools.NewRegistry()
+	formal.Register(tools.NewSubmitPlanTool(store, reviewer, lifecycle.approve))
+	lifecycle.setFormalRegistry(formal)
+
+	firstPlan := "# First proposal\n\n- Inspect current behavior"
+	first := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID: "first", Name: "submit_plan",
+		Arguments: lifecycleArgs(map[string]string{"plan_markdown": firstPlan}),
+	})
+	if first.IsError {
+		t.Fatalf("first submit_plan result = %#v", first)
+	}
+	second := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID: "second", Name: "submit_plan",
+		Arguments: lifecycleArgs(map[string]string{"plan_markdown": "# Premature replacement"}),
+	})
+	if !second.IsError {
+		t.Fatalf("second submit_plan result = %#v, want same-turn rejection", second)
+	}
+	if len(reviewer.plans) != 1 || reviewer.plans[0] != firstPlan {
+		t.Fatalf("reviewed plans = %#v, want only the first same-turn proposal", reviewer.plans)
+	}
+	if data, err := os.ReadFile(store.PlanPath()); err != nil || string(data) != firstPlan {
+		t.Fatalf("PLAN.md = %q, err=%v, want first proposal", data, err)
+	}
+
+	lifecycle.BeginTurn()
+	revisedPlan := "# Revised proposal\n\n- Incorporate the user's feedback"
+	third := lifecycle.Execute(context.Background(), schema.ToolCall{
+		ID: "third", Name: "submit_plan",
+		Arguments: lifecycleArgs(map[string]string{"plan_markdown": revisedPlan}),
+	})
+	if third.IsError {
+		t.Fatalf("next-turn submit_plan result = %#v, want revision to be allowed", third)
+	}
+	if len(reviewer.plans) != 2 || reviewer.plans[1] != revisedPlan {
+		t.Fatalf("reviewed plans after next turn = %#v", reviewer.plans)
+	}
+}
+
+func TestFormalPlanRunSkipsMemoryExtractionUntilPlanIsApproved(t *testing.T) {
+	provider := &immediateCountingProvider{}
+	runner, _, _ := newFormalLifecycleRunner(t, provider, &approvingPlanReviewer{})
+	runner.autoMemory = automemory.NewStore(t.TempDir(), runner.WorkDir())
+
+	extractionCalls := 0
+	runner.extractionFire = func(*session.Session, string, *automemory.Tracker) {
+		extractionCalls++
+	}
+
+	result, err := runner.RunInCollaborationMode(context.Background(), "plan without approval", collaboration.ModeFormalPlan, nil)
+	if err == nil || !strings.Contains(err.Error(), "completion gate remained unsatisfied") {
+		t.Fatalf("RunInCollaborationMode() error = %v, want unapproved completion-gate failure", err)
+	}
+	if result == nil {
+		t.Fatal("RunInCollaborationMode() result = nil, want partial failed result")
+	}
+	if extractionCalls != 0 {
+		t.Fatalf("memory extraction calls = %d, want 0 before plan approval", extractionCalls)
+	}
+}
+
+func assertLifecycleToolSurface(t *testing.T, got []string, required []string, forbidden []string) {
+	t.Helper()
+	set := make(map[string]bool, len(got))
+	for _, name := range got {
+		set[name] = true
+	}
+	for _, name := range required {
+		if !set[name] {
+			t.Fatalf("tool surface %v missing %q", got, name)
+		}
+	}
+	for _, name := range forbidden {
+		if set[name] {
+			t.Fatalf("tool surface %v unexpectedly contains %q", got, name)
+		}
+	}
+}
+
+func lifecycleMessagesContain(messages []schema.Message, want string) bool {
+	for _, message := range messages {
+		if strings.Contains(message.Content, want) {
+			return true
+		}
+	}
+	return false
+}
+
+type revisionLifecycleProvider struct {
+	calls        int
+	firstPlan    string
+	revisedPlan  string
+	seen         [][]schema.Message
+	toolSurfaces [][]string
+}
+
+func (p *revisionLifecycleProvider) Generate(ctx context.Context, messages []schema.Message, definitions []schema.ToolDefinition) (*providerpkg.GenerateResponse, error) {
+	p.seen = append(p.seen, append([]schema.Message(nil), messages...))
+	names := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		names = append(names, definition.Name)
+	}
+	p.toolSurfaces = append(p.toolSurfaces, names)
+
+	call := p.calls
+	p.calls++
+	switch call {
+	case 0:
+		return &providerpkg.GenerateResponse{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID: "first-plan", Name: "submit_plan",
+				Arguments: lifecycleArgs(map[string]string{"plan_markdown": p.firstPlan}),
+			}},
+		}}, nil
+	case 1:
+		return &providerpkg.GenerateResponse{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID: "revised-plan", Name: "submit_plan",
+				Arguments: lifecycleArgs(map[string]string{"plan_markdown": p.revisedPlan}),
+			}},
+		}}, nil
+	case 2:
+		return &providerpkg.GenerateResponse{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID: "revision-todo", Name: "update_todo",
+				Arguments: lifecycleArgs(map[string]string{"content": "# TODO\n\n- [ ] Implement revised plan\n- [ ] Verify rollback\n"}),
+			}},
+		}}, nil
+	default:
+		return &providerpkg.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "ready"}}, nil
+	}
+}
+
+func TestFormalPlanRevisionAndRewindRestorePreMessageArtifacts(t *testing.T) {
+	provider := &revisionLifecycleProvider{
+		firstPlan:   "# First plan\n\n- Implement directly",
+		revisedPlan: "# Revised plan\n\n- Implement\n- Verify rollback",
+	}
+	reviewer := &revisingPlanReviewer{}
+	runner, _, store := newFormalLifecycleRunner(t, provider, reviewer)
+	if err := store.ReplacePlan("# Previous session plan"); err != nil {
+		t.Fatalf("seed PLAN.md: %v", err)
+	}
+	if err := os.WriteFile(store.TodoPath(), []byte("# TODO\n\n- [x] Previous task\n"), 0644); err != nil {
+		t.Fatalf("seed TODO.md: %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), "prepare a reviewed change", nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == nil || result.FinalMessage != "ready" || provider.calls != 4 {
+		t.Fatalf("result = %#v, calls=%d", result, provider.calls)
+	}
+	if len(reviewer.plans) != 2 || reviewer.plans[0] != provider.firstPlan || reviewer.plans[1] != provider.revisedPlan {
+		t.Fatalf("reviewed plans = %#v", reviewer.plans)
+	}
+	if !lifecycleMessagesContain(provider.seen[1], "Add an explicit rollback verification step.") {
+		t.Fatalf("revision feedback missing from planning context: %#v", provider.seen[1])
+	}
+	assertLifecycleToolSurface(t, provider.toolSurfaces[1], []string{"submit_plan"}, []string{"write_file", "update_todo"})
+	assertLifecycleToolSurface(t, provider.toolSurfaces[2], []string{"update_todo"}, []string{"write_file", "submit_plan"})
+
+	if data, err := os.ReadFile(store.PlanPath()); err != nil || string(data) != provider.revisedPlan {
+		t.Fatalf("latest PLAN.md = %q, err=%v", data, err)
+	}
+	if data, err := os.ReadFile(store.TodoPath()); err != nil || !strings.Contains(string(data), "Verify rollback") {
+		t.Fatalf("latest TODO.md = %q, err=%v", data, err)
+	}
+
+	restored, err := runner.RestoreSessionStateBeforeMessage(0)
+	if err != nil || !restored {
+		t.Fatalf("RestoreSessionStateBeforeMessage() = (%v, %v), want (true, nil)", restored, err)
+	}
+	if data, err := os.ReadFile(store.PlanPath()); err != nil || string(data) != "# Previous session plan" {
+		t.Fatalf("restored PLAN.md = %q, err=%v", data, err)
+	}
+	if data, err := os.ReadFile(store.TodoPath()); err != nil || string(data) != "# TODO\n\n- [x] Previous task\n" {
+		t.Fatalf("restored TODO.md = %q, err=%v", data, err)
+	}
+}

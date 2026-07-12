@@ -1,11 +1,39 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
+	"github.com/Zts0hg/foxharness/internal/session"
 )
+
+func TestBuildBenchmarkRegistryIncludesTodoTools(t *testing.T) {
+	sess := &session.Session{RootDir: t.TempDir()}
+	registry := buildBenchmarkRegistry(t.TempDir(), sess)
+	names := map[string]bool{}
+	for _, definition := range registry.GetAvailableTools() {
+		names[definition.Name] = true
+	}
+	for _, name := range []string{"read_file", "write_file", "bash", "edit_file", "read_todo", "update_todo"} {
+		if !names[name] {
+			t.Fatalf("benchmark registry missing %s: %v", name, names)
+		}
+	}
+}
+
+func TestBenchmarkSourceHasNoLegacyPlannerPrepass(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("ReadFile(main.go) error = %v", err)
+	}
+	for _, forbidden := range []string{"memory.NewPlanner", ".BuildPlan("} {
+		if strings.Contains(string(source), forbidden) {
+			t.Fatalf("main.go still contains legacy Planner call %q", forbidden)
+		}
+	}
+}
 
 func TestResolveBenchmarkLLMConfigUsesScopedEnvironment(t *testing.T) {
 	got, err := resolveBenchmarkLLMConfig(t.TempDir(), mapEnv{

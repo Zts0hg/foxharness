@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
+	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	providerpkg "github.com/Zts0hg/foxharness/internal/provider"
@@ -226,7 +227,7 @@ func (p *blockingLLMProvider) Generate(ctx context.Context, messages []schema.Me
 	}
 }
 
-func TestAgentRunnerSetPlanModeWhileRunIsActive(t *testing.T) {
+func TestAgentRunnerSetCollaborationModeWhileRunIsActive(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -249,15 +250,15 @@ func TestAgentRunnerSetPlanModeWhileRunIsActive(t *testing.T) {
 		release: make(chan struct{}),
 	}
 	runner := &AgentRunner{
-		workDir:        workDir,
-		model:          "fake-model",
-		enableThinking: false,
-		enablePlanMode: false,
-		maxTurns:       3,
-		store:          store,
-		manager:        manager,
-		llmProvider:    provider,
-		currentSession: sess,
+		workDir:           workDir,
+		model:             "fake-model",
+		enableThinking:    false,
+		collaborationMode: collaboration.ModeDefault,
+		maxTurns:          3,
+		store:             store,
+		manager:           manager,
+		llmProvider:       provider,
+		currentSession:    sess,
 	}
 
 	runDone := make(chan error, 1)
@@ -274,17 +275,17 @@ func TestAgentRunnerSetPlanModeWhileRunIsActive(t *testing.T) {
 
 	toggleDone := make(chan struct{})
 	go func() {
-		runner.SetPlanMode(true)
+		runner.SetCollaborationMode(collaboration.ModeFormalPlan)
 		close(toggleDone)
 	}()
 
 	select {
 	case <-toggleDone:
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("SetPlanMode blocked while Run was active")
+		t.Fatal("SetCollaborationMode blocked while Run was active")
 	}
-	if !runner.PlanMode() {
-		t.Fatal("PlanMode() = false, want true")
+	if got := runner.CollaborationMode(); got != collaboration.ModeFormalPlan {
+		t.Fatalf("CollaborationMode() = %q, want %q", got, collaboration.ModeFormalPlan)
 	}
 
 	close(provider.release)
@@ -314,15 +315,15 @@ func TestAgentRunnerContextUsage(t *testing.T) {
 	}
 
 	runner := &AgentRunner{
-		workDir:        workDir,
-		model:          "fake-model",
-		enableThinking: false,
-		enablePlanMode: false,
-		maxTurns:       3,
-		store:          store,
-		manager:        manager,
-		llmProvider:    &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})},
-		currentSession: sess,
+		workDir:           workDir,
+		model:             "fake-model",
+		enableThinking:    false,
+		collaborationMode: collaboration.ModeDefault,
+		maxTurns:          3,
+		store:             store,
+		manager:           manager,
+		llmProvider:       &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})},
+		currentSession:    sess,
 	}
 
 	if got := runner.ContextUsage(); got != "0%" {
@@ -355,15 +356,15 @@ func TestAgentRunnerMessageHistory(t *testing.T) {
 	}
 
 	runner := &AgentRunner{
-		workDir:        workDir,
-		model:          "fake-model",
-		enableThinking: false,
-		enablePlanMode: false,
-		maxTurns:       3,
-		store:          store,
-		manager:        manager,
-		llmProvider:    &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})},
-		currentSession: sess,
+		workDir:           workDir,
+		model:             "fake-model",
+		enableThinking:    false,
+		collaborationMode: collaboration.ModeDefault,
+		maxTurns:          3,
+		store:             store,
+		manager:           manager,
+		llmProvider:       &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})},
+		currentSession:    sess,
 	}
 
 	records, err := runner.MessageHistory()
@@ -392,15 +393,15 @@ func TestAgentRunnerRunWithDisplayPersistsHumanPrompt(t *testing.T) {
 	}
 	provider := &blockingLLMProvider{entered: make(chan struct{}), release: make(chan struct{})}
 	runner := &AgentRunner{
-		workDir:        workDir,
-		model:          "fake-model",
-		enableThinking: false,
-		enablePlanMode: false,
-		maxTurns:       3,
-		store:          store,
-		manager:        manager,
-		llmProvider:    provider,
-		currentSession: sess,
+		workDir:           workDir,
+		model:             "fake-model",
+		enableThinking:    false,
+		collaborationMode: collaboration.ModeDefault,
+		maxTurns:          3,
+		store:             store,
+		manager:           manager,
+		llmProvider:       provider,
+		currentSession:    sess,
 	}
 
 	runDone := make(chan error, 1)
@@ -865,5 +866,36 @@ func TestOneShotRunAwaitsExtraction(t *testing.T) {
 	// 1 Generate for the main run, plus >=1 for the extraction pass.
 	if got, want := prov.count(), 2; got < want {
 		t.Fatalf("extraction not awaited: Generate calls = %d, want >= %d", got, want)
+	}
+}
+
+func TestDefaultRunnerUsesOnePrimaryModelCallWithoutPlannerPrepass(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	store := memory.NewSessionStore(workDir, sess.RootDir)
+	if err := store.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles() error = %v", err)
+	}
+	provider := &immediateCountingProvider{}
+	runner := &AgentRunner{
+		workDir:           workDir,
+		model:             "fake-model",
+		collaborationMode: collaboration.ModeDefault,
+		maxTurns:          3,
+		store:             store,
+		manager:           manager,
+		llmProvider:       provider,
+		currentSession:    sess,
+	}
+
+	if _, err := runner.Run(context.Background(), "answer directly", nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := provider.count(); got != 1 {
+		t.Fatalf("primary provider calls = %d, want 1", got)
 	}
 }

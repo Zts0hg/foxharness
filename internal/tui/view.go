@@ -150,6 +150,25 @@ func (m Model) View() string {
 		}
 		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 	}
+	if m.planForm != nil {
+		formHeight := max(min(m.height/2, 18), 10)
+		card := inputStyle.Width(width).Render(m.planForm.view(width, formHeight))
+		chrome := outerStyle.GetVerticalFrameSize() +
+			lipgloss.Height(card) + 1 +
+			1 +
+			lipgloss.Height(m.renderStatusBar(width)) +
+			lipgloss.Height(m.renderKeybinds(width))
+		bodyHeight := max(m.height-chrome, 1)
+		parts := []string{
+			m.renderMainArea(bodyHeight),
+			"",
+			card,
+			"",
+			m.renderStatusBar(width),
+			m.renderKeybinds(width),
+		}
+		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	}
 
 	if m.askForm != nil {
 		// Render the question inline at the bottom (replacing the input band),
@@ -1204,7 +1223,7 @@ func renderWorkingBar(frame int, width int) string {
 	return b.String()
 }
 
-func queuedPromptNoticeLines(prompts []string, width int) []string {
+func queuedPromptNoticeLines(prompts []queuedPrompt, width int) []string {
 	if len(prompts) == 0 {
 		return nil
 	}
@@ -1214,7 +1233,7 @@ func queuedPromptNoticeLines(prompts []string, width int) []string {
 	for i := 0; i < count; i++ {
 		prefix := fmt.Sprintf("  %d. ", i+1)
 		messageWidth := max(lineWidth-lipgloss.Width(prefix), 1)
-		message := strings.Join(strings.Fields(prompts[i]), " ")
+		message := strings.Join(strings.Fields(prompts[i].text), " ")
 		lines = append(lines, prefix+xansi.Truncate(message, messageWidth, "..."))
 	}
 	if remaining := len(prompts) - count; remaining > 0 {
@@ -1350,7 +1369,7 @@ func (m Model) renderStatusBar(width int) string {
 
 func (m Model) renderKeybinds(width int) string {
 	plan := mutedStyle.Render("[ plan mode off ]")
-	if m.planMode {
+	if m.collaborationMode.PlanEnabled() {
 		plan = planModeStyle.Render("[ plan mode on ]")
 	}
 	hint := statusFaintStyle.Render("shift + tab to cycle")
@@ -1359,13 +1378,6 @@ func (m Model) renderKeybinds(width int) string {
 		pad = 1
 	}
 	return footerStyle.Width(width).Render(fitLine(plan+strings.Repeat(" ", pad)+hint, width))
-}
-
-func planModeText(enabled bool) string {
-	if !enabled {
-		return ""
-	}
-	return planModeStyle.Render("plan mode on")
 }
 
 func labelStyle(e entry) lipgloss.Style {

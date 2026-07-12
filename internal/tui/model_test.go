@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -31,25 +32,26 @@ type fakeRunner struct {
 	workDir    string
 	model      string
 
-	runs            []string
-	runErr          error
-	runErrs         []error
-	setModelErr     error
-	newErr          error
-	nextRunID       int
-	planMode        bool
-	contextUsage    string
-	history         []session.MessageRecord
-	historyErr      error
-	truncatedSeq    int64
-	restoreStateSeq int64
-	restoreStateOK  bool
-	restoreStateErr error
-	checkpointer    checkpoint.Checkpointer
-	compactResult   *compaction.CompactResult
-	compactErr      error
-	compactInstr    string
-	memoryIndex     string
+	runs              []string
+	runModes          []collaboration.Mode
+	runErr            error
+	runErrs           []error
+	setModelErr       error
+	newErr            error
+	nextRunID         int
+	collaborationMode collaboration.Mode
+	contextUsage      string
+	history           []session.MessageRecord
+	historyErr        error
+	truncatedSeq      int64
+	restoreStateSeq   int64
+	restoreStateOK    bool
+	restoreStateErr   error
+	checkpointer      checkpoint.Checkpointer
+	compactResult     *compaction.CompactResult
+	compactErr        error
+	compactInstr      string
+	memoryIndex       string
 }
 
 // AutoMemoryIndex satisfies the Runner interface for the test double; tests that
@@ -74,8 +76,13 @@ func (r *projectHistoryRunner) ProjectInputHistory(limit int) ([]string, error) 
 	return append([]string(nil), r.projectHistory...), nil
 }
 
-func (r *fakeRunner) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
+func (r *fakeRunner) RunInCollaborationMode(ctx context.Context, prompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
+	return r.runInCollaborationMode(ctx, prompt, mode, reporter)
+}
+
+func (r *fakeRunner) runInCollaborationMode(ctx context.Context, prompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
 	r.runs = append(r.runs, prompt)
+	r.runModes = append(r.runModes, collaboration.Normalize(mode))
 	r.nextRunID++
 	runID := "run-1"
 	if r.nextRunID > 1 {
@@ -112,6 +119,7 @@ func (r *fakeRunner) NewSession(ctx context.Context) (string, error) {
 	}
 	r.sessionID = "sess-new"
 	r.sessionDir = "/tmp/sess-new"
+	r.collaborationMode = collaboration.ModeDefault
 	return r.sessionID, nil
 }
 
@@ -177,12 +185,12 @@ func (r *fakeRunner) Checkpointer() checkpoint.Checkpointer {
 	return r.checkpointer
 }
 
-func (r *fakeRunner) PlanMode() bool {
-	return r.planMode
+func (r *fakeRunner) CollaborationMode() collaboration.Mode {
+	return collaboration.Normalize(r.collaborationMode)
 }
 
-func (r *fakeRunner) SetPlanMode(enabled bool) {
-	r.planMode = enabled
+func (r *fakeRunner) SetCollaborationMode(mode collaboration.Mode) {
+	r.collaborationMode = collaboration.Normalize(mode)
 }
 
 func (r *fakeRunner) CompactNow(ctx context.Context, customInstructions string) (*compaction.CompactResult, error) {
@@ -354,7 +362,7 @@ func TestModelBangCommandCompletionStartsQueuedPrompt(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("queueing prompt while shell command runs returned command")
 	}
-	if len(m.queuedPrompts) != 1 || m.queuedPrompts[0] != "queued prompt" {
+	if len(m.queuedPrompts) != 1 || m.queuedPrompts[0].text != "queued prompt" {
 		t.Fatalf("queuedPrompts = %#v, want queued prompt", m.queuedPrompts)
 	}
 
@@ -1061,7 +1069,7 @@ func TestStatusCommandRendersGroupedOverview(t *testing.T) {
 		ProviderProfileID: "primary",
 		ProviderProtocol:  "openai",
 	})
-	m.queuedPrompts = []string{"queued follow-up"}
+	m.queuedPrompts = testQueuedPrompts("queued follow-up")
 	m.sidebarVisible = false
 
 	m, _ = update(t, m, keyRunes("/status"))
@@ -2423,16 +2431,16 @@ func TestSessionCommandRendersPlainAlignedRows(t *testing.T) {
 func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
-	if m.planMode {
-		t.Fatalf("initial planMode = true, want false")
+	if m.collaborationMode.PlanEnabled() {
+		t.Fatalf("initial collaboration mode = %q, want Default", m.collaborationMode)
 	}
 	if !strings.Contains(m.View(), "plan mode off") || !strings.Contains(m.View(), "shift + tab to cycle") {
 		t.Fatalf("plan mode off hint missing:\n%s", m.View())
 	}
 
 	m, _ = update(t, m, keyShiftTab())
-	if !m.planMode || !runner.planMode {
-		t.Fatalf("plan mode was not enabled: model=%v runner=%v", m.planMode, runner.planMode)
+	if !m.collaborationMode.PlanEnabled() || !runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("plan mode was not enabled: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
 	}
 	if m.status != "Plan mode enabled" {
 		t.Fatalf("status = %q, want Plan mode enabled", m.status)
@@ -2445,8 +2453,8 @@ func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	}
 
 	m, _ = update(t, m, keyShiftTab())
-	if m.planMode || runner.planMode {
-		t.Fatalf("plan mode was not disabled: model=%v runner=%v", m.planMode, runner.planMode)
+	if m.collaborationMode.PlanEnabled() || runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("plan mode was not disabled: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
 	}
 	if m.status != "Plan mode disabled" {
 		t.Fatalf("status = %q, want Plan mode disabled", m.status)
@@ -2456,14 +2464,60 @@ func TestModelShiftTabTogglesPlanMode(t *testing.T) {
 	}
 }
 
+func TestModelPlanCommandsAreIdempotent(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/plan"))
+	m, _ = update(t, m, keyEnter())
+	if !m.collaborationMode.PlanEnabled() || !runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("/plan did not enable Formal Plan: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
+	}
+
+	m, _ = update(t, m, keyRunes("/plan"))
+	m, _ = update(t, m, keyEnter())
+	if !m.collaborationMode.PlanEnabled() || !runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("repeated /plan changed Formal Plan: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
+	}
+
+	m, _ = update(t, m, keyRunes("/plan off"))
+	m, _ = update(t, m, keyEnter())
+	if m.collaborationMode.PlanEnabled() || runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("/plan off did not select Default: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
+	}
+
+	m, _ = update(t, m, keyRunes("/plan off"))
+	m, _ = update(t, m, keyEnter())
+	if m.collaborationMode.PlanEnabled() || runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("repeated /plan off changed Default: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
+	}
+}
+
+func TestModelNewSessionResetsPlanModeSelection(t *testing.T) {
+	runner := newFakeRunner()
+	runner.collaborationMode = collaboration.ModeFormalPlan
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/new"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatal("/new command is nil")
+	}
+	m, _ = update(t, m, cmd())
+
+	if m.collaborationMode.PlanEnabled() || runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("new session retained Formal Plan: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
+	}
+}
+
 func TestModelTogglesPlanModeWhileRunningForNextRun(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
 	m.running = true
 
 	m, _ = update(t, m, keyShiftTab())
-	if !m.planMode || !runner.planMode {
-		t.Fatalf("plan mode was not enabled while running: model=%v runner=%v", m.planMode, runner.planMode)
+	if !m.collaborationMode.PlanEnabled() || !runner.collaborationMode.PlanEnabled() {
+		t.Fatalf("plan mode was not enabled while running: model=%v runner=%v", m.collaborationMode, runner.collaborationMode)
 	}
 	if m.status != "Plan mode enabled for next run" {
 		t.Fatalf("status = %q, want next-run plan mode status", m.status)
@@ -3125,7 +3179,7 @@ func TestModelQueuesInputWhileRunIsActiveAndCancelsCurrentRun(t *testing.T) {
 	if got := string(m.input); got != "" {
 		t.Fatalf("input after queueing = %q, want empty", got)
 	}
-	if len(m.queuedPrompts) != 1 || m.queuedPrompts[0] != "queued follow-up" {
+	if len(m.queuedPrompts) != 1 || m.queuedPrompts[0].text != "queued follow-up" {
 		t.Fatalf("queuedPrompts = %#v, want queued follow-up", m.queuedPrompts)
 	}
 	if !strings.Contains(m.status, "Queued 1 message") {
@@ -3145,6 +3199,54 @@ func TestModelQueuesInputWhileRunIsActiveAndCancelsCurrentRun(t *testing.T) {
 	}
 }
 
+func TestModelQueuedPromptKeepsCollaborationModeSelectedAtSubmission(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.running = true
+
+	m, _ = update(t, m, keyShiftTab())
+	if m.collaborationMode != collaboration.ModeFormalPlan {
+		t.Fatalf("collaboration mode = %q, want Formal Plan before queueing", m.collaborationMode)
+	}
+	m, _ = update(t, m, keyRunes("queued formal task"))
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatalf("queueing prompt returned command")
+	}
+
+	// The active run may reset the selected mode before this queued submission
+	// starts. The queued submission must still use the mode selected when Enter
+	// was pressed.
+	m.collaborationMode = collaboration.ModeDefault
+	runner.SetCollaborationMode(collaboration.ModeDefault)
+	m, queuedCmd := update(t, m, runFinishedMsg{result: &engine.RunResult{RunID: "active-run"}})
+	if queuedCmd == nil {
+		t.Fatal("active run completion did not start queued prompt")
+	}
+	_, _ = update(t, m, queuedCmd())
+
+	if len(runner.runModes) != 1 || runner.runModes[0] != collaboration.ModeFormalPlan {
+		t.Fatalf("run modes = %#v, want queued prompt frozen to Formal Plan", runner.runModes)
+	}
+}
+
+func TestModelPromptKeepsCollaborationModeBeforeRunCommandStarts(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m, _ = update(t, m, keyShiftTab())
+	m, _ = update(t, m, keyRunes("formal task"))
+	_, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatal("submitting prompt did not return run command")
+	}
+
+	runner.SetCollaborationMode(collaboration.ModeDefault)
+	_ = cmd()
+	if len(runner.runModes) != 1 || runner.runModes[0] != collaboration.ModeFormalPlan {
+		t.Fatalf("run modes = %#v, want submitted prompt frozen to Formal Plan", runner.runModes)
+	}
+}
+
 func TestModelRunningNoticeShowsQueuedPromptPreviews(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
@@ -3152,12 +3254,12 @@ func TestModelRunningNoticeShowsQueuedPromptPreviews(t *testing.T) {
 	m.now = func() time.Time { return current }
 	m.running = true
 	m.runStartedAt = current.Add(-5 * time.Second)
-	m.queuedPrompts = []string{
+	m.queuedPrompts = testQueuedPrompts(
 		"second task",
 		"third task\nwith newline",
 		strings.Repeat("long ", 40),
 		"fourth task",
-	}
+	)
 
 	notice := stripANSI(m.renderRunningNotice(72))
 	for _, want := range []string{
@@ -3199,7 +3301,7 @@ func TestModelRunsQueuedPromptsInFIFOOrder(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("queueing third task returned command, want nil")
 	}
-	if got := strings.Join(m.queuedPrompts, ","); got != "second task,third task" {
+	if got := strings.Join(queuedPromptTexts(m.queuedPrompts), ","); got != "second task,third task" {
 		t.Fatalf("queuedPrompts = %#v, want FIFO second/third", m.queuedPrompts)
 	}
 
@@ -3213,7 +3315,7 @@ func TestModelRunsQueuedPromptsInFIFOOrder(t *testing.T) {
 	if got := strings.Join(runner.runs, ","); got != "first task" {
 		t.Fatalf("runs after first completion = %#v, want first task only", runner.runs)
 	}
-	if got := strings.Join(m.queuedPrompts, ","); got != "third task" {
+	if got := strings.Join(queuedPromptTexts(m.queuedPrompts), ","); got != "third task" {
 		t.Fatalf("queuedPrompts after starting second = %#v, want third task", m.queuedPrompts)
 	}
 	if !entriesContain(m.entries, "user", "second task") {
@@ -3318,7 +3420,7 @@ func TestModelCommandQueuedBetweenPromptsRunsInFIFOOrder(t *testing.T) {
 	if runner.Model() != "fake-model" {
 		t.Fatalf("model switched while run active: %q", runner.Model())
 	}
-	if got := strings.Join(m.queuedPrompts, ","); got != "second task,/model next-model,third task" {
+	if got := strings.Join(queuedPromptTexts(m.queuedPrompts), ","); got != "second task,/model next-model,third task" {
 		t.Fatalf("queuedPrompts = %#v, want prompt/model/prompt", m.queuedPrompts)
 	}
 
@@ -4202,6 +4304,22 @@ func newFakeRunner() *fakeRunner {
 		contextUsage: "7%",
 		truncatedSeq: -1,
 	}
+}
+
+func testQueuedPrompts(texts ...string) []queuedPrompt {
+	prompts := make([]queuedPrompt, 0, len(texts))
+	for _, text := range texts {
+		prompts = append(prompts, queuedPrompt{text: text, mode: collaboration.ModeDefault})
+	}
+	return prompts
+}
+
+func queuedPromptTexts(prompts []queuedPrompt) []string {
+	texts := make([]string, 0, len(prompts))
+	for _, prompt := range prompts {
+		texts = append(texts, prompt.text)
+	}
+	return texts
 }
 
 func historyRecord(seq int64, runID string, msg schema.Message) session.MessageRecord {

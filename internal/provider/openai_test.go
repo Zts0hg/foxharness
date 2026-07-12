@@ -95,7 +95,7 @@ func TestOpenAIProviderRetriesPerAttemptTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempt := atomic.AddInt32(&attempts, 1)
 		if attempt == 1 {
-			time.Sleep(30 * time.Millisecond)
+			time.Sleep(150 * time.Millisecond)
 			return
 		}
 		writeChatCompletion(t, w, "after timeout")
@@ -106,7 +106,7 @@ func TestOpenAIProviderRetriesPerAttemptTimeout(t *testing.T) {
 		MaxAttempts:  2,
 		InitialDelay: time.Nanosecond,
 		MaxDelay:     time.Nanosecond,
-	}, option.WithRequestTimeout(5*time.Millisecond))
+	}, option.WithRequestTimeout(50*time.Millisecond))
 
 	resp, err := provider.Generate(context.Background(), []schema.Message{
 		{Role: schema.RoleUser, Content: "hello"},

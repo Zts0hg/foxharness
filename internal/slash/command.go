@@ -1,5 +1,7 @@
 package slash
 
+import "strings"
+
 // CommandType identifies whether a command is a hardcoded built-in handler
 // or a file-based prompt command.
 type CommandType int
@@ -130,6 +132,17 @@ func (c Command) IsModelInvocable() bool {
 		return false
 	}
 	return !c.Frontmatter.DisableModelInvocation
+}
+
+// RunsShellAroundAgent reports whether this command can execute shell outside
+// the agent tool registry, either while preparing the prompt or after the run.
+func (c Command) RunsShellAroundAgent() bool {
+	if shellEmbedRe.MatchString(c.Content) {
+		return true
+	}
+	return c.Frontmatter.Hooks != nil &&
+		(strings.TrimSpace(c.Frontmatter.Hooks.Before) != "" ||
+			strings.TrimSpace(c.Frontmatter.Hooks.After) != "")
 }
 
 // MatchesAlias returns true if the supplied name exactly matches one of the

@@ -77,12 +77,6 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engi
 		return nil, nil, err
 	}
 
-	registry := tools.NewRegistry()
-	registry.Register(tools.NewReadFileTool(workDir))
-	registry.Register(tools.NewWriteFileTool(workDir))
-	registry.Register(tools.NewBashTool(workDir))
-	registry.Register(tools.NewEditFileTool(workDir))
-
 	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
 	store := memory.NewSessionStore(workDir, sess.RootDir)
 	if err := store.EnsureFiles(); err != nil {
@@ -97,15 +91,7 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engi
 	if err != nil {
 		return nil, nil, err
 	}
-
-	enableThinking := false
-	planner := memory.NewPlanner(llmProvider, store)
-	if err := planner.BuildPlan(ctx, c.Prompt); err != nil {
-		log.Printf("[PlanMode] 生成计划失败，将回退到旧版每轮 Thinking: %v", err)
-		enableThinking = true
-	} else {
-		log.Printf("[PlanMode] 计划已生成，本次 Benchmark Run 关闭每轮 Thinking")
-	}
+	registry := buildBenchmarkRegistry(workDir, sess)
 
 	eng := engine.NewAgentEngine(
 		llmProvider,
@@ -113,7 +99,6 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engi
 		workDir,
 		composer,
 		engine.Config{
-			EnableThinking:   enableThinking,
 			MaxTurns:         c.MaxTurns,
 			ProviderProtocol: llmConfig.Protocol,
 			Model:            llmConfig.Model,
@@ -121,6 +106,17 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engi
 	)
 
 	return eng, sess, nil
+}
+
+func buildBenchmarkRegistry(workDir string, sess *session.Session) tools.Registry {
+	registry := tools.NewRegistry()
+	registry.Register(tools.NewReadFileTool(workDir))
+	registry.Register(tools.NewWriteFileTool(workDir))
+	registry.Register(tools.NewBashTool(workDir))
+	registry.Register(tools.NewEditFileTool(workDir))
+	registry.Register(tools.NewReadTodoTool(sess.RootDir))
+	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
+	return registry
 }
 
 func resolveBenchmarkLLMConfig(homeDir string, lookup llmconfig.EnvLookup) (llmconfig.ResolvedConfig, error) {

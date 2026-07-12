@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/slash"
 )
@@ -14,15 +15,26 @@ type restrictedFakeRunner struct {
 	*fakeRunner
 	restrictedRuns   []string
 	restrictedAllow  []string
+	restrictedModes  []collaboration.Mode
 	restrictedResult *engine.RunResult
 }
 
-func (r *restrictedFakeRunner) RunRestricted(ctx context.Context, prompt string, allowed []string, reporter engine.Reporter) (*engine.RunResult, error) {
+type recordingTUIForkRunner struct {
+	calls int
+}
+
+func (r *recordingTUIForkRunner) Run(context.Context, string, string, []string) (string, error) {
+	r.calls++
+	return "fork report", nil
+}
+
+func (r *restrictedFakeRunner) RunRestrictedInCollaborationMode(ctx context.Context, prompt string, allowed []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
 	r.restrictedRuns = append(r.restrictedRuns, prompt)
 	r.restrictedAllow = append([]string(nil), allowed...)
+	r.restrictedModes = append(r.restrictedModes, collaboration.Normalize(mode))
 	// Emit a minimal run lifecycle through the reporter so the TUI's
 	// channelReporter pipeline completes — without delegating to the
-	// underlying fakeRunner.Run (which would mutate fakeRunner.runs and
+	// underlying fakeRunner.RunInCollaborationMode (which would mutate fakeRunner.runs and
 	// hide whether the unrestricted path was used).
 	runID := "restricted-1"
 	reporter.OnRunStart(ctx, r.fakeRunner.sessionID, runID)
@@ -118,6 +130,89 @@ func TestModel_FileBasedCommand_DispatchesThroughExecutor(t *testing.T) {
 	}
 	if !strings.Contains(runner.runs[0], "Review: pr-9") {
 		t.Errorf("runner received %q, want substring 'Review: pr-9'", runner.runs[0])
+	}
+}
+
+func TestModel_FormalPlanRejectsForkedPromptCommandBeforeExecution(t *testing.T) {
+	runner := newFakeRunner()
+	runner.collaborationMode = collaboration.ModeFormalPlan
+	registry := newRegistryWithPromptCommandFrontmatter(t, "forked", "Inspect and modify", slash.Frontmatter{
+		Context: "fork",
+	})
+	forkRunner := &recordingTUIForkRunner{}
+	executor := slash.NewExecutor(slash.WithForkRunner(forkRunner))
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, executor)
+
+	m, _ = update(t, m, keyRunes("/forked"))
+	m = drivePromptCommand(t, m)
+
+	if forkRunner.calls != 0 {
+		t.Fatalf("fork runner calls = %d, want 0 in Formal Plan mode", forkRunner.calls)
+	}
+	if m.status != "Command failed" || !entriesContain(m.entries, "error", "Formal Plan") {
+		t.Fatalf("formal fork rejection not surfaced: status=%q entries=%#v", m.status, m.entries)
+	}
+	if len(runner.runs) != 0 {
+		t.Fatalf("top-level runner unexpectedly executed after fork rejection: %#v", runner.runs)
+	}
+}
+
+func TestModel_FormalPlanRejectsSideEffectfulInlinePromptPreparation(t *testing.T) {
+	tests := []struct {
+		name    string
+		command func(marker string) (string, slash.Frontmatter)
+	}{
+		{
+			name: "embedded shell",
+			command: func(marker string) (string, slash.Frontmatter) {
+				return "Inspect !`touch " + marker + "`", slash.Frontmatter{}
+			},
+		},
+		{
+			name: "before hook",
+			command: func(marker string) (string, slash.Frontmatter) {
+				return "Inspect", slash.Frontmatter{
+					Hooks: &slash.FrontmatterHooks{Before: "touch " + marker},
+				}
+			},
+		},
+		{
+			name: "after hook",
+			command: func(marker string) (string, slash.Frontmatter) {
+				return "Inspect", slash.Frontmatter{
+					Hooks: &slash.FrontmatterHooks{After: "touch " + marker},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			marker := workDir + "/prepare.marker"
+			body, frontmatter := tt.command(marker)
+			frontmatter.UserInvocable = true
+
+			runner := newFakeRunner()
+			runner.workDir = workDir
+			runner.collaborationMode = collaboration.ModeFormalPlan
+			registry := newRegistryWithPromptCommandFrontmatter(t, "inspect", body, frontmatter)
+			executor := slash.NewExecutor(slash.WithWorkDir(workDir))
+			m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, executor)
+
+			m, _ = update(t, m, keyRunes("/inspect"))
+			m = drivePromptCommand(t, m)
+
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("Formal Plan preparation created marker before approval: %v", err)
+			}
+			if m.status != "Command failed" || !entriesContain(m.entries, "error", "Formal Plan") {
+				t.Fatalf("side-effectful preparation rejection not surfaced: status=%q entries=%#v", m.status, m.entries)
+			}
+			if len(runner.runs) != 0 {
+				t.Fatalf("runner unexpectedly executed after preparation rejection: %#v", runner.runs)
+			}
+		})
 	}
 }
 
@@ -320,6 +415,7 @@ func TestModel_AllowedTools_RoutesToRunRestricted(t *testing.T) {
 		},
 	})
 	m := NewModel(context.Background(), runner, Config{}).WithRegistry(r, slash.NewExecutor())
+	m, _ = update(t, m, keyShiftTab())
 
 	m, _ = update(t, m, keyRunes("/scan"))
 	m = drivePromptCommand(t, m)
@@ -332,6 +428,9 @@ func TestModel_AllowedTools_RoutesToRunRestricted(t *testing.T) {
 	}
 	if len(runner.restrictedAllow) != 1 || runner.restrictedAllow[0] != "read_file" {
 		t.Errorf("allowedTools = %v", runner.restrictedAllow)
+	}
+	if len(runner.restrictedModes) != 1 || runner.restrictedModes[0] != collaboration.ModeFormalPlan {
+		t.Errorf("collaboration modes = %v, want Formal Plan", runner.restrictedModes)
 	}
 	// Regular Run path must NOT be called when restriction applies.
 	if len(runner.fakeRunner.runs) != 0 {

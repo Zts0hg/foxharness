@@ -25,6 +25,7 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 	defer restoreLogs()
 
 	asker := attachInteractiveAsker(runner)
+	planReviewer := attachInteractivePlanReviewer(runner)
 	homeDir, _ := os.UserHomeDir()
 
 	return tui.Run(ctx, runner, tui.Config{
@@ -37,12 +38,19 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 		Registry:          runner.SlashRegistry(),
 		Executor:          runner.SlashExecutor(),
 		Asker:             asker,
+		PlanReviewer:      planReviewer,
 		Autodev: func(runCtx context.Context, backlogPath string, reporter autodev.Reporter) error {
 			autodevCfg := cfg
 			autodevCfg.Prompt = backlogPath
 			return RunAutodev(runCtx, autodevCfg, reporter)
 		},
 	})
+}
+
+func attachInteractivePlanReviewer(runner *AgentRunner) *tui.PlanReviewer {
+	reviewer := tui.NewPlanReviewer()
+	runner.SetPlanReviewer(reviewer)
+	return reviewer
 }
 
 // attachInteractiveAsker creates the interactive asker, installs it on the

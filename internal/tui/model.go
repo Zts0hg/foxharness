@@ -12,6 +12,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -40,7 +41,7 @@ const (
 // Runner is the app-facing runtime required by the TUI. It is intentionally
 // small so tests can exercise the UI without calling a real model.
 type Runner interface {
-	Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error)
+	RunInCollaborationMode(ctx context.Context, prompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
 	NewSession(ctx context.Context) (string, error)
 	SessionID() string
 	SessionDir() string
@@ -55,8 +56,8 @@ type Runner interface {
 	TruncateMessageHistory(seq int64) error
 	RestoreSessionStateBeforeMessage(seq int64) (bool, error)
 	Checkpointer() checkpoint.Checkpointer
-	PlanMode() bool
-	SetPlanMode(enabled bool)
+	CollaborationMode() collaboration.Mode
+	SetCollaborationMode(mode collaboration.Mode)
 	CompactNow(ctx context.Context, customInstructions string) (*compaction.CompactResult, error)
 }
 
@@ -84,6 +85,9 @@ type Config struct {
 	// Only the TUI sets it; non-interactive runners leave it nil so the tool
 	// is never offered to the model.
 	Asker *Asker
+
+	// PlanReviewer, when non-nil, enables submit_plan confirmation and revision.
+	PlanReviewer *PlanReviewer
 
 	// Autodev, when non-nil, launches the backlog autopilot for the
 	// /autodev builtin. internal/app injects it so the tui -> autodev
@@ -135,6 +139,7 @@ var slashCommands = []slashCommand{
 	{Name: "/rewind", Description: "restore a previous checkpoint"},
 	{Name: "/checkpoint", Description: "alias for /rewind"},
 	{Name: "/new", Description: "start a fresh session"},
+	{Name: "/plan", Description: "enter or leave Formal Plan mode", ArgumentHint: "[off]"},
 	{Name: "/model", Description: "show or switch the active model"},
 	{Name: "/theme", Description: "show or switch the TUI theme", ArgumentHint: "[name]"},
 	{Name: "/statusline", Description: "configure statusline items", ArgumentHint: "[set <items>|default]"},
@@ -178,6 +183,11 @@ type inputPastePreview struct {
 	lineCount int
 }
 
+type queuedPrompt struct {
+	text string
+	mode collaboration.Mode
+}
+
 type Model struct {
 	ctx           context.Context
 	runner        Runner
@@ -199,7 +209,7 @@ type Model struct {
 	slashSelection     int
 	fileSelection      int
 	fileMentions       []fileMention
-	queuedPrompts      []string
+	queuedPrompts      []queuedPrompt
 
 	entries            []entry
 	status             string
@@ -224,13 +234,13 @@ type Model struct {
 	mouseTailID   uint64
 	selection     selectionState
 
-	sessionID    string
-	modelName    string
-	project      string
-	gitBranch    string
-	contextUsage string
-	planMode     bool
-	homeDir      string
+	sessionID         string
+	modelName         string
+	project           string
+	gitBranch         string
+	contextUsage      string
+	collaborationMode collaboration.Mode
+	homeDir           string
 
 	providerID        string
 	providerProfileID string
@@ -244,6 +254,9 @@ type Model struct {
 
 	asker   *Asker
 	askForm *askForm
+
+	planReviewer *PlanReviewer
+	planForm     *planReviewForm
 
 	sidebarVisible       bool
 	sidebarFocused       bool
@@ -305,9 +318,10 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		project:           projectFolderName(runner.WorkDir()),
 		gitBranch:         gitBranchForWorkDir(runner.WorkDir()),
 		contextUsage:      normalizeContextUsage(runner.ContextUsage()),
-		planMode:          runner.PlanMode(),
+		collaborationMode: collaboration.Normalize(runner.CollaborationMode()),
 		checkpointer:      runner.Checkpointer(),
 		asker:             cfg.Asker,
+		planReviewer:      cfg.PlanReviewer,
 		autodevLauncher:   cfg.Autodev,
 		entries:           entries,
 		sidebarVisible:    true,
@@ -321,6 +335,9 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{waitForRunEvent(m.ctx, m.events), runningTickCmd()}
 	if m.asker != nil {
 		cmds = append(cmds, listenForAsk(m.ctx, m.asker))
+	}
+	if m.planReviewer != nil {
+		cmds = append(cmds, listenForPlanReview(m.ctx, m.planReviewer))
 	}
 	return tea.Batch(cmds...)
 }
@@ -387,6 +404,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askDoneMsg:
 		return m.handleAskDone()
+
+	case planReviewMsg:
+		m.planForm = newPlanReviewForm(msg.req)
+		return m, nil
+
+	case planReviewDoneMsg:
+		return m.handlePlanReviewDone()
 
 	case promptCommandReadyMsg:
 		return m.handlePromptCommandReady(msg)
@@ -1057,7 +1081,35 @@ func (m Model) handleAskDone() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handlePlanReviewDone() (tea.Model, tea.Cmd) {
+	if m.planForm == nil {
+		return m, nil
+	}
+	result := planReviewResult{
+		review:    m.planForm.review,
+		cancelled: m.planForm.cancelled,
+	}
+	if result.review.Decision == tools.PlanApproved && !result.cancelled {
+		m.collaborationMode = collaboration.ModeDefault
+		m.runner.SetCollaborationMode(collaboration.ModeDefault)
+		m.status = "Plan approved; continuing in Default mode"
+	} else if result.cancelled {
+		m.status = "Plan review cancelled; Formal Plan remains active"
+	} else {
+		m.status = "Continuing Formal Plan"
+	}
+	m.planForm.req.reply <- result
+	m.planForm = nil
+	if m.planReviewer != nil {
+		return m, listenForPlanReview(m.ctx, m.planReviewer)
+	}
+	return m, nil
+}
+
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.planForm != nil {
+		return m, m.planForm.update(msg)
+	}
 	if m.askForm != nil {
 		return m, m.askForm.update(msg)
 	}
@@ -1156,7 +1208,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.insertInputNewline()
 		return m, nil
 	case "shift+tab":
-		return m.togglePlanMode()
+		return m.toggleFormalPlan()
 	case "tab":
 		if m.hasSlashMenu() {
 			m.completeSlashCommand()
@@ -1698,10 +1750,18 @@ func (m Model) maxFocusedSidebarOffset() int {
 	return maxSidebarScrollOffset(m.sidebarDocuments[m.sidebarFocusIndex], sidebarContentWidth(width), heights[m.sidebarFocusIndex])
 }
 
-func (m Model) togglePlanMode() (tea.Model, tea.Cmd) {
-	m.planMode = !m.planMode
-	m.runner.SetPlanMode(m.planMode)
-	if m.planMode {
+func (m Model) toggleFormalPlan() (tea.Model, tea.Cmd) {
+	mode := collaboration.ModeFormalPlan
+	if m.collaborationMode == collaboration.ModeFormalPlan {
+		mode = collaboration.ModeDefault
+	}
+	return m.selectCollaborationMode(mode)
+}
+
+func (m Model) selectCollaborationMode(mode collaboration.Mode) (tea.Model, tea.Cmd) {
+	m.collaborationMode = collaboration.Normalize(mode)
+	m.runner.SetCollaborationMode(m.collaborationMode)
+	if m.collaborationMode == collaboration.ModeFormalPlan {
 		if m.running {
 			m.status = "Plan mode enabled for next run"
 		} else {
@@ -1779,7 +1839,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		m.resetCompletions()
 		if m.running && isQueuedModelCommand(text) {
 			m.addInputHistory(text)
-			m.queuedPrompts = append(m.queuedPrompts, text)
+			m.queuePrompt(text)
 			m.status = fmt.Sprintf("Queued %d message%s", len(m.queuedPrompts), pluralS(len(m.queuedPrompts)))
 			return m, nil
 		}
@@ -1792,7 +1852,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		m.clearInputPastePreview()
 		m.resetHistoryNavigation()
 		m.resetCompletions()
-		m.queuedPrompts = append(m.queuedPrompts, text)
+		m.queuePrompt(text)
 		m.status = fmt.Sprintf("Queued %d message%s", len(m.queuedPrompts), pluralS(len(m.queuedPrompts)))
 		return m, nil
 	}
@@ -1841,6 +1901,10 @@ func (m Model) submitBangCommand(text string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startPrompt(text string) (tea.Model, tea.Cmd) {
+	return m.startPromptInCollaborationMode(text, m.collaborationMode)
+}
+
+func (m Model) startPromptInCollaborationMode(text string, mode collaboration.Mode) (tea.Model, tea.Cmd) {
 	m.scrollOffset = 0
 	m.running = true
 	m.runStartedAt = m.nowTime()
@@ -1850,22 +1914,22 @@ func (m Model) startPrompt(text string) (tea.Model, tea.Cmd) {
 
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
-	return m, runPromptCmd(runCtx, m.runner, text, m.events)
+	return m, runPromptCmd(runCtx, m.runner, text, mode, m.events)
 }
 
 func (m Model) startNextQueuedPrompt() (tea.Model, tea.Cmd) {
 	for len(m.queuedPrompts) > 0 {
-		text := m.queuedPrompts[0]
-		m.queuedPrompts = append([]string(nil), m.queuedPrompts[1:]...)
-		if isModelCommand(text) {
-			next, cmd := m.handleSlashCommand(text)
+		queued := m.queuedPrompts[0]
+		m.queuedPrompts = append([]queuedPrompt(nil), m.queuedPrompts[1:]...)
+		if isModelCommand(queued.text) {
+			next, cmd := m.handleSlashCommand(queued.text)
 			m = next.(Model)
 			if cmd != nil {
 				return m, cmd
 			}
 			continue
 		}
-		next, cmd := m.startPrompt(text)
+		next, cmd := m.startPromptInCollaborationMode(queued.text, queued.mode)
 		typed := next.(Model)
 		if len(typed.queuedPrompts) > 0 {
 			typed.status = fmt.Sprintf("Running queued message; %d queued", len(typed.queuedPrompts))
@@ -1875,6 +1939,13 @@ func (m Model) startNextQueuedPrompt() (tea.Model, tea.Cmd) {
 		return typed, cmd
 	}
 	return m, nil
+}
+
+func (m *Model) queuePrompt(text string) {
+	m.queuedPrompts = append(m.queuedPrompts, queuedPrompt{
+		text: text,
+		mode: collaboration.Normalize(m.collaborationMode),
+	})
 }
 
 func (m *Model) addInputHistory(text string) {
@@ -2267,6 +2338,16 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.appendCommandEntry("Model", fmt.Sprintf("Switched model to %s", m.modelName))
 		m.status = fmt.Sprintf("Model switched to %s", m.modelName)
 		return m, nil
+	case "/plan":
+		if len(fields) == 1 {
+			return m.selectCollaborationMode(collaboration.ModeFormalPlan)
+		}
+		if len(fields) == 2 && strings.EqualFold(fields[1], "off") {
+			return m.selectCollaborationMode(collaboration.ModeDefault)
+		}
+		m.appendEntry("error", "invalid command", "Usage: /plan [off]", true)
+		m.status = "Invalid plan command"
+		return m, nil
 	case "/theme":
 		return m.handleThemeCommand(fields)
 	case "/statusline":
@@ -2505,7 +2586,7 @@ func (m Model) executePromptCommand(cmd *slash.Command, args string, displayProm
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
 	sessionID := m.runner.SessionID()
-	return m, executePromptCommandCmd(runCtx, exec, cmd, args, sessionID, displayPrompt)
+	return m, executePromptCommandCmd(runCtx, exec, cmd, args, sessionID, displayPrompt, m.collaborationMode)
 }
 
 // promptCommandReadyMsg is emitted by the executor goroutine once
@@ -2514,16 +2595,42 @@ func (m Model) executePromptCommand(cmd *slash.Command, args string, displayProm
 // whether to start an inline run, render a fork report, or surface an
 // error.
 type promptCommandReadyMsg struct {
-	cmdName       string
-	displayPrompt string
-	result        slash.ExecutionResult
-	err           error
+	cmdName           string
+	displayPrompt     string
+	collaborationMode collaboration.Mode
+	result            slash.ExecutionResult
+	err               error
 }
 
-func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *slash.Command, args, sessionID, displayPrompt string) tea.Cmd {
+func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *slash.Command, args, sessionID, displayPrompt string, mode collaboration.Mode) tea.Cmd {
 	return func() tea.Msg {
+		mode = collaboration.Normalize(mode)
+		if mode == collaboration.ModeFormalPlan {
+			switch {
+			case strings.EqualFold(strings.TrimSpace(cmd.Frontmatter.Context), "fork"):
+				return promptCommandReadyMsg{
+					cmdName:           cmd.Name,
+					displayPrompt:     displayPrompt,
+					collaborationMode: mode,
+					err:               fmt.Errorf("fork-mode prompt commands are unavailable in Formal Plan mode; use /plan off before running this command"),
+				}
+			case cmd.RunsShellAroundAgent():
+				return promptCommandReadyMsg{
+					cmdName:           cmd.Name,
+					displayPrompt:     displayPrompt,
+					collaborationMode: mode,
+					err:               fmt.Errorf("prompt commands with embedded shell or shell hooks are unavailable in Formal Plan mode; use /plan off before running this command"),
+				}
+			}
+		}
 		res, err := exec.Execute(ctx, cmd, args, sessionID)
-		return promptCommandReadyMsg{cmdName: cmd.Name, displayPrompt: displayPrompt, result: res, err: err}
+		return promptCommandReadyMsg{
+			cmdName:           cmd.Name,
+			displayPrompt:     displayPrompt,
+			collaborationMode: mode,
+			result:            res,
+			err:               err,
+		}
 	}
 }
 
@@ -2565,10 +2672,10 @@ func (m Model) handlePromptCommandReady(msg promptCommandReadyMsg) (tea.Model, t
 	// The prepare-stage runCtx is no longer relevant — derive a fresh
 	// run context so Ctrl+C cancellation maps to the run, not to the
 	// already-finished prepare phase.
-	return m.runInlinePromptCommand(msg.result, msg.displayPrompt)
+	return m.runInlinePromptCommand(msg.result, msg.displayPrompt, msg.collaborationMode)
 }
 
-func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPrompt string) (tea.Model, tea.Cmd) {
+func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPrompt string, mode collaboration.Mode) (tea.Model, tea.Cmd) {
 	text := result.Content
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
@@ -2589,10 +2696,10 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPromp
 		}
 		m.status = "Running (restricted)"
 		allowedCopy := append([]string(nil), result.AllowedTools...)
-		return m, runRestrictedPromptCmd(runCtx, rr, text, displayPrompt, allowedCopy, result.AfterHook, m.events)
+		return m, runRestrictedPromptCmd(runCtx, rr, text, displayPrompt, allowedCopy, mode, result.AfterHook, m.events)
 	}
 	m.status = "Running"
-	return m, runPromptCmdWithAfter(runCtx, m.runner, text, displayPrompt, result.AfterHook, m.events)
+	return m, runPromptCmdWithAfter(runCtx, m.runner, text, displayPrompt, mode, result.AfterHook, m.events)
 }
 
 // restrictedRunner is the optional interface a Runner implements to
@@ -2600,30 +2707,30 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPromp
 // satisfies it; test mocks may omit it and the TUI degrades gracefully
 // to a hard error so allowed-tools is never silently ignored.
 type restrictedRunner interface {
-	RunRestricted(ctx context.Context, prompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error)
-}
-
-type displayRunner interface {
-	RunWithDisplay(ctx context.Context, prompt string, displayPrompt string, reporter engine.Reporter) (*engine.RunResult, error)
+	RunRestrictedInCollaborationMode(ctx context.Context, prompt string, allowedTools []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
 }
 
 type restrictedDisplayRunner interface {
-	RunRestrictedWithDisplay(ctx context.Context, prompt string, displayPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error)
+	RunRestrictedWithDisplayInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, allowedTools []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
+}
+
+type collaborationDisplayRunner interface {
+	RunWithDisplayInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
 }
 
 type projectInputHistoryRunner interface {
 	ProjectInputHistory(limit int) ([]string, error)
 }
 
-func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, displayPrompt string, allowed []string, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, displayPrompt string, allowed []string, mode collaboration.Mode, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
 		var result *engine.RunResult
 		var err error
 		if displayRunner, ok := runner.(restrictedDisplayRunner); ok && strings.TrimSpace(displayPrompt) != "" {
-			result, err = displayRunner.RunRestrictedWithDisplay(ctx, prompt, displayPrompt, allowed, reporter)
+			result, err = displayRunner.RunRestrictedWithDisplayInCollaborationMode(ctx, prompt, displayPrompt, allowed, mode, reporter)
 		} else {
-			result, err = runner.RunRestricted(ctx, prompt, allowed, reporter)
+			result, err = runner.RunRestrictedInCollaborationMode(ctx, prompt, allowed, mode, reporter)
 		}
 		if afterHook != nil {
 			afterHook(ctx)
@@ -2632,15 +2739,15 @@ func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt
 	}
 }
 
-func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, displayPrompt string, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, displayPrompt string, mode collaboration.Mode, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
 		var result *engine.RunResult
 		var err error
-		if displayRunner, ok := runner.(displayRunner); ok && strings.TrimSpace(displayPrompt) != "" {
-			result, err = displayRunner.RunWithDisplay(ctx, prompt, displayPrompt, reporter)
+		if displayRunner, ok := runner.(collaborationDisplayRunner); ok && strings.TrimSpace(displayPrompt) != "" {
+			result, err = displayRunner.RunWithDisplayInCollaborationMode(ctx, prompt, displayPrompt, mode, reporter)
 		} else {
-			result, err = runner.Run(ctx, prompt, reporter)
+			result, err = runner.RunInCollaborationMode(ctx, prompt, mode, reporter)
 		}
 		if afterHook != nil {
 			afterHook(ctx)
@@ -2899,7 +3006,7 @@ func (m Model) formatStatusOverview() string {
 				{label: "Provider", value: provider},
 				{label: "Profile", value: profile},
 				{label: "Model", value: unavailableIfEmpty(m.runner.Model())},
-				{label: "Plan Mode", value: onOff(m.planMode)},
+				{label: "Plan Mode", value: onOff(m.collaborationMode.PlanEnabled())},
 			},
 		},
 		{
@@ -3308,10 +3415,10 @@ type shellCommandFinishedMsg struct {
 	result  tools.BashCommandResult
 }
 
-func runPromptCmd(ctx context.Context, runner Runner, prompt string, events chan<- tea.Msg) tea.Cmd {
+func runPromptCmd(ctx context.Context, runner Runner, prompt string, mode collaboration.Mode, events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
-		result, err := runner.Run(ctx, prompt, reporter)
+		result, err := runner.RunInCollaborationMode(ctx, prompt, mode, reporter)
 		return runFinishedMsg{result: result, err: err}
 	}
 }

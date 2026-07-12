@@ -89,8 +89,7 @@ func (a *coreRunnerAdapter) StagePrompt(ctx context.Context, command, args strin
 }
 
 // appCoreRunnerFactory creates one real AgentRunner per item, scoped to the
-// item's worktree. Plan mode is disabled: the SDD pipeline supplies its own
-// structure, and per-run planning would fight the staged prompts.
+// item's worktree. The SDD pipeline supplies its own staged structure.
 type appCoreRunnerFactory struct {
 	llmConfig llmconfig.ResolvedConfig
 	maxTurns  int
@@ -105,11 +104,10 @@ func (f *appCoreRunnerFactory) New(ctx context.Context, workDir, model string) (
 	}
 	llmConfig := f.llmConfig.WithModel(model)
 	runner, err := NewAgentRunner(ctx, AgentRunnerConfig{
-		WorkDir:        workDir,
-		Model:          llmConfig.Model,
-		LLM:            llmConfig,
-		EnablePlanMode: false,
-		MaxTurns:       f.maxTurns,
+		WorkDir:  workDir,
+		Model:    llmConfig.Model,
+		LLM:      llmConfig,
+		MaxTurns: f.maxTurns,
 	})
 	if err != nil {
 		return nil, err
