@@ -90,6 +90,7 @@ func parseTUISettings(path string, raw json.RawMessage) TUISettings {
 			tui.Permissions.Mode = ""
 		}
 	}
+	_, hasFullAccessWarningAcknowledged := fields["full_access_warning_acknowledged"]
 	if rawAck, ok := fields["full_access_warning_acknowledged"]; ok {
 		if err := json.Unmarshal(rawAck, &tui.Permissions.FullAccessWarningRemembered); err != nil {
 			log.Printf("[Settings] ignored invalid tui.full_access_warning_acknowledged in %s: %v", path, err)
@@ -104,7 +105,7 @@ func parseTUISettings(path string, raw json.RawMessage) TUISettings {
 			if tui.Permissions.Mode == "" {
 				tui.Permissions.Mode = permissions.Mode
 			}
-			if !tui.Permissions.FullAccessWarningRemembered {
+			if !hasFullAccessWarningAcknowledged {
 				tui.Permissions.FullAccessWarningRemembered = permissions.FullAccessWarningRemembered
 			}
 		}
