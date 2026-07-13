@@ -75,6 +75,9 @@ func TestReadOnlyBashFastPathIsConservative(t *testing.T) {
 	if IsReadOnlyBash("git remote set-url origin git@example.com:x/y", workspace, workspace) {
 		t.Fatal("git remote mutation should not be allowed")
 	}
+	if IsReadOnlyBash("rg --pre=rm pattern .", workspace, workspace) {
+		t.Fatal("rg --pre should not be allowed")
+	}
 	if IsReadOnlyBash("find . -delete", workspace, workspace) {
 		t.Fatal("find -delete should not be allowed")
 	}

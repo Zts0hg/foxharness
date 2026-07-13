@@ -169,6 +169,8 @@ func flagAllowed(command string, flag string) bool {
 	switch command {
 	case "git":
 		return gitFlagAllowed(flag)
+	case "rg":
+		return rgFlagAllowed(flag)
 	case "find":
 		return !findDangerousArg(flag)
 	default:
@@ -188,6 +190,15 @@ func commandArgsAllowed(command string, args []string) bool {
 		}
 	}
 	return true
+}
+
+func rgFlagAllowed(flag string) bool {
+	switch {
+	case flag == "--pre", strings.HasPrefix(flag, "--pre="), flag == "--pre-glob", strings.HasPrefix(flag, "--pre-glob="):
+		return false
+	default:
+		return true
+	}
 }
 
 func gitArgsAllowed(args []string) bool {
