@@ -194,10 +194,22 @@ func (r *Registry) GetAvailableTools() []schema.ToolDefinition { return r.base.G
 
 // Execute authorizes the call before delegating to the base registry.
 func (r *Registry) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
+	if !toolAdvertised(r.base, call.Name) {
+		return r.base.Execute(ctx, call)
+	}
 	if err := r.coordinator.Authorize(ctx, call); err != nil {
 		return schema.ToolResult{ToolCallID: call.ID, Output: "Tool execution denied by permission policy: " + err.Error(), IsError: true}
 	}
 	return r.base.Execute(ctx, call)
+}
+
+func toolAdvertised(registry tools.Registry, name string) bool {
+	for _, definition := range registry.GetAvailableTools() {
+		if definition.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // IsParallelSafe disables parallel execution while approvals may be interactive.

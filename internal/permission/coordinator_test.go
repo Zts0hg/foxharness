@@ -54,6 +54,26 @@ func TestRegistryDecoratorDeniesBeforeExecuteAndDisablesParallel(t *testing.T) {
 	}
 }
 
+func TestRegistryDecoratorDoesNotPromptForUnknownTool(t *testing.T) {
+	registry := tools.NewRegistry()
+	approver := &fakeApprover{decision: UserDecision{Kind: UserAllowOnce}}
+	coordinator := NewCoordinator(Config{
+		State:     NewState(ModeAsk, false),
+		Workspace: t.TempDir(),
+		CWD:       t.TempDir(),
+		Approver:  approver,
+	})
+	wrapped := DecorateRegistry(registry, coordinator)
+
+	result := wrapped.Execute(context.Background(), schema.ToolCall{ID: "1", Name: "missing_tool", Arguments: json.RawMessage(`{}`)})
+	if !result.IsError {
+		t.Fatalf("Execute() IsError = false, want true")
+	}
+	if approver.calls != 0 {
+		t.Fatalf("approver calls = %d, want 0", approver.calls)
+	}
+}
+
 func TestCoordinatorPassesInjectedEvidenceToReviewer(t *testing.T) {
 	reviewer := &capturingReviewer{result: ReviewResult{
 		Decision:          ReviewApprove,

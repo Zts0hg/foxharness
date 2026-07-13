@@ -137,6 +137,9 @@ func readOnlyCall(call *syntax.CallExpr, workspace string, cwd string) bool {
 		if strings.ContainsAny(text, "*?[{") {
 			return false
 		}
+		if expandsOutsideWorkspace(text) {
+			return false
+		}
 		if looksLikePath(text) && !containedInWorkspace(workspace, cwd, text) {
 			return false
 		}
@@ -242,6 +245,10 @@ func literalWord(word *syntax.Word) string {
 
 func looksLikePath(arg string) bool {
 	return strings.Contains(arg, "/") || strings.HasPrefix(arg, ".")
+}
+
+func expandsOutsideWorkspace(arg string) bool {
+	return strings.HasPrefix(arg, "~")
 }
 
 func containedInWorkspace(workspace string, cwd string, path string) bool {

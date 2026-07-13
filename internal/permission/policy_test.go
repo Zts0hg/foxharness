@@ -50,6 +50,9 @@ func TestReadOnlyBashFastPathIsConservative(t *testing.T) {
 	if IsReadOnlyBash("cat ../secret.txt", workspace, workspace) {
 		t.Fatal("workspace escape should not be allowed")
 	}
+	if IsReadOnlyBash("cat ~/.ssh/id_rsa", workspace, workspace) {
+		t.Fatal("tilde-expanded home path should not be allowed")
+	}
 	if IsReadOnlyBash("echo hi > file.txt", workspace, workspace) {
 		t.Fatal("redirect should not be allowed")
 	}
