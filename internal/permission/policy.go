@@ -76,7 +76,7 @@ func Classify(workspace string, cwd string, source Source, call schema.ToolCall)
 		req.Risk = riskForBash(command)
 		return PolicyDecision{RequiresReview: true, Request: req, Reason: "bash requires review"}
 	case "delegate_task", "subagent", "skill":
-		req.Action = call.Name
+		req.Action = call.Name + " " + req.Arguments
 		req.Risk = RiskHigh
 		return PolicyDecision{RequiresReview: true, Request: req, Reason: "composite tool requires review"}
 	default:

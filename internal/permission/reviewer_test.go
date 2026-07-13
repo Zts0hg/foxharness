@@ -106,6 +106,25 @@ func TestProviderReviewerCannotDowngradeDeterministicRisk(t *testing.T) {
 	}
 }
 
+func TestProviderReviewerEscalatesUnknownAuthorization(t *testing.T) {
+	reviewProvider := &scriptedReviewProvider{
+		responses: []reviewProviderResponse{
+			{content: `{"decision":"approve","risk_level":"low","user_authorization":"unknown","rationale":"not enough authorization"}`},
+		},
+	}
+	reviewer := &ProviderReviewer{
+		Lookup: func() provider.LLMProvider { return reviewProvider },
+	}
+
+	result, err := reviewer.Review(context.Background(), reviewRequest(), Evidence{Text: "trusted context"})
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if result.Decision != ReviewEscalate {
+		t.Fatalf("decision = %q, want escalate for unknown authorization", result.Decision)
+	}
+}
+
 func TestProviderReviewerRetriesNilMessageResponse(t *testing.T) {
 	reviewProvider := &scriptedReviewProvider{
 		responses: []reviewProviderResponse{

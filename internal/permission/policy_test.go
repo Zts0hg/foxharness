@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -85,6 +86,13 @@ func TestClassifyReviewsCompositeAndUnknownTools(t *testing.T) {
 		if !got.RequiresReview {
 			t.Fatalf("%s classification = %+v, want review", name, got)
 		}
+	}
+}
+
+func TestClassifyCompositeActionIncludesArguments(t *testing.T) {
+	got := Classify(t.TempDir(), "", SourceMain, toolCall("skill", map[string]string{"name": "review", "arguments": "pr-9"}))
+	if !strings.Contains(got.Request.Action, `"name":"review"`) || !strings.Contains(got.Request.Action, `"arguments":"pr-9"`) {
+		t.Fatalf("composite action = %q, want normalized arguments", got.Request.Action)
 	}
 }
 

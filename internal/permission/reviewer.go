@@ -91,7 +91,7 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 			lastErr = err
 			continue
 		}
-		if result.Decision == ReviewApprove && reviewerMayApprove(request.Risk) && reviewerMayApprove(result.Risk) {
+		if result.Decision == ReviewApprove && reviewerMayApprove(request.Risk) && reviewerMayApprove(result.Risk) && reviewerAuthorizationSufficient(result.UserAuthorization) {
 			return result, nil
 		}
 		result.Decision = ReviewEscalate
@@ -142,4 +142,8 @@ func parseReviewResult(resp *provider.GenerateResponse) (ReviewResult, error) {
 
 func reviewerMayApprove(risk Risk) bool {
 	return risk == RiskLow || risk == RiskMedium
+}
+
+func reviewerAuthorizationSufficient(authorization UserAuthorization) bool {
+	return authorization == AuthorizationHigh || authorization == AuthorizationMedium
 }
