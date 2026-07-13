@@ -12,8 +12,9 @@ import (
 func TestCoordinatorRoutesAskModeToUserAndStoresSessionGrant(t *testing.T) {
 	state := NewState(ModeAsk, false)
 	approver := &fakeApprover{decision: UserDecision{Kind: UserAllowSession}}
+	sink := &fakeStateSink{}
 	coordinator := NewCoordinator(Config{
-		State: state, Workspace: t.TempDir(), CWD: t.TempDir(), Source: SourceMain, Approver: approver,
+		State: state, Workspace: t.TempDir(), CWD: t.TempDir(), Source: SourceMain, Approver: approver, Sink: sink,
 	})
 	call := toolCall("bash", map[string]string{"command": "go test ./..."})
 
@@ -22,6 +23,9 @@ func TestCoordinatorRoutesAskModeToUserAndStoresSessionGrant(t *testing.T) {
 	}
 	if approver.calls != 1 {
 		t.Fatalf("approver calls = %d, want 1", approver.calls)
+	}
+	if sink.stateChanges != 1 {
+		t.Fatalf("state changes = %d, want 1", sink.stateChanges)
 	}
 	if err := coordinator.Authorize(context.Background(), call); err != nil {
 		t.Fatalf("Authorize() with grant error = %v", err)
@@ -84,6 +88,16 @@ func (a *fakeApprover) Approve(ctx context.Context, request ApprovalRequest) (Us
 	a.calls++
 	return a.decision, nil
 }
+
+type fakeStateSink struct {
+	stateChanges int
+}
+
+func (s *fakeStateSink) OnReviewStart(request Request)                       {}
+func (s *fakeStateSink) OnReviewRetry(request Request, attempt int)          {}
+func (s *fakeStateSink) OnAutoApproved(request Request, result ReviewResult) {}
+func (s *fakeStateSink) OnEscalated(request Request, result ReviewResult)    {}
+func (s *fakeStateSink) OnPermissionStateChanged()                           { s.stateChanges++ }
 
 type capturingReviewer struct {
 	result   ReviewResult

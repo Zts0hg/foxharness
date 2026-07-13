@@ -448,6 +448,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = msg.status
 		return m, waitForRunEvent(m.ctx, m.events)
 
+	case permissionStateChangedMsg:
+		m.permissionSnapshot = permissionSnapshot(m.runner)
+		return m, waitForRunEvent(m.ctx, m.events)
+
 	case approvalDoneMsg:
 		return m.handleApprovalDone()
 

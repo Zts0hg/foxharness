@@ -4389,6 +4389,26 @@ func TestUnrememberedFullAccessStartupShowsWarningEntry(t *testing.T) {
 	}
 }
 
+func TestPermissionStateChangedRefreshesSnapshot(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	if got := m.permissionSnapshot.SessionGrantCount; got != 0 {
+		t.Fatalf("initial grant count = %d, want 0", got)
+	}
+	runner.permissionState.AddGrant(permission.GrantForRequest(permission.Request{
+		ToolName:  "bash",
+		CWD:       runner.workDir,
+		Workspace: runner.workDir,
+		Source:    permission.SourceMain,
+	}))
+
+	next, _ := update(t, m, permissionStateChangedMsg{})
+	m = next
+	if got := m.permissionSnapshot.SessionGrantCount; got != 1 {
+		t.Fatalf("refreshed grant count = %d, want 1", got)
+	}
+}
+
 func testQueuedPrompts(texts ...string) []queuedPrompt {
 	prompts := make([]queuedPrompt, 0, len(texts))
 	for _, text := range texts {

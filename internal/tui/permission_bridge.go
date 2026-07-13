@@ -21,6 +21,8 @@ type permissionReviewMsg struct {
 	status string
 }
 
+type permissionStateChangedMsg struct{}
+
 // PermissionBridge connects the permission coordinator to the TUI event loop.
 type PermissionBridge struct {
 	requests chan permissionRequest
@@ -73,6 +75,11 @@ func (b *PermissionBridge) OnAutoApproved(request permission.Request, result per
 // OnEscalated reports escalation to user approval.
 func (b *PermissionBridge) OnEscalated(request permission.Request, result permission.ReviewResult) {
 	b.send(permissionReviewMsg{status: "Permission review escalated: " + request.ToolName})
+}
+
+// OnPermissionStateChanged asks the TUI to refresh visible permission state.
+func (b *PermissionBridge) OnPermissionStateChanged() {
+	b.send(permissionStateChangedMsg{})
 }
 
 func (b *PermissionBridge) send(msg tea.Msg) {

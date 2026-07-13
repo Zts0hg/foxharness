@@ -24,6 +24,11 @@ type EventSink interface {
 	OnEscalated(request Request, result ReviewResult)
 }
 
+// StateChangeSink receives permission-state changes caused by approval flow.
+type StateChangeSink interface {
+	OnPermissionStateChanged()
+}
+
 // EvidenceProvider builds bounded reviewer context for a request.
 type EvidenceProvider func(request Request) Evidence
 
@@ -153,6 +158,9 @@ func (c *Coordinator) askUser(ctx context.Context, request Request, review Revie
 		return nil
 	case UserAllowSession:
 		c.state.AddGrant(GrantForRequest(request))
+		if sink, ok := c.sink.(StateChangeSink); ok {
+			sink.OnPermissionStateChanged()
+		}
 		return nil
 	case UserDenyFeedback:
 		if decision.Feedback != "" {
