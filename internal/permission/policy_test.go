@@ -51,6 +51,9 @@ func TestReadOnlyBashFastPathIsConservative(t *testing.T) {
 	if IsReadOnlyBash("GIT_EXTERNAL_DIFF=/tmp/runme git diff", workspace, workspace) {
 		t.Fatal("environment assignments should not be allowed in read-only fast path")
 	}
+	if IsReadOnlyBash("sed -n 1p go.mod", workspace, workspace) {
+		t.Fatal("sed should not be allowed in read-only fast path")
+	}
 	if IsReadOnlyBash("sed -i s/a/b/g file.txt", workspace, workspace) {
 		t.Fatal("sed -i should not be allowed")
 	}

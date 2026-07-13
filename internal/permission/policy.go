@@ -155,7 +155,7 @@ func readOnlyCall(call *syntax.CallExpr, workspace string, cwd string) bool {
 
 var readOnlyCommand = map[string]bool{
 	"cat": true, "find": true, "git": true, "grep": true,
-	"head": true, "ls": true, "pwd": true, "rg": true, "sed": true,
+	"head": true, "ls": true, "pwd": true, "rg": true,
 	"tail": true, "test": true, "wc": true,
 }
 
