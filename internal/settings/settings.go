@@ -24,8 +24,15 @@ type Settings struct {
 
 // TUISettings contains persisted terminal UI preferences.
 type TUISettings struct {
-	Theme      string   `json:"theme,omitempty"`
-	Statusline []string `json:"statusline,omitempty"`
+	Theme       string             `json:"theme,omitempty"`
+	Statusline  []string           `json:"statusline,omitempty"`
+	Permissions PermissionSettings `json:"permissions,omitempty"`
+}
+
+// PermissionSettings contains persisted TUI permission-mode preferences.
+type PermissionSettings struct {
+	Mode                        string `json:"mode,omitempty"`
+	FullAccessWarningRemembered bool   `json:"full_access_warning_remembered,omitempty"`
 }
 
 // Load reads ~/.foxharness/settings.json. If the file is missing, malformed,
@@ -75,6 +82,14 @@ func parseTUISettings(path string, raw json.RawMessage) TUISettings {
 			log.Printf("[Settings] ignored invalid tui.statusline in %s: %v", path, err)
 		} else {
 			tui.Statusline = items
+		}
+	}
+	if rawPermissions, ok := fields["permissions"]; ok {
+		var permissions PermissionSettings
+		if err := json.Unmarshal(rawPermissions, &permissions); err != nil {
+			log.Printf("[Settings] ignored invalid tui.permissions in %s: %v", path, err)
+		} else {
+			tui.Permissions = permissions
 		}
 	}
 	return tui
@@ -242,7 +257,11 @@ func hasLLMSettings(llm llmconfig.Settings) bool {
 }
 
 func hasTUISettings(tui TUISettings) bool {
-	return tui.Theme != "" || len(tui.Statusline) > 0
+	return tui.Theme != "" || len(tui.Statusline) > 0 || hasPermissionSettings(tui.Permissions)
+}
+
+func hasPermissionSettings(p PermissionSettings) bool {
+	return p.Mode != "" || p.FullAccessWarningRemembered
 }
 
 func mergeLLMRaw(raw json.RawMessage, llm llmconfig.Settings) json.RawMessage {
@@ -277,8 +296,37 @@ func mergeTUIRaw(raw json.RawMessage, tui TUISettings) json.RawMessage {
 		statuslineJSON, _ := json.Marshal(tui.Statusline)
 		m["statusline"] = statuslineJSON
 	}
+	if hasPermissionSettings(tui.Permissions) {
+		m["permissions"] = mergePermissionsRaw(m["permissions"], tui.Permissions)
+	}
 	out, _ := json.Marshal(m)
 	return out
+}
+
+func mergePermissionsRaw(raw json.RawMessage, permissions PermissionSettings) json.RawMessage {
+	var m map[string]json.RawMessage
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &m)
+	}
+	if m == nil {
+		m = make(map[string]json.RawMessage)
+	}
+	setStringField(m, "mode", permissions.Mode)
+	if permissions.FullAccessWarningRemembered || fieldExists(raw, "full_access_warning_remembered") {
+		data, _ := json.Marshal(permissions.FullAccessWarningRemembered)
+		m["full_access_warning_remembered"] = data
+	}
+	out, _ := json.Marshal(m)
+	return out
+}
+
+func fieldExists(raw json.RawMessage, name string) bool {
+	var m map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &m) != nil {
+		return false
+	}
+	_, ok := m[name]
+	return ok
 }
 
 func mergeProvidersRaw(raw json.RawMessage, providers map[string]llmconfig.Profile) json.RawMessage {

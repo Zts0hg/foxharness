@@ -18,8 +18,10 @@ import (
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/settings"
 	"github.com/Zts0hg/foxharness/internal/tools"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
@@ -52,6 +54,7 @@ type fakeRunner struct {
 	compactErr        error
 	compactInstr      string
 	memoryIndex       string
+	permissionState   *permission.State
 }
 
 // AutoMemoryIndex satisfies the Runner interface for the test double; tests that
@@ -206,6 +209,35 @@ func (r *fakeRunner) CompactNow(ctx context.Context, customInstructions string) 
 		PostTokens:         200,
 		MessagesSummarized: 15,
 	}, nil
+}
+
+func (r *fakeRunner) PermissionSnapshot() permission.Snapshot {
+	if r.permissionState == nil {
+		r.permissionState = permission.NewState(permission.ModeAsk, false)
+	}
+	return r.permissionState.Snapshot()
+}
+
+func (r *fakeRunner) SetPermissionMode(mode permission.Mode, remembered bool) {
+	if r.permissionState == nil {
+		r.permissionState = permission.NewState(mode, remembered)
+		return
+	}
+	r.permissionState.SetSelected(mode, remembered)
+}
+
+func (r *fakeRunner) ActivateFullAccess(remember bool) {
+	if r.permissionState == nil {
+		r.permissionState = permission.NewState(permission.ModeAsk, false)
+	}
+	r.permissionState.ActivateFullAccess(remember)
+}
+
+func (r *fakeRunner) ClearPermissionGrants() int {
+	if r.permissionState == nil {
+		return 0
+	}
+	return r.permissionState.ClearGrants()
 }
 
 type tuiCheckpointer struct {
@@ -4303,6 +4335,57 @@ func newFakeRunner() *fakeRunner {
 		model:        "fake-model",
 		contextUsage: "7%",
 		truncatedSeq: -1,
+	}
+}
+
+func TestPermissionsCommandUpdatesModeAndPersistsSettings(t *testing.T) {
+	runner := newFakeRunner()
+	home := t.TempDir()
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	next, _ := m.handleSlashCommand("/permissions approve")
+	m = next.(Model)
+	if got := runner.PermissionSnapshot().EffectiveMode; got != permission.ModeApprove {
+		t.Fatalf("EffectiveMode = %q, want approve", got)
+	}
+	loaded, err := settings.Load(home)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := loaded.TUI.Permissions.Mode; got != string(permission.ModeApprove) {
+		t.Fatalf("persisted mode = %q, want approve", got)
+	}
+}
+
+func TestPermissionsStatuslineIsOptionalAndRenderable(t *testing.T) {
+	if containsString(defaultStatuslineItems, "permissions") {
+		t.Fatal("permissions must not be in default statusline items")
+	}
+	runner := newFakeRunner()
+	runner.SetPermissionMode(permission.ModeApprove, false)
+	m := NewModel(context.Background(), runner, Config{})
+	m.statuslineItems = []string{"permissions"}
+	if got := m.renderStatuslineItem("permissions"); !strings.Contains(got, "Approve for me") {
+		t.Fatalf("permissions statusline = %q, want mode label", got)
+	}
+}
+
+func TestFullAccessWarningRendersAtBottom(t *testing.T) {
+	runner := newFakeRunner()
+	runner.ActivateFullAccess(false)
+	m := NewModel(context.Background(), runner, Config{})
+	got := m.renderKeybinds(80)
+	if !strings.Contains(got, "[ full access ]") {
+		t.Fatalf("keybinds = %q, want full access warning", got)
+	}
+}
+
+func TestUnrememberedFullAccessStartupShowsWarningEntry(t *testing.T) {
+	runner := newFakeRunner()
+	runner.permissionState = permission.NewState(permission.ModeFullAccess, false)
+	m := NewModel(context.Background(), runner, Config{})
+	if !entriesContain(m.entries, "system", "Full Access is selected but not remembered") {
+		t.Fatalf("entries = %#v, want startup warning", m.entries)
 	}
 }
 

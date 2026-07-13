@@ -184,6 +184,36 @@ func TestLoad(t *testing.T) {
 		}
 	})
 
+	t.Run("loads_tui_permission_settings", func(t *testing.T) {
+		home := t.TempDir()
+		dir := filepath.Join(home, ".foxharness")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		raw := `{
+		  "tui": {
+		    "permissions": {
+		      "mode": "full_access",
+		      "full_access_warning_remembered": true
+		    }
+		  }
+		}`
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := Load(home)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if got.TUI.Permissions.Mode != "full_access" {
+			t.Fatalf("TUI.Permissions.Mode = %q, want full_access", got.TUI.Permissions.Mode)
+		}
+		if !got.TUI.Permissions.FullAccessWarningRemembered {
+			t.Fatal("FullAccessWarningRemembered = false, want true")
+		}
+	})
+
 	t.Run("string_statusline_settings_do_not_drop_llm_settings", func(t *testing.T) {
 		home := t.TempDir()
 		dir := filepath.Join(home, ".foxharness")

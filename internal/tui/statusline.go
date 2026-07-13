@@ -13,6 +13,7 @@ var allStatuslineItems = []string{
 	"git-branch",
 	"run-state",
 	"plan-mode",
+	"permissions",
 	"context-used",
 	"queued",
 	"session-id",
@@ -88,6 +89,8 @@ func (m Model) renderStatuslineItem(item string) string {
 		return mutedStyle.Render("run ") + statusProjectStyle.Render(m.runStateLabel())
 	case "plan-mode":
 		return statusProjectStyle.Render("plan mode " + onOff(m.collaborationMode.PlanEnabled()))
+	case "permissions":
+		return mutedStyle.Render("perm ") + statusProjectStyle.Render(permissionModeLabel(m.permissionSnapshot.EffectiveMode))
 	case "context-used":
 		return mutedStyle.Render("Context ") + statusModelStyle.Render(normalizeContextUsage(m.contextUsage))
 	case "queued":

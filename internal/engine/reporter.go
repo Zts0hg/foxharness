@@ -1,6 +1,10 @@
 package engine
 
-import "context"
+import (
+	"context"
+
+	"github.com/Zts0hg/foxharness/internal/schema"
+)
 
 // Reporter receives human-facing lifecycle events from an engine run.
 // It keeps output surfaces such as Feishu, CLI, or Web UI out of the core
@@ -14,4 +18,10 @@ type Reporter interface {
 	OnMessage(ctx context.Context, content string)
 	OnRunComplete(ctx context.Context, result RunResult)
 	OnRunError(ctx context.Context, sessionID string, runID string, err error)
+}
+
+// DetailedReporter optionally receives tool-call IDs for audit correlation.
+type DetailedReporter interface {
+	OnToolCallDetail(ctx context.Context, call schema.ToolCall)
+	OnToolResultDetail(ctx context.Context, call schema.ToolCall, result schema.ToolResult)
 }

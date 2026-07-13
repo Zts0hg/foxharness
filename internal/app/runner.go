@@ -23,6 +23,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/middleware"
+	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -44,6 +45,7 @@ type AgentRunnerConfig struct {
 	ContinueSession bool
 	NewSession      bool
 	OnModelChange   func(model string) error
+	Permission      *permission.Coordinator
 }
 
 // AgentRunner owns one long-lived session and can execute many user prompts
@@ -77,8 +79,9 @@ type AgentRunner struct {
 	slashRegistry  *slash.Registry
 	slashExecutor  *slash.Executor
 
-	userAsker    tools.UserAsker
-	planReviewer tools.PlanReviewer
+	userAsker             tools.UserAsker
+	planReviewer          tools.PlanReviewer
+	permissionCoordinator *permission.Coordinator
 
 	pendingMu          sync.Mutex
 	pendingActivations []string
@@ -153,21 +156,22 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 	}
 
 	ar := &AgentRunner{
-		workDir:           workDir,
-		model:             cfg.LLM.Model,
-		providerProtocol:  providerProtocol,
-		llmConfig:         cfg.LLM,
-		enableThinking:    cfg.EnableThinking,
-		collaborationMode: collaboration.ModeDefault,
-		maxTurns:          cfg.MaxTurns,
-		onModelChange:     cfg.OnModelChange,
-		store:             store,
-		autoMemory:        autoMem,
-		manager:           manager,
-		llmProvider:       llmProvider,
-		currentSession:    sess,
-		checkpointer:      cp,
-		slashRegistry:     slashRegistry,
+		workDir:               workDir,
+		model:                 cfg.LLM.Model,
+		providerProtocol:      providerProtocol,
+		llmConfig:             cfg.LLM,
+		enableThinking:        cfg.EnableThinking,
+		collaborationMode:     collaboration.ModeDefault,
+		maxTurns:              cfg.MaxTurns,
+		onModelChange:         cfg.OnModelChange,
+		permissionCoordinator: cfg.Permission,
+		store:                 store,
+		autoMemory:            autoMem,
+		manager:               manager,
+		llmProvider:           llmProvider,
+		currentSession:        sess,
+		checkpointer:          cp,
+		slashRegistry:         slashRegistry,
 	}
 	ar.slashExecutor = slash.NewExecutor(
 		slash.WithWorkDir(workDir),
@@ -253,8 +257,9 @@ func (r *AgentRunner) currentSubagentManager() *subagent.Manager {
 	r.mu.Lock()
 	p := r.llmProvider
 	wd := r.workDir
+	permissions := r.permissionCoordinator
 	r.mu.Unlock()
-	return subagent.NewManager(p, wd)
+	return subagent.NewManager(p, wd).WithPermission(permissions)
 }
 
 // currentSessionIDLocked returns the current session id, or "" when no
@@ -556,6 +561,9 @@ func (r *AgentRunner) NewSession(ctx context.Context) (string, error) {
 	r.store = store
 	r.checkpointer = checkpoint.New(checkpoint.Config{SessionDir: sess.RootDir})
 	r.collaborationMode = collaboration.ModeDefault
+	if r.permissionCoordinator != nil {
+		r.permissionCoordinator.State().ClearGrants()
+	}
 	if checkpointDisabledFromEnv() {
 		r.checkpointer.SetDisabled(true)
 	}
@@ -962,7 +970,11 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 	registry.Register(tools.NewReadTodoTool(sess.RootDir))
 	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
 
-	subManager := subagent.NewManager(llmProvider, r.workDir)
+	r.mu.Lock()
+	permissions := r.permissionCoordinator
+	r.mu.Unlock()
+
+	subManager := subagent.NewManager(llmProvider, r.workDir).WithPermission(permissions)
 	registry.Register(subagent.NewTool(subManager, sess.ID))
 
 	r.mu.Lock()
@@ -980,7 +992,7 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 	if userAsker != nil {
 		registry.Register(tools.NewAskUserQuestionTool(userAsker))
 	}
-	return registry
+	return permission.DecorateRegistry(registry, permissions)
 }
 
 func (r *AgentRunner) buildPlanLifecycle(sess *session.Session, store *memory.Store, defaultRegistry tools.Registry) *planLifecycle {
@@ -995,6 +1007,9 @@ func (r *AgentRunner) buildPlanLifecycle(sess *session.Session, store *memory.St
 	checklistRegistry.Register(tools.NewAskUserQuestionTool(userAsker))
 	checklistRegistry.Register(tools.NewReadTodoTool(sess.RootDir))
 	checklistRegistry.Register(tools.NewUpdateTodoTool(sess.RootDir))
+	if r.permissionCoordinator != nil {
+		checklistRegistry = permission.DecorateRegistry(checklistRegistry, r.permissionCoordinator)
+	}
 
 	lifecycle := newPlanLifecycle(nil, checklistRegistry, defaultRegistry, func() {
 		r.SetCollaborationMode(collaboration.ModeDefault)
@@ -1004,8 +1019,53 @@ func (r *AgentRunner) buildPlanLifecycle(sess *session.Session, store *memory.St
 	formalRegistry.Register(tools.NewBashTool(r.workDir))
 	formalRegistry.Register(tools.NewAskUserQuestionTool(userAsker))
 	formalRegistry.Register(tools.NewSubmitPlanTool(store, planReviewer, lifecycle.approve))
+	if r.permissionCoordinator != nil {
+		formalRegistry = permission.DecorateRegistry(formalRegistry, r.permissionCoordinator)
+	}
 	lifecycle.setFormalRegistry(formalRegistry)
 	return lifecycle
+}
+
+// PermissionSnapshot exposes the TUI permission state.
+func (r *AgentRunner) PermissionSnapshot() permission.Snapshot {
+	r.mu.Lock()
+	coordinator := r.permissionCoordinator
+	r.mu.Unlock()
+	if coordinator == nil {
+		return permission.NewState(permission.ModeAsk, false).Snapshot()
+	}
+	return coordinator.State().Snapshot()
+}
+
+// SetPermissionMode updates the process-local selected and effective mode.
+func (r *AgentRunner) SetPermissionMode(mode permission.Mode, remembered bool) {
+	r.mu.Lock()
+	coordinator := r.permissionCoordinator
+	r.mu.Unlock()
+	if coordinator != nil {
+		coordinator.State().SetSelected(mode, remembered)
+	}
+}
+
+// ActivateFullAccess enables Full Access for the current TUI process.
+func (r *AgentRunner) ActivateFullAccess(remember bool) {
+	r.mu.Lock()
+	coordinator := r.permissionCoordinator
+	r.mu.Unlock()
+	if coordinator != nil {
+		coordinator.State().ActivateFullAccess(remember)
+	}
+}
+
+// ClearPermissionGrants clears process-local session grants.
+func (r *AgentRunner) ClearPermissionGrants() int {
+	r.mu.Lock()
+	coordinator := r.permissionCoordinator
+	r.mu.Unlock()
+	if coordinator == nil {
+		return 0
+	}
+	return coordinator.State().ClearGrants()
 }
 
 // SetUserAsker installs the interactive asker used by the ask_user_question

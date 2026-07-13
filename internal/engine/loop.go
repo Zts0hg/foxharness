@@ -715,8 +715,12 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 
 		log.Printf("[Engine] 模型请求调用 %d 个工具\n", len(actionResponse.ToolCalls))
 		if reporter != nil {
+			detailed, _ := reporter.(DetailedReporter)
 			for _, toolCall := range actionResponse.ToolCalls {
 				reporter.OnToolCall(ctx, toolCall.Name, string(toolCall.Arguments))
+				if detailed != nil {
+					detailed.OnToolCallDetail(ctx, toolCall)
+				}
 			}
 		}
 
@@ -732,6 +736,9 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 					truncateReporterOutput(item.Result.Output, 800),
 					item.Result.IsError,
 				)
+				if detailed, ok := reporter.(DetailedReporter); ok {
+					detailed.OnToolResultDetail(ctx, item.Call, item.Result)
+				}
 			}
 
 			if item.Result.IsError {
