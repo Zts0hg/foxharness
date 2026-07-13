@@ -4357,6 +4357,55 @@ func TestPermissionsCommandUpdatesModeAndPersistsSettings(t *testing.T) {
 	}
 }
 
+func TestPermissionsFullAccessWithoutRememberDoesNotActivate(t *testing.T) {
+	runner := newFakeRunner()
+	home := t.TempDir()
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	next, _ := m.handleSlashCommand("/permissions full-access")
+	m = next.(Model)
+	snap := runner.PermissionSnapshot()
+	if snap.SelectedMode != permission.ModeFullAccess {
+		t.Fatalf("SelectedMode = %q, want full access", snap.SelectedMode)
+	}
+	if snap.EffectiveMode != permission.ModeAsk {
+		t.Fatalf("EffectiveMode = %q, want ask until remembered confirmation", snap.EffectiveMode)
+	}
+	loaded, err := settings.Load(home)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := loaded.TUI.Permissions.Mode; got != string(permission.ModeFullAccess) {
+		t.Fatalf("persisted mode = %q, want full access", got)
+	}
+	if loaded.TUI.Permissions.FullAccessWarningRemembered {
+		t.Fatal("FullAccessWarningRemembered = true, want false")
+	}
+}
+
+func TestPermissionsFullAccessRememberActivatesAndPersistsAcknowledgement(t *testing.T) {
+	runner := newFakeRunner()
+	home := t.TempDir()
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	next, _ := m.handleSlashCommand("/permissions full-access remember")
+	m = next.(Model)
+	snap := runner.PermissionSnapshot()
+	if snap.EffectiveMode != permission.ModeFullAccess {
+		t.Fatalf("EffectiveMode = %q, want full access", snap.EffectiveMode)
+	}
+	if !snap.FullAccessRemembered {
+		t.Fatal("FullAccessRemembered = false, want true")
+	}
+	loaded, err := settings.Load(home)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !loaded.TUI.Permissions.FullAccessWarningRemembered {
+		t.Fatal("persisted FullAccessWarningRemembered = false, want true")
+	}
+}
+
 func TestPermissionsStatuslineIsOptionalAndRenderable(t *testing.T) {
 	if containsString(defaultStatuslineItems, "permissions") {
 		t.Fatal("permissions must not be in default statusline items")

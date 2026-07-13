@@ -192,10 +192,8 @@ func TestLoad(t *testing.T) {
 		}
 		raw := `{
 		  "tui": {
-		    "permissions": {
-		      "mode": "full_access",
-		      "full_access_warning_remembered": true
-		    }
+		    "permission_mode": "full_access",
+		    "full_access_warning_acknowledged": true
 		  }
 		}`
 		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0644); err != nil {
@@ -211,6 +209,36 @@ func TestLoad(t *testing.T) {
 		}
 		if !got.TUI.Permissions.FullAccessWarningRemembered {
 			t.Fatal("FullAccessWarningRemembered = false, want true")
+		}
+	})
+
+	t.Run("loads_legacy_nested_tui_permission_settings", func(t *testing.T) {
+		home := t.TempDir()
+		dir := filepath.Join(home, ".foxharness")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		raw := `{
+		  "tui": {
+		    "permissions": {
+		      "mode": "approve",
+		      "full_access_warning_remembered": true
+		    }
+		  }
+		}`
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := Load(home)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if got.TUI.Permissions.Mode != "approve" {
+			t.Fatalf("legacy mode = %q, want approve", got.TUI.Permissions.Mode)
+		}
+		if !got.TUI.Permissions.FullAccessWarningRemembered {
+			t.Fatal("legacy FullAccessWarningRemembered = false, want true")
 		}
 	})
 

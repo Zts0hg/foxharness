@@ -2631,7 +2631,9 @@ func (m Model) setPermissionMode(mode permission.Mode, remember bool) (tea.Model
 	}
 	if mode == permission.ModeFullAccess {
 		setPermissionMode(m.runner, permission.ModeFullAccess, nextSettings.FullAccessWarningRemembered)
-		activateFullAccess(m.runner, remember)
+		if remember {
+			activateFullAccess(m.runner, true)
+		}
 	} else {
 		setPermissionMode(m.runner, mode, nextSettings.FullAccessWarningRemembered)
 	}
