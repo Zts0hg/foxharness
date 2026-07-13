@@ -91,7 +91,7 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 			lastErr = err
 			continue
 		}
-		if result.Decision == ReviewApprove && reviewerMayApprove(result.Risk) {
+		if result.Decision == ReviewApprove && reviewerMayApprove(request.Risk) && reviewerMayApprove(result.Risk) {
 			return result, nil
 		}
 		result.Decision = ReviewEscalate
@@ -112,6 +112,9 @@ func reviewerMessages(request Request, evidence Evidence) []schema.Message {
 func parseReviewResult(resp *provider.GenerateResponse) (ReviewResult, error) {
 	if resp == nil {
 		return ReviewResult{}, fmt.Errorf("nil review response")
+	}
+	if resp.Message == nil {
+		return ReviewResult{}, fmt.Errorf("nil review message")
 	}
 	content := strings.TrimSpace(resp.Message.Content)
 	var result ReviewResult

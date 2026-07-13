@@ -85,9 +85,58 @@ func TestProviderReviewerRequiresStructuredAuthorizationField(t *testing.T) {
 	}
 }
 
+func TestProviderReviewerCannotDowngradeDeterministicRisk(t *testing.T) {
+	reviewProvider := &scriptedReviewProvider{
+		responses: []reviewProviderResponse{
+			{content: `{"decision":"approve","risk_level":"low","user_authorization":"high","rationale":"claimed safe"}`},
+		},
+	}
+	reviewer := &ProviderReviewer{
+		Lookup: func() provider.LLMProvider { return reviewProvider },
+	}
+	request := reviewRequest()
+	request.Risk = RiskHigh
+
+	result, err := reviewer.Review(context.Background(), request, Evidence{Text: "trusted context"})
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if result.Decision != ReviewEscalate {
+		t.Fatalf("decision = %q, want escalate for high deterministic risk", result.Decision)
+	}
+}
+
+func TestProviderReviewerRetriesNilMessageResponse(t *testing.T) {
+	reviewProvider := &scriptedReviewProvider{
+		responses: []reviewProviderResponse{
+			{nilMessage: true},
+			{content: `{"decision":"approve","risk_level":"low","user_authorization":"medium","rationale":"valid retry"}`},
+		},
+	}
+	var attempts []int
+	reviewer := &ProviderReviewer{
+		Lookup: func() provider.LLMProvider { return reviewProvider },
+		OnRetry: func(request Request, attempt int) {
+			attempts = append(attempts, attempt)
+		},
+	}
+
+	result, err := reviewer.Review(context.Background(), reviewRequest(), Evidence{Text: "trusted context"})
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if result.Decision != ReviewApprove {
+		t.Fatalf("decision = %q, want approve after retry", result.Decision)
+	}
+	if len(attempts) != 1 || attempts[0] != 2 {
+		t.Fatalf("retry attempts = %#v, want [2]", attempts)
+	}
+}
+
 type reviewProviderResponse struct {
-	content string
-	err     error
+	content    string
+	nilMessage bool
+	err        error
 }
 
 type scriptedReviewProvider struct {
@@ -106,6 +155,9 @@ func (p *scriptedReviewProvider) Generate(ctx context.Context, messages []schema
 	p.calls++
 	if resp.err != nil {
 		return nil, resp.err
+	}
+	if resp.nilMessage {
+		return &provider.GenerateResponse{}, nil
 	}
 	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: resp.content}}, nil
 }
