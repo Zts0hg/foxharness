@@ -48,6 +48,9 @@ func TestReadOnlyBashFastPathIsConservative(t *testing.T) {
 	if IsReadOnlyBash("cd && cat .ssh/id_rsa", workspace, workspace) {
 		t.Fatal("cd should not be allowed in read-only fast path")
 	}
+	if IsReadOnlyBash("GIT_EXTERNAL_DIFF=/tmp/runme git diff", workspace, workspace) {
+		t.Fatal("environment assignments should not be allowed in read-only fast path")
+	}
 	if IsReadOnlyBash("sed -i s/a/b/g file.txt", workspace, workspace) {
 		t.Fatal("sed -i should not be allowed")
 	}
@@ -93,6 +96,18 @@ func TestClassifyCompositeActionIncludesArguments(t *testing.T) {
 	got := Classify(t.TempDir(), "", SourceMain, toolCall("skill", map[string]string{"name": "review", "arguments": "pr-9"}))
 	if !strings.Contains(got.Request.Action, `"name":"review"`) || !strings.Contains(got.Request.Action, `"arguments":"pr-9"`) {
 		t.Fatalf("composite action = %q, want normalized arguments", got.Request.Action)
+	}
+}
+
+func TestBashRiskUsesShellTokens(t *testing.T) {
+	workspace := t.TempDir()
+	got := Classify(workspace, workspace, SourceMain, toolCall("bash", map[string]string{"command": "rm\t-rf dir"}))
+	if got.Request.Risk != RiskCritical {
+		t.Fatalf("rm tab risk = %q, want critical", got.Request.Risk)
+	}
+	got = Classify(workspace, workspace, SourceMain, toolCall("bash", map[string]string{"command": "git\tpush origin main"}))
+	if got.Request.Risk != RiskHigh {
+		t.Fatalf("git push tab risk = %q, want high", got.Request.Risk)
 	}
 }
 

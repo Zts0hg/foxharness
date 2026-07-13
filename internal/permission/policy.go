@@ -114,6 +114,9 @@ func IsReadOnlyBash(command string, workspace string, cwd string) bool {
 }
 
 func readOnlyCall(call *syntax.CallExpr, workspace string, cwd string) bool {
+	if len(call.Assigns) > 0 {
+		return false
+	}
 	if len(call.Args) == 0 {
 		return false
 	}
@@ -321,12 +324,52 @@ func bashCommand(raw json.RawMessage) string {
 }
 
 func riskForBash(command string) Risk {
-	lower := strings.ToLower(command)
-	if strings.Contains(lower, "rm ") || strings.Contains(lower, "sudo ") || strings.Contains(lower, "chmod ") || strings.Contains(lower, "chown ") {
-		return RiskCritical
+	risk := RiskMedium
+	parser := syntax.NewParser()
+	file, err := parser.Parse(strings.NewReader(command), "")
+	if err != nil {
+		return fallbackRiskForBash(command)
 	}
-	if strings.Contains(lower, "git push") || strings.Contains(lower, "git commit") || strings.Contains(lower, "curl ") {
-		return RiskHigh
+	syntax.Walk(file, func(node syntax.Node) bool {
+		call, ok := node.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		name := strings.ToLower(literalWord(call.Args[0]))
+		switch name {
+		case "rm", "sudo", "chmod", "chown":
+			risk = RiskCritical
+			return false
+		case "curl":
+			if risk != RiskCritical {
+				risk = RiskHigh
+			}
+		case "git":
+			if len(call.Args) > 1 {
+				subcommand := strings.ToLower(literalWord(call.Args[1]))
+				if subcommand == "push" || subcommand == "commit" {
+					if risk != RiskCritical {
+						risk = RiskHigh
+					}
+				}
+			}
+		}
+		return true
+	})
+	return risk
+}
+
+func fallbackRiskForBash(command string) Risk {
+	lower := strings.ToLower(command)
+	for _, needle := range []string{"rm", "sudo", "chmod", "chown"} {
+		if strings.Contains(lower, needle) {
+			return RiskCritical
+		}
+	}
+	for _, needle := range []string{"git push", "git commit", "curl"} {
+		if strings.Contains(lower, needle) {
+			return RiskHigh
+		}
 	}
 	return RiskMedium
 }
