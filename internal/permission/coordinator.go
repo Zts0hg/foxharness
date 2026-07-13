@@ -24,6 +24,9 @@ type EventSink interface {
 	OnEscalated(request Request, result ReviewResult)
 }
 
+// EvidenceProvider builds bounded reviewer context for a request.
+type EvidenceProvider func(request Request) Evidence
+
 // ApprovalRequest contains the visible approval prompt state.
 type ApprovalRequest struct {
 	Request         Request
@@ -57,6 +60,7 @@ type Coordinator struct {
 	approver  UserApprover
 	reviewer  Reviewer
 	sink      EventSink
+	evidence  EvidenceProvider
 }
 
 // Config creates a coordinator for one interactive runtime.
@@ -68,6 +72,7 @@ type Config struct {
 	Approver  UserApprover
 	Reviewer  Reviewer
 	Sink      EventSink
+	Evidence  EvidenceProvider
 }
 
 // NewCoordinator creates a permission coordinator.
@@ -78,11 +83,18 @@ func NewCoordinator(cfg Config) *Coordinator {
 	if cfg.Source == "" {
 		cfg.Source = SourceMain
 	}
-	return &Coordinator{state: cfg.State, workspace: cfg.Workspace, cwd: cfg.CWD, source: cfg.Source, approver: cfg.Approver, reviewer: cfg.Reviewer, sink: cfg.Sink}
+	return &Coordinator{state: cfg.State, workspace: cfg.Workspace, cwd: cfg.CWD, source: cfg.Source, approver: cfg.Approver, reviewer: cfg.Reviewer, sink: cfg.Sink, evidence: cfg.Evidence}
 }
 
 // State returns the shared permission state.
 func (c *Coordinator) State() *State { return c.state }
+
+// SetEvidenceProvider replaces the reviewer context provider for future calls.
+func (c *Coordinator) SetEvidenceProvider(provider EvidenceProvider) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.evidence = provider
+}
 
 // Authorize returns nil when a tool call may execute.
 func (c *Coordinator) Authorize(ctx context.Context, call schema.ToolCall) error {
@@ -102,7 +114,11 @@ func (c *Coordinator) Authorize(ctx context.Context, call schema.ToolCall) error
 		if c.sink != nil {
 			c.sink.OnReviewStart(request)
 		}
-		result, err := c.reviewer.Review(ctx, request, BuildEvidence(nil, nil, request))
+		evidence := BuildEvidence(nil, nil, request)
+		if c.evidence != nil {
+			evidence = c.evidence(request)
+		}
+		result, err := c.reviewer.Review(ctx, request, evidence)
 		if err == nil && result.Decision == ReviewApprove {
 			if c.sink != nil {
 				c.sink.OnAutoApproved(request, result)

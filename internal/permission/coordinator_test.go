@@ -50,6 +50,31 @@ func TestRegistryDecoratorDeniesBeforeExecuteAndDisablesParallel(t *testing.T) {
 	}
 }
 
+func TestCoordinatorPassesInjectedEvidenceToReviewer(t *testing.T) {
+	reviewer := &capturingReviewer{result: ReviewResult{
+		Decision:          ReviewApprove,
+		Risk:              RiskLow,
+		UserAuthorization: AuthorizationMedium,
+		Rationale:         "scoped",
+	}}
+	coordinator := NewCoordinator(Config{
+		State:     NewState(ModeApprove, false),
+		Workspace: t.TempDir(),
+		CWD:       t.TempDir(),
+		Reviewer:  reviewer,
+		Evidence: func(request Request) Evidence {
+			return Evidence{Text: "trusted current user task"}
+		},
+	})
+
+	if err := coordinator.Authorize(context.Background(), toolCall("bash", map[string]string{"command": "go test ./..."})); err != nil {
+		t.Fatalf("Authorize() error = %v", err)
+	}
+	if reviewer.evidence.Text != "trusted current user task" {
+		t.Fatalf("review evidence = %q, want injected task context", reviewer.evidence.Text)
+	}
+}
+
 type fakeApprover struct {
 	decision UserDecision
 	calls    int
@@ -58,6 +83,16 @@ type fakeApprover struct {
 func (a *fakeApprover) Approve(ctx context.Context, request ApprovalRequest) (UserDecision, error) {
 	a.calls++
 	return a.decision, nil
+}
+
+type capturingReviewer struct {
+	result   ReviewResult
+	evidence Evidence
+}
+
+func (r *capturingReviewer) Review(ctx context.Context, request Request, evidence Evidence) (ReviewResult, error) {
+	r.evidence = evidence
+	return r.result, nil
 }
 
 type fakeTool struct{ name string }

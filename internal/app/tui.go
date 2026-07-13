@@ -26,21 +26,23 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 	)
 	permissionBridge := tui.NewPermissionBridge()
 	var runner *AgentRunner
+	reviewer := permission.NewProviderReviewer(func() provider.LLMProvider {
+		if runner == nil {
+			return nil
+		}
+		runner.mu.Lock()
+		defer runner.mu.Unlock()
+		return runner.llmProvider
+	})
+	reviewer.OnRetry = permissionBridge.OnReviewRetry
 	coordinator := permission.NewCoordinator(permission.Config{
 		State:     permissionState,
 		Workspace: cfg.WorkDir,
 		CWD:       cfg.WorkDir,
 		Source:    permission.SourceMain,
 		Approver:  permissionBridge,
-		Reviewer: permission.NewProviderReviewer(func() provider.LLMProvider {
-			if runner == nil {
-				return nil
-			}
-			runner.mu.Lock()
-			defer runner.mu.Unlock()
-			return runner.llmProvider
-		}),
-		Sink: permissionBridge,
+		Reviewer:  reviewer,
+		Sink:      permissionBridge,
 	})
 	defer coordinator.State().ClearGrants()
 	runnerCfg := agentRunnerConfigFromCLI(cfg)

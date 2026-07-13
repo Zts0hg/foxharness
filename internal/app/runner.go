@@ -418,6 +418,13 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	}
 
 	toolRegistry := r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID)
+	if r.permissionCoordinator != nil {
+		reviewMessages := []schema.Message{{Role: schema.RoleUser, Content: userPrompt}}
+		r.permissionCoordinator.SetEvidenceProvider(func(request permission.Request) permission.Evidence {
+			return permission.BuildEvidence(reviewMessages, nil, request)
+		})
+		defer r.permissionCoordinator.SetEvidenceProvider(nil)
+	}
 	var planRun *planLifecycle
 	if collaborationMode == collaboration.ModeFormalPlan {
 		planRun = r.buildPlanLifecycle(sess, store, toolRegistry)

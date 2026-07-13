@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/Zts0hg/foxharness/internal/permission"
 	tea "github.com/charmbracelet/bubbletea"
@@ -61,7 +62,7 @@ func (b *PermissionBridge) OnReviewStart(request permission.Request) {
 
 // OnReviewRetry reports transient reviewer retry progress.
 func (b *PermissionBridge) OnReviewRetry(request permission.Request, attempt int) {
-	b.send(permissionReviewMsg{status: "Retrying permission review"})
+	b.send(permissionReviewMsg{status: "Retrying permission review (attempt " + strconv.Itoa(attempt) + ")"})
 }
 
 // OnAutoApproved reports an automatic approval.

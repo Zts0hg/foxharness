@@ -23,9 +23,10 @@ type ProviderLookup func() provider.LLMProvider
 
 // ReviewResult is the strict reviewer outcome.
 type ReviewResult struct {
-	Decision  ReviewDecision `json:"decision"`
-	Risk      Risk           `json:"risk"`
-	Rationale string         `json:"rationale"`
+	Decision          ReviewDecision    `json:"decision"`
+	Risk              Risk              `json:"risk_level"`
+	UserAuthorization UserAuthorization `json:"user_authorization"`
+	Rationale         string            `json:"rationale"`
 }
 
 // ReviewDecision is the reviewer authority surface.
@@ -36,10 +37,21 @@ const (
 	ReviewEscalate ReviewDecision = "escalate"
 )
 
+// UserAuthorization is the reviewer estimate of explicit user authorization.
+type UserAuthorization string
+
+const (
+	AuthorizationHigh    UserAuthorization = "high"
+	AuthorizationMedium  UserAuthorization = "medium"
+	AuthorizationLow     UserAuthorization = "low"
+	AuthorizationUnknown UserAuthorization = "unknown"
+)
+
 // ProviderReviewer runs isolated, tool-free approval review through the active provider.
 type ProviderReviewer struct {
 	Lookup  ProviderLookup
 	Timeout time.Duration
+	OnRetry func(request Request, attempt int)
 }
 
 // NewProviderReviewer creates an active-provider reviewer.
@@ -58,6 +70,9 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 
 	var lastErr error
 	for attempt := 0; attempt < reviewerAttempts; attempt++ {
+		if attempt > 0 && r.OnRetry != nil {
+			r.OnRetry(request, attempt+1)
+		}
 		p := r.Lookup()
 		if p == nil {
 			lastErr = fmt.Errorf("review provider unavailable")
@@ -82,11 +97,11 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 		result.Decision = ReviewEscalate
 		return result, nil
 	}
-	return ReviewResult{Decision: ReviewEscalate, Risk: request.Risk, Rationale: "Auto-review was unavailable after three attempts."}, lastErr
+	return ReviewResult{Decision: ReviewEscalate, Risk: request.Risk, UserAuthorization: AuthorizationUnknown, Rationale: "Auto-review was unavailable after three attempts."}, lastErr
 }
 
 func reviewerMessages(request Request, evidence Evidence) []schema.Message {
-	system := `You are a tool-call approval reviewer. Return exactly one JSON object with fields decision, risk, and rationale. decision must be "approve" or "escalate". Approve only the exact invocation when context is sufficient, task-relevant, and narrowly scoped. Escalate critical, suspicious, unclear, unrelated, or insufficiently authorized calls.`
+	system := `You are a tool-call approval reviewer. Return exactly one JSON object with fields decision, risk_level, user_authorization, and rationale. decision must be "approve" or "escalate". risk_level must be "low", "medium", "high", or "critical". user_authorization must be "high", "medium", "low", or "unknown". Approve only the exact invocation when context is sufficient, task-relevant, and narrowly scoped. Escalate critical, suspicious, unclear, unrelated, or insufficiently authorized calls.`
 	user := fmt.Sprintf("Request:\nTool: %s\nAction: %s\nCWD: %s\nWorkspace: %s\nRisk: %s\n\nEvidence:\n%s", request.ToolName, request.Action, request.CWD, request.Workspace, request.Risk, evidence.Text)
 	return []schema.Message{
 		{Role: schema.RoleSystem, Content: system},
@@ -110,6 +125,11 @@ func parseReviewResult(resp *provider.GenerateResponse) (ReviewResult, error) {
 	case RiskLow, RiskMedium, RiskHigh, RiskCritical:
 	default:
 		return ReviewResult{}, fmt.Errorf("invalid review risk %q", result.Risk)
+	}
+	switch result.UserAuthorization {
+	case AuthorizationHigh, AuthorizationMedium, AuthorizationLow, AuthorizationUnknown:
+	default:
+		return ReviewResult{}, fmt.Errorf("invalid review user authorization %q", result.UserAuthorization)
 	}
 	if strings.TrimSpace(result.Rationale) == "" {
 		return ReviewResult{}, fmt.Errorf("missing review rationale")
