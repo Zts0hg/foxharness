@@ -65,7 +65,7 @@ type Coordinator struct {
 	approver  UserApprover
 	reviewer  Reviewer
 	sink      EventSink
-	evidence  EvidenceProvider
+	evidence  *evidenceSlot
 }
 
 // Config creates a coordinator for one interactive runtime.
@@ -80,6 +80,23 @@ type Config struct {
 	Evidence  EvidenceProvider
 }
 
+type evidenceSlot struct {
+	mu       sync.Mutex
+	provider EvidenceProvider
+}
+
+func (s *evidenceSlot) set(provider EvidenceProvider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.provider = provider
+}
+
+func (s *evidenceSlot) get() EvidenceProvider {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.provider
+}
+
 // NewCoordinator creates a permission coordinator.
 func NewCoordinator(cfg Config) *Coordinator {
 	if cfg.State == nil {
@@ -88,7 +105,7 @@ func NewCoordinator(cfg Config) *Coordinator {
 	if cfg.Source == "" {
 		cfg.Source = SourceMain
 	}
-	return &Coordinator{state: cfg.State, workspace: cfg.Workspace, cwd: cfg.CWD, source: cfg.Source, approver: cfg.Approver, reviewer: cfg.Reviewer, sink: cfg.Sink, evidence: cfg.Evidence}
+	return &Coordinator{state: cfg.State, workspace: cfg.Workspace, cwd: cfg.CWD, source: cfg.Source, approver: cfg.Approver, reviewer: cfg.Reviewer, sink: cfg.Sink, evidence: &evidenceSlot{provider: cfg.Evidence}}
 }
 
 // State returns the shared permission state.
@@ -118,9 +135,10 @@ func (c *Coordinator) WithSource(source Source) *Coordinator {
 
 // SetEvidenceProvider replaces the reviewer context provider for future calls.
 func (c *Coordinator) SetEvidenceProvider(provider EvidenceProvider) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.evidence = provider
+	if c == nil || c.evidence == nil {
+		return
+	}
+	c.evidence.set(provider)
 }
 
 // Authorize returns nil when a tool call may execute.
@@ -143,7 +161,9 @@ func (c *Coordinator) Authorize(ctx context.Context, call schema.ToolCall) error
 		}
 		evidence := BuildEvidence(nil, nil, request)
 		if c.evidence != nil {
-			evidence = c.evidence(request)
+			if provider := c.evidence.get(); provider != nil {
+				evidence = provider(request)
+			}
 		}
 		result, err := c.reviewer.Review(ctx, request, evidence)
 		if err == nil && result.Decision == ReviewApprove {

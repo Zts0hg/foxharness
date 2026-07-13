@@ -121,6 +121,29 @@ func TestCoordinatorWithSourceDoesNotReuseMainGrant(t *testing.T) {
 	}
 }
 
+func TestCoordinatorWithSourceSharesEvidenceUpdates(t *testing.T) {
+	reviewer := &capturingReviewer{result: ReviewResult{
+		Decision:          ReviewApprove,
+		Risk:              RiskLow,
+		UserAuthorization: AuthorizationMedium,
+		Rationale:         "scoped",
+	}}
+	parent := NewCoordinator(Config{
+		State: NewState(ModeApprove, false), Workspace: t.TempDir(), CWD: t.TempDir(), Source: SourceMain, Reviewer: reviewer,
+	})
+	child := parent.WithSource(SourceSubagent)
+	parent.SetEvidenceProvider(func(request Request) Evidence {
+		return Evidence{Text: "late-bound user task"}
+	})
+
+	if err := child.Authorize(context.Background(), toolCall("bash", map[string]string{"command": "go test ./..."})); err != nil {
+		t.Fatalf("child Authorize() error = %v", err)
+	}
+	if reviewer.evidence.Text != "late-bound user task" {
+		t.Fatalf("child review evidence = %q, want live parent evidence", reviewer.evidence.Text)
+	}
+}
+
 type fakeApprover struct {
 	decision UserDecision
 	calls    int
