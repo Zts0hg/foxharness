@@ -44,6 +44,9 @@ func TestReadOnlyBashFastPathIsConservative(t *testing.T) {
 	if !IsReadOnlyBash("pwd && ls -la . | head -20", workspace, sub) {
 		t.Fatal("read-only chain should be allowed")
 	}
+	if IsReadOnlyBash("cd && cat .ssh/id_rsa", workspace, workspace) {
+		t.Fatal("cd should not be allowed in read-only fast path")
+	}
 	if IsReadOnlyBash("sed -i s/a/b/g file.txt", workspace, workspace) {
 		t.Fatal("sed -i should not be allowed")
 	}
@@ -61,6 +64,12 @@ func TestReadOnlyBashFastPathIsConservative(t *testing.T) {
 	}
 	if IsReadOnlyBash("git diff --output=/tmp/out", workspace, workspace) {
 		t.Fatal("git diff --output should not be allowed")
+	}
+	if IsReadOnlyBash("git branch new-work", workspace, workspace) {
+		t.Fatal("git branch mutation should not be allowed")
+	}
+	if IsReadOnlyBash("git remote set-url origin git@example.com:x/y", workspace, workspace) {
+		t.Fatal("git remote mutation should not be allowed")
 	}
 	if IsReadOnlyBash("find . -delete", workspace, workspace) {
 		t.Fatal("find -delete should not be allowed")

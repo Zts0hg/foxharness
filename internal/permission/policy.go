@@ -151,7 +151,7 @@ func readOnlyCall(call *syntax.CallExpr, workspace string, cwd string) bool {
 }
 
 var readOnlyCommand = map[string]bool{
-	"cat": true, "cd": true, "find": true, "git": true, "grep": true,
+	"cat": true, "find": true, "git": true, "grep": true,
 	"head": true, "ls": true, "pwd": true, "rg": true, "sed": true,
 	"tail": true, "test": true, "wc": true,
 }
@@ -200,7 +200,7 @@ func gitArgsAllowed(args []string) bool {
 		break
 	}
 	switch subcommand {
-	case "status", "diff", "log", "show", "branch", "rev-parse", "ls-files", "grep", "remote":
+	case "status", "diff", "log", "show", "rev-parse", "ls-files", "grep":
 		return true
 	default:
 		return false

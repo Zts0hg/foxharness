@@ -85,7 +85,7 @@ func (m *Manager) WithMaxTurns(n int) *Manager {
 
 // WithPermission makes delegated tool calls use the parent TUI coordinator.
 func (m *Manager) WithPermission(coordinator *permission.Coordinator) *Manager {
-	m.permissions = coordinator
+	m.permissions = coordinator.WithSource(permission.SourceSubagent)
 	return m
 }
 

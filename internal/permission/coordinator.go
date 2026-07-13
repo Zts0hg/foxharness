@@ -94,6 +94,28 @@ func NewCoordinator(cfg Config) *Coordinator {
 // State returns the shared permission state.
 func (c *Coordinator) State() *State { return c.state }
 
+// WithSource creates a coordinator view with the same state and reviewers but a distinct source.
+func (c *Coordinator) WithSource(source Source) *Coordinator {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if source == "" {
+		source = c.source
+	}
+	return &Coordinator{
+		state:     c.state,
+		workspace: c.workspace,
+		cwd:       c.cwd,
+		source:    source,
+		approver:  c.approver,
+		reviewer:  c.reviewer,
+		sink:      c.sink,
+		evidence:  c.evidence,
+	}
+}
+
 // SetEvidenceProvider replaces the reviewer context provider for future calls.
 func (c *Coordinator) SetEvidenceProvider(provider EvidenceProvider) {
 	c.mu.Lock()

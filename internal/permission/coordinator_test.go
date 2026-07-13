@@ -99,6 +99,28 @@ func TestCoordinatorPassesInjectedEvidenceToReviewer(t *testing.T) {
 	}
 }
 
+func TestCoordinatorWithSourceDoesNotReuseMainGrant(t *testing.T) {
+	state := NewState(ModeAsk, false)
+	parentApprover := &fakeApprover{decision: UserDecision{Kind: UserAllowSession}}
+	parent := NewCoordinator(Config{
+		State: state, Workspace: t.TempDir(), CWD: t.TempDir(), Source: SourceMain, Approver: parentApprover,
+	})
+	childApprover := &fakeApprover{decision: UserDecision{Kind: UserAllowOnce}}
+	child := parent.WithSource(SourceSubagent)
+	child.approver = childApprover
+	call := toolCall("bash", map[string]string{"command": "go test ./..."})
+
+	if err := parent.Authorize(context.Background(), call); err != nil {
+		t.Fatalf("parent Authorize() error = %v", err)
+	}
+	if err := child.Authorize(context.Background(), call); err != nil {
+		t.Fatalf("child Authorize() error = %v", err)
+	}
+	if childApprover.calls != 1 {
+		t.Fatalf("child approver calls = %d, want 1", childApprover.calls)
+	}
+}
+
 type fakeApprover struct {
 	decision UserDecision
 	calls    int
