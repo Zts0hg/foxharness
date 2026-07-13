@@ -2,6 +2,7 @@ package permission
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -23,6 +24,20 @@ func TestClassifyAllowsWorkspaceFileToolsAndReviewsEscapes(t *testing.T) {
 	}
 }
 
+func TestClassifyReviewsWorkspaceSymlinkEscapes(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(workspace, "external")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	call := toolCall("write_file", map[string]string{"path": "external/new.txt"})
+	got := Classify(workspace, workspace, SourceMain, call)
+	if !got.RequiresReview || got.Request.Risk != RiskHigh {
+		t.Fatalf("symlink escape classification = %+v, want review high", got)
+	}
+}
+
 func TestReadOnlyBashFastPathIsConservative(t *testing.T) {
 	workspace := t.TempDir()
 	sub := filepath.Join(workspace, "sub")
@@ -40,6 +55,9 @@ func TestReadOnlyBashFastPathIsConservative(t *testing.T) {
 	}
 	if IsReadOnlyBash("git reset --hard HEAD", workspace, workspace) {
 		t.Fatal("git reset should not be allowed")
+	}
+	if IsReadOnlyBash("git diff --output=/tmp/out", workspace, workspace) {
+		t.Fatal("git diff --output should not be allowed")
 	}
 	if IsReadOnlyBash("find . -delete", workspace, workspace) {
 		t.Fatal("find -delete should not be allowed")

@@ -3,6 +3,7 @@ package permission
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -161,7 +162,7 @@ func flagAllowed(command string, flag string) bool {
 	}
 	switch command {
 	case "git":
-		return true
+		return gitFlagAllowed(flag)
 	case "find":
 		return !findDangerousArg(flag)
 	default:
@@ -203,6 +204,21 @@ func gitArgsAllowed(args []string) bool {
 	}
 }
 
+func gitFlagAllowed(flag string) bool {
+	if strings.Contains(flag, "=") {
+		return false
+	}
+	switch flag {
+	case "--", "--short", "--porcelain", "--branch", "--stat", "--name-only", "--name-status",
+		"--cached", "--staged", "--color", "--no-color", "--oneline", "--decorate",
+		"--all", "--remotes", "--tags", "--show-current", "--abbrev-ref", "--verify",
+		"-s", "-b", "-p", "-u", "-U", "-M", "-C", "-n", "-1", "-2", "-3", "-4", "-5":
+		return true
+	default:
+		return false
+	}
+}
+
 func findDangerousArg(arg string) bool {
 	switch arg {
 	case "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf":
@@ -238,11 +254,44 @@ func containedInWorkspace(workspace string, cwd string, path string) bool {
 	} else {
 		full = cleanPath(filepath.Join(cwd, path))
 	}
+	resolved, ok := resolvePathForContainment(full)
+	if !ok {
+		return false
+	}
+	full = resolved
+	workspaceResolved, ok := resolvePathForContainment(workspace)
+	if !ok {
+		return false
+	}
+	workspace = workspaceResolved
 	rel, err := filepath.Rel(workspace, full)
 	if err != nil {
 		return false
 	}
 	return rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel))
+}
+
+func resolvePathForContainment(path string) (string, bool) {
+	path = cleanPath(path)
+	existing := path
+	var suffix []string
+	for {
+		if _, err := os.Lstat(existing); err == nil {
+			break
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return "", false
+		}
+		suffix = append([]string{filepath.Base(existing)}, suffix...)
+		existing = parent
+	}
+	resolved, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", false
+	}
+	parts := append([]string{resolved}, suffix...)
+	return cleanPath(filepath.Join(parts...)), true
 }
 
 func toolPath(raw json.RawMessage) (string, bool) {
