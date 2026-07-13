@@ -1,6 +1,10 @@
 package permission
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestStateDefaultsUnrememberedFullAccessToAskEffectiveMode(t *testing.T) {
 	state := NewState(ModeFullAccess, false)
@@ -44,6 +48,28 @@ func TestGrantKeyUsesFileMutationTargetScope(t *testing.T) {
 	second := Request{ToolName: "edit_file", ToolCall: toolCall("edit_file", map[string]string{"path": "../outside.txt", "old_string": "one", "new_string": "two"}), CWD: "/work/project", Workspace: "/work/project", Source: SourceMain}
 	if GrantKeyFor(first) != GrantKeyFor(second) {
 		t.Fatal("write/edit grants for the same canonical mutation target should match")
+	}
+}
+
+func TestGrantKeyResolvesFileMutationSymlinkTarget(t *testing.T) {
+	workspace := t.TempDir()
+	firstTarget := t.TempDir()
+	secondTarget := t.TempDir()
+	link := filepath.Join(workspace, "external")
+	if err := os.Symlink(firstTarget, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	request := Request{ToolName: "write_file", ToolCall: toolCall("write_file", map[string]string{"path": "external/file.txt", "content": "one"}), CWD: workspace, Workspace: workspace, Source: SourceMain}
+	firstKey := GrantKeyFor(request)
+
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secondTarget, link); err != nil {
+		t.Fatal(err)
+	}
+	if firstKey == GrantKeyFor(request) {
+		t.Fatal("retargeted symlink mutation should not share a grant")
 	}
 }
 

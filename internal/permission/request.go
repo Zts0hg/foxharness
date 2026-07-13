@@ -98,10 +98,16 @@ func canonicalToolPath(request Request) string {
 	if !ok {
 		return normalizeJSON(request.ToolCall.Arguments)
 	}
+	var full string
 	if filepath.IsAbs(path) {
-		return cleanPath(path)
+		full = cleanPath(path)
+	} else {
+		full = cleanPath(filepath.Join(firstNonEmpty(request.CWD, request.Workspace), path))
 	}
-	return cleanPath(filepath.Join(firstNonEmpty(request.CWD, request.Workspace), path))
+	if resolved, ok := resolvePathForContainment(full); ok {
+		return resolved
+	}
+	return full
 }
 
 // GrantForRequest creates a session grant for request.

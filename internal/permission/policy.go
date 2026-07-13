@@ -143,7 +143,7 @@ func readOnlyCall(call *syntax.CallExpr, workspace string, cwd string) bool {
 		if expandsOutsideWorkspace(text) {
 			return false
 		}
-		if looksLikePath(text) && !containedInWorkspace(workspace, cwd, text) {
+		if pathOperandRequiresContainment(name, args, text) && !containedInWorkspace(workspace, cwd, text) {
 			return false
 		}
 	}
@@ -259,6 +259,31 @@ func literalWord(word *syntax.Word) string {
 
 func looksLikePath(arg string) bool {
 	return strings.Contains(arg, "/") || strings.HasPrefix(arg, ".")
+}
+
+func pathOperandRequiresContainment(command string, args []string, arg string) bool {
+	if looksLikePath(arg) {
+		return true
+	}
+	switch command {
+	case "cat", "head", "tail", "wc", "ls", "find", "test":
+		return true
+	case "grep", "rg":
+		return nonFlagArgs(args) > 1
+	default:
+		return false
+	}
+}
+
+func nonFlagArgs(args []string) int {
+	count := 0
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func expandsOutsideWorkspace(arg string) bool {

@@ -63,6 +63,16 @@ func TestReadOnlyBashFastPathIsConservative(t *testing.T) {
 	if IsReadOnlyBash("cat ~/.ssh/id_rsa", workspace, workspace) {
 		t.Fatal("tilde-expanded home path should not be allowed")
 	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret"), filepath.Join(workspace, "secret")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if IsReadOnlyBash("cat secret", workspace, workspace) {
+		t.Fatal("bare symlink path should not be allowed")
+	}
 	if IsReadOnlyBash("echo hi > file.txt", workspace, workspace) {
 		t.Fatal("redirect should not be allowed")
 	}
