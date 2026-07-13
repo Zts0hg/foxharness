@@ -84,6 +84,12 @@ func TestReadOnlyBashFastPathIsConservative(t *testing.T) {
 	if IsReadOnlyBash("find . -delete", workspace, workspace) {
 		t.Fatal("find -delete should not be allowed")
 	}
+	if IsReadOnlyBash("find -L . -maxdepth 1", workspace, workspace) {
+		t.Fatal("find -L should not be allowed")
+	}
+	if IsReadOnlyBash("find -H . -maxdepth 1", workspace, workspace) {
+		t.Fatal("find -H should not be allowed")
+	}
 	if !IsReadOnlyBash("git status --short && git diff -- go.mod", workspace, workspace) {
 		t.Fatal("read-only git status/diff should be allowed")
 	}

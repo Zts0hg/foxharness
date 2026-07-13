@@ -238,7 +238,7 @@ func gitFlagAllowed(flag string) bool {
 
 func findDangerousArg(arg string) bool {
 	switch arg {
-	case "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf":
+	case "-L", "-H", "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf":
 		return true
 	default:
 		return false

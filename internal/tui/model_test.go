@@ -4406,6 +4406,29 @@ func TestPermissionsFullAccessRememberActivatesAndPersistsAcknowledgement(t *tes
 	}
 }
 
+func TestPermissionsFullAccessConfirmActivatesWithoutRemembering(t *testing.T) {
+	runner := newFakeRunner()
+	home := t.TempDir()
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	next, _ := m.handleSlashCommand("/permissions full-access confirm")
+	m = next.(Model)
+	snap := runner.PermissionSnapshot()
+	if snap.EffectiveMode != permission.ModeFullAccess {
+		t.Fatalf("EffectiveMode = %q, want full access", snap.EffectiveMode)
+	}
+	if snap.FullAccessRemembered {
+		t.Fatal("FullAccessRemembered = true, want false")
+	}
+	loaded, err := settings.Load(home)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.TUI.Permissions.FullAccessWarningRemembered {
+		t.Fatal("persisted FullAccessWarningRemembered = true, want false")
+	}
+}
+
 func TestPermissionsStatuslineIsOptionalAndRenderable(t *testing.T) {
 	if containsString(defaultStatuslineItems, "permissions") {
 		t.Fatal("permissions must not be in default statusline items")

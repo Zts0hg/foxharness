@@ -38,3 +38,27 @@ func TestNormalizeModeDefaultsUnknownToAsk(t *testing.T) {
 		t.Fatalf("NormalizeMode(read-only) = %q, want ask", got)
 	}
 }
+
+func TestGrantKeyUsesFileMutationTargetScope(t *testing.T) {
+	first := Request{ToolName: "write_file", ToolCall: toolCall("write_file", map[string]string{"path": "../outside.txt", "content": "one"}), CWD: "/work/project", Workspace: "/work/project", Source: SourceMain}
+	second := Request{ToolName: "edit_file", ToolCall: toolCall("edit_file", map[string]string{"path": "../outside.txt", "old_string": "one", "new_string": "two"}), CWD: "/work/project", Workspace: "/work/project", Source: SourceMain}
+	if GrantKeyFor(first) != GrantKeyFor(second) {
+		t.Fatal("write/edit grants for the same canonical mutation target should match")
+	}
+}
+
+func TestGrantKeyCanonicalizesBashWhitespace(t *testing.T) {
+	first := Request{ToolName: "bash", ToolCall: toolCall("bash", map[string]string{"command": "git\tpush origin main"}), CWD: "/work/project", Workspace: "/work/project", Source: SourceMain}
+	second := Request{ToolName: "bash", ToolCall: toolCall("bash", map[string]string{"command": "git push origin main"}), CWD: "/work/project", Workspace: "/work/project", Source: SourceMain}
+	if GrantKeyFor(first) != GrantKeyFor(second) {
+		t.Fatal("equivalent bash command whitespace should share a grant")
+	}
+}
+
+func TestGrantKeyPreservesBashStructure(t *testing.T) {
+	first := Request{ToolName: "bash", ToolCall: toolCall("bash", map[string]string{"command": "git push origin main && git status"}), CWD: "/work/project", Workspace: "/work/project", Source: SourceMain}
+	second := Request{ToolName: "bash", ToolCall: toolCall("bash", map[string]string{"command": "git push origin main git status"}), CWD: "/work/project", Workspace: "/work/project", Source: SourceMain}
+	if GrantKeyFor(first) == GrantKeyFor(second) {
+		t.Fatal("different bash command structures should not share a grant")
+	}
+}

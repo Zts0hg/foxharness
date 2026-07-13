@@ -2596,12 +2596,13 @@ func (m Model) handlePermissionsCommand(fields []string) (tea.Model, tea.Cmd) {
 	}
 	switch strings.ToLower(fields[1]) {
 	case "ask":
-		return m.setPermissionMode(permission.ModeAsk, false)
+		return m.setPermissionMode(permission.ModeAsk, false, false)
 	case "approve":
-		return m.setPermissionMode(permission.ModeApprove, false)
+		return m.setPermissionMode(permission.ModeApprove, false, false)
 	case "full-access", "full_access":
+		confirm := len(fields) > 2 && (fields[2] == "confirm" || fields[2] == "--confirm")
 		remember := len(fields) > 2 && (fields[2] == "remember" || fields[2] == "--remember")
-		return m.setPermissionMode(permission.ModeFullAccess, remember)
+		return m.setPermissionMode(permission.ModeFullAccess, remember, confirm)
 	case "clear":
 		count := clearPermissionGrants(m.runner)
 		m.permissionSnapshot = permissionSnapshot(m.runner)
@@ -2609,13 +2610,13 @@ func (m Model) handlePermissionsCommand(fields []string) (tea.Model, tea.Cmd) {
 		m.status = "Session approvals cleared"
 		return m, nil
 	default:
-		m.appendEntry("error", "invalid command", "Usage: /permissions [ask|approve|full-access [remember]|clear]", true)
+		m.appendEntry("error", "invalid command", "Usage: /permissions [ask|approve|full-access [confirm|remember]|clear]", true)
 		m.status = "Invalid permissions command"
 		return m, nil
 	}
 }
 
-func (m Model) setPermissionMode(mode permission.Mode, remember bool) (tea.Model, tea.Cmd) {
+func (m Model) setPermissionMode(mode permission.Mode, remember bool, confirm bool) (tea.Model, tea.Cmd) {
 	previous := permissionSnapshot(m.runner)
 	nextSettings := settings.PermissionSettings{
 		Mode:                        string(mode),
@@ -2631,8 +2632,8 @@ func (m Model) setPermissionMode(mode permission.Mode, remember bool) (tea.Model
 	}
 	if mode == permission.ModeFullAccess {
 		setPermissionMode(m.runner, permission.ModeFullAccess, nextSettings.FullAccessWarningRemembered)
-		if remember {
-			activateFullAccess(m.runner, true)
+		if remember || confirm {
+			activateFullAccess(m.runner, remember)
 		}
 	} else {
 		setPermissionMode(m.runner, mode, nextSettings.FullAccessWarningRemembered)
@@ -2646,7 +2647,7 @@ func (m Model) setPermissionMode(mode permission.Mode, remember bool) (tea.Model
 func (m Model) formatPermissionsHelp() string {
 	snap := m.permissionSnapshot
 	return fmt.Sprintf(
-		"Selected: %s\nEffective: %s\nSession approvals: %d\nFull Access warning remembered: %s\n\nUsage: /permissions ask\nUsage: /permissions approve\nUsage: /permissions full-access\nUsage: /permissions full-access remember\nUsage: /permissions clear",
+		"Selected: %s\nEffective: %s\nSession approvals: %d\nFull Access warning remembered: %s\n\nUsage: /permissions ask\nUsage: /permissions approve\nUsage: /permissions full-access\nUsage: /permissions full-access confirm\nUsage: /permissions full-access remember\nUsage: /permissions clear",
 		permissionModeLabel(snap.SelectedMode),
 		permissionModeLabel(snap.EffectiveMode),
 		snap.SessionGrantCount,
