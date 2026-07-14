@@ -104,6 +104,16 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Test installer
+        run: sh scripts/install_test.sh
+
+      - name: Stage installer
+        run: |
+          set -eu
+          test -f scripts/install.sh
+          test -x scripts/install.sh
+          cp scripts/install.sh release-assets/install.sh
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
