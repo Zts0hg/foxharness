@@ -592,11 +592,76 @@ replace_fixture_with_symlink() {
   write_checksum fox_linux_amd64.tar.gz
 }
 
+write_single_entry_tar() {
+  entry_name=$1
+  payload_text=$2
+  tar_path=$3
+  awk -v entry_name="$entry_name" -v payload_text="$payload_text" '
+    function put_string(offset, value, width,    i) {
+      for (i = 1; i <= length(value) && i <= width; i++) {
+        header[offset + i - 1] = ord(substr(value, i, 1))
+      }
+    }
+
+    function put_octal(offset, value, width,    formatted, i) {
+      formatted = sprintf("%0*o", width - 1, value)
+      for (i = 1; i <= length(formatted); i++) {
+        header[offset + i - 1] = ord(substr(formatted, i, 1))
+      }
+    }
+
+    function ord(character) {
+      return index(chars, character) - 1
+    }
+
+    BEGIN {
+      chars = sprintf("%c", 0)
+      for (i = 1; i < 256; i++) {
+        chars = chars sprintf("%c", i)
+      }
+
+      for (i = 0; i < 512; i++) {
+        header[i] = 0
+      }
+      put_string(0, entry_name, 100)
+      put_string(100, "0000644", 8)
+      put_string(108, "0000000", 8)
+      put_string(116, "0000000", 8)
+      put_octal(124, length(payload_text), 12)
+      put_string(136, "00000000000", 12)
+      for (i = 148; i < 156; i++) {
+        header[i] = 32
+      }
+      header[156] = ord("0")
+      put_string(257, "ustar", 6)
+      put_string(263, "00", 2)
+
+      checksum = 0
+      for (i = 0; i < 512; i++) {
+        checksum += header[i]
+      }
+      put_octal(148, checksum, 7)
+      header[155] = 32
+
+      for (i = 0; i < 512; i++) {
+        printf "%c", header[i]
+      }
+      printf "%s", payload_text
+      padding = (512 - (length(payload_text) % 512)) % 512
+      for (i = 0; i < padding; i++) {
+        printf "%c", 0
+      }
+      for (i = 0; i < 1024; i++) {
+        printf "%c", 0
+      }
+    }
+  ' >"$tar_path"
+}
+
 replace_fixture_with_traversal() {
-  payload=$CASE_ROOT/unsafe-traversal
-  mkdir -p "$payload/sub"
-  printf 'fox-test-binary\n' >"$payload/fox"
-  tar --format ustar -C "$payload" -czf "$FIXTURE_DIR/fox_linux_amd64.tar.gz" sub/../fox
+  tar_path=$CASE_ROOT/unsafe-traversal.tar
+  write_single_entry_tar 'sub/../fox' 'fox-test-binary' "$tar_path"
+  gzip -c "$tar_path" >"$FIXTURE_DIR/fox_linux_amd64.tar.gz"
   write_checksum fox_linux_amd64.tar.gz
 }
 
