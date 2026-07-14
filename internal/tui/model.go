@@ -15,6 +15,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/settings"
@@ -61,6 +62,13 @@ type Runner interface {
 	CompactNow(ctx context.Context, customInstructions string) (*compaction.CompactResult, error)
 }
 
+type permissionRuntime interface {
+	PermissionSnapshot() permission.Snapshot
+	SetPermissionMode(mode permission.Mode, remembered bool)
+	ActivateFullAccess(remember bool)
+	ClearPermissionGrants() int
+}
+
 // Config controls the initial TUI presentation.
 type Config struct {
 	Model         string
@@ -88,6 +96,7 @@ type Config struct {
 
 	// PlanReviewer, when non-nil, enables submit_plan confirmation and revision.
 	PlanReviewer *PlanReviewer
+	Permissions  *PermissionBridge
 
 	// Autodev, when non-nil, launches the backlog autopilot for the
 	// /autodev builtin. internal/app injects it so the tui -> autodev
@@ -143,6 +152,7 @@ var slashCommands = []slashCommand{
 	{Name: "/model", Description: "show or switch the active model"},
 	{Name: "/theme", Description: "show or switch the TUI theme", ArgumentHint: "[name]"},
 	{Name: "/statusline", Description: "configure statusline items", ArgumentHint: "[set <items>|default]"},
+	{Name: "/permissions", Description: "configure tool approval mode"},
 	{Name: "/compact", Description: "compact context", ArgumentHint: "<optional custom instructions>"},
 	{Name: "/autodev", Description: "drain the backlog autonomously", ArgumentHint: "[backlog-path]"},
 	{Name: "/cancel", Description: "cancel the active run"},
@@ -255,8 +265,11 @@ type Model struct {
 	asker   *Asker
 	askForm *askForm
 
-	planReviewer *PlanReviewer
-	planForm     *planReviewForm
+	planReviewer       *PlanReviewer
+	planForm           *planReviewForm
+	permissionBridge   *PermissionBridge
+	approvalForm       *approvalForm
+	permissionSnapshot permission.Snapshot
 
 	sidebarVisible       bool
 	sidebarFocused       bool
@@ -291,48 +304,63 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		}
 	}
 	themeName = applyTheme(themeName)
+	permissionState := permissionSnapshot(runner)
+	if permissionState.FullAccessNeedsWarning {
+		entries = append(entries, entry{
+			role:  "system",
+			title: "permissions",
+			body:  "Full Access is selected but not remembered. Effective mode is Ask for approval until you run /permissions full-access or /permissions full-access remember.",
+			time:  time.Now(),
+		})
+	}
 	return Model{
-		ctx:               ctx,
-		runner:            runner,
-		events:            make(chan tea.Msg, 256),
-		now:               time.Now,
-		copySelection:     copyToClipboard,
-		width:             96,
-		height:            28,
-		input:             []rune(cfg.InitialPrompt),
-		inputCursor:       len([]rune(cfg.InitialPrompt)),
-		inputHistory:      inputHistory,
-		historyIndex:      -1,
-		slashSelection:    -1,
-		fileSelection:     -1,
-		fileMentions:      loadFileMentions(runner.WorkDir()),
-		status:            status,
-		homeDir:           cfg.HomeDir,
-		providerID:        cfg.ProviderID,
-		providerProfileID: cfg.ProviderProfileID,
-		providerProtocol:  cfg.ProviderProtocol,
-		themeName:         themeName,
-		statuslineItems:   statuslineItems,
-		sessionID:         runner.SessionID(),
-		modelName:         modelName,
-		project:           projectFolderName(runner.WorkDir()),
-		gitBranch:         gitBranchForWorkDir(runner.WorkDir()),
-		contextUsage:      normalizeContextUsage(runner.ContextUsage()),
-		collaborationMode: collaboration.Normalize(runner.CollaborationMode()),
-		checkpointer:      runner.Checkpointer(),
-		asker:             cfg.Asker,
-		planReviewer:      cfg.PlanReviewer,
-		autodevLauncher:   cfg.Autodev,
-		entries:           entries,
-		sidebarVisible:    true,
-		terminalFocused:   true,
-		sidebarFocusIndex: -1,
-		sidebarDocuments:  loadSidebarDocuments(runner.WorkDir(), runner.SessionDir(), runner.AutoMemoryIndex()),
+		ctx:                ctx,
+		runner:             runner,
+		events:             make(chan tea.Msg, 256),
+		now:                time.Now,
+		copySelection:      copyToClipboard,
+		width:              96,
+		height:             28,
+		input:              []rune(cfg.InitialPrompt),
+		inputCursor:        len([]rune(cfg.InitialPrompt)),
+		inputHistory:       inputHistory,
+		historyIndex:       -1,
+		slashSelection:     -1,
+		fileSelection:      -1,
+		fileMentions:       loadFileMentions(runner.WorkDir()),
+		status:             status,
+		homeDir:            cfg.HomeDir,
+		providerID:         cfg.ProviderID,
+		providerProfileID:  cfg.ProviderProfileID,
+		providerProtocol:   cfg.ProviderProtocol,
+		themeName:          themeName,
+		statuslineItems:    statuslineItems,
+		sessionID:          runner.SessionID(),
+		modelName:          modelName,
+		project:            projectFolderName(runner.WorkDir()),
+		gitBranch:          gitBranchForWorkDir(runner.WorkDir()),
+		contextUsage:       normalizeContextUsage(runner.ContextUsage()),
+		collaborationMode:  collaboration.Normalize(runner.CollaborationMode()),
+		checkpointer:       runner.Checkpointer(),
+		asker:              cfg.Asker,
+		planReviewer:       cfg.PlanReviewer,
+		permissionBridge:   cfg.Permissions,
+		permissionSnapshot: permissionState,
+		autodevLauncher:    cfg.Autodev,
+		entries:            entries,
+		sidebarVisible:     true,
+		terminalFocused:    true,
+		sidebarFocusIndex:  -1,
+		sidebarDocuments:   loadSidebarDocuments(runner.WorkDir(), runner.SessionDir(), runner.AutoMemoryIndex()),
 	}
 }
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{waitForRunEvent(m.ctx, m.events), runningTickCmd()}
+	if m.permissionBridge != nil {
+		m.permissionBridge.SetEvents(m.events)
+		cmds = append(cmds, listenForPermissionRequest(m.ctx, m.permissionBridge))
+	}
 	if m.asker != nil {
 		cmds = append(cmds, listenForAsk(m.ctx, m.asker))
 	}
@@ -411,6 +439,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case planReviewDoneMsg:
 		return m.handlePlanReviewDone()
+
+	case permissionUserMsg:
+		m.approvalForm = newApprovalForm(msg.req)
+		return m, nil
+
+	case permissionReviewMsg:
+		m.status = msg.status
+		return m, waitForRunEvent(m.ctx, m.events)
+
+	case permissionStateChangedMsg:
+		m.permissionSnapshot = permissionSnapshot(m.runner)
+		return m, waitForRunEvent(m.ctx, m.events)
+
+	case approvalDoneMsg:
+		return m.handleApprovalDone()
 
 	case promptCommandReadyMsg:
 		return m.handlePromptCommandReady(msg)
@@ -1106,7 +1149,23 @@ func (m Model) handlePlanReviewDone() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleApprovalDone() (tea.Model, tea.Cmd) {
+	if m.approvalForm == nil {
+		return m, nil
+	}
+	m.approvalForm.req.reply <- m.approvalForm.decision()
+	m.approvalForm = nil
+	m.permissionSnapshot = permissionSnapshot(m.runner)
+	if m.permissionBridge != nil {
+		return m, listenForPermissionRequest(m.ctx, m.permissionBridge)
+	}
+	return m, nil
+}
+
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.approvalForm != nil {
+		return m, m.approvalForm.update(msg)
+	}
 	if m.planForm != nil {
 		return m, m.planForm.update(msg)
 	}
@@ -2311,6 +2370,7 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.status = "Help"
 		return m, nil
 	case "/status", "/session":
+		m.permissionSnapshot = permissionSnapshot(m.runner)
 		m.appendCommandEntry("Status", m.formatStatusOverview())
 		m.status = "Status"
 		return m, nil
@@ -2352,6 +2412,8 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		return m.handleThemeCommand(fields)
 	case "/statusline":
 		return m.handleStatuslineCommand(text, fields)
+	case "/permissions":
+		return m.handlePermissionsCommand(fields)
 	case "/sidebar":
 		mode := "toggle"
 		if len(fields) > 1 {
@@ -2525,6 +2587,123 @@ func (m Model) formatStatuslineHelp() string {
 	)
 }
 
+func (m Model) handlePermissionsCommand(fields []string) (tea.Model, tea.Cmd) {
+	if len(fields) == 1 {
+		m.permissionSnapshot = permissionSnapshot(m.runner)
+		m.appendCommandEntry("Permissions", m.formatPermissionsHelp())
+		m.status = "Permissions"
+		return m, nil
+	}
+	switch strings.ToLower(fields[1]) {
+	case "ask":
+		return m.setPermissionMode(permission.ModeAsk, false, false)
+	case "approve":
+		return m.setPermissionMode(permission.ModeApprove, false, false)
+	case "full-access", "full_access":
+		confirm := len(fields) > 2 && (fields[2] == "confirm" || fields[2] == "--confirm")
+		remember := len(fields) > 2 && (fields[2] == "remember" || fields[2] == "--remember")
+		return m.setPermissionMode(permission.ModeFullAccess, remember, confirm)
+	case "clear":
+		count := clearPermissionGrants(m.runner)
+		m.permissionSnapshot = permissionSnapshot(m.runner)
+		m.appendCommandEntry("Permissions", fmt.Sprintf("Cleared %d session approval(s).", count))
+		m.status = "Session approvals cleared"
+		return m, nil
+	default:
+		m.appendEntry("error", "invalid command", "Usage: /permissions [ask|approve|full-access [confirm|remember]|clear]", true)
+		m.status = "Invalid permissions command"
+		return m, nil
+	}
+}
+
+func (m Model) setPermissionMode(mode permission.Mode, remember bool, confirm bool) (tea.Model, tea.Cmd) {
+	previous := permissionSnapshot(m.runner)
+	nextSettings := settings.PermissionSettings{
+		Mode:                        string(mode),
+		FullAccessWarningRemembered: previous.FullAccessRemembered,
+	}
+	if mode == permission.ModeFullAccess && remember {
+		nextSettings.FullAccessWarningRemembered = true
+	}
+	if err := m.savePermissionSettings(nextSettings); err != nil {
+		m.appendEntry("error", "permissions save failed", fmt.Sprintf("save settings: %v", err), true)
+		m.status = "Permissions save failed"
+		return m, nil
+	}
+	if mode == permission.ModeFullAccess {
+		setPermissionMode(m.runner, permission.ModeFullAccess, nextSettings.FullAccessWarningRemembered)
+		if remember || confirm {
+			activateFullAccess(m.runner, remember)
+		}
+	} else {
+		setPermissionMode(m.runner, mode, nextSettings.FullAccessWarningRemembered)
+	}
+	m.permissionSnapshot = permissionSnapshot(m.runner)
+	m.appendCommandEntry("Permissions", m.formatPermissionsHelp())
+	m.status = "Permissions updated"
+	return m, nil
+}
+
+func (m Model) formatPermissionsHelp() string {
+	snap := m.permissionSnapshot
+	return fmt.Sprintf(
+		"Selected: %s\nEffective: %s\nSession approvals: %d\nFull Access warning remembered: %s\n\nUsage: /permissions ask\nUsage: /permissions approve\nUsage: /permissions full-access\nUsage: /permissions full-access confirm\nUsage: /permissions full-access remember\nUsage: /permissions clear",
+		permissionModeLabel(snap.SelectedMode),
+		permissionModeLabel(snap.EffectiveMode),
+		snap.SessionGrantCount,
+		onOff(snap.FullAccessRemembered),
+	)
+}
+
+func permissionModeLabel(mode permission.Mode) string {
+	switch mode {
+	case permission.ModeApprove:
+		return "Approve for me"
+	case permission.ModeFullAccess:
+		return "Full Access"
+	default:
+		return "Ask for approval"
+	}
+}
+
+func permissionSnapshot(runner Runner) permission.Snapshot {
+	if runtime, ok := runner.(permissionRuntime); ok {
+		return runtime.PermissionSnapshot()
+	}
+	return permission.NewState(permission.ModeAsk, false).Snapshot()
+}
+
+func setPermissionMode(runner Runner, mode permission.Mode, remembered bool) {
+	if runtime, ok := runner.(permissionRuntime); ok {
+		runtime.SetPermissionMode(mode, remembered)
+	}
+}
+
+func activateFullAccess(runner Runner, remember bool) {
+	if runtime, ok := runner.(permissionRuntime); ok {
+		runtime.ActivateFullAccess(remember)
+	}
+}
+
+func clearPermissionGrants(runner Runner) int {
+	if runtime, ok := runner.(permissionRuntime); ok {
+		return runtime.ClearPermissionGrants()
+	}
+	return 0
+}
+
+func (m Model) savePermissionSettings(next settings.PermissionSettings) error {
+	if strings.TrimSpace(m.homeDir) == "" {
+		return fmt.Errorf("home directory unavailable")
+	}
+	loaded, err := settings.Load(m.homeDir)
+	if err != nil {
+		return err
+	}
+	loaded.TUI.Permissions = next
+	return settings.Save(m.homeDir, loaded)
+}
+
 func commandArgsAfter(text string, command string, subcommand string) string {
 	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), command))
 	return strings.TrimSpace(strings.TrimPrefix(rest, subcommand))
@@ -2540,6 +2719,10 @@ func (m Model) saveTUISettings() error {
 	}
 	loaded.TUI.Theme = m.themeName
 	loaded.TUI.Statusline = append([]string(nil), m.statuslineItems...)
+	loaded.TUI.Permissions = settings.PermissionSettings{
+		Mode:                        string(m.permissionSnapshot.SelectedMode),
+		FullAccessWarningRemembered: m.permissionSnapshot.FullAccessRemembered,
+	}
 	return settings.Save(m.homeDir, loaded)
 }
 
@@ -3015,6 +3198,8 @@ func (m Model) formatStatusOverview() string {
 				{label: "Run State", value: m.runStateLabel()},
 				{label: "Queued Prompts", value: strconv.Itoa(len(m.queuedPrompts))},
 				{label: "Context", value: normalizeContextUsage(m.contextUsage)},
+				{label: "Permissions", value: permissionModeLabel(m.permissionSnapshot.EffectiveMode)},
+				{label: "Session Approvals", value: strconv.Itoa(m.permissionSnapshot.SessionGrantCount)},
 			},
 		},
 		{

@@ -24,8 +24,15 @@ type Settings struct {
 
 // TUISettings contains persisted terminal UI preferences.
 type TUISettings struct {
-	Theme      string   `json:"theme,omitempty"`
-	Statusline []string `json:"statusline,omitempty"`
+	Theme       string             `json:"theme,omitempty"`
+	Statusline  []string           `json:"statusline,omitempty"`
+	Permissions PermissionSettings `json:"-"`
+}
+
+// PermissionSettings contains persisted TUI permission-mode preferences.
+type PermissionSettings struct {
+	Mode                        string
+	FullAccessWarningRemembered bool
 }
 
 // Load reads ~/.foxharness/settings.json. If the file is missing, malformed,
@@ -77,7 +84,46 @@ func parseTUISettings(path string, raw json.RawMessage) TUISettings {
 			tui.Statusline = items
 		}
 	}
+	if rawMode, ok := fields["permission_mode"]; ok {
+		if err := json.Unmarshal(rawMode, &tui.Permissions.Mode); err != nil {
+			log.Printf("[Settings] ignored invalid tui.permission_mode in %s: %v", path, err)
+			tui.Permissions.Mode = ""
+		}
+	}
+	_, hasFullAccessWarningAcknowledged := fields["full_access_warning_acknowledged"]
+	if rawAck, ok := fields["full_access_warning_acknowledged"]; ok {
+		if err := json.Unmarshal(rawAck, &tui.Permissions.FullAccessWarningRemembered); err != nil {
+			log.Printf("[Settings] ignored invalid tui.full_access_warning_acknowledged in %s: %v", path, err)
+			tui.Permissions.FullAccessWarningRemembered = false
+		}
+	}
+	if rawPermissions, ok := fields["permissions"]; ok {
+		var permissions PermissionSettings
+		if err := parseLegacyPermissions(rawPermissions, &permissions); err != nil {
+			log.Printf("[Settings] ignored invalid tui.permissions in %s: %v", path, err)
+		} else {
+			if tui.Permissions.Mode == "" {
+				tui.Permissions.Mode = permissions.Mode
+			}
+			if !hasFullAccessWarningAcknowledged {
+				tui.Permissions.FullAccessWarningRemembered = permissions.FullAccessWarningRemembered
+			}
+		}
+	}
 	return tui
+}
+
+func parseLegacyPermissions(raw json.RawMessage, out *PermissionSettings) error {
+	var legacy struct {
+		Mode                        string `json:"mode"`
+		FullAccessWarningRemembered bool   `json:"full_access_warning_remembered"`
+	}
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		return err
+	}
+	out.Mode = legacy.Mode
+	out.FullAccessWarningRemembered = legacy.FullAccessWarningRemembered
+	return nil
 }
 
 func parseTUIStatusline(raw json.RawMessage) ([]string, error) {
@@ -231,7 +277,7 @@ func mergeRaw(s *Settings) []byte {
 		m["llm"] = s.LLM
 	}
 	if hasTUISettings(s.TUI) {
-		m["tui"] = s.TUI
+		m["tui"] = mergeTUIRaw(nil, s.TUI)
 	}
 	out, _ := json.MarshalIndent(m, "", "  ")
 	return append(out, '\n')
@@ -242,7 +288,11 @@ func hasLLMSettings(llm llmconfig.Settings) bool {
 }
 
 func hasTUISettings(tui TUISettings) bool {
-	return tui.Theme != "" || len(tui.Statusline) > 0
+	return tui.Theme != "" || len(tui.Statusline) > 0 || hasPermissionSettings(tui.Permissions)
+}
+
+func hasPermissionSettings(p PermissionSettings) bool {
+	return p.Mode != "" || p.FullAccessWarningRemembered
 }
 
 func mergeLLMRaw(raw json.RawMessage, llm llmconfig.Settings) json.RawMessage {
@@ -277,8 +327,24 @@ func mergeTUIRaw(raw json.RawMessage, tui TUISettings) json.RawMessage {
 		statuslineJSON, _ := json.Marshal(tui.Statusline)
 		m["statusline"] = statuslineJSON
 	}
+	if hasPermissionSettings(tui.Permissions) {
+		setStringField(m, "permission_mode", tui.Permissions.Mode)
+		if tui.Permissions.FullAccessWarningRemembered || fieldExists(raw, "full_access_warning_acknowledged") {
+			data, _ := json.Marshal(tui.Permissions.FullAccessWarningRemembered)
+			m["full_access_warning_acknowledged"] = data
+		}
+	}
 	out, _ := json.Marshal(m)
 	return out
+}
+
+func fieldExists(raw json.RawMessage, name string) bool {
+	var m map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &m) != nil {
+		return false
+	}
+	_, ok := m[name]
+	return ok
 }
 
 func mergeProvidersRaw(raw json.RawMessage, providers map[string]llmconfig.Profile) json.RawMessage {

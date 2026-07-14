@@ -263,6 +263,49 @@ func (r *recordingReporter) OnRunError(ctx context.Context, sessionID string, ru
 	r.events = append(r.events, fmt.Sprintf("error:%s:%s", sessionID, runID))
 }
 
+type detailedRecordingReporter struct {
+	recordingReporter
+	details []string
+}
+
+func (r *detailedRecordingReporter) OnToolCallDetail(ctx context.Context, call schema.ToolCall) {
+	r.details = append(r.details, "call:"+call.ID+":"+call.Name)
+}
+
+func (r *detailedRecordingReporter) OnToolResultDetail(ctx context.Context, call schema.ToolCall, result schema.ToolResult) {
+	r.details = append(r.details, "result:"+call.ID+":"+result.ToolCallID)
+}
+
+func TestDetailedReporterReceivesToolCallIDs(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(&bigOutputTool{name: "detail_tool", output: "ok"})
+	p := &sequencedProvider{responses: []*provider.GenerateResponse{
+		{Message: &schema.Message{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{{
+			ID:        "call-detail",
+			Name:      "detail_tool",
+			Arguments: schema.NormalizeToolArguments([]byte(`{}`)),
+		}}}},
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+	}}
+	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
+	reporter := &detailedRecordingReporter{}
+
+	if _, err := eng.RunWithReporter(context.Background(), sess, "hello", reporter); err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	want := []string{"call:call-detail:detail_tool", "result:call-detail:call-detail"}
+	if fmt.Sprint(reporter.details) != fmt.Sprint(want) {
+		t.Fatalf("details = %#v, want %#v", reporter.details, want)
+	}
+}
+
 func TestRunWithReporterEmitsLifecycleAndPersistsMessages(t *testing.T) {
 	workDir := t.TempDir()
 	manager := session.NewManagerWithHome(workDir, t.TempDir())

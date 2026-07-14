@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 
 	"github.com/Zts0hg/foxharness/internal/autodev"
+	"github.com/Zts0hg/foxharness/internal/permission"
+	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/settings"
 	"github.com/Zts0hg/foxharness/internal/tui"
 )
 
@@ -15,9 +18,38 @@ import (
 // many user-submitted runs. The onModelChange callback is invoked whenever the
 // user switches models via the /model command; it may be nil.
 func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error) error {
+	homeDir, _ := os.UserHomeDir()
+	loadedSettings, _ := settings.Load(homeDir)
+	permissionState := permission.NewState(
+		permission.NormalizeMode(loadedSettings.TUI.Permissions.Mode),
+		loadedSettings.TUI.Permissions.FullAccessWarningRemembered,
+	)
+	permissionBridge := tui.NewPermissionBridge()
+	var runner *AgentRunner
+	reviewer := permission.NewProviderReviewer(func() provider.LLMProvider {
+		if runner == nil {
+			return nil
+		}
+		runner.mu.Lock()
+		defer runner.mu.Unlock()
+		return runner.llmProvider
+	})
+	reviewer.OnRetry = permissionBridge.OnReviewRetry
+	coordinator := permission.NewCoordinator(permission.Config{
+		State:     permissionState,
+		Workspace: cfg.WorkDir,
+		CWD:       cfg.WorkDir,
+		Source:    permission.SourceMain,
+		Approver:  permissionBridge,
+		Reviewer:  reviewer,
+		Sink:      permissionBridge,
+	})
+	defer coordinator.State().ClearGrants()
 	runnerCfg := agentRunnerConfigFromCLI(cfg)
 	runnerCfg.OnModelChange = onModelChange
-	runner, err := NewAgentRunner(ctx, runnerCfg)
+	runnerCfg.Permission = coordinator
+	var err error
+	runner, err = NewAgentRunner(ctx, runnerCfg)
 	if err != nil {
 		return err
 	}
@@ -26,7 +58,6 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 
 	asker := attachInteractiveAsker(runner)
 	planReviewer := attachInteractivePlanReviewer(runner)
-	homeDir, _ := os.UserHomeDir()
 
 	return tui.Run(ctx, runner, tui.Config{
 		Model:             cfg.Model,
@@ -39,6 +70,7 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 		Executor:          runner.SlashExecutor(),
 		Asker:             asker,
 		PlanReviewer:      planReviewer,
+		Permissions:       permissionBridge,
 		Autodev: func(runCtx context.Context, backlogPath string, reporter autodev.Reporter) error {
 			autodevCfg := cfg
 			autodevCfg.Prompt = backlogPath

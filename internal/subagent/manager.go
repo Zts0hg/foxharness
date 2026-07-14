@@ -12,6 +12,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -59,7 +60,8 @@ type Manager struct {
 	// maxTurns is the turn budget handed to the subagent engine. It defaults to
 	// DefaultMaxTurns (applied by NewManager) and may be overridden via
 	// WithMaxTurns, primarily for deterministic tests of the exhaustion path.
-	maxTurns int
+	maxTurns    int
+	permissions *permission.Coordinator
 }
 
 // NewManager creates a Manager that delegates LLM calls to p and roots
@@ -78,6 +80,12 @@ func NewManager(p provider.LLMProvider, workDir string) *Manager {
 // use the DefaultMaxTurns default applied by NewManager.
 func (m *Manager) WithMaxTurns(n int) *Manager {
 	m.maxTurns = n
+	return m
+}
+
+// WithPermission makes delegated tool calls use the parent TUI coordinator.
+func (m *Manager) WithPermission(coordinator *permission.Coordinator) *Manager {
+	m.permissions = coordinator.WithSource(permission.SourceSubagent)
 	return m
 }
 
@@ -101,9 +109,9 @@ func (m *Manager) buildRegistry(readOnly bool, allowedTools []string) tools.Regi
 	}
 
 	if len(allowedTools) > 0 {
-		return tools.NewFilteredRegistry(registry, allowedTools)
+		return tools.NewFilteredRegistry(permission.DecorateRegistry(registry, m.permissions), allowedTools)
 	}
-	return registry
+	return permission.DecorateRegistry(registry, m.permissions)
 }
 
 // Run executes the subagent task described by req. It creates a new session,

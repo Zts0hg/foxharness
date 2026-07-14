@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 )
@@ -159,6 +160,25 @@ func (m Model) View() string {
 			lipgloss.Height(m.renderStatusBar(width)) +
 			lipgloss.Height(m.renderKeybinds(width))
 		bodyHeight := max(m.height-chrome, 1)
+		parts := []string{
+			m.renderMainArea(bodyHeight),
+			"",
+			card,
+			"",
+			m.renderStatusBar(width),
+			m.renderKeybinds(width),
+		}
+		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	}
+
+	if m.approvalForm != nil {
+		card := inputStyle.Width(width).Render(m.approvalForm.view(width))
+		chrome := outerStyle.GetVerticalFrameSize() +
+			lipgloss.Height(card) + 1 +
+			1 +
+			lipgloss.Height(m.renderStatusBar(width)) +
+			lipgloss.Height(m.renderKeybinds(width))
+		bodyHeight := max(m.height-chrome, m.minTranscriptHeightForWindow())
 		parts := []string{
 			m.renderMainArea(bodyHeight),
 			"",
@@ -1371,6 +1391,9 @@ func (m Model) renderKeybinds(width int) string {
 	plan := mutedStyle.Render("[ plan mode off ]")
 	if m.collaborationMode.PlanEnabled() {
 		plan = planModeStyle.Render("[ plan mode on ]")
+	}
+	if m.permissionSnapshot.EffectiveMode == permission.ModeFullAccess {
+		plan += " " + planModeStyle.Render("[ full access ]")
 	}
 	hint := statusFaintStyle.Render("shift + tab to cycle")
 	pad := width - lipgloss.Width(plan) - lipgloss.Width(hint)
