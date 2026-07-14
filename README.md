@@ -28,7 +28,49 @@ The default binary command is `fox`.
 
 ## Install
 
-### Option 1: Download a release binary
+### Recommended: one-line installer
+
+On macOS or Linux, install the latest release with:
+
+```sh
+curl -fsSL https://github.com/Zts0hg/foxharness/releases/latest/download/install.sh | sh
+```
+
+The installer detects your OS and architecture, verifies the downloaded archive,
+and installs `fox` to `~/.local/bin/fox` without `sudo`. If needed, it also adds
+that directory to your shell `PATH`.
+
+Install an exact version:
+
+```sh
+curl -fsSL https://github.com/Zts0hg/foxharness/releases/latest/download/install.sh | sh -s -- --version v0.1.30
+```
+
+Install to a custom directory:
+
+```sh
+curl -fsSL https://github.com/Zts0hg/foxharness/releases/latest/download/install.sh | sh -s -- --install-dir "$HOME/bin"
+```
+
+Install without modifying shell profile files:
+
+```sh
+curl -fsSL https://github.com/Zts0hg/foxharness/releases/latest/download/install.sh | sh -s -- --no-modify-path
+```
+
+When using environment variables in a pipeline, attach them to the right-hand
+`sh` process. Assigning them before `curl` only makes them available to `curl`,
+not to the installer:
+
+```sh
+curl -fsSL https://github.com/Zts0hg/foxharness/releases/latest/download/install.sh | FOX_VERSION=v0.1.30 FOX_INSTALL_DIR="$HOME/bin" FOX_NO_MODIFY_PATH=1 sh
+```
+
+The corresponding environment variables are `FOX_VERSION`,
+`FOX_INSTALL_DIR`, and `FOX_NO_MODIFY_PATH`. Command-line options take
+precedence over environment variables.
+
+### Manual Release installation
 
 Download the binary for your platform from:
 
@@ -81,7 +123,7 @@ On macOS, if Gatekeeper blocks the downloaded binary, remove the quarantine flag
 xattr -d com.apple.quarantine /usr/local/bin/fox
 ```
 
-### Option 2: Install from source
+### Install from source
 
 This requires Go 1.25 or newer.
 
