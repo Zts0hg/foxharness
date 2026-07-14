@@ -338,6 +338,128 @@ calculate_sha256() {
   esac
 }
 
+inspect_raw_tar_archive() {
+  tar_path=$1
+  output_path=$2
+
+  od -An -v -t u1 "$tar_path" | awk -v output_path="$output_path" '
+    function reset_block(i) {
+      for (i = 0; i < 512; i++) {
+        block[i] = 0
+      }
+      block_len = 0
+      nonzero = 0
+    }
+
+    function field_string(start, field_len,    i, byte, value) {
+      value = ""
+      for (i = start; i < start + field_len; i++) {
+        byte = block[i]
+        if (byte == 0) {
+          break
+        }
+        value = value sprintf("%c", byte)
+      }
+      return value
+    }
+
+    function octal_field(start, field_len, field_name,    i, byte, saw_digit, value) {
+      saw_digit = 0
+      value = 0
+      for (i = start; i < start + field_len; i++) {
+        byte = block[i]
+        if (byte == 0 || byte == 32) {
+          continue
+        }
+        if (byte < 48 || byte > 55) {
+          fail = "invalid tar " field_name
+          return -1
+        }
+        saw_digit = 1
+        value = (value * 8) + (byte - 48)
+      }
+      return value
+    }
+
+    function process_block(    name, prefix, typeflag, size) {
+      if (skip_blocks > 0) {
+        skip_blocks--
+        return
+      }
+
+      if (!nonzero) {
+        ended = 1
+        return
+      }
+
+      if (ended) {
+        fail = "non-zero data after tar end marker"
+        return
+      }
+
+      entry_count++
+      if (entry_count > 1) {
+        fail = "expected exactly one tar entry"
+        return
+      }
+
+      name = field_string(0, 100)
+      prefix = field_string(345, 155)
+      typeflag = block[156]
+      if (prefix != "") {
+        fail = "unexpected tar prefix"
+        return
+      }
+      if (name != "fox" && name != "./fox") {
+        fail = "unexpected tar entry"
+        return
+      }
+      if (typeflag != 0 && typeflag != 48) {
+        fail = "tar entry is not a regular file"
+        return
+      }
+
+      size = octal_field(124, 12, "size")
+      if (size < 0) {
+        return
+      }
+      skip_blocks = int((size + 511) / 512)
+      archive_entry = name
+    }
+
+    BEGIN {
+      reset_block()
+    }
+    {
+      for (i = 1; i <= NF; i++) {
+        byte = $i + 0
+        if (byte < 0 || byte > 255) {
+          fail = "invalid byte stream"
+          exit 1
+        }
+        block[block_len] = byte
+        if (byte != 0) {
+          nonzero = 1
+        }
+        block_len++
+        if (block_len == 512) {
+          process_block()
+          if (fail) {
+            exit 1
+          }
+          reset_block()
+        }
+      }
+    }
+    END {
+      if (fail || block_len != 0 || skip_blocks != 0 || entry_count != 1) {
+        exit 1
+      }
+      print archive_entry > output_path
+    }
+  '
+}
+
 if [ "${FOX_VERSION+x}" = x ]; then
   VERSION=$FOX_VERSION
 else
@@ -380,7 +502,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-for required in awk cat chmod cmp cp grep mkdir mktemp mv pwd rm sed tar tr uname
+for required in awk cat chmod cmp cp grep gzip mkdir mktemp mv od pwd rm sed tar tr uname
 do
   require_command "$required"
 done
@@ -560,27 +682,16 @@ if [ "$EXPECTED_DIGEST" != "$ACTUAL_DIGEST" ]; then
   die "checksum mismatch for $ASSET"
 fi
 
-NAMES_PATH=$TEMP_DIR/archive-names
-VERBOSE_PATH=$TEMP_DIR/archive-verbose
-if ! tar -tzf "$ARCHIVE_PATH" >"$NAMES_PATH"; then
-  die "unsafe archive: could not list $ASSET"
+RAW_TAR_PATH=$TEMP_DIR/archive.tar
+ARCHIVE_ENTRY_PATH=$TEMP_DIR/archive-entry
+if ! gzip -cd "$ARCHIVE_PATH" >"$RAW_TAR_PATH"; then
+  die "unsafe archive: could not decompress $ASSET"
 fi
-if ! ARCHIVE_ENTRY=$(awk 'NR == 1 { entry = $0 } END { if (NR != 1) exit 1; print entry }' "$NAMES_PATH"); then
-  die 'unsafe archive: expected exactly one entry'
+if ! inspect_raw_tar_archive "$RAW_TAR_PATH" "$ARCHIVE_ENTRY_PATH"; then
+  die "unsafe archive: expected exactly one regular fox entry"
 fi
-case "$ARCHIVE_ENTRY" in
-  fox|./fox) ;;
-  *) die "unsafe archive: unexpected entry $ARCHIVE_ENTRY" ;;
-esac
-
-if ! tar -tvzf "$ARCHIVE_PATH" >"$VERBOSE_PATH"; then
-  die "unsafe archive: could not inspect $ASSET"
-fi
-if ! ARCHIVE_TYPE=$(awk 'NR == 1 { type = substr($0, 1, 1) } END { if (NR != 1) exit 1; print type }' "$VERBOSE_PATH"); then
-  die 'unsafe archive: expected exactly one typed entry'
-fi
-if [ "$ARCHIVE_TYPE" != '-' ]; then
-  die 'unsafe archive: fox is not a regular file'
+if ! ARCHIVE_ENTRY=$(cat "$ARCHIVE_ENTRY_PATH"); then
+  die "unsafe archive: could not read verified entry"
 fi
 
 EXTRACT_DIR=$TEMP_DIR/extracted

@@ -3,7 +3,8 @@ set -eu
 
 LC_ALL=C
 LANG=C
-export LC_ALL LANG
+COPYFILE_DISABLE=1
+export LC_ALL LANG COPYFILE_DISABLE
 TEST_LINE_FEED='
 '
 
@@ -158,7 +159,7 @@ link_tool() {
 }
 
 create_base_tools() {
-  for tool in awk basename cat chmod cmp cp cut dirname find grep gzip head mkdir mktemp mv openssl pwd rm sed shasum sha256sum sort tar tr wc
+  for tool in awk basename cat chmod cmp cp cut dirname find grep gzip head mkdir mktemp mv od openssl pwd rm sed shasum sha256sum sort tar tr wc
   do
     link_tool "$tool"
   done
@@ -256,7 +257,7 @@ create_valid_fixtures() {
   for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64
   do
     archive=fox_$target.tar.gz
-    tar -C "$payload" -czf "$FIXTURE_DIR/$archive" fox
+    tar --format ustar -C "$payload" -czf "$FIXTURE_DIR/$archive" fox
     write_checksum "$archive"
   done
 }
@@ -578,7 +579,7 @@ replace_fixture_with_extra_entry() {
   mkdir -p "$payload"
   printf 'fox-test-binary\n' >"$payload/fox"
   printf 'extra\n' >"$payload/extra"
-  tar -C "$payload" -czf "$FIXTURE_DIR/fox_linux_amd64.tar.gz" fox extra
+  tar --format ustar -C "$payload" -czf "$FIXTURE_DIR/fox_linux_amd64.tar.gz" fox extra
   write_checksum fox_linux_amd64.tar.gz
 }
 
@@ -587,7 +588,7 @@ replace_fixture_with_symlink() {
   mkdir -p "$payload"
   printf 'target\n' >"$payload/target"
   ln -s target "$payload/fox"
-  tar -C "$payload" -czf "$FIXTURE_DIR/fox_linux_amd64.tar.gz" fox
+  tar --format ustar -C "$payload" -czf "$FIXTURE_DIR/fox_linux_amd64.tar.gz" fox
   write_checksum fox_linux_amd64.tar.gz
 }
 
@@ -595,7 +596,7 @@ replace_fixture_with_traversal() {
   payload=$CASE_ROOT/unsafe-traversal
   mkdir -p "$payload/sub"
   printf 'fox-test-binary\n' >"$payload/fox"
-  tar -C "$payload" -czf "$FIXTURE_DIR/fox_linux_amd64.tar.gz" sub/../fox
+  tar --format ustar -C "$payload" -czf "$FIXTURE_DIR/fox_linux_amd64.tar.gz" sub/../fox
   write_checksum fox_linux_amd64.tar.gz
 }
 
