@@ -31,7 +31,7 @@ const (
 	minHeight = 20
 
 	quitConfirmWindow = 2 * time.Second
-	runningTickEvery  = 250 * time.Millisecond
+	runningTickEvery  = 150 * time.Millisecond
 	pendingEscDelay   = 50 * time.Millisecond
 	mouseTailDelay    = 150 * time.Millisecond
 	inputHistoryLimit = 100
@@ -161,7 +161,7 @@ var slashCommands = []slashCommand{
 	{Name: "/exit", Description: "quit"},
 }
 
-var workingFrames = []string{"•", "◦", "●", "◌"}
+var workingFrames = []string{"✦", "✧"}
 
 const defaultThemeName = "codex"
 
@@ -269,6 +269,7 @@ type Model struct {
 	planForm           *planReviewForm
 	permissionBridge   *PermissionBridge
 	approvalForm       *approvalForm
+	permissionForm     *permissionForm
 	permissionSnapshot permission.Snapshot
 
 	sidebarVisible       bool
@@ -454,6 +455,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case approvalDoneMsg:
 		return m.handleApprovalDone()
+
+	case permissionDoneMsg:
+		return m.handlePermissionDone()
 
 	case promptCommandReadyMsg:
 		return m.handlePromptCommandReady(msg)
@@ -1165,6 +1169,9 @@ func (m Model) handleApprovalDone() (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.approvalForm != nil {
 		return m, m.approvalForm.update(msg)
+	}
+	if m.permissionForm != nil {
+		return m, m.permissionForm.update(msg)
 	}
 	if m.planForm != nil {
 		return m, m.planForm.update(msg)
@@ -1891,6 +1898,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		if command, ok := m.selectedSlashCommand(); ok {
 			text = command.Name
 		}
+		m.addInputHistory(text)
 		m.input = nil
 		m.inputCursor = 0
 		m.clearInputPastePreview()
@@ -2590,7 +2598,7 @@ func (m Model) formatStatuslineHelp() string {
 func (m Model) handlePermissionsCommand(fields []string) (tea.Model, tea.Cmd) {
 	if len(fields) == 1 {
 		m.permissionSnapshot = permissionSnapshot(m.runner)
-		m.appendCommandEntry("Permissions", m.formatPermissionsHelp())
+		m.permissionForm = newPermissionForm(m.permissionSnapshot)
 		m.status = "Permissions"
 		return m, nil
 	}
@@ -2602,6 +2610,12 @@ func (m Model) handlePermissionsCommand(fields []string) (tea.Model, tea.Cmd) {
 	case "full-access", "full_access":
 		confirm := len(fields) > 2 && (fields[2] == "confirm" || fields[2] == "--confirm")
 		remember := len(fields) > 2 && (fields[2] == "remember" || fields[2] == "--remember")
+		if !confirm && !remember {
+			m.permissionSnapshot = permissionSnapshot(m.runner)
+			m.permissionForm = newFullAccessWarningForm(m.permissionSnapshot)
+			m.status = "Full Access warning"
+			return m, nil
+		}
 		return m.setPermissionMode(permission.ModeFullAccess, remember, confirm)
 	case "clear":
 		count := clearPermissionGrants(m.runner)
@@ -2612,6 +2626,33 @@ func (m Model) handlePermissionsCommand(fields []string) (tea.Model, tea.Cmd) {
 	default:
 		m.appendEntry("error", "invalid command", "Usage: /permissions [ask|approve|full-access [confirm|remember]|clear]", true)
 		m.status = "Invalid permissions command"
+		return m, nil
+	}
+}
+
+func (m Model) handlePermissionDone() (tea.Model, tea.Cmd) {
+	if m.permissionForm == nil {
+		return m, nil
+	}
+	result := m.permissionForm.result
+	m.permissionForm = nil
+	switch result {
+	case permissionFormAsk:
+		return m.setPermissionMode(permission.ModeAsk, false, false)
+	case permissionFormApprove:
+		return m.setPermissionMode(permission.ModeApprove, false, false)
+	case permissionFormFullAccessSession:
+		return m.setPermissionMode(permission.ModeFullAccess, false, true)
+	case permissionFormFullAccessRemember:
+		return m.setPermissionMode(permission.ModeFullAccess, true, true)
+	case permissionFormClear:
+		count := clearPermissionGrants(m.runner)
+		m.permissionSnapshot = permissionSnapshot(m.runner)
+		m.appendCommandEntry("Permissions", fmt.Sprintf("Cleared %d session approval(s).", count))
+		m.status = "Session approvals cleared"
+		return m, nil
+	default:
+		m.status = "Permissions cancelled"
 		return m, nil
 	}
 }
@@ -3493,7 +3534,7 @@ func (m Model) workingFrame() string {
 	if len(workingFrames) == 0 {
 		return "•"
 	}
-	return workingFrames[m.spinnerFrame%len(workingFrames)]
+	return workingFrames[(m.spinnerFrame/4)%len(workingFrames)]
 }
 
 func (m Model) runningElapsed() time.Duration {

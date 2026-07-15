@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -76,11 +77,13 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 		p := r.Lookup()
 		if p == nil {
 			lastErr = fmt.Errorf("review provider unavailable")
+			log.Printf("permission auto-review attempt %d/%d failed for %s: %v", attempt+1, reviewerAttempts, request.ToolName, lastErr)
 			continue
 		}
 		resp, err := p.Generate(ctx, reviewerMessages(request, evidence), nil)
 		if err != nil {
 			lastErr = err
+			log.Printf("permission auto-review attempt %d/%d failed for %s: generate: %v", attempt+1, reviewerAttempts, request.ToolName, err)
 			if ctx.Err() != nil {
 				return ReviewResult{}, ctx.Err()
 			}
@@ -89,6 +92,7 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 		result, err := parseReviewResult(resp)
 		if err != nil {
 			lastErr = err
+			log.Printf("permission auto-review attempt %d/%d failed for %s: parse: %v; response=%q", attempt+1, reviewerAttempts, request.ToolName, err, reviewResponsePreview(resp))
 			continue
 		}
 		if result.Decision == ReviewApprove && reviewerMayApprove(request.Risk) && reviewerMayApprove(result.Risk) && reviewerAuthorizationSufficient(result.UserAuthorization) {
@@ -97,6 +101,7 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 		result.Decision = ReviewEscalate
 		return result, nil
 	}
+	log.Printf("permission auto-review unavailable after %d attempts for %s action=%q: last_error=%v", reviewerAttempts, request.ToolName, request.Action, lastErr)
 	return ReviewResult{Decision: ReviewEscalate, Risk: request.Risk, UserAuthorization: AuthorizationUnknown, Rationale: "Auto-review was unavailable after three attempts."}, lastErr
 }
 
@@ -138,6 +143,18 @@ func parseReviewResult(resp *provider.GenerateResponse) (ReviewResult, error) {
 		return ReviewResult{}, fmt.Errorf("missing review rationale")
 	}
 	return result, nil
+}
+
+func reviewResponsePreview(resp *provider.GenerateResponse) string {
+	if resp == nil || resp.Message == nil {
+		return ""
+	}
+	content := strings.TrimSpace(resp.Message.Content)
+	const limit = 500
+	if len(content) <= limit {
+		return content
+	}
+	return content[:limit] + "…"
 }
 
 func reviewerMayApprove(risk Risk) bool {

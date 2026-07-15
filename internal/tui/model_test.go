@@ -2589,6 +2589,27 @@ func TestModelInputHistoryWithArrowKeys(t *testing.T) {
 	}
 }
 
+func TestModelSlashCommandInputHistoryWithArrowKeys(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("/permissions"))
+	m, _ = update(t, m, keyEnter())
+	if m.permissionForm == nil {
+		t.Fatal("/permissions did not open permissions form")
+	}
+	m, cmd := update(t, m, keyEsc())
+	if cmd == nil {
+		t.Fatal("permissions cancel command is nil")
+	}
+	m, _ = update(t, m, cmd())
+
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != "/permissions" {
+		t.Fatalf("slash command history recall = %q, want /permissions", got)
+	}
+}
+
 func TestModelInputHistoryRestoresDraft(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
@@ -3295,7 +3316,7 @@ func TestModelRunningNoticeShowsQueuedPromptPreviews(t *testing.T) {
 
 	notice := stripANSI(m.renderRunningNotice(72))
 	for _, want := range []string{
-		"[ WORKING ] 5s • esc to interrupt",
+		"✦ working... 5s • esc to interrupt",
 		"1. second task",
 		"2. third task with newline",
 		"3. long long",
@@ -4269,15 +4290,15 @@ func TestModelViewShowsRunningNoticeAboveInput(t *testing.T) {
 	m.runStartedAt = current.Add(-(2*time.Hour + 3*time.Minute + 4*time.Second))
 
 	view := m.View()
-	if !strings.Contains(view, "[ WORKING ] 2h 3m 4s • esc to interrupt") {
+	if !strings.Contains(stripANSI(view), "working... 2h 3m 4s • esc to interrupt") {
 		t.Fatalf("view missing running notice:\n%s", view)
 	}
-	if strings.Contains(view, "› [ WORKING ]") {
+	if strings.Contains(stripANSI(view), "› ✦ working...") || strings.Contains(stripANSI(view), "› ✧ working...") {
 		t.Fatalf("running notice rendered inside input:\n%s", view)
 	}
 
 	lines := strings.Split(stripANSI(view), "\n")
-	noticeLine := lineContaining(stripANSI(view), "[ WORKING ]")
+	noticeLine := lineContaining(stripANSI(view), "working...")
 	inputLine := lineContaining(stripANSI(view), "message will be queued, or /cancel")
 	if inputLine < 0 {
 		t.Fatalf("view missing queue placeholder text:\n%s", view)
@@ -4292,6 +4313,65 @@ func TestModelViewShowsRunningNoticeAboveInput(t *testing.T) {
 	}
 	if noticeLine == 0 || strings.TrimSpace(lines[noticeLine-1]) != "" {
 		t.Fatalf("running notice should have a blank line above it:\n%s", view)
+	}
+}
+
+func TestModelRunningNoticeUsesBlinkingSparkle(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	current := time.Date(2026, 5, 17, 12, 0, 5, 0, time.UTC)
+	m.now = func() time.Time { return current }
+	m.running = true
+	m.runStartedAt = current.Add(-5 * time.Second)
+
+	m.spinnerFrame = 0
+	first := stripANSI(m.renderRunningNotice(72))
+	m.spinnerFrame = 1
+	second := stripANSI(m.renderRunningNotice(72))
+	m.spinnerFrame = 2
+	third := stripANSI(m.renderRunningNotice(72))
+	m.spinnerFrame = 4
+	fifth := stripANSI(m.renderRunningNotice(72))
+
+	if !strings.Contains(first, "✦ working... 5s • esc to interrupt") {
+		t.Fatalf("first frame missing filled sparkle working notice:\n%s", first)
+	}
+	if !strings.Contains(second, "✦ working... 5s • esc to interrupt") {
+		t.Fatalf("second frame should keep filled sparkle for slower blink:\n%s", second)
+	}
+	if !strings.Contains(third, "✦ working... 5s • esc to interrupt") {
+		t.Fatalf("third frame should keep filled sparkle for slower blink:\n%s", third)
+	}
+	if !strings.Contains(fifth, "✧ working... 5s • esc to interrupt") {
+		t.Fatalf("fifth frame missing hollow sparkle working notice:\n%s", fifth)
+	}
+	if strings.Contains(first, "[ WORKING ]") || strings.Contains(first, "▰") || strings.Contains(first, "▱") || strings.Contains(first, "⬢") || strings.Contains(first, "⬡") {
+		t.Fatalf("running notice still uses old working bar:\n%s", first)
+	}
+}
+
+func TestRenderWorkingTextShimmers(t *testing.T) {
+	first := renderWorkingText(11)
+	second := renderWorkingText(12)
+	if stripANSI(first) != "working..." || stripANSI(second) != "working..." {
+		t.Fatalf("shimmer changed visible working text: first=%q second=%q", stripANSI(first), stripANSI(second))
+	}
+	firstBefore, firstShimmer, _ := workingShimmerSegments(workingNoticeText, workingGlimmerIndex(11, len([]rune(workingNoticeText))))
+	secondBefore, secondShimmer, _ := workingShimmerSegments(workingNoticeText, workingGlimmerIndex(12, len([]rune(workingNoticeText))))
+	if firstShimmer == "" || secondShimmer == "" {
+		t.Fatalf("expected visible shimmer segments, got first=%q second=%q", firstShimmer, secondShimmer)
+	}
+	if firstShimmer == secondShimmer {
+		t.Fatalf("shimmer did not move between frames: first=%q second=%q", firstShimmer, secondShimmer)
+	}
+	if len([]rune(secondBefore)) <= len([]rune(firstBefore)) {
+		t.Fatalf("shimmer should move left-to-right: first before=%q second before=%q", firstBefore, secondBefore)
+	}
+	if workingTextStyle.GetForeground() != lipgloss.Color(claudeWorkingHex) {
+		t.Fatalf("working text foreground = %q, want Claude working color %q", workingTextStyle.GetForeground(), claudeWorkingHex)
+	}
+	if workingShimmerStyle.GetForeground() != lipgloss.Color(claudeShimmerHex) {
+		t.Fatalf("working shimmer foreground = %q, want Claude shimmer color %q", workingShimmerStyle.GetForeground(), claudeShimmerHex)
 	}
 }
 
@@ -4316,14 +4396,24 @@ func TestModelRunningTickAdvancesSpinner(t *testing.T) {
 		t.Fatalf("running tick did not schedule another tick")
 	}
 	after := m.workingFrame()
+	if before != after {
+		t.Fatalf("sparkle blink advanced too quickly after one tick: before=%q after=%q", before, after)
+	}
+	for i := 0; i < 3; i++ {
+		m, cmd = update(t, m, runningTickMsg{})
+		if cmd == nil {
+			t.Fatalf("running tick %d did not schedule another tick", i+2)
+		}
+		after = m.workingFrame()
+	}
 	if before == after {
-		t.Fatalf("spinner frame did not advance: before=%q after=%q", before, after)
+		t.Fatalf("sparkle blink did not advance after four ticks: before=%q after=%q", before, after)
 	}
 }
 
 func TestRunningTickInterval(t *testing.T) {
-	if runningTickEvery != 250*time.Millisecond {
-		t.Fatalf("runningTickEvery = %s, want 250ms", runningTickEvery)
+	if runningTickEvery != 150*time.Millisecond {
+		t.Fatalf("runningTickEvery = %s, want 150ms", runningTickEvery)
 	}
 }
 
@@ -4357,19 +4447,32 @@ func TestPermissionsCommandUpdatesModeAndPersistsSettings(t *testing.T) {
 	}
 }
 
-func TestPermissionsFullAccessWithoutRememberDoesNotActivate(t *testing.T) {
+func TestPermissionsFullAccessCommandOpensWarningAndConfirmActivates(t *testing.T) {
 	runner := newFakeRunner()
 	home := t.TempDir()
 	m := NewModel(context.Background(), runner, Config{HomeDir: home})
 
 	next, _ := m.handleSlashCommand("/permissions full-access")
 	m = next.(Model)
-	snap := runner.PermissionSnapshot()
-	if snap.SelectedMode != permission.ModeFullAccess {
-		t.Fatalf("SelectedMode = %q, want full access", snap.SelectedMode)
+	if m.permissionForm == nil {
+		t.Fatal("/permissions full-access did not open warning form")
 	}
-	if snap.EffectiveMode != permission.ModeAsk {
-		t.Fatalf("EffectiveMode = %q, want ask until remembered confirmation", snap.EffectiveMode)
+	if m.permissionForm.stage != permissionFormStageFullAccessWarning {
+		t.Fatalf("stage = %v, want full access warning", m.permissionForm.stage)
+	}
+	snap := runner.PermissionSnapshot()
+	if snap.EffectiveMode == permission.ModeFullAccess {
+		t.Fatal("Full Access activated before confirmation")
+	}
+
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatal("full access confirmation command is nil")
+	}
+	m, _ = update(t, m, cmd())
+	snap = runner.PermissionSnapshot()
+	if snap.SelectedMode != permission.ModeFullAccess || snap.EffectiveMode != permission.ModeFullAccess {
+		t.Fatalf("snapshot = %+v, want selected/effective full access", snap)
 	}
 	loaded, err := settings.Load(home)
 	if err != nil {
@@ -4380,6 +4483,68 @@ func TestPermissionsFullAccessWithoutRememberDoesNotActivate(t *testing.T) {
 	}
 	if loaded.TUI.Permissions.FullAccessWarningRemembered {
 		t.Fatal("FullAccessWarningRemembered = true, want false")
+	}
+}
+
+func TestPermissionsSelectorApproveMode(t *testing.T) {
+	runner := newFakeRunner()
+	home := t.TempDir()
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	m, _ = update(t, m, keyRunes("/permissions"))
+	m, _ = update(t, m, keyEnter())
+	if m.permissionForm == nil {
+		t.Fatal("/permissions did not open form")
+	}
+	m, _ = update(t, m, keyDown())
+	m, cmd := update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatal("permissions selection command is nil")
+	}
+	m, _ = update(t, m, cmd())
+
+	if m.permissionForm != nil {
+		t.Fatal("permission form still open")
+	}
+	if got := runner.PermissionSnapshot().EffectiveMode; got != permission.ModeApprove {
+		t.Fatalf("EffectiveMode = %q, want approve", got)
+	}
+	loaded, err := settings.Load(home)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := loaded.TUI.Permissions.Mode; got != string(permission.ModeApprove) {
+		t.Fatalf("persisted mode = %q, want approve", got)
+	}
+}
+
+func TestPermissionsSelectorFullAccessShowsWarningBeforeActivation(t *testing.T) {
+	runner := newFakeRunner()
+	home := t.TempDir()
+	m := NewModel(context.Background(), runner, Config{HomeDir: home})
+
+	m, _ = update(t, m, keyRunes("/permissions"))
+	m, _ = update(t, m, keyEnter())
+	m, _ = update(t, m, keyDown())
+	m, _ = update(t, m, keyDown())
+	m, cmd := update(t, m, keyEnter())
+	if cmd != nil {
+		t.Fatal("selecting Full Access should open warning without completing")
+	}
+	if m.permissionForm == nil || m.permissionForm.stage != permissionFormStageFullAccessWarning {
+		t.Fatalf("permission form = %#v, want warning stage", m.permissionForm)
+	}
+	if got := runner.PermissionSnapshot().EffectiveMode; got == permission.ModeFullAccess {
+		t.Fatal("Full Access activated before warning confirmation")
+	}
+
+	m, cmd = update(t, m, keyEnter())
+	if cmd == nil {
+		t.Fatal("warning confirmation command is nil")
+	}
+	m, _ = update(t, m, cmd())
+	if got := runner.PermissionSnapshot().EffectiveMode; got != permission.ModeFullAccess {
+		t.Fatalf("EffectiveMode = %q, want full access", got)
 	}
 }
 

@@ -83,14 +83,13 @@ func (f *approvalForm) view(width int) string {
 	}
 	if f.req.approval.ReviewerFailure != "" {
 		b.WriteString("Auto-review unavailable after three attempts.\n")
+		b.WriteString(fmt.Sprintf("Reviewer failure: %s\n", fitLine(f.req.approval.ReviewerFailure, max(width-inputStyle.GetHorizontalFrameSize()-2, 20))))
 	}
 	b.WriteString("\n")
 	labels := []string{"Yes", "Yes, session", "No", "No + feedback"}
 	for i, label := range labels {
-		if i > 0 {
-			b.WriteString("   ")
-		}
 		b.WriteString(f.renderAction(i, label))
+		b.WriteString("\n")
 	}
 	if f.action == 3 {
 		b.WriteString("\n\n")

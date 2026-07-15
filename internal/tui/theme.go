@@ -150,7 +150,10 @@ func rebuildStyles() {
 		Foreground(cTextSec).
 		Border(lipgloss.Border{Top: "─", Bottom: "─"}, true, false, true, false).
 		BorderForeground(cTextVeryDim)
-	runningNoticeStyle = lipgloss.NewStyle().Foreground(cWarn)
+	runningNoticeStyle = lipgloss.NewStyle().Foreground(cWorkingText)
+	workingGlyphStyle = lipgloss.NewStyle().Bold(true).Foreground(cWorkingText)
+	workingTextStyle = lipgloss.NewStyle().Foreground(cWorkingText)
+	workingShimmerStyle = lipgloss.NewStyle().Bold(true).Foreground(cWorkingShimmer)
 	suggestionStyle = lipgloss.NewStyle().
 		Foreground(cTextSec).
 		Border(lipgloss.Border{Left: "┊"}, false, false, false, true).

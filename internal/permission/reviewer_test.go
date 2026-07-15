@@ -1,8 +1,11 @@
 package permission
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"strings"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/provider"
@@ -149,6 +152,46 @@ func TestProviderReviewerRetriesNilMessageResponse(t *testing.T) {
 	}
 	if len(attempts) != 1 || attempts[0] != 2 {
 		t.Fatalf("retry attempts = %#v, want [2]", attempts)
+	}
+}
+
+func TestProviderReviewerLogsFailureDetails(t *testing.T) {
+	reviewProvider := &scriptedReviewProvider{
+		responses: []reviewProviderResponse{
+			{err: errors.New("network refused")},
+			{content: `not json`},
+			{nilMessage: true},
+		},
+	}
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
+
+	reviewer := &ProviderReviewer{
+		Lookup: func() provider.LLMProvider { return reviewProvider },
+	}
+	_, err := reviewer.Review(context.Background(), reviewRequest(), Evidence{Text: "trusted context"})
+	if err == nil {
+		t.Fatal("Review() error = nil, want failure")
+	}
+	got := logs.String()
+	for _, want := range []string{
+		"permission auto-review attempt 1/3 failed",
+		"generate: network refused",
+		"permission auto-review attempt 2/3 failed",
+		"parse:",
+		`response="not json"`,
+		"permission auto-review unavailable after 3 attempts",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("logs missing %q:\n%s", want, got)
+		}
 	}
 }
 

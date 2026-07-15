@@ -129,7 +129,7 @@ func (f *planReviewForm) view(width, maxHeight int) string {
 	b.WriteString(strings.Join(visible, "\n"))
 	b.WriteString("\n\n")
 	b.WriteString(f.renderAction(0, "Approve"))
-	b.WriteString("   ")
+	b.WriteString("\n")
 	b.WriteString(f.renderAction(1, "Continue planning"))
 	if f.action == 1 {
 		b.WriteString("\n\n")

@@ -15,6 +15,7 @@ const (
 	minTranscriptHeight         = 6
 	maxCollapsedToolOutputLines = 3
 	toolCallGlyph               = "⬢"
+	workingNoticeText           = "working..."
 
 	viewPaddingTop      = 1
 	viewPaddingRight    = 2
@@ -31,24 +32,28 @@ const (
 	amberDimHex           = "#B07E48"
 	amberDividerHex       = "#6b4520"
 	amberProgressEmptyHex = "#5a3020"
+	claudeWorkingHex      = "#D77757"
+	claudeShimmerHex      = "#F59575"
 	selectionBgHex        = "#FFC56B"
 	selectionFgHex        = "#1a0e03"
 )
 
 var (
-	cBg            = lipgloss.Color(amberBgHex)
-	cAccent        = lipgloss.Color(amberHex)
-	cAccentHi      = lipgloss.Color(amberHiHex)
-	cWarn          = lipgloss.Color(amberWarnHex)
-	cTextPri       = lipgloss.Color(amberHiHex)
-	cTextSec       = lipgloss.Color(amberHex)
-	cTextMuted     = lipgloss.Color(amberMutedHex)
-	cTextDim       = lipgloss.Color(amberDimHex)
-	cTextVeryDim   = lipgloss.Color(amberDividerHex)
-	cMsgBg         = lipgloss.Color(amberPanelHex)
-	cProgressEmpty = lipgloss.Color(amberProgressEmptyHex)
-	cSelectionBg   = lipgloss.Color(selectionBgHex)
-	cSelectionFg   = lipgloss.Color(selectionFgHex)
+	cBg             = lipgloss.Color(amberBgHex)
+	cAccent         = lipgloss.Color(amberHex)
+	cAccentHi       = lipgloss.Color(amberHiHex)
+	cWarn           = lipgloss.Color(amberWarnHex)
+	cTextPri        = lipgloss.Color(amberHiHex)
+	cTextSec        = lipgloss.Color(amberHex)
+	cTextMuted      = lipgloss.Color(amberMutedHex)
+	cTextDim        = lipgloss.Color(amberDimHex)
+	cTextVeryDim    = lipgloss.Color(amberDividerHex)
+	cMsgBg          = lipgloss.Color(amberPanelHex)
+	cProgressEmpty  = lipgloss.Color(amberProgressEmptyHex)
+	cWorkingText    = lipgloss.Color(claudeWorkingHex)
+	cWorkingShimmer = lipgloss.Color(claudeShimmerHex)
+	cSelectionBg    = lipgloss.Color(selectionBgHex)
+	cSelectionFg    = lipgloss.Color(selectionFgHex)
 
 	outerStyle = lipgloss.NewStyle().
 			Foreground(cAccent).
@@ -70,7 +75,15 @@ var (
 			BorderForeground(cTextVeryDim)
 
 	runningNoticeStyle = lipgloss.NewStyle().
-				Foreground(cWarn)
+				Foreground(cWorkingText)
+	workingGlyphStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(cWorkingText)
+	workingTextStyle = lipgloss.NewStyle().
+				Foreground(cWorkingText)
+	workingShimmerStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(cWorkingShimmer)
 
 	suggestionStyle = lipgloss.NewStyle().
 			Foreground(cTextSec).
@@ -173,6 +186,25 @@ func (m Model) View() string {
 
 	if m.approvalForm != nil {
 		card := inputStyle.Width(width).Render(m.approvalForm.view(width))
+		chrome := outerStyle.GetVerticalFrameSize() +
+			lipgloss.Height(card) + 1 +
+			1 +
+			lipgloss.Height(m.renderStatusBar(width)) +
+			lipgloss.Height(m.renderKeybinds(width))
+		bodyHeight := max(m.height-chrome, m.minTranscriptHeightForWindow())
+		parts := []string{
+			m.renderMainArea(bodyHeight),
+			"",
+			card,
+			"",
+			m.renderStatusBar(width),
+			m.renderKeybinds(width),
+		}
+		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	}
+
+	if m.permissionForm != nil {
+		card := inputStyle.Width(width).Render(m.permissionForm.view(width))
 		chrome := outerStyle.GetVerticalFrameSize() +
 			lipgloss.Height(card) + 1 +
 			1 +
@@ -1213,34 +1245,43 @@ func (m Model) renderRunningNotice(width int) string {
 	if !m.running {
 		return ""
 	}
-	tag := planModeStyle.Bold(true).Render("[ WORKING ]")
+	glyph := workingGlyphStyle.Render(m.workingFrame())
+	text := renderWorkingText(m.spinnerFrame)
 	hint := mutedStyle.Render(formatDuration(m.runningElapsed()) + " • esc to interrupt")
-	prefix := lipgloss.JoinHorizontal(lipgloss.Top, tag, " ", hint, " ")
-	barWidth := width - lipgloss.Width(prefix)
-	if barWidth < 1 {
-		barWidth = 1
-	}
-	bar := renderWorkingBar(m.spinnerFrame, barWidth)
-	lines := []string{prefix + bar}
+	lines := []string{lipgloss.JoinHorizontal(lipgloss.Top, glyph, " ", text, " ", hint)}
 	lines = append(lines, queuedPromptNoticeLines(m.queuedPrompts, width)...)
 	return runningNoticeStyle.Width(width - runningNoticeStyle.GetHorizontalFrameSize()).Render(strings.Join(lines, "\n"))
 }
 
-func renderWorkingBar(frame int, width int) string {
-	if width <= 0 {
-		return ""
+func renderWorkingText(frame int) string {
+	before, shimmer, after := workingShimmerSegments(workingNoticeText, workingGlimmerIndex(frame, len([]rune(workingNoticeText))))
+	return workingTextStyle.Render(before) +
+		workingShimmerStyle.Render(shimmer) +
+		workingTextStyle.Render(after)
+}
+
+func workingGlimmerIndex(frame int, textWidth int) int {
+	if textWidth <= 0 {
+		return -100
 	}
-	pos := frame % width
-	activeWidth := min(14, width)
-	var b strings.Builder
-	for i := 0; i < width; i++ {
-		if i >= pos && i < pos+activeWidth {
-			b.WriteString(lipgloss.NewStyle().Foreground(cWarn).Render("▰"))
-		} else {
-			b.WriteString(lipgloss.NewStyle().Foreground(cProgressEmpty).Render("▱"))
-		}
+	cycleLength := textWidth + 20
+	position := frame % cycleLength
+	if position < 0 {
+		position += cycleLength
 	}
-	return b.String()
+	return position - 10
+}
+
+func workingShimmerSegments(text string, glimmerIndex int) (string, string, string) {
+	runes := []rune(text)
+	shimmerStart := glimmerIndex - 1
+	shimmerEnd := glimmerIndex + 1
+	if shimmerStart >= len(runes) || shimmerEnd < 0 {
+		return text, "", ""
+	}
+	start := max(shimmerStart, 0)
+	end := min(shimmerEnd+1, len(runes))
+	return string(runes[:start]), string(runes[start:end]), string(runes[end:])
 }
 
 func queuedPromptNoticeLines(prompts []queuedPrompt, width int) []string {
