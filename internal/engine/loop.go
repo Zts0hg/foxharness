@@ -890,7 +890,7 @@ func (e *AgentEngine) callModel(
 		metrics.EstimateToolDefinitions(estimator, tools)
 
 	started := time.Now()
-	resp, err := e.provider.Generate(ctx, messages, tools)
+	resp, err := e.generate(ctx, messages, tools)
 	duration := time.Since(started)
 	var message *schema.Message
 	if resp != nil && resp.Message != nil {
@@ -941,4 +941,16 @@ func (e *AgentEngine) callModel(
 	})
 
 	return message, nil
+}
+
+func (e *AgentEngine) generate(ctx context.Context, messages []schema.Message, tools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	effort := strings.TrimSpace(e.config.EffortOverride)
+	if effort == "" {
+		return e.provider.Generate(ctx, messages, tools)
+	}
+	withOptions, ok := e.provider.(provider.OptionsGenerator)
+	if !ok {
+		return nil, fmt.Errorf("provider does not support effort options")
+	}
+	return withOptions.GenerateWithOptions(ctx, messages, tools, provider.GenerateOptions{Effort: effort})
 }

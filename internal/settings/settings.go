@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Zts0hg/foxharness/internal/effort"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 )
 
@@ -251,6 +252,28 @@ func SetDefaultProvider(s *Settings, id string) error {
 	return nil
 }
 
+// SetEffort stores or clears the persisted effort value for a provider
+// protocol. Passing effort.Auto clears the explicit value.
+func SetEffort(s *Settings, protocol string, value string) error {
+	if s == nil {
+		return fmt.Errorf("settings cannot be nil")
+	}
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	value, err := effort.Validate(protocol, value)
+	if err != nil {
+		return err
+	}
+	if value == effort.Auto {
+		delete(s.LLM.Effort, protocol)
+		return nil
+	}
+	if s.LLM.Effort == nil {
+		s.LLM.Effort = map[string]string{}
+	}
+	s.LLM.Effort[protocol] = value
+	return nil
+}
+
 // mergeRaw builds the final JSON bytes. If raw bytes from a previous load
 // exist, it patches known LLM fields while preserving unknown fields and
 // legacy top-level fields. Otherwise it marshals the new settings schema from
@@ -259,7 +282,7 @@ func mergeRaw(s *Settings) []byte {
 	if s.raw != nil {
 		var m map[string]json.RawMessage
 		if err := json.Unmarshal(s.raw, &m); err == nil {
-			if hasLLMSettings(s.LLM) {
+			if hasLLMSettings(s.LLM) || rawLLMHasField(m["llm"], "effort") {
 				m["llm"] = mergeLLMRaw(m["llm"], s.LLM)
 			}
 			if hasTUISettings(s.TUI) {
@@ -284,7 +307,16 @@ func mergeRaw(s *Settings) []byte {
 }
 
 func hasLLMSettings(llm llmconfig.Settings) bool {
-	return llm.DefaultProvider != "" || len(llm.Providers) > 0
+	return llm.DefaultProvider != "" || len(llm.Providers) > 0 || len(llm.Effort) > 0
+}
+
+func rawLLMHasField(raw json.RawMessage, field string) bool {
+	var m map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &m) != nil {
+		return false
+	}
+	_, ok := m[field]
+	return ok
 }
 
 func hasTUISettings(tui TUISettings) bool {
@@ -309,6 +341,30 @@ func mergeLLMRaw(raw json.RawMessage, llm llmconfig.Settings) json.RawMessage {
 	}
 	if len(llm.Providers) > 0 {
 		m["providers"] = mergeProvidersRaw(m["providers"], llm.Providers)
+	}
+	if len(llm.Effort) > 0 || fieldExists(raw, "effort") {
+		m["effort"] = mergeEffortRaw(m["effort"], llm.Effort)
+	}
+	out, _ := json.Marshal(m)
+	return out
+}
+
+func mergeEffortRaw(raw json.RawMessage, efforts map[string]string) json.RawMessage {
+	var m map[string]json.RawMessage
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &m)
+	}
+	if m == nil {
+		m = make(map[string]json.RawMessage)
+	}
+	for protocol, value := range efforts {
+		data, _ := json.Marshal(value)
+		m[protocol] = data
+	}
+	for protocol := range m {
+		if _, ok := efforts[protocol]; !ok {
+			delete(m, protocol)
+		}
 	}
 	out, _ := json.Marshal(m)
 	return out

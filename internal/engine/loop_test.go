@@ -54,6 +54,23 @@ func (p *sequencedProvider) Generate(ctx context.Context, messages []schema.Mess
 	return p.responses[idx], nil
 }
 
+type optionCapturingProvider struct {
+	generateCalls int
+	optionCalls   int
+	options       []provider.GenerateOptions
+}
+
+func (p *optionCapturingProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	p.generateCalls++
+	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}}, nil
+}
+
+func (p *optionCapturingProvider) GenerateWithOptions(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition, options provider.GenerateOptions) (*provider.GenerateResponse, error) {
+	p.optionCalls++
+	p.options = append(p.options, options)
+	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}}, nil
+}
+
 type engineTurnRegistry struct {
 	tools.Registry
 	turns int
@@ -62,6 +79,48 @@ type engineTurnRegistry struct {
 func (r *engineTurnRegistry) BeginTurn() {
 	r.turns++
 	r.Register(&bigOutputTool{name: "turn_tool", output: "ok"})
+}
+
+func TestEngineUsesGenerateOptionsForEffortOverride(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	p := &optionCapturingProvider{}
+	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1, EffortOverride: "high"})
+	if _, err := eng.RunWithReporter(context.Background(), sess, "test", nil); err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if p.generateCalls != 0 {
+		t.Fatalf("Generate calls = %d, want 0 when effort override is set", p.generateCalls)
+	}
+	if p.optionCalls != 1 || len(p.options) != 1 || p.options[0].Effort != "high" {
+		t.Fatalf("GenerateWithOptions calls/options = %d/%#v, want high", p.optionCalls, p.options)
+	}
+}
+
+func TestEngineUsesDefaultGenerateWithoutEffortOverride(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	p := &optionCapturingProvider{}
+	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	if _, err := eng.RunWithReporter(context.Background(), sess, "test", nil); err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if p.generateCalls != 1 {
+		t.Fatalf("Generate calls = %d, want 1 without effort override", p.generateCalls)
+	}
+	if p.optionCalls != 0 {
+		t.Fatalf("GenerateWithOptions calls = %d, want 0 without effort override", p.optionCalls)
+	}
 }
 
 func TestEngineBeginsRegistryTurnBeforeToolDiscovery(t *testing.T) {

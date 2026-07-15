@@ -21,6 +21,7 @@ type CLIConfig struct {
 	Model           string
 	LLM             llmconfig.CLIOverrides
 	ResolvedLLM     llmconfig.ResolvedConfig
+	EffortOverride  string
 	EnableThinking  bool
 	MaxTurns        int
 	SessionID       string

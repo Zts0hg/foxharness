@@ -181,6 +181,54 @@ func TestClaudeProviderRetriesTransientHTTPFailure(t *testing.T) {
 	}
 }
 
+func TestClaudeProviderGenerateWithOptionsSendsOutputConfigEffort(t *testing.T) {
+	requests := make(chan claudeRequestBody, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body claudeRequestBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- body
+		writeClaudeTextMessage(t, w, "ok")
+	}))
+	defer server.Close()
+
+	provider := newTestClaudeProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	_, err := provider.GenerateWithOptions(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{Effort: "max"})
+	if err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+
+	req := <-requests
+	if req.OutputConfig == nil || req.OutputConfig.Effort == nil || *req.OutputConfig.Effort != "max" {
+		t.Fatalf("output_config.effort = %#v, want max", req.OutputConfig)
+	}
+}
+
+func TestClaudeProviderGenerateOmitsOutputConfigEffort(t *testing.T) {
+	requests := make(chan claudeRequestBody, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body claudeRequestBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- body
+		writeClaudeTextMessage(t, w, "ok")
+	}))
+	defer server.Close()
+
+	provider := newTestClaudeProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	_, err := provider.Generate(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	req := <-requests
+	if req.OutputConfig != nil {
+		t.Fatalf("output_config = %#v, want omitted", req.OutputConfig)
+	}
+}
+
 func TestNewProviderClaudeUsesConfiguredConnectionAndAPIKeyAuth(t *testing.T) {
 	requests := make(chan claudeRequestHeaders, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -337,9 +385,12 @@ func TestNormalizeProviderProtocol(t *testing.T) {
 }
 
 type claudeRequestBody struct {
-	Model     string `json:"model"`
-	MaxTokens int64  `json:"max_tokens"`
-	System    []struct {
+	Model        string `json:"model"`
+	MaxTokens    int64  `json:"max_tokens"`
+	OutputConfig *struct {
+		Effort *string `json:"effort"`
+	} `json:"output_config"`
+	System []struct {
 		Text string `json:"text"`
 	} `json:"system"`
 	Messages []struct {

@@ -38,6 +38,7 @@ type Profile struct {
 type Settings struct {
 	DefaultProvider string             `json:"default_provider,omitempty"`
 	Providers       map[string]Profile `json:"providers,omitempty"`
+	Effort          map[string]string  `json:"effort,omitempty"`
 }
 
 // CLIOverrides contains LLM fields supplied by command-line flags.

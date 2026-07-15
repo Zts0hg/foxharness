@@ -63,6 +63,7 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 		Model:             cfg.Model,
 		InitialPrompt:     cfg.Prompt,
 		HomeDir:           homeDir,
+		EffortOverride:    cfg.EffortOverride,
 		ProviderID:        cfg.ResolvedLLM.ProviderID,
 		ProviderProfileID: cfg.ResolvedLLM.SettingsProviderID,
 		ProviderProtocol:  cfg.ResolvedLLM.Protocol,

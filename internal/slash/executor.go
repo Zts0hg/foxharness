@@ -97,6 +97,11 @@ type ExecutionResult struct {
 	// (e.g. as a tool report rather than a regular assistant reply).
 	Fork bool
 
+	// Effort mirrors the command's frontmatter effort for inline prompt
+	// commands. Callers validate it against the active provider protocol before
+	// starting the model run.
+	Effort string
+
 	// AfterHook is set for inline-mode commands that declare a
 	// frontmatter `hooks.after`. The caller is responsible for invoking
 	// AfterHook once the command's execution truly completes — i.e.,
@@ -180,6 +185,7 @@ func (e *Executor) Execute(ctx context.Context, cmd *Command, rawArgs, sessionID
 	return ExecutionResult{
 		Content:      processed,
 		AllowedTools: append([]string(nil), cmd.Frontmatter.AllowedTools...),
+		Effort:       cmd.Frontmatter.Effort,
 		AfterHook:    afterHook,
 	}, nil
 }

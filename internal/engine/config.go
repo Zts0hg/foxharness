@@ -14,6 +14,10 @@ type Config struct {
 	// Phase 2 (Action): LLM has full tool access for execution
 	EnableThinking bool
 
+	// EffortOverride is the validated session-level reasoning effort override
+	// for user-run model calls. An empty value means no CLI/session override.
+	EffortOverride string
+
 	// MaxTurns is the maximum number of turns the engine will execute.
 	// If <= 0, the engine has no turn limit. Each turn consists of optional
 	// thinking followed by action execution.

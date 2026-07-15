@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/Zts0hg/foxharness/internal/effort"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/openai/openai-go/v3"
@@ -92,6 +93,12 @@ func (p *OpenAIProvider) ModelName() string {
 // Returns a schema.Message with the LLM's response, including any tool calls,
 // or an error if the API request fails or returns an empty response.
 func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*GenerateResponse, error) {
+	return p.GenerateWithOptions(ctx, messages, availableTools, GenerateOptions{})
+}
+
+// GenerateWithOptions produces a response from the OpenAI-compatible API with
+// optional per-call user-run generation settings.
+func (p *OpenAIProvider) GenerateWithOptions(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition, options GenerateOptions) (*GenerateResponse, error) {
 	var openaiMessages []openai.ChatCompletionMessageParamUnion
 
 	for _, message := range messages {
@@ -165,6 +172,11 @@ func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message
 
 	if len(openaiTools) > 0 {
 		params.Tools = openaiTools
+	}
+	if explicitEffort, err := effort.ExplicitForProvider(effort.ProtocolOpenAI, options.Effort); err != nil {
+		return nil, err
+	} else if explicitEffort != "" {
+		params.ReasoningEffort = shared.ReasoningEffort(explicitEffort)
 	}
 
 	resp, err := p.chatCompletionWithRetry(ctx, params)

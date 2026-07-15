@@ -203,6 +203,54 @@ func TestOpenAIProviderNormalizesEmptyToolCallArguments(t *testing.T) {
 	}
 }
 
+func TestOpenAIProviderGenerateWithOptionsSendsReasoningEffort(t *testing.T) {
+	requests := make(chan openAIRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body openAIRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- body
+		writeChatCompletion(t, w, "ok")
+	}))
+	defer server.Close()
+
+	provider := newTestOpenAIProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	_, err := provider.GenerateWithOptions(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{Effort: "xhigh"})
+	if err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+
+	req := <-requests
+	if req.ReasoningEffort == nil || *req.ReasoningEffort != "xhigh" {
+		t.Fatalf("reasoning_effort = %v, want xhigh", req.ReasoningEffort)
+	}
+}
+
+func TestOpenAIProviderGenerateOmitsReasoningEffort(t *testing.T) {
+	requests := make(chan openAIRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body openAIRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- body
+		writeChatCompletion(t, w, "ok")
+	}))
+	defer server.Close()
+
+	provider := newTestOpenAIProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	_, err := provider.Generate(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	req := <-requests
+	if req.ReasoningEffort != nil {
+		t.Fatalf("reasoning_effort = %v, want omitted", *req.ReasoningEffort)
+	}
+}
+
 func TestNewProviderOpenAIUsesConfiguredConnectionAndAPIKeyAuth(t *testing.T) {
 	requests := make(chan openAIRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -328,11 +376,12 @@ func TestNewProviderOpenAIAuthNoneIgnoresOpenAIEnvironmentDefaults(t *testing.T)
 }
 
 type openAIRequest struct {
-	Model         string `json:"model"`
-	Authorization string
-	XAPIKey       string
-	Organization  string
-	LeakedSecret  string
+	Model           string  `json:"model"`
+	ReasoningEffort *string `json:"reasoning_effort"`
+	Authorization   string
+	XAPIKey         string
+	Organization    string
+	LeakedSecret    string
 }
 
 func newTestOpenAIProvider(baseURL string, retry RetryConfig) *OpenAIProvider {

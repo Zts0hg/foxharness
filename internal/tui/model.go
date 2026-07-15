@@ -14,6 +14,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
+	"github.com/Zts0hg/foxharness/internal/effort"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -69,11 +70,18 @@ type permissionRuntime interface {
 	ClearPermissionGrants() int
 }
 
+type effortRuntime interface {
+	SetEffortOverride(value string)
+}
+
 // Config controls the initial TUI presentation.
 type Config struct {
 	Model         string
 	InitialPrompt string
 	HomeDir       string
+	// EffortOverride is the resolved session-level effort value that should
+	// seed the /effort selector before the user changes it interactively.
+	EffortOverride string
 
 	ProviderID        string
 	ProviderProfileID string
@@ -153,6 +161,7 @@ var slashCommands = []slashCommand{
 	{Name: "/theme", Description: "show or switch the TUI theme", ArgumentHint: "[name]"},
 	{Name: "/statusline", Description: "configure statusline items", ArgumentHint: "[set <items>|default]"},
 	{Name: "/permissions", Description: "configure tool approval mode"},
+	{Name: "/effort", Description: "configure reasoning effort"},
 	{Name: "/compact", Description: "compact context", ArgumentHint: "<optional custom instructions>"},
 	{Name: "/autodev", Description: "drain the backlog autonomously", ArgumentHint: "[backlog-path]"},
 	{Name: "/cancel", Description: "cancel the active run"},
@@ -271,6 +280,8 @@ type Model struct {
 	approvalForm       *approvalForm
 	permissionForm     *permissionForm
 	permissionSnapshot permission.Snapshot
+	effortForm         *effortForm
+	effortValue        string
 
 	sidebarVisible       bool
 	sidebarFocused       bool
@@ -296,12 +307,21 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 	entries, inputHistory, status := initialSessionState(runner)
 	themeName := defaultThemeName
 	statuslineItems := append([]string(nil), defaultStatuslineItems...)
+	effortValue := effort.Auto
 	if strings.TrimSpace(cfg.HomeDir) != "" {
 		if loaded, err := settings.Load(cfg.HomeDir); err == nil {
 			if isBuiltInTheme(loaded.TUI.Theme) {
 				themeName = normalizeThemeName(loaded.TUI.Theme)
 			}
 			statuslineItems = normalizeSavedStatuslineItems(loaded.TUI.Statusline)
+			if value := strings.TrimSpace(loaded.LLM.Effort[strings.ToLower(strings.TrimSpace(cfg.ProviderProtocol))]); value != "" {
+				effortValue = value
+			}
+		}
+	}
+	if value := strings.TrimSpace(cfg.EffortOverride); value != "" {
+		if normalized, err := effort.Validate(cfg.ProviderProtocol, value); err == nil {
+			effortValue = normalized
 		}
 	}
 	themeName = applyTheme(themeName)
@@ -334,6 +354,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		providerID:         cfg.ProviderID,
 		providerProfileID:  cfg.ProviderProfileID,
 		providerProtocol:   cfg.ProviderProtocol,
+		effortValue:        effortValue,
 		themeName:          themeName,
 		statuslineItems:    statuslineItems,
 		sessionID:          runner.SessionID(),
@@ -458,6 +479,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case permissionDoneMsg:
 		return m.handlePermissionDone()
+
+	case effortDoneMsg:
+		return m.handleEffortDone()
 
 	case promptCommandReadyMsg:
 		return m.handlePromptCommandReady(msg)
@@ -1172,6 +1196,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.permissionForm != nil {
 		return m, m.permissionForm.update(msg)
+	}
+	if m.effortForm != nil {
+		return m, m.effortForm.update(msg)
 	}
 	if m.planForm != nil {
 		return m, m.planForm.update(msg)
@@ -2422,6 +2449,8 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		return m.handleStatuslineCommand(text, fields)
 	case "/permissions":
 		return m.handlePermissionsCommand(fields)
+	case "/effort":
+		return m.handleEffortCommand(fields)
 	case "/sidebar":
 		mode := "toggle"
 		if len(fields) > 1 {
@@ -2499,6 +2528,27 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		m.status = "Unknown command"
 		return m, nil
 	}
+}
+
+func (m Model) handleEffortCommand(fields []string) (tea.Model, tea.Cmd) {
+	if len(fields) != 1 {
+		m.appendEntry("error", "invalid command", "Usage: /effort", true)
+		m.status = "Invalid effort command"
+		return m, nil
+	}
+	options, err := effort.OptionsForProtocol(m.providerProtocol)
+	if err != nil {
+		m.appendEntry("error", "effort unavailable", err.Error(), true)
+		m.status = "Effort unavailable"
+		return m, nil
+	}
+	selected := m.effortValue
+	if selected == "" {
+		selected = effort.Auto
+	}
+	m.effortForm = newEffortForm(m.providerProtocol, options, selected)
+	m.status = "Effort"
+	return m, nil
 }
 
 func (m Model) handleThemeCommand(fields []string) (tea.Model, tea.Cmd) {
@@ -2657,6 +2707,34 @@ func (m Model) handlePermissionDone() (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m Model) handleEffortDone() (tea.Model, tea.Cmd) {
+	if m.effortForm == nil {
+		return m, nil
+	}
+	value := strings.TrimSpace(m.effortForm.result)
+	m.effortForm = nil
+	if value == "" {
+		m.status = "Effort cancelled"
+		return m, nil
+	}
+	if err := m.saveEffortSetting(value); err != nil {
+		m.appendEntry("error", "effort save failed", fmt.Sprintf("save settings: %v", err), true)
+		m.status = "Effort save failed"
+		return m, nil
+	}
+	m.effortValue = value
+	if runtime, ok := m.runner.(effortRuntime); ok {
+		if value == effort.Auto {
+			runtime.SetEffortOverride("")
+		} else {
+			runtime.SetEffortOverride(value)
+		}
+	}
+	m.appendCommandEntry("Effort", fmt.Sprintf("Effort set to %s for %s", value, m.providerProtocol))
+	m.status = fmt.Sprintf("Effort set to %s", value)
+	return m, nil
+}
+
 func (m Model) setPermissionMode(mode permission.Mode, remember bool, confirm bool) (tea.Model, tea.Cmd) {
 	previous := permissionSnapshot(m.runner)
 	nextSettings := settings.PermissionSettings{
@@ -2742,6 +2820,20 @@ func (m Model) savePermissionSettings(next settings.PermissionSettings) error {
 		return err
 	}
 	loaded.TUI.Permissions = next
+	return settings.Save(m.homeDir, loaded)
+}
+
+func (m Model) saveEffortSetting(value string) error {
+	if strings.TrimSpace(m.homeDir) == "" {
+		return fmt.Errorf("home directory unavailable")
+	}
+	loaded, err := settings.Load(m.homeDir)
+	if err != nil {
+		return err
+	}
+	if err := settings.SetEffort(loaded, m.providerProtocol, value); err != nil {
+		return err
+	}
 	return settings.Save(m.homeDir, loaded)
 }
 
@@ -2907,6 +2999,19 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPromp
 		displayPrompt = text
 	}
 	m.appendEntry("user", "you", displayPrompt, false)
+	runEffort := strings.TrimSpace(result.Effort)
+	if runEffort != "" {
+		normalized, err := effort.Validate(m.providerProtocol, runEffort)
+		if err != nil {
+			m.running = false
+			m.runStartedAt = time.Time{}
+			m.cancelRun = nil
+			m.appendEntry("error", "command", err.Error(), true)
+			m.status = "Invalid effort"
+			return m, nil
+		}
+		runEffort = normalized
+	}
 
 	if len(result.AllowedTools) > 0 {
 		rr, ok := m.runner.(restrictedRunner)
@@ -2920,9 +3025,33 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPromp
 		}
 		m.status = "Running (restricted)"
 		allowedCopy := append([]string(nil), result.AllowedTools...)
+		if runEffort != "" {
+			effortRunner, ok := rr.(restrictedEffortRunner)
+			if !ok {
+				m.running = false
+				m.runStartedAt = time.Time{}
+				m.cancelRun = nil
+				m.appendEntry("error", "command", "Runner does not support effort override with allowed-tools; aborting to avoid silent escape.", true)
+				m.status = "Effort run unsupported"
+				return m, nil
+			}
+			return m, runRestrictedPromptCmdWithEffort(runCtx, effortRunner, text, displayPrompt, allowedCopy, runEffort, mode, result.AfterHook, m.events)
+		}
 		return m, runRestrictedPromptCmd(runCtx, rr, text, displayPrompt, allowedCopy, mode, result.AfterHook, m.events)
 	}
 	m.status = "Running"
+	if runEffort != "" {
+		effortRunner, ok := m.runner.(effortRunner)
+		if !ok {
+			m.running = false
+			m.runStartedAt = time.Time{}
+			m.cancelRun = nil
+			m.appendEntry("error", "command", "Runner does not support effort override; aborting to avoid silently ignoring command effort.", true)
+			m.status = "Effort run unsupported"
+			return m, nil
+		}
+		return m, runPromptCmdWithEffortAndAfter(runCtx, effortRunner, text, displayPrompt, runEffort, mode, result.AfterHook, m.events)
+	}
 	return m, runPromptCmdWithAfter(runCtx, m.runner, text, displayPrompt, mode, result.AfterHook, m.events)
 }
 
@@ -2936,6 +3065,14 @@ type restrictedRunner interface {
 
 type restrictedDisplayRunner interface {
 	RunRestrictedWithDisplayInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, allowedTools []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
+}
+
+type effortRunner interface {
+	RunWithDisplayAndEffortInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, effort string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
+}
+
+type restrictedEffortRunner interface {
+	RunRestrictedWithDisplayAndEffortInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, allowedTools []string, effort string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
 }
 
 type collaborationDisplayRunner interface {
@@ -2963,6 +3100,17 @@ func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt
 	}
 }
 
+func runRestrictedPromptCmdWithEffort(ctx context.Context, runner restrictedEffortRunner, prompt string, displayPrompt string, allowed []string, effort string, mode collaboration.Mode, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		reporter := &channelReporter{events: events}
+		result, err := runner.RunRestrictedWithDisplayAndEffortInCollaborationMode(ctx, prompt, displayPrompt, allowed, effort, mode, reporter)
+		if afterHook != nil {
+			afterHook(ctx)
+		}
+		return runFinishedMsg{result: result, err: err}
+	}
+}
+
 func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, displayPrompt string, mode collaboration.Mode, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		reporter := &channelReporter{events: events}
@@ -2973,6 +3121,17 @@ func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, di
 		} else {
 			result, err = runner.RunInCollaborationMode(ctx, prompt, mode, reporter)
 		}
+		if afterHook != nil {
+			afterHook(ctx)
+		}
+		return runFinishedMsg{result: result, err: err}
+	}
+}
+
+func runPromptCmdWithEffortAndAfter(ctx context.Context, runner effortRunner, prompt string, displayPrompt string, effort string, mode collaboration.Mode, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		reporter := &channelReporter{events: events}
+		result, err := runner.RunWithDisplayAndEffortInCollaborationMode(ctx, prompt, displayPrompt, effort, mode, reporter)
 		if afterHook != nil {
 			afterHook(ctx)
 		}

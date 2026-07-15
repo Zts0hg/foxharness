@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/Zts0hg/foxharness/internal/effort"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/anthropics/anthropic-sdk-go"
@@ -78,6 +79,12 @@ func (p *ClaudeProvider) ModelName() string {
 // Generate translates foxharness messages/tools into Anthropic Messages API
 // requests and normalizes text/tool_use response blocks back to schema.Message.
 func (p *ClaudeProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*GenerateResponse, error) {
+	return p.GenerateWithOptions(ctx, messages, availableTools, GenerateOptions{})
+}
+
+// GenerateWithOptions translates foxharness messages/tools into Anthropic
+// Messages API requests with optional per-call user-run generation settings.
+func (p *ClaudeProvider) GenerateWithOptions(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition, options GenerateOptions) (*GenerateResponse, error) {
 	anthropicMessages, systemBlocks := toAnthropicMessages(messages)
 	anthropicTools := toAnthropicTools(availableTools)
 
@@ -91,6 +98,11 @@ func (p *ClaudeProvider) Generate(ctx context.Context, messages []schema.Message
 	}
 	if len(anthropicTools) > 0 {
 		params.Tools = anthropicTools
+	}
+	if explicitEffort, err := effort.ExplicitForProvider(effort.ProtocolClaude, options.Effort); err != nil {
+		return nil, err
+	} else if explicitEffort != "" {
+		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(explicitEffort)}
 	}
 
 	resp, err := p.messagesNewWithRetry(ctx, params)
