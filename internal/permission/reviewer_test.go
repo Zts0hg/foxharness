@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 )
 
 func TestProviderReviewerReportsRetriesAfterFirstAttempt(t *testing.T) {
@@ -121,6 +123,25 @@ func TestProviderReviewerRequestsStructuredOutput(t *testing.T) {
 	}
 }
 
+func TestReviewerPromptIncludesCapabilitiesWithoutRiskHintAnchoring(t *testing.T) {
+	request := reviewRequest()
+	request.Risk = RiskCritical
+	request.Capabilities = toolpolicy.Assessment{
+		Effects: []toolpolicy.Effect{toolpolicy.EffectWorkflow, toolpolicy.EffectExecute},
+		Scope:   toolpolicy.ScopeMixed, Commands: []string{"touch marker", "git status --short"},
+	}
+	messages := reviewerMessages(request, Evidence{Text: "trusted context"})
+	content := messages[1].Content
+	for _, want := range []string{"Effects: [workflow execute]", "Scope: mixed", "Planned commands: [touch marker git status --short]"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("review prompt missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "Risk: critical") {
+		t.Fatalf("review prompt anchors on coarse risk hint:\n%s", content)
+	}
+}
+
 func TestProviderReviewerRequiresStructuredAuthorizationField(t *testing.T) {
 	reviewProvider := &scriptedReviewProvider{
 		responses: []reviewProviderResponse{
@@ -148,7 +169,7 @@ func TestProviderReviewerRequiresStructuredAuthorizationField(t *testing.T) {
 	}
 }
 
-func TestProviderReviewerCannotDowngradeDeterministicRisk(t *testing.T) {
+func TestProviderReviewerDoesNotTreatRiskHintAsApprovalFloor(t *testing.T) {
 	reviewProvider := &scriptedReviewProvider{
 		responses: []reviewProviderResponse{
 			{content: `{"decision":"approve","risk_level":"low","user_authorization":"high","rationale":"claimed safe"}`},
@@ -164,8 +185,8 @@ func TestProviderReviewerCannotDowngradeDeterministicRisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Review() error = %v", err)
 	}
-	if result.Decision != ReviewEscalate {
-		t.Fatalf("decision = %q, want escalate for high deterministic risk", result.Decision)
+	if result.Decision != ReviewApprove {
+		t.Fatalf("decision = %q, want approve from the reviewer's contextual risk assessment", result.Decision)
 	}
 }
 
@@ -216,46 +237,39 @@ func TestProviderReviewerCanApproveHighRiskReadOnlyDelegateTask(t *testing.T) {
 	}
 }
 
-func TestProviderReviewerEscalatesHighRiskWritableDelegateTask(t *testing.T) {
-	reviewProvider := &scriptedReviewProvider{
-		responses: []reviewProviderResponse{
-			{content: `{"decision":"approve","risk_level":"low","user_authorization":"high","rationale":"claimed authorized"}`},
-		},
-	}
-	reviewer := &ProviderReviewer{
-		Lookup: func() provider.LLMProvider { return reviewProvider },
-	}
-	request := reviewRequest()
-	request.ToolName = "delegate_task"
-	request.Action = `delegate_task {"task":"change files"}`
-	request.Arguments = `{"task":"change files"}`
-	request.Risk = RiskHigh
-
-	result, err := reviewer.Review(context.Background(), request, Evidence{Text: "User asked to inspect docs only."})
-	if err != nil {
-		t.Fatalf("Review() error = %v", err)
-	}
-	if result.Decision != ReviewEscalate {
-		t.Fatalf("decision = %q, want escalation for writable delegate task", result.Decision)
-	}
-}
-
-func TestProviderReviewerEscalatesUnknownAuthorization(t *testing.T) {
-	reviewProvider := &scriptedReviewProvider{
-		responses: []reviewProviderResponse{
-			{content: `{"decision":"approve","risk_level":"low","user_authorization":"unknown","rationale":"not enough authorization"}`},
-		},
-	}
-	reviewer := &ProviderReviewer{
-		Lookup: func() provider.LLMProvider { return reviewProvider },
+func TestProviderReviewerAppliesGenericRiskAuthorizationMatrix(t *testing.T) {
+	tests := []struct {
+		name          string
+		risk          Risk
+		authorization UserAuthorization
+		want          ReviewDecision
+	}{
+		{name: "low risk with unknown authorization", risk: RiskLow, authorization: AuthorizationUnknown, want: ReviewApprove},
+		{name: "medium risk with low authorization", risk: RiskMedium, authorization: AuthorizationLow, want: ReviewApprove},
+		{name: "high risk with medium authorization", risk: RiskHigh, authorization: AuthorizationMedium, want: ReviewApprove},
+		{name: "high risk with high authorization", risk: RiskHigh, authorization: AuthorizationHigh, want: ReviewApprove},
+		{name: "high risk with low authorization", risk: RiskHigh, authorization: AuthorizationLow, want: ReviewEscalate},
+		{name: "high risk with unknown authorization", risk: RiskHigh, authorization: AuthorizationUnknown, want: ReviewEscalate},
+		{name: "critical risk with high authorization", risk: RiskCritical, authorization: AuthorizationHigh, want: ReviewEscalate},
 	}
 
-	result, err := reviewer.Review(context.Background(), reviewRequest(), Evidence{Text: "trusted context"})
-	if err != nil {
-		t.Fatalf("Review() error = %v", err)
-	}
-	if result.Decision != ReviewEscalate {
-		t.Fatalf("decision = %q, want escalate for unknown authorization", result.Decision)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reviewProvider := &scriptedReviewProvider{
+				responses: []reviewProviderResponse{
+					{content: fmt.Sprintf(`{"decision":"approve","risk_level":%q,"user_authorization":%q,"rationale":"matrix case"}`, tt.risk, tt.authorization)},
+				},
+			}
+			reviewer := &ProviderReviewer{Lookup: func() provider.LLMProvider { return reviewProvider }}
+
+			result, err := reviewer.Review(context.Background(), reviewRequest(), Evidence{Text: "trusted context"})
+			if err != nil {
+				t.Fatalf("Review() error = %v", err)
+			}
+			if result.Decision != tt.want {
+				t.Fatalf("decision = %q, want %q", result.Decision, tt.want)
+			}
+		})
 	}
 }
 

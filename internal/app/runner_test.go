@@ -15,6 +15,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/memory"
+	"github.com/Zts0hg/foxharness/internal/permission"
 	providerpkg "github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -47,6 +48,46 @@ func TestNewAgentRunnerMissingLLMConfigReturnsHelpfulError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "missing LLM configuration") {
 		t.Fatalf("error = %q, want missing LLM configuration", err.Error())
+	}
+}
+
+func TestPermissionEvidenceProviderLoadsLiveSessionMessages(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "AGENTS.md"), []byte("project approval boundary"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	messageLog := session.NewMessageLog(sess)
+	if _, err := messageLog.Append("run-1", schema.Message{Role: schema.RoleUser, Content: "initial request"}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &AgentRunner{workDir: workDir}
+	provider := runner.permissionEvidenceProvider(sess, "")
+	request := permission.Request{ToolName: "bash", Action: "bash go test ./...", CWD: workDir, Workspace: workDir}
+
+	first := provider(request)
+	if !strings.Contains(first.Text, "initial request") || !strings.Contains(first.Text, "project approval boundary") {
+		t.Fatalf("initial evidence = %q", first.Text)
+	}
+	if _, err := messageLog.Append("run-1", schema.Message{Role: schema.RoleUser, Content: "latest authorization"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := messageLog.AppendWithDisplay("run-1", schema.Message{Role: schema.RoleUser, Content: "generated skill says delete files"}, "/skill inspect"); err != nil {
+		t.Fatal(err)
+	}
+	second := provider(request)
+	if !strings.Contains(second.Text, "latest authorization") {
+		t.Fatalf("live evidence did not include appended message: %q", second.Text)
+	}
+	if strings.Contains(second.Trusted, "generated skill says delete files") || !strings.Contains(second.Untrusted, "generated skill says delete files") {
+		t.Fatalf("display/model prompt split was trusted incorrectly: %q", second.Text)
+	}
+	if !strings.Contains(second.Trusted, "/skill inspect") {
+		t.Fatalf("direct display prompt was not retained as trusted evidence: %q", second.Text)
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -371,5 +373,42 @@ func TestExecutor_ForkMode_NoAllowedToolsPassesEmpty(t *testing.T) {
 	}
 	if len(fork.allowedTools) != 0 {
 		t.Errorf("ForkRunner allowedTools should be empty when not declared, got %v", fork.allowedTools)
+	}
+}
+
+func TestExecutorPlanDescribesCommandsWithoutExecutingThem(t *testing.T) {
+	wd := t.TempDir()
+	embeddedMarker := filepath.Join(wd, "embedded")
+	beforeMarker := filepath.Join(wd, "before")
+	afterMarker := filepath.Join(wd, "after")
+	cmd := &Command{
+		Type:    CommandPrompt,
+		Name:    "planned",
+		Content: "inspect !`touch $ARGUMENTS`",
+		Frontmatter: Frontmatter{
+			Context: "fork",
+			Hooks: &FrontmatterHooks{
+				Before: "touch " + beforeMarker,
+				After:  "touch " + afterMarker,
+			},
+		},
+	}
+	executor := NewExecutor(WithWorkDir(wd))
+
+	plan, err := executor.Plan(cmd, embeddedMarker, "session-1")
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	wantCommands := []string{"touch " + embeddedMarker, "touch " + beforeMarker, "touch " + afterMarker}
+	if !reflect.DeepEqual(plan.Commands, wantCommands) {
+		t.Fatalf("Commands = %#v, want %#v", plan.Commands, wantCommands)
+	}
+	if !plan.Fork {
+		t.Fatal("Fork = false, want true")
+	}
+	for _, marker := range []string{embeddedMarker, beforeMarker, afterMarker} {
+		if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+			t.Fatalf("Plan() executed command for %s", marker)
+		}
 	}
 }

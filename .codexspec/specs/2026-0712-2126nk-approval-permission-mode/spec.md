@@ -154,14 +154,14 @@ As a user selecting `Full Access`, I want a clear warning and predictable restar
 - **REQ-003**: Full Access activation MUST use a warning acknowledgment separate from the selected mode. The acknowledgment MUST be an independently resettable settings field. Ordinary confirmation MUST activate Full Access only for the current run without persisting acknowledgment. `Enable and remember` MUST persist acknowledgment. A later startup with selected Full Access but no acknowledgment MUST begin effectively in Ask mode and show the warning before activation. Switching modes MUST NOT clear remembered acknowledgment.
   - Sources: DEC-023
 
-- **REQ-004**: Ask and Approve modes MUST enforce the same tool boundary. Trusted interaction and session-state tools, including `ask_user_question`, `read_todo`, `update_todo`, and `submit_plan`, MUST bypass the approval gate while retaining their own rules. `read_file`, `write_file`, and `edit_file` MUST bypass the gate when their normalized, symlink-aware targets remain inside the active workspace and MUST require review when their targets are outside it. Non-fast-path Bash, skills, delegated tasks, and unknown tools MUST require review. Full Access MUST bypass only this approval gate.
-  - Sources: CON-002, DEC-009, DEC-010
+- **REQ-004**: Ask and Approve modes MUST enforce the same tool boundary. Trusted interaction and session-state tools, including `ask_user_question`, `read_todo`, `update_todo`, and `submit_plan`, MUST bypass the approval gate while retaining their own rules. `read_file`, `write_file`, and `edit_file` MUST bypass the gate when their normalized, symlink-aware targets remain inside the active workspace and MUST require review when their targets are outside it. Non-fast-path Bash, skills, and delegated tasks MUST require review when their capability assessments are valid. Registered tools without valid capability metadata MUST go directly to user approval. Full Access MUST bypass only this approval gate.
+  - Sources: CON-002, DEC-009, DEC-010, DEC-025
 
 - **REQ-005**: Main-agent, delegated, Skill-originated, forked, embedded-shell, and nested tool calls created by the interactive TUI MUST inherit one effective permission mode, approval coordinator, and session-grant set. No nested execution path may bypass the active policy.
   - Sources: CON-004, DEC-010, DEC-015, DEC-019
 
-- **REQ-006**: Bash fast-path classification MUST use structured shell parsing and fail closed to review. Unsupported or unparseable syntax, unknown commands, ambiguous flags, unsafe constructs, unresolved paths, and paths not proven workspace-contained MUST miss the fast path without being automatically denied.
-  - Sources: CON-005, DEC-010, DEC-016
+- **REQ-006**: Bash fast-path classification MUST use structured shell parsing. Unknown but parseable commands, ambiguous flags, unsafe constructs, unresolved paths, and paths not proven workspace-contained MUST miss the fast path and remain reviewable. Invalid arguments or unparseable shell syntax MUST fail closed to direct user approval. Missing the fast path MUST NOT itself deny execution.
+  - Sources: CON-005, DEC-010, DEC-016, DEC-025
 
 - **REQ-007**: The deterministic Bash fast path MUST enforce the confirmed command, option, grammar, and path boundary:
   - Path-free query commands: `pwd`, `whoami`, `id`, `uname`, `which`, `true`, and `false`.
@@ -218,6 +218,21 @@ As a user selecting `Full Access`, I want a clear warning and predictable restar
 - **REQ-021**: The permission mode, coordinator, queue, grants, and approval UI MUST apply only to the default interactive TUI and nested execution originating from it. `fox exec`, `fox -p`, autodev, Feishu, AgentOps, bench, and other non-interactive entry points MUST retain existing behavior and ignore the persisted TUI permission mode.
   - Sources: DEC-019
 
+- **REQ-022**: Tools eligible for deterministic or LLM approval MUST provide an invocation-specific capability assessment containing approval behavior, canonical action, effects, scope, read-only status, nested-enforcement status, coarse risk hint, reason, target when applicable, and directly executed commands when applicable. Registry alias resolution MUST return the canonical tool's assessment. The coordinator MUST route `fast_allow` directly, `reviewable` through the configured reviewer path, and `human_only` directly to user approval without tool-name classification. Human-only prompts MUST explain the policy reason and wrap rather than truncate the exact action and effective cwd.
+  - Sources: DEC-025
+
+- **REQ-023**: The local validator for a structured reviewer result MUST be tool-independent. It MUST accept reviewer-approved low- and medium-risk calls, accept reviewer-approved high-risk calls only when user authorization is medium or high, and escalate every critical-risk call or high-risk call with low or unknown authorization. It MUST NOT use the coarse deterministic risk hint as an approval floor or contain tool-name exceptions.
+  - Sources: DEC-017, DEC-026
+
+- **REQ-024**: Reviewer evidence MUST be loaded from the live persisted session at review time and include applicable project instructions. Trusted evidence MUST be limited to 16 KiB and untrusted evidence to 8 KiB, with recent content retained and truncation labeled. Registry wrappers MUST own their evidence providers. Child reviews MUST preserve parent trust labels while classifying the delegated task and child execution transcript as untrusted, except for direct user answers obtained through `ask_user_question`.
+  - Sources: CON-006, DEC-018, DEC-027
+
+- **REQ-025**: `delegate_task` capability assessment MUST apply the same default as execution: omitted `read_only` means `true`. Every delegation MUST remain reviewable, distinguish read-only from writable scope, and report whether nested permission enforcement is present. Invalid delegated tasks or missing nested enforcement MUST go directly to user approval.
+  - Sources: CON-004, DEC-025, DEC-028
+
+- **REQ-026**: Model-invoked Skill assessment MUST resolve and validate the skill, perform argument and variable planning without side effects, and expose every embedded shell command, before/after hook, fork effect, and nested-enforcement status before execution. Assessment and execution MUST share the same pure planning operation. Invalid or unparseable plans and forked execution without proven nested enforcement MUST go directly to user approval.
+  - Sources: CON-004, DEC-025, DEC-028
+
 ### Non-Functional Requirements
 
 - **NFR-001**: The feature MUST describe and enforce a tool-policy boundary only and MUST NOT claim OS-level filesystem, process, or network isolation.
@@ -238,6 +253,7 @@ As a user selecting `Full Access`, I want a clear warning and predictable restar
 - **Effective Permission Mode**: The mode currently enforced by the TUI. It may temporarily be Ask while an unacknowledged persisted Full Access selection awaits confirmation.
 - **Full Access Warning Acknowledgment**: A separate, resettable persisted setting controlling whether later runs may activate selected Full Access without showing the warning.
 - **Approval Request**: One canonical tool invocation with exact arguments, effective cwd, workspace, invocation source, and permission context.
+- **Capability Assessment**: A tool-owned, invocation-specific description of approval behavior, effects, scope, read-only state, nested enforcement, risk hint, and direct commands.
 - **Reviewer Result**: One structured risk, authorization, decision, and rationale result that applies only to the current approval request.
 - **Session Approval Grant**: One in-memory, tool-specific authorization key created only by explicit user selection of `Yes, allow for this session`.
 - **Approval Queue**: The serial FIFO sequence of calls that require review and have not yet started execution.
@@ -342,6 +358,10 @@ No blocking open questions remain. `OPEN-001` through `OPEN-017` in `requirement
 | DEC-022 | REQ-019, REQ-020, NFR-004, SC-006 | Low-noise review and status surfaces covered. |
 | DEC-023 | User Story 6, REQ-003 | Full Access persistence and warning interaction covered. |
 | DEC-024 | Goals, REQ-001, REQ-009, Out of Scope | Final first-version architecture and classifier exclusion covered. |
+| DEC-025 | REQ-004, REQ-006, REQ-022, NFR-002 | Tool-owned capability contract and human-only fallback covered. |
+| DEC-026 | REQ-012, REQ-023 | Generic reviewer validation matrix covered. |
+| DEC-027 | REQ-013, REQ-014, REQ-024 | Live evidence, trust labels, budgets, and provider isolation covered. |
+| DEC-028 | REQ-005, REQ-025, REQ-026 | Delegation defaults and side-effect-free Skill planning covered. |
 | OUT-002 | NFR-001, Out of Scope | OS sandbox excluded. |
 | OUT-003 | REQ-001, Out of Scope | Read-only mode excluded. |
 | OUT-004 | REQ-021, Out of Scope | Non-interactive integration excluded. |

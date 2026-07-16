@@ -455,6 +455,46 @@ Unregistered calls remain hard validation failures before approval. The default-
 
 **Covers**: REQ-002, REQ-003
 
+### PLD-010: Move Invocation Semantics Into Tool Capability Assessments
+
+**Decision**: Add a provider-neutral capability package and optional tool/registry assessment interfaces. Resolve aliases before assessment. The permission decorator obtains the assessment before authorization; missing, invalid, or failed assessment becomes `human_only`.
+
+**Rationale**: Tool implementations can apply the same argument defaults and dynamic scope rules used by execution, while the coordinator remains generic.
+
+**Trade-off**: New tools must implement the optional contract before they can participate in automatic approval.
+
+**Covers**: REQ-004, REQ-006, REQ-022, NFR-002
+
+### PLD-011: Validate Reviewer Results With One Matrix
+
+**Decision**: Remove request-risk floors and per-tool post-review gates. Validate only the structured result: low/medium approvals pass; high approvals require medium/high authorization; critical approvals and under-authorized high approvals escalate.
+
+**Rationale**: The reviewer receives exact capability facts and can make a contextual risk determination without hidden tool-specific contradictions.
+
+**Trade-off**: Correct behavior depends on strong structured-output prompts and complete capability facts; the small local matrix remains the fail-closed boundary.
+
+**Covers**: REQ-011, REQ-012, REQ-023
+
+### PLD-012: Bind Evidence Providers To Registry Views
+
+**Decision**: Store evidence providers on permission registry wrappers. Main providers load the live message log and project instructions for each review. Child providers combine labeled parent evidence with live child messages using separate trusted and untrusted budgets.
+
+**Rationale**: Main, Plan, and child registries may share state and reviewer infrastructure without sharing a mutable context callback.
+
+**Trade-off**: Each review performs bounded session-log and project-instruction reads.
+
+**Covers**: REQ-013, REQ-014, REQ-024
+
+### PLD-013: Share Pure Skill Planning Between Assessment And Execution
+
+**Decision**: Split argument substitution and command discovery into a side-effect-free execution plan. Skill assessment classifies planned embeddings, hooks, fork effects, and nested enforcement; execution consumes the same planning operation before running effects.
+
+**Rationale**: Permission review sees the commands that bypass the normal tool registry before any of them execute.
+
+**Trade-off**: Planning runs once for assessment and again immediately before execution, so it must remain pure and deterministic.
+
+**Covers**: REQ-005, REQ-025, REQ-026, NFR-002
+
 ## Implementation Phases
 
 Each phase follows Red-Green-Refactor. Tests listed first must fail for the expected missing behavior before implementation begins.
@@ -514,6 +554,15 @@ Each phase follows Red-Green-Refactor. Tests listed first must fail for the expe
 3. Review security-sensitive code for fail-closed parsing, trust-boundary violations, registry-wrapper ordering, cancellation leaks, and accidental non-interactive activation.
 
 **Covers**: REQ-001 through REQ-021, NFR-001 through NFR-004
+
+### Phase 8: Capability-Aware Reviewer Hardening
+
+1. Add failing tests for the generic reviewer matrix, capability lookup through aliases, missing-capability human fallback, built-in dynamic assessments, delegation defaults, and pure Skill planning.
+2. Implement the capability contract, registry lookup, generic policy mapping, built-in assessors, and tool-independent reviewer validator.
+3. Add failing tests for trust labels, 16 KiB/8 KiB budgets, live session reads, per-registry provider isolation, and child evidence composition; implement the evidence pipeline and nested wiring.
+4. Run focused suites, full tests, race checks, static analysis, and a security-focused code review.
+
+**Covers**: REQ-004 through REQ-006, REQ-011 through REQ-014, REQ-022 through REQ-026, NFR-001, NFR-002, NFR-004
 
 ## Verification Strategy
 
@@ -595,17 +644,17 @@ Each phase follows Red-Green-Refactor. Tests listed first must fail for the expe
 | REQ-001 | Full | Components 1, 6, 7; PLD-001; Phases 1 and 6 |
 | REQ-002 | Full | Component 6; PLD-009; Phases 1 and 6 |
 | REQ-003 | Full | Components 1, 6, 7; PLD-009; Phases 1 and 6 |
-| REQ-004 | Full | Components 2 and 4; PLD-003; Phases 2 and 3 |
-| REQ-005 | Full | Components 4 and 5; PLD-003; Phases 3 and 5 |
-| REQ-006 | Full | Component 2; PLD-004; Phase 2 |
+| REQ-004 | Full | Components 2 and 4; PLD-003 and PLD-010; Phases 2, 3, and 8 |
+| REQ-005 | Full | Components 4 and 5; PLD-003 and PLD-013; Phases 3, 5, and 8 |
+| REQ-006 | Full | Component 2; PLD-004 and PLD-010; Phases 2 and 8 |
 | REQ-007 | Full | Component 2; PLD-004; Phase 2 |
 | REQ-008 | Full | Components 4 and 7; User Approval interface; Phases 3 and 6 |
 | REQ-009 | Full | Components 3 and 4; PLD-005; Phases 3 and 4 |
 | REQ-010 | Full | Components 3 and 5; PLD-005; Phases 4 and 5 |
-| REQ-011 | Full | Component 3; PLD-005; Phase 4 |
-| REQ-012 | Full | Component 3; Phase 4 |
-| REQ-013 | Full | Component 3; PLD-006; Evidence Context; Phase 4 |
-| REQ-014 | Full | Component 3; PLD-006; Evidence Context; Phase 4 |
+| REQ-011 | Full | Component 3; PLD-005 and PLD-011; Phases 4 and 8 |
+| REQ-012 | Full | Component 3; PLD-011; Phases 4 and 8 |
+| REQ-013 | Full | Component 3; PLD-006 and PLD-012; Evidence Context; Phases 4 and 8 |
+| REQ-014 | Full | Component 3; PLD-006 and PLD-012; Evidence Context; Phases 4 and 8 |
 | REQ-015 | Full | Components 3, 4, and 7; PLD-005; Phases 3, 4, and 6 |
 | REQ-016 | Full | Component 4; PLD-002 and PLD-003; Phase 3 |
 | REQ-017 | Full | Components 1 and 2; PLD-007; Phases 1 through 3 |
@@ -613,6 +662,11 @@ Each phase follows Red-Green-Refactor. Tests listed first must fail for the expe
 | REQ-019 | Full | Components 7 and 8; PLD-008; Phase 6 |
 | REQ-020 | Full | Components 1 and 7; Phase 6 |
 | REQ-021 | Full | Components 5; PLD-001 and PLD-002; Phase 5 |
+| REQ-022 | Full | PLD-010; Phase 8 |
+| REQ-023 | Full | PLD-011; Phase 8 |
+| REQ-024 | Full | PLD-012; Phase 8 |
+| REQ-025 | Full | PLD-010 and PLD-013; Phase 8 |
+| REQ-026 | Full | PLD-013; Phase 8 |
 | NFR-001 | Full | Components 2, 4, and 5; PLD-001 and PLD-003; Security Considerations |
 | NFR-002 | Full | Components 2, 4, and 5; PLD-002 and PLD-003; Phases 3 and 5 |
 | NFR-003 | Full | Context, documentation constraint throughout plan, Security Considerations |

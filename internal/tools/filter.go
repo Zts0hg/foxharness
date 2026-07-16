@@ -2,10 +2,12 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 )
 
 // NewFilteredRegistry wraps base with an allow-list of tool names. When
@@ -70,6 +72,18 @@ func (f *filteredRegistry) IsParallelSafe(toolName string) bool {
 		return false
 	}
 	return f.base.IsParallelSafe(toolName)
+}
+
+// AssessPermission forwards capability lookup only for allowed tools.
+func (f *filteredRegistry) AssessPermission(name string, ctx toolpolicy.Context, args json.RawMessage) (toolpolicy.Assessment, bool, error) {
+	if !f.allowed[name] {
+		return toolpolicy.Assessment{}, false, nil
+	}
+	registry, ok := f.base.(PermissionRegistry)
+	if !ok {
+		return toolpolicy.Assessment{}, false, nil
+	}
+	return registry.AssessPermission(name, ctx, args)
 }
 
 // BeginTurn forwards the optional turn boundary to the wrapped registry.

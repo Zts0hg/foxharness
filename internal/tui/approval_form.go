@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/permission"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -71,19 +72,23 @@ func (f *approvalForm) decision() permission.UserDecision {
 
 func (f *approvalForm) view(width int) string {
 	req := f.req.approval.Request
+	contentWidth := max(width-inputStyle.GetHorizontalFrameSize()-2, 20)
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("Approve tool call"))
 	b.WriteString("\n\n")
-	b.WriteString(fmt.Sprintf("Action: %s\n", req.Action))
-	b.WriteString(fmt.Sprintf("CWD: %s\n", req.CWD))
-	b.WriteString(fmt.Sprintf("Scope: exact invocation in this session\n"))
+	b.WriteString(wrapText("Action: "+req.Action, contentWidth) + "\n")
+	b.WriteString(wrapText("CWD: "+req.CWD, contentWidth) + "\n")
+	b.WriteString(wrapText("Scope: exact invocation in this session", contentWidth) + "\n")
 	b.WriteString(fmt.Sprintf("Risk: %s\n", req.Risk))
+	if req.Capabilities.Behavior == toolpolicy.BehaviorHumanOnly && req.Capabilities.Reason != "" {
+		b.WriteString(wrapText("Policy: "+req.Capabilities.Reason, contentWidth) + "\n")
+	}
 	if f.req.approval.Review != nil {
-		b.WriteString(fmt.Sprintf("Review: %s\n", f.req.approval.Review.Rationale))
+		b.WriteString(wrapText("Review: "+f.req.approval.Review.Rationale, contentWidth) + "\n")
 	}
 	if f.req.approval.ReviewerFailure != "" {
 		b.WriteString("Auto-review unavailable after three attempts.\n")
-		b.WriteString(fmt.Sprintf("Reviewer failure: %s\n", fitLine(f.req.approval.ReviewerFailure, max(width-inputStyle.GetHorizontalFrameSize()-2, 20))))
+		b.WriteString(wrapText("Reviewer failure: "+f.req.approval.ReviewerFailure, contentWidth) + "\n")
 	}
 	b.WriteString("\n")
 	labels := []string{"Yes", "Yes, session", "No", "No + feedback"}
@@ -103,7 +108,6 @@ func (f *approvalForm) view(width int) string {
 	}
 	b.WriteString("\n\n")
 	b.WriteString(hintStyle.Render("Tab/←/→ choose · Enter confirm · Esc deny"))
-	contentWidth := max(width-inputStyle.GetHorizontalFrameSize()-2, 20)
 	lines := strings.Split(b.String(), "\n")
 	for i := range lines {
 		lines[i] = fitLine(lines[i], contentWidth)

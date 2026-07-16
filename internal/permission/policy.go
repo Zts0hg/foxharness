@@ -2,7 +2,6 @@ package permission
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,107 +9,147 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 )
 
 // Risk is the coarse severity the reviewer and TUI display for a request.
-type Risk string
+type Risk = toolpolicy.Risk
 
 const (
-	RiskLow      Risk = "low"
-	RiskMedium   Risk = "medium"
-	RiskHigh     Risk = "high"
-	RiskCritical Risk = "critical"
+	RiskLow      = toolpolicy.RiskLow
+	RiskMedium   = toolpolicy.RiskMedium
+	RiskHigh     = toolpolicy.RiskHigh
+	RiskCritical = toolpolicy.RiskCritical
 )
 
 // PolicyDecision classifies a request before reviewer or user approval.
 type PolicyDecision struct {
 	AllowFastPath  bool
 	RequiresReview bool
+	HumanOnly      bool
 	Request        Request
 	Reason         string
 }
 
-// Classify returns the deterministic permission classification for a tool call.
-func Classify(workspace string, cwd string, source Source, call schema.ToolCall) PolicyDecision {
+// Classify maps a tool-owned capability assessment into the deterministic
+// permission path. Missing or invalid assessments fail closed to human review.
+func Classify(workspace string, cwd string, source Source, call schema.ToolCall, assessments ...toolpolicy.Assessment) PolicyDecision {
 	workspace = cleanPath(workspace)
 	cwd = cleanPath(firstNonEmpty(cwd, workspace))
-	req := Request{
-		ToolCall:  call,
-		ToolName:  call.Name,
-		Arguments: normalizeJSON(call.Arguments),
-		CWD:       cwd,
-		Workspace: workspace,
-		Source:    source,
-		Risk:      RiskMedium,
+	assessment := missingAssessment(call.Name)
+	if len(assessments) > 0 {
+		assessment = normalizeAssessment(call.Name, assessments[0])
 	}
-
-	switch call.Name {
-	case "ask_user_question", "AskUserQuestion", "read_todo", "submit_plan", "update_todo":
-		req.Action = call.Name
-		req.Risk = RiskLow
-		return PolicyDecision{AllowFastPath: true, Request: req, Reason: "trusted session tool"}
-	case "read_file", "write_file", "edit_file":
-		path, ok := toolPath(call.Arguments)
-		req.Action = fmt.Sprintf("%s %s", call.Name, path)
-		if !ok || !containedInWorkspace(workspace, cwd, path) {
-			req.Risk = RiskHigh
-			return PolicyDecision{RequiresReview: true, Request: req, Reason: "path outside workspace or invalid"}
-		}
-		if call.Name == "read_file" {
-			req.Risk = RiskLow
-		} else {
-			req.Risk = RiskMedium
-		}
-		return PolicyDecision{AllowFastPath: true, Request: req, Reason: "workspace-contained file tool"}
-	case "bash":
-		command := bashCommand(call.Arguments)
-		req.Action = "bash " + command
-		if command == "" {
-			req.Risk = RiskHigh
-			return PolicyDecision{RequiresReview: true, Request: req, Reason: "missing bash command"}
-		}
-		if IsReadOnlyBash(command, workspace, cwd) {
-			req.Risk = RiskLow
-			return PolicyDecision{AllowFastPath: true, Request: req, Reason: "read-only bash fast path"}
-		}
-		req.Risk = riskForBash(command)
-		return PolicyDecision{RequiresReview: true, Request: req, Reason: "bash requires review"}
-	case "delegate_task", "subagent", "skill":
-		req.Action = call.Name + " " + req.Arguments
-		req.Risk = RiskHigh
-		return PolicyDecision{RequiresReview: true, Request: req, Reason: "composite tool requires review"}
+	arguments := normalizeJSON(call.Arguments)
+	if assessment.Behavior != toolpolicy.BehaviorFastAllow && assessment.Action == call.Name {
+		assessment.Action = strings.TrimSpace(call.Name + " " + arguments)
+	}
+	req := Request{
+		ToolCall:     call,
+		ToolName:     call.Name,
+		Arguments:    arguments,
+		CWD:          cwd,
+		Workspace:    workspace,
+		Source:       source,
+		Action:       assessment.Action,
+		Risk:         assessment.RiskHint,
+		Capabilities: assessment,
+	}
+	switch assessment.Behavior {
+	case toolpolicy.BehaviorFastAllow:
+		return PolicyDecision{AllowFastPath: true, Request: req, Reason: assessment.Reason}
+	case toolpolicy.BehaviorReviewable:
+		return PolicyDecision{RequiresReview: true, Request: req, Reason: assessment.Reason}
 	default:
-		req.Action = call.Name
-		req.Risk = RiskMedium
-		return PolicyDecision{RequiresReview: true, Request: req, Reason: "unknown registered tool requires review"}
+		return PolicyDecision{HumanOnly: true, Request: req, Reason: assessment.Reason}
+	}
+}
+
+func normalizeAssessment(toolName string, assessment toolpolicy.Assessment) toolpolicy.Assessment {
+	switch assessment.Behavior {
+	case toolpolicy.BehaviorFastAllow, toolpolicy.BehaviorReviewable, toolpolicy.BehaviorHumanOnly:
+	default:
+		return missingAssessment(toolName)
+	}
+	if strings.TrimSpace(assessment.Action) == "" {
+		assessment.Action = toolName
+	}
+	switch assessment.RiskHint {
+	case RiskLow, RiskMedium, RiskHigh, RiskCritical:
+	default:
+		assessment.Behavior = toolpolicy.BehaviorHumanOnly
+		assessment.RiskHint = RiskHigh
+		assessment.Reason = "tool capability risk is invalid"
+	}
+	if strings.TrimSpace(assessment.Reason) == "" {
+		assessment.Reason = "tool capability assessment"
+	}
+	if assessment.Behavior != toolpolicy.BehaviorHumanOnly {
+		if reason := invalidAssessmentReason(assessment); reason != "" {
+			assessment.Behavior = toolpolicy.BehaviorHumanOnly
+			assessment.RiskHint = RiskHigh
+			assessment.Reason = reason
+		}
+	}
+	return assessment
+}
+
+func invalidAssessmentReason(assessment toolpolicy.Assessment) string {
+	if len(assessment.Effects) == 0 {
+		return "tool capability effects are missing"
+	}
+	switch assessment.Scope {
+	case toolpolicy.ScopeWorkspace, toolpolicy.ScopeExternal, toolpolicy.ScopeMixed:
+	default:
+		return "tool capability scope is invalid"
+	}
+	if assessment.Behavior == toolpolicy.BehaviorFastAllow && assessment.Scope != toolpolicy.ScopeWorkspace {
+		return "fast-allow capability is not workspace-scoped"
+	}
+	hasDelegate := false
+	hasExecute := false
+	for _, effect := range assessment.Effects {
+		switch effect {
+		case toolpolicy.EffectObserve, toolpolicy.EffectMutate, toolpolicy.EffectExecute,
+			toolpolicy.EffectNetwork, toolpolicy.EffectDelegate, toolpolicy.EffectWorkflow,
+			toolpolicy.EffectInteract:
+		default:
+			return "tool capability effect is invalid"
+		}
+		if effect == toolpolicy.EffectDelegate {
+			hasDelegate = true
+		}
+		if effect == toolpolicy.EffectExecute {
+			hasExecute = true
+		}
+		if effect == toolpolicy.EffectMutate && assessment.ReadOnly {
+			return "read-only capability declares mutation"
+		}
+	}
+	if hasDelegate && !assessment.NestedEnforcement {
+		return "delegating capability lacks nested permission enforcement"
+	}
+	if hasExecute && len(assessment.Commands) == 0 {
+		return "executing capability does not identify commands"
+	}
+	return ""
+}
+
+func missingAssessment(toolName string) toolpolicy.Assessment {
+	return toolpolicy.Assessment{
+		Behavior: toolpolicy.BehaviorHumanOnly,
+		Action:   toolName,
+		Effects:  []toolpolicy.Effect{toolpolicy.EffectUnknown},
+		Scope:    toolpolicy.ScopeUnknown,
+		RiskHint: toolpolicy.RiskHigh,
+		Reason:   "registered tool does not declare permission capabilities",
 	}
 }
 
 // IsReadOnlyBash validates a conservative read-only subset of shell commands.
 func IsReadOnlyBash(command string, workspace string, cwd string) bool {
-	parser := syntax.NewParser()
-	file, err := parser.Parse(strings.NewReader(command), "")
-	if err != nil {
-		return false
-	}
-	ok := true
-	syntax.Walk(file, func(node syntax.Node) bool {
-		if !ok {
-			return false
-		}
-		switch n := node.(type) {
-		case *syntax.Redirect, *syntax.ProcSubst, *syntax.CmdSubst, *syntax.ArithmExp:
-			ok = false
-			return false
-		case *syntax.CallExpr:
-			if !readOnlyCall(n, workspace, cwd) {
-				ok = false
-				return false
-			}
-		}
-		return true
-	})
-	return ok
+	readOnly, _, parsed := toolpolicy.AssessShell(command, workspace, cwd)
+	return parsed && readOnly
 }
 
 func readOnlyCall(call *syntax.CallExpr, workspace string, cwd string) bool {

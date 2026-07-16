@@ -194,6 +194,72 @@ Tasks preserve the approved plan's seven implementation phases and the project c
 - **Verification**: Final review reports no unresolved Critical or High findings; focused tests and `go test ./...` pass after each accepted correction.
 - **Covers**: REQ-004, REQ-005, REQ-006, REQ-007, REQ-009, REQ-010, REQ-011, REQ-012, REQ-013, REQ-014, REQ-015, REQ-016, REQ-017, REQ-018, REQ-021, NFR-001, NFR-002, NFR-004; Plan: Phase 7, Security Considerations, Risks / Trade-offs
 
+## Phase 8: Capability-Aware Reviewer Hardening
+
+### T022 - [x] Add Failing Tests For Generic Review Validation And Capability Lookup
+
+- **Outcome**: Tests define the tool-independent risk/authorization matrix, reject deterministic risk anchoring, require alias-aware capability lookup, and require tools without metadata to skip LLM review and route directly to the user.
+- **Paths**: `internal/permission/reviewer_test.go`, `internal/permission/coordinator_test.go`, `internal/tools/registry_test.go`
+- **Dependencies**: T021
+- **Verification**: Focused tests fail against the prior tool-name gates and unknown-tool reviewer path.
+- **Covers**: REQ-022, REQ-023; Plan: Phase 8, PLD-010, PLD-011
+
+### T023 - [x] Implement Capability Contract And Generic Reviewer Matrix
+
+- **Outcome**: A provider-neutral capability contract and alias-aware registry interface feed a generic coordinator classifier; missing metadata is human-only; reviewer result validation contains no tool-specific exceptions or deterministic risk floor.
+- **Paths**: `internal/toolpolicy/assessment.go`, `internal/tools/registry.go`, `internal/tools/filter.go`, `internal/permission/policy.go`, `internal/permission/coordinator.go`, `internal/permission/reviewer.go`, `internal/tui/approval_form.go`
+- **Dependencies**: T022
+- **Verification**: `go test ./internal/permission ./internal/tools` passes the new matrix and routing tests.
+- **Covers**: REQ-004, REQ-011, REQ-012, REQ-022, REQ-023; Plan: Phase 8, PLD-010, PLD-011
+
+### T024 - [x] Add Failing Tests For Built-In And Composite Assessments
+
+- **Outcome**: Tests define file scope/effects, shell parsing and risk, trusted session tools, delegation's omitted read-only default, nested enforcement, side-effect-free Skill planning, planned commands, hooks, and unknown/invalid composite fallback.
+- **Paths**: `internal/tools/permission_test.go`, `internal/subagent/tool_permission_test.go`, `internal/slash/executor_test.go`, `internal/slash/skilltool/tool_test.go`
+- **Dependencies**: T023
+- **Verification**: Focused tests fail before built-in assessors and the pure planning operation exist.
+- **Covers**: REQ-005, REQ-006, REQ-025, REQ-026; Plan: Phase 8, PLD-010, PLD-013
+
+### T025 - [x] Implement Built-In Assessors And Pure Skill Planning
+
+- **Outcome**: File, shell, session, delegation, and Skill tools describe exact invocation capabilities; shell and path helpers are shared; delegation defaults match execution; Skill planning discovers embeddings and hooks without executing them and verifies fork enforcement.
+- **Paths**: `internal/toolpolicy/path.go`, `internal/toolpolicy/shell.go`, `internal/tools/permission.go`, `internal/subagent/tool.go`, `internal/subagent/manager.go`, `internal/slash/executor.go`, `internal/slash/shell.go`, `internal/slash/skilltool/tool.go`, `internal/app/runner.go`
+- **Dependencies**: T024
+- **Verification**: `go test ./internal/tools ./internal/subagent ./internal/slash ./internal/slash/skilltool` passes.
+- **Covers**: REQ-004 through REQ-006, REQ-022, REQ-025, REQ-026; Plan: Phase 8, PLD-010, PLD-013
+
+### T026 - [x] Add Failing Tests For Live Trust-Labeled Evidence
+
+- **Outcome**: Tests define direct-user and direct-answer trust, assistant/tool distrust, separate 16 KiB/8 KiB recent budgets, oversized request bounds, per-registry provider isolation, live message-log reads, and parent/child evidence composition.
+- **Paths**: `internal/permission/evidence_test.go`, `internal/permission/coordinator_test.go`, `internal/app/runner_test.go`, `internal/subagent/evidence_test.go`
+- **Dependencies**: T025
+- **Verification**: Focused tests fail against snapshot-only evidence and the shared mutable provider slot.
+- **Covers**: REQ-013, REQ-014, REQ-024; Plan: Phase 8, PLD-012
+
+### T027 - [x] Implement Per-Registry Live Evidence Pipeline
+
+- **Outcome**: Evidence uses separate trusted and untrusted budgets, loads current session messages and project instructions per review, identifies direct question answers, preserves parent labels, marks child context untrusted, and binds providers to main, Plan, and child registry views.
+- **Paths**: `internal/permission/evidence.go`, `internal/permission/coordinator.go`, `internal/app/runner.go`, `internal/subagent/manager.go`
+- **Dependencies**: T026
+- **Verification**: Focused permission, app, and subagent evidence tests pass.
+- **Covers**: REQ-013, REQ-014, REQ-024; Plan: Phase 8, PLD-012
+
+### T028 - [x] Pass Focused And Full Regression Tests
+
+- **Outcome**: Capability, reviewer, evidence, nested execution, provider, TUI, and repository regression suites pass after the interface migration.
+- **Paths**: All changed Go files
+- **Dependencies**: T027
+- **Verification**: Focused package suites and `go test ./... -count=1` pass.
+- **Covers**: REQ-004 through REQ-006, REQ-009 through REQ-015, REQ-022 through REQ-026, NFR-001, NFR-002, NFR-004; Plan: Phase 8
+
+### T029 - [x] Format, Race-Test, Vet, And Review The Follow-Up
+
+- **Outcome**: Changed Go files are formatted; race-sensitive suites, full tests, static analysis, artifact consistency checks, and final code review pass with no unresolved high-severity findings.
+- **Paths**: All changed files and repository root
+- **Dependencies**: T028
+- **Verification**: Run `gofmt -w` on changed Go files, `go test -race ./internal/permission ./internal/subagent ./internal/app`, `go test ./...`, `go vet ./...`, artifact scans, and final review.
+- **Covers**: REQ-004 through REQ-006, REQ-011 through REQ-014, REQ-022 through REQ-026, NFR-001 through NFR-004; Plan: Phase 8
+
 ## Checkpoints
 
 - **Checkpoint A - Domain And Policy**: After T004, state persistence, canonical paths, typed grants, and deterministic policy are green before concurrency is introduced.
@@ -201,10 +267,11 @@ Tasks preserve the approved plan's seven implementation phases and the project c
 - **Checkpoint C - Runtime Enforcement**: After T014, every main, Plan lifecycle, delegated, Skill, forked, and nested TUI execution path shares the coordinator while non-interactive behavior remains unchanged.
 - **Checkpoint D - User Experience**: After T018, permission selection, warnings, approvals, audit metadata, and status surfaces are complete and low-noise.
 - **Checkpoint E - Release Readiness**: After T021, integration, race, full-suite, vet, and security review gates are green.
+- **Checkpoint F - Reviewer Hardening**: After T029, capability-aware routing, generic review validation, live trust-labeled evidence, and composite planning are release-ready.
 
 ## Dependency Summary
 
-`T001 -> T002 -> T003 -> T004 -> T005 -> T006 -> T007 -> T008 -> T009 -> T010 -> T011 -> T012 -> T013 -> T014 -> T015 -> T016 -> T017 -> T018 -> T019 -> T020 -> T021`
+`T001 -> T002 -> T003 -> T004 -> T005 -> T006 -> T007 -> T008 -> T009 -> T010 -> T011 -> T012 -> T013 -> T014 -> T015 -> T016 -> T017 -> T018 -> T019 -> T020 -> T021 -> T022 -> T023 -> T024 -> T025 -> T026 -> T027 -> T028 -> T029`
 
 The main chain is intentionally linear. Each phase introduces interfaces or enforcement order consumed by the next phase, and every implementation task requires recorded RED evidence from its preceding test task. No task is marked `[P]` because concurrent execution would overlap shared permission contracts or begin against unfinished dependencies.
 
@@ -233,6 +300,11 @@ The main chain is intentionally linear. Each phase introduces interfaces or enfo
 | REQ-019 | T017-T020 |
 | REQ-020 | T017-T020 |
 | REQ-021 | T011-T014, T019-T021 |
+| REQ-022 | T022-T025, T028, T029 |
+| REQ-023 | T022, T023, T028, T029 |
+| REQ-024 | T026-T029 |
+| REQ-025 | T024, T025, T028, T029 |
+| REQ-026 | T024, T025, T028, T029 |
 | NFR-001 | T003-T006, T011-T014, T019-T021 |
 | NFR-002 | T005, T006, T011-T014, T019-T021 |
 | NFR-003 | T020 and this source-independent task artifact |
@@ -244,6 +316,7 @@ The main chain is intentionally linear. Each phase introduces interfaces or enfo
 | Phase 5 / Component 5 | T011-T014 |
 | Phase 6 / Components 6-8 | T015-T018 |
 | Phase 7 / Verification Strategy | T019-T021 |
+| Phase 8 / Capability-Aware Reviewer Hardening | T022-T029 |
 | PLD-001 through PLD-009 | T001-T021 as referenced by each task's Plan mapping |
 
 ## Unmapped Tasks

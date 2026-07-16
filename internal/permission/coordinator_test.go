@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
@@ -74,6 +75,33 @@ func TestRegistryDecoratorDoesNotPromptForUnknownTool(t *testing.T) {
 	}
 }
 
+func TestRegistryDecoratorSendsToolWithoutCapabilitiesDirectlyToUser(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(fakeTool{name: "unclassified"})
+	reviewer := &capturingReviewer{result: ReviewResult{
+		Decision:          ReviewApprove,
+		Risk:              RiskLow,
+		UserAuthorization: AuthorizationHigh,
+		Rationale:         "model guessed that it was safe",
+	}}
+	approver := &fakeApprover{decision: UserDecision{Kind: UserAllowOnce}}
+	coordinator := NewCoordinator(Config{
+		State: NewState(ModeApprove, false), Workspace: t.TempDir(), CWD: t.TempDir(), Reviewer: reviewer, Approver: approver,
+	})
+	wrapper := DecorateRegistry(registry, coordinator)
+
+	result := wrapper.Execute(context.Background(), schema.ToolCall{ID: "1", Name: "unclassified", Arguments: json.RawMessage(`{}`)})
+	if result.IsError {
+		t.Fatalf("Execute() error = %s", result.Output)
+	}
+	if reviewer.calls != 0 {
+		t.Fatalf("reviewer calls = %d, want 0", reviewer.calls)
+	}
+	if approver.calls != 1 {
+		t.Fatalf("approver calls = %d, want 1", approver.calls)
+	}
+}
+
 func TestCoordinatorPassesInjectedEvidenceToReviewer(t *testing.T) {
 	reviewer := &capturingReviewer{result: ReviewResult{
 		Decision:          ReviewApprove,
@@ -91,7 +119,7 @@ func TestCoordinatorPassesInjectedEvidenceToReviewer(t *testing.T) {
 		},
 	})
 
-	if err := coordinator.Authorize(context.Background(), toolCall("bash", map[string]string{"command": "go test ./..."})); err != nil {
+	if err := coordinator.Authorize(context.Background(), toolCall("bash", map[string]string{"command": "go test ./..."}), reviewableCapability("bash go test ./...")); err != nil {
 		t.Fatalf("Authorize() error = %v", err)
 	}
 	if reviewer.evidence.Text != "trusted current user task" {
@@ -121,7 +149,7 @@ func TestCoordinatorWithSourceDoesNotReuseMainGrant(t *testing.T) {
 	}
 }
 
-func TestCoordinatorWithSourceSharesEvidenceUpdates(t *testing.T) {
+func TestRegistryDecoratorsKeepEvidenceProvidersIsolated(t *testing.T) {
 	reviewer := &capturingReviewer{result: ReviewResult{
 		Decision:          ReviewApprove,
 		Risk:              RiskLow,
@@ -132,15 +160,23 @@ func TestCoordinatorWithSourceSharesEvidenceUpdates(t *testing.T) {
 		State: NewState(ModeApprove, false), Workspace: t.TempDir(), CWD: t.TempDir(), Source: SourceMain, Reviewer: reviewer,
 	})
 	child := parent.WithSource(SourceSubagent)
-	parent.SetEvidenceProvider(func(request Request) Evidence {
-		return Evidence{Text: "late-bound user task"}
-	})
+	mainRegistry := tools.NewRegistry()
+	mainRegistry.Register(assessingFakeTool{fakeTool: fakeTool{name: "reviewable"}})
+	childRegistry := tools.NewRegistry()
+	childRegistry.Register(assessingFakeTool{fakeTool: fakeTool{name: "reviewable"}})
+	main := DecorateRegistry(mainRegistry, parent, func(Request) Evidence { return Evidence{Text: "main evidence"} })
+	subagent := DecorateRegistry(childRegistry, child, func(Request) Evidence { return Evidence{Text: "child evidence"} })
+	call := schema.ToolCall{ID: "1", Name: "reviewable", Arguments: json.RawMessage(`{}`)}
 
-	if err := child.Authorize(context.Background(), toolCall("bash", map[string]string{"command": "go test ./..."})); err != nil {
-		t.Fatalf("child Authorize() error = %v", err)
+	if result := main.Execute(context.Background(), call); result.IsError {
+		t.Fatalf("main Execute() error = %s", result.Output)
 	}
-	if reviewer.evidence.Text != "late-bound user task" {
-		t.Fatalf("child review evidence = %q, want live parent evidence", reviewer.evidence.Text)
+	call.ID = "2"
+	if result := subagent.Execute(context.Background(), call); result.IsError {
+		t.Fatalf("subagent Execute() error = %s", result.Output)
+	}
+	if len(reviewer.evidences) != 2 || reviewer.evidences[0].Text != "main evidence" || reviewer.evidences[1].Text != "child evidence" {
+		t.Fatalf("review evidences = %#v", reviewer.evidences)
 	}
 }
 
@@ -165,12 +201,16 @@ func (s *fakeStateSink) OnEscalated(request Request, result ReviewResult)    {}
 func (s *fakeStateSink) OnPermissionStateChanged()                           { s.stateChanges++ }
 
 type capturingReviewer struct {
-	result   ReviewResult
-	evidence Evidence
+	result    ReviewResult
+	evidence  Evidence
+	evidences []Evidence
+	calls     int
 }
 
 func (r *capturingReviewer) Review(ctx context.Context, request Request, evidence Evidence) (ReviewResult, error) {
+	r.calls++
 	r.evidence = evidence
+	r.evidences = append(r.evidences, evidence)
 	return r.result, nil
 }
 
@@ -184,3 +224,21 @@ func (t fakeTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	return "ok", nil
 }
 func (t fakeTool) ParallelSafe() bool { return true }
+
+type assessingFakeTool struct{ fakeTool }
+
+func (t assessingFakeTool) AssessPermission(toolpolicy.Context, json.RawMessage) (toolpolicy.Assessment, error) {
+	return reviewableCapability(t.Name()), nil
+}
+
+func reviewableCapability(action string) toolpolicy.Assessment {
+	return toolpolicy.Assessment{
+		Behavior: toolpolicy.BehaviorReviewable,
+		Action:   action,
+		Effects:  []toolpolicy.Effect{toolpolicy.EffectExecute},
+		Scope:    toolpolicy.ScopeWorkspace,
+		RiskHint: toolpolicy.RiskMedium,
+		Reason:   "test reviewable capability",
+		Commands: []string{action},
+	}
+}
