@@ -81,9 +81,10 @@ type AgentRunner struct {
 	slashRegistry  *slash.Registry
 	slashExecutor  *slash.Executor
 
-	userAsker             tools.UserAsker
-	planReviewer          tools.PlanReviewer
-	permissionCoordinator *permission.Coordinator
+	userAsker              tools.UserAsker
+	planReviewer           tools.PlanReviewer
+	permissionCoordinator  *permission.Coordinator
+	permissionInstructions []string
 
 	pendingMu          sync.Mutex
 	pendingActivations []string
@@ -159,23 +160,24 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 	}
 
 	ar := &AgentRunner{
-		workDir:               workDir,
-		model:                 cfg.LLM.Model,
-		providerProtocol:      providerProtocol,
-		llmConfig:             cfg.LLM,
-		enableThinking:        cfg.EnableThinking,
-		effortOverride:        cfg.EffortOverride,
-		collaborationMode:     collaboration.ModeDefault,
-		maxTurns:              cfg.MaxTurns,
-		onModelChange:         cfg.OnModelChange,
-		permissionCoordinator: cfg.Permission,
-		store:                 store,
-		autoMemory:            autoMem,
-		manager:               manager,
-		llmProvider:           llmProvider,
-		currentSession:        sess,
-		checkpointer:          cp,
-		slashRegistry:         slashRegistry,
+		workDir:                workDir,
+		model:                  cfg.LLM.Model,
+		providerProtocol:       providerProtocol,
+		llmConfig:              cfg.LLM,
+		enableThinking:         cfg.EnableThinking,
+		effortOverride:         cfg.EffortOverride,
+		collaborationMode:      collaboration.ModeDefault,
+		maxTurns:               cfg.MaxTurns,
+		onModelChange:          cfg.OnModelChange,
+		permissionCoordinator:  cfg.Permission,
+		permissionInstructions: snapshotPermissionInstructions(workDir),
+		store:                  store,
+		autoMemory:             autoMem,
+		manager:                manager,
+		llmProvider:            llmProvider,
+		currentSession:         sess,
+		checkpointer:           cp,
+		slashRegistry:          slashRegistry,
 	}
 	ar.slashExecutor = slash.NewExecutor(
 		slash.WithWorkDir(workDir),
@@ -272,6 +274,7 @@ func (r *AgentRunner) permissionEvidenceProvider(sess *session.Session, currentP
 	if len(trustCurrentPrompt) > 0 {
 		trustPrompt = trustCurrentPrompt[0]
 	}
+	instructions := append([]string(nil), r.permissionInstructions...)
 	return func(request permission.Request) permission.Evidence {
 		var messages []schema.Message
 		if sess != nil {
@@ -294,12 +297,16 @@ func (r *AgentRunner) permissionEvidenceProvider(sess *session.Session, currentP
 		if trustPrompt && strings.TrimSpace(currentPrompt) != "" && !containsDirectUserMessage(messages, currentPrompt) {
 			messages = append(messages, schema.Message{Role: schema.RoleUser, Content: currentPrompt})
 		}
-		var instructions []string
-		if content, err := os.ReadFile(filepath.Join(r.workDir, "AGENTS.md")); err == nil && len(content) > 0 {
-			instructions = []string{string(content)}
-		}
 		return permission.BuildEvidence(messages, instructions, request)
 	}
+}
+
+func snapshotPermissionInstructions(workDir string) []string {
+	content, err := os.ReadFile(filepath.Join(workDir, "AGENTS.md"))
+	if err != nil || len(content) == 0 {
+		return nil
+	}
+	return []string{string(content)}
 }
 
 func containsDirectUserMessage(messages []schema.Message, content string) bool {

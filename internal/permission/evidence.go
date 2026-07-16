@@ -1,7 +1,7 @@
 package permission
 
 import (
-	"fmt"
+	"encoding/json"
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -10,6 +10,7 @@ import (
 const (
 	trustedEvidenceBudget   = 16 * 1024
 	untrustedEvidenceBudget = 8 * 1024
+	untrustedEvidenceLabel  = "[untrusted evidence]\n"
 )
 
 // Evidence is the bounded, trust-labeled context supplied to the reviewer.
@@ -46,7 +47,7 @@ func BuildChildEvidence(parent Evidence, childMessages []schema.Message, request
 }
 
 func composeEvidence(request Request, trustedChunks, untrustedChunks []string) Evidence {
-	header := fmt.Sprintf("[trusted request facts]\ntool=%s action=%s cwd=%s workspace=%s source=%s\n", request.ToolName, request.Action, request.CWD, request.Workspace, request.Source)
+	header := "[request facts; not authorization]\n" + requestFactsJSON(request) + "\n"
 	if len(header) > trustedEvidenceBudget {
 		const marker = "\n[truncated request facts]\n"
 		header = truncateUTF8(header, trustedEvidenceBudget-len(marker)) + marker
@@ -55,8 +56,12 @@ func composeEvidence(request Request, trustedChunks, untrustedChunks []string) E
 	if remaining < 0 {
 		remaining = 0
 	}
-	trusted := header + recentBounded(trustedChunks, remaining)
-	untrusted := recentBounded(untrustedChunks, untrustedEvidenceBudget)
+	trusted := header + recentBounded(trustedChunks, remaining, "[trusted truncated content]\n")
+	untrustedBody := recentBounded(untrustedChunks, untrustedEvidenceBudget-len(untrustedEvidenceLabel), "[untrusted truncated content]\n")
+	untrusted := ""
+	if untrustedBody != "" {
+		untrusted = untrustedEvidenceLabel + untrustedBody
+	}
 	text := trusted
 	if untrusted != "" {
 		text += "\n" + untrusted
@@ -78,21 +83,40 @@ func truncateUTF8(text string, limit int) string {
 	return text[:cut]
 }
 
+func truncateUTF8Tail(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	start := len(text) - limit
+	for start < len(text) && text[start]&0xc0 == 0x80 {
+		start++
+	}
+	return text[start:]
+}
+
 func classifyMessages(messages []schema.Message, trustDirectUsers bool, untrustedOverride string) (trusted, untrusted []string) {
-	trustedAnswers := make(map[string]bool)
+	pendingCalls := make(map[string]string)
 	for _, message := range messages {
 		for _, call := range message.ToolCalls {
-			if call.Name == "ask_user_question" || call.Name == "AskUserQuestion" {
-				trustedAnswers[call.ID] = true
+			if call.ID != "" {
+				pendingCalls[call.ID] = call.Name
 			}
 		}
-	}
-	for _, message := range messages {
+		callName, matchedCall := "", false
+		if message.ToolCallID != "" {
+			callName, matchedCall = pendingCalls[message.ToolCallID]
+		}
+		if matchedCall {
+			delete(pendingCalls, message.ToolCallID)
+		}
 		if strings.TrimSpace(message.Content) == "" {
 			continue
 		}
 		switch {
-		case message.Role == schema.RoleUser && message.ToolCallID != "" && trustedAnswers[message.ToolCallID]:
+		case message.Role == schema.RoleUser && message.ToolCallID != "" && matchedCall && isAskUserQuestion(callName):
 			trusted = append(trusted, "[trusted user answer]\n"+message.Content+"\n")
 		case message.Role == schema.RoleUser && message.ToolCallID == "" && isGeneratedContext(message.Content):
 			untrusted = append(untrusted, "[untrusted generated context]\n"+message.Content+"\n")
@@ -116,6 +140,43 @@ func classifyMessages(messages []schema.Message, trustDirectUsers bool, untruste
 	return trusted, untrusted
 }
 
+func isAskUserQuestion(name string) bool {
+	return name == "ask_user_question" || name == "AskUserQuestion"
+}
+
+func requestFactsJSON(request Request) string {
+	facts := struct {
+		Tool              string   `json:"tool"`
+		Action            string   `json:"action"`
+		Effects           []string `json:"effects"`
+		Scope             string   `json:"scope"`
+		ReadOnly          bool     `json:"read_only"`
+		NestedEnforcement bool     `json:"nested_enforcement"`
+		PlannedCommands   []string `json:"planned_commands"`
+		CWD               string   `json:"cwd"`
+		Workspace         string   `json:"workspace"`
+		Source            string   `json:"source"`
+	}{
+		Tool:              request.ToolName,
+		Action:            request.Action,
+		Scope:             string(request.Capabilities.Scope),
+		ReadOnly:          request.Capabilities.ReadOnly,
+		NestedEnforcement: request.Capabilities.NestedEnforcement,
+		PlannedCommands:   append([]string(nil), request.Capabilities.Commands...),
+		CWD:               request.CWD,
+		Workspace:         request.Workspace,
+		Source:            string(request.Source),
+	}
+	for _, effect := range request.Capabilities.Effects {
+		facts.Effects = append(facts.Effects, string(effect))
+	}
+	encoded, err := json.Marshal(facts)
+	if err != nil {
+		return `{}`
+	}
+	return string(encoded)
+}
+
 func isGeneratedContext(content string) bool {
 	content = strings.TrimSpace(content)
 	return strings.HasPrefix(content, "## Compacted Context Summary") ||
@@ -123,7 +184,7 @@ func isGeneratedContext(content string) bool {
 		strings.HasPrefix(content, "[Runtime System Reminder]")
 }
 
-func recentBounded(chunks []string, budget int) string {
+func recentBounded(chunks []string, budget int, truncatedLabel string) string {
 	if budget <= 0 {
 		return ""
 	}
@@ -136,10 +197,11 @@ func recentBounded(chunks []string, budget int) string {
 		}
 		if len(chunk) > remaining {
 			const marker = "[truncated older content]\n"
-			if remaining <= len(marker) {
-				selected = append([]string{marker[:remaining]}, selected...)
+			prefix := marker + truncatedLabel
+			if remaining <= len(prefix) {
+				selected = append([]string{truncateUTF8(prefix, remaining)}, selected...)
 			} else {
-				selected = append([]string{marker + chunk[len(chunk)-(remaining-len(marker)):]}, selected...)
+				selected = append([]string{prefix + truncateUTF8Tail(chunk, remaining-len(prefix))}, selected...)
 			}
 			remaining = 0
 			break

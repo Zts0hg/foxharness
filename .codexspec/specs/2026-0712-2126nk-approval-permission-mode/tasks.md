@@ -260,6 +260,32 @@ Tasks preserve the approved plan's seven implementation phases and the project c
 - **Verification**: Run `gofmt -w` on changed Go files, `go test -race ./internal/permission ./internal/subagent ./internal/app`, `go test ./...`, `go vet ./...`, artifact scans, and final review.
 - **Covers**: REQ-004 through REQ-006, REQ-011 through REQ-014, REQ-022 through REQ-026, NFR-001 through NFR-004; Plan: Phase 8
 
+## Phase 9: Review Corrections
+
+### T030 - [x] Reproduce Ripgrep Helper Execution And Structured Output Compatibility Findings
+
+- **Outcome**: Regression tests prove that ripgrep helper-launch options were incorrectly fast-allowed and that a provider-native structured output rejection was retried without a compatible plain JSON path.
+- **Paths**: `internal/toolpolicy/shell_test.go`, `internal/provider/openai_test.go`, `internal/provider/claude_test.go`, `internal/permission/reviewer_test.go`
+- **Dependencies**: T029
+- **Verification**: Focused tests fail before implementation: all helper-launch option cases report read-only, and the structured output compatibility tests fail because no provider-neutral rejection or reviewer fallback exists.
+- **Covers**: REQ-007, REQ-009, REQ-010, REQ-011
+
+### T031 - [x] Reject Ripgrep Helpers And Add Structured Output Fallback
+
+- **Outcome**: Ripgrep preprocessing, hostname executable, and archive-helper options miss the fast path, while both provider protocols normalize native structured output rejection and the reviewer falls back to tool-free plain JSON without repeating a known-unsupported option.
+- **Paths**: `internal/toolpolicy/shell.go`, `internal/provider/structured_output.go`, `internal/provider/openai.go`, `internal/provider/claude.go`, `internal/permission/reviewer.go`, tests from T030
+- **Dependencies**: T030
+- **Verification**: Focused tool-policy, provider, and permission tests pass; a transient provider error remains a native structured output logical retry rather than triggering compatibility fallback.
+- **Covers**: REQ-007, REQ-009, REQ-010, REQ-011
+
+### T032 - [x] Verify And Independently Review The Corrections
+
+- **Outcome**: Formatting, focused race tests, full repository tests, static analysis, and an independent code review pass with no unresolved findings.
+- **Paths**: All correction files, including reviewer evidence, runner instruction snapshots, provider compatibility handling, and shell policy tests
+- **Dependencies**: T031
+- **Verification**: `gofmt`, `go test -race ./internal/app ./internal/provider ./internal/permission ./internal/toolpolicy -count=1`, `go test ./... -count=1`, `go vet ./...`, and the final independent review pass with no findings.
+- **Covers**: REQ-007, REQ-009, REQ-010, REQ-011, NFR-002
+
 ## Checkpoints
 
 - **Checkpoint A - Domain And Policy**: After T004, state persistence, canonical paths, typed grants, and deterministic policy are green before concurrency is introduced.
@@ -271,7 +297,7 @@ Tasks preserve the approved plan's seven implementation phases and the project c
 
 ## Dependency Summary
 
-`T001 -> T002 -> T003 -> T004 -> T005 -> T006 -> T007 -> T008 -> T009 -> T010 -> T011 -> T012 -> T013 -> T014 -> T015 -> T016 -> T017 -> T018 -> T019 -> T020 -> T021 -> T022 -> T023 -> T024 -> T025 -> T026 -> T027 -> T028 -> T029`
+`T001 -> T002 -> T003 -> T004 -> T005 -> T006 -> T007 -> T008 -> T009 -> T010 -> T011 -> T012 -> T013 -> T014 -> T015 -> T016 -> T017 -> T018 -> T019 -> T020 -> T021 -> T022 -> T023 -> T024 -> T025 -> T026 -> T027 -> T028 -> T029 -> T030 -> T031 -> T032`
 
 The main chain is intentionally linear. Each phase introduces interfaces or enforcement order consumed by the next phase, and every implementation task requires recorded RED evidence from its preceding test task. No task is marked `[P]` because concurrent execution would overlap shared permission contracts or begin against unfinished dependencies.
 
@@ -285,11 +311,11 @@ The main chain is intentionally linear. Each phase introduces interfaces or enfo
 | REQ-004 | T003-T006, T013, T014, T019-T021 |
 | REQ-005 | T005, T006, T011-T014, T019-T021 |
 | REQ-006 | T003, T004, T019-T021 |
-| REQ-007 | T003, T004, T019-T021 |
+| REQ-007 | T003, T004, T019-T021, T030-T032 |
 | REQ-008 | T005, T006, T017-T020 |
-| REQ-009 | T005, T006, T009, T010, T019-T021 |
-| REQ-010 | T009-T012, T019-T021 |
-| REQ-011 | T009, T010, T019-T021 |
+| REQ-009 | T005, T006, T009, T010, T019-T021, T030-T032 |
+| REQ-010 | T009-T012, T019-T021, T030-T032 |
+| REQ-011 | T009, T010, T019-T021, T030-T032 |
 | REQ-012 | T009, T010, T019-T021 |
 | REQ-013 | T007-T010, T019-T021 |
 | REQ-014 | T007-T010, T019-T021 |

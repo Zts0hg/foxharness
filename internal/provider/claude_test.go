@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -239,6 +240,23 @@ func TestClaudeProviderGenerateWithOptionsSendsStructuredOutputSchema(t *testing
 	}
 	if req.OutputConfig.Format.Schema["type"] != "object" {
 		t.Fatalf("output_config.format.schema = %#v, want object schema", req.OutputConfig.Format.Schema)
+	}
+}
+
+func TestClaudeProviderMarksUnsupportedStructuredOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"Extra inputs are not permitted: output_config.format"}}`)
+	}))
+	defer server.Close()
+
+	p := newTestClaudeProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	_, err := p.GenerateWithOptions(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{
+		StructuredOutput: &StructuredOutputOptions{Name: "permission_review", Schema: map[string]any{"type": "object"}, Strict: true},
+	})
+	if !errors.Is(err, ErrStructuredOutputUnsupported) {
+		t.Fatalf("GenerateWithOptions() error = %v, want ErrStructuredOutputUnsupported", err)
 	}
 }
 

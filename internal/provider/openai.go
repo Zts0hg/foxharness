@@ -194,6 +194,9 @@ func (p *OpenAIProvider) GenerateWithOptions(ctx context.Context, messages []sch
 
 	resp, err := p.chatCompletionWithRetry(ctx, params)
 	if err != nil {
+		if options.StructuredOutput != nil {
+			err = normalizeStructuredOutputError(err)
+		}
 		return nil, err
 	}
 

@@ -100,11 +100,28 @@ func flagAllowed(command, flag string) bool {
 	case "git":
 		return gitFlagAllowed(flag)
 	case "rg":
-		return flag != "--pre" && !strings.HasPrefix(flag, "--pre=") && flag != "--pre-glob" && !strings.HasPrefix(flag, "--pre-glob=")
+		return ripgrepFlagAllowed(flag)
 	case "find":
 		return !findDangerousArg(flag)
 	default:
 		return !strings.Contains(flag, "f") || command == "ls"
+	}
+}
+
+func ripgrepFlagAllowed(flag string) bool {
+	switch {
+	case flag == "--pre", strings.HasPrefix(flag, "--pre="):
+		return false
+	case flag == "--pre-glob", strings.HasPrefix(flag, "--pre-glob="):
+		return false
+	case flag == "--hostname-bin", strings.HasPrefix(flag, "--hostname-bin="):
+		return false
+	case flag == "--search-zip", strings.HasPrefix(flag, "--search-zip="):
+		return false
+	case strings.HasPrefix(flag, "-") && !strings.HasPrefix(flag, "--"):
+		return !strings.Contains(strings.TrimPrefix(flag, "-"), "z")
+	default:
+		return true
 	}
 }
 

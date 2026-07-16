@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -267,6 +268,23 @@ func TestOpenAIProviderGenerateWithOptionsSendsStructuredOutputSchema(t *testing
 	}
 	if req.ResponseFormat.JSONSchema.Schema["type"] != "object" {
 		t.Fatalf("response_format.json_schema.schema = %#v, want object schema", req.ResponseFormat.JSONSchema.Schema)
+	}
+}
+
+func TestOpenAIProviderMarksUnsupportedStructuredOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"response_format json_schema is not supported by this model","type":"invalid_request_error","param":"response_format","code":"unsupported_parameter"}}`)
+	}))
+	defer server.Close()
+
+	p := newTestOpenAIProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	_, err := p.GenerateWithOptions(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{
+		StructuredOutput: &StructuredOutputOptions{Name: "permission_review", Schema: map[string]any{"type": "object"}, Strict: true},
+	})
+	if !errors.Is(err, ErrStructuredOutputUnsupported) {
+		t.Fatalf("GenerateWithOptions() error = %v, want ErrStructuredOutputUnsupported", err)
 	}
 }
 
