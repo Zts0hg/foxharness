@@ -28,6 +28,12 @@ type GenerateResponse struct {
 	Usage   schema.Usage
 }
 
+// GenerateOptions contains optional per-call provider settings. Empty fields
+// preserve the provider default behavior.
+type GenerateOptions struct {
+	Effort string
+}
+
 // LLMProvider defines the interface for Large Language Model providers.
 // Implementations can support various LLM backends (OpenAI, Anthropic, local models, etc.)
 // while providing a consistent API for the engine.
@@ -47,4 +53,10 @@ type LLMProvider interface {
 	// usage metadata. The message may include text content, tool calls, or both.
 	// Returns an error if the generation fails.
 	Generate(ctx context.Context, message []schema.Message, availableTools []schema.ToolDefinition) (*GenerateResponse, error)
+}
+
+// OptionsGenerator is implemented by providers that support explicit
+// call-time options for user-run model calls.
+type OptionsGenerator interface {
+	GenerateWithOptions(ctx context.Context, message []schema.Message, availableTools []schema.ToolDefinition, options GenerateOptions) (*GenerateResponse, error)
 }

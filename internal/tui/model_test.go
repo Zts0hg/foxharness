@@ -1094,6 +1094,57 @@ func TestModelSlashCommands(t *testing.T) {
 	}
 }
 
+func TestModelSlashCommandEffortOpensSelector(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{ProviderProtocol: "openai"})
+
+	next, _ := m.handleSlashCommand("/effort")
+	m = next.(Model)
+
+	if m.effortForm == nil {
+		t.Fatal("effort form = nil, want selector")
+	}
+	if len(m.effortForm.options) != 7 || m.effortForm.options[1] != "none" || m.effortForm.options[2] != "minimal" {
+		t.Fatalf("options = %v, want openai effort options", m.effortForm.options)
+	}
+}
+
+func TestModelSlashCommandEffortSelectsSessionOverride(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{ProviderProtocol: "openai", EffortOverride: "minimal"})
+
+	next, _ := m.handleSlashCommand("/effort")
+	m = next.(Model)
+
+	if m.effortValue != "minimal" {
+		t.Fatalf("effortValue = %q, want minimal", m.effortValue)
+	}
+	if m.effortForm == nil {
+		t.Fatal("effort form = nil, want selector")
+	}
+	if got := m.effortForm.options[m.effortForm.cursor]; got != "minimal" {
+		t.Fatalf("selected effort = %q, want minimal", got)
+	}
+}
+
+func TestModelSlashCommandEffortWithArgumentDoesNotSet(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{ProviderProtocol: "openai"})
+
+	next, _ := m.handleSlashCommand("/effort high")
+	m = next.(Model)
+
+	if m.effortForm != nil {
+		t.Fatal("effort form opened for /effort high, want selector-only error")
+	}
+	if m.effortValue != "auto" {
+		t.Fatalf("effortValue = %q, want auto", m.effortValue)
+	}
+	if !entriesContain(m.entries, "error", "Usage: /effort") {
+		t.Fatalf("entries = %#v, want usage error", m.entries)
+	}
+}
+
 func TestStatusCommandRendersGroupedOverview(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{

@@ -50,6 +50,26 @@ func TestExecutor_InlineMode_FullPipeline(t *testing.T) {
 	}
 }
 
+func TestExecutor_InlineModeCarriesFrontmatterEffort(t *testing.T) {
+	exec := NewExecutor()
+	cmd := &Command{
+		Type:    CommandPrompt,
+		Name:    "deep-review",
+		Content: "Review deeply",
+		Frontmatter: Frontmatter{
+			Context: "inline",
+			Effort:  "xhigh",
+		},
+	}
+	got, err := exec.Execute(context.Background(), cmd, "", "sess-1")
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got.Effort != "xhigh" {
+		t.Fatalf("Effort = %q, want xhigh", got.Effort)
+	}
+}
+
 func TestExecutor_AutoAppendArguments(t *testing.T) {
 	exec := NewExecutor()
 	cmd := &Command{Type: CommandPrompt, Content: "no placeholders here"}

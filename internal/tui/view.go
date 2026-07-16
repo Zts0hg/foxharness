@@ -222,6 +222,25 @@ func (m Model) View() string {
 		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 	}
 
+	if m.effortForm != nil {
+		card := inputStyle.Width(width).Render(m.effortForm.view(width))
+		chrome := outerStyle.GetVerticalFrameSize() +
+			lipgloss.Height(card) + 1 +
+			1 +
+			lipgloss.Height(m.renderStatusBar(width)) +
+			lipgloss.Height(m.renderKeybinds(width))
+		bodyHeight := max(m.height-chrome, m.minTranscriptHeightForWindow())
+		parts := []string{
+			m.renderMainArea(bodyHeight),
+			"",
+			card,
+			"",
+			m.renderStatusBar(width),
+			m.renderKeybinds(width),
+		}
+		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	}
+
 	if m.askForm != nil {
 		// Render the question inline at the bottom (replacing the input band),
 		// keeping the conversation transcript visible above — rather than a

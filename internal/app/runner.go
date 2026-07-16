@@ -39,6 +39,7 @@ type AgentRunnerConfig struct {
 	WorkDir         string
 	Model           string
 	LLM             llmconfig.ResolvedConfig
+	EffortOverride  string
 	EnableThinking  bool
 	MaxTurns        int
 	SessionID       string
@@ -60,6 +61,7 @@ type AgentRunner struct {
 	llmConfig        llmconfig.ResolvedConfig
 
 	enableThinking    bool
+	effortOverride    string
 	collaborationMode collaboration.Mode
 	maxTurns          int
 
@@ -99,6 +101,7 @@ func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
 		WorkDir:         cfg.WorkDir,
 		Model:           cfg.Model,
 		LLM:             cfg.ResolvedLLM,
+		EffortOverride:  cfg.EffortOverride,
 		EnableThinking:  cfg.EnableThinking,
 		MaxTurns:        cfg.MaxTurns,
 		SessionID:       cfg.SessionID,
@@ -161,6 +164,7 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		providerProtocol:      providerProtocol,
 		llmConfig:             cfg.LLM,
 		enableThinking:        cfg.EnableThinking,
+		effortOverride:        cfg.EffortOverride,
 		collaborationMode:     collaboration.ModeDefault,
 		maxTurns:              cfg.MaxTurns,
 		onModelChange:         cfg.OnModelChange,
@@ -292,25 +296,31 @@ func (r *AgentRunner) SlashExecutor() *slash.Executor {
 
 // Run executes one prompt as a new run in the current session.
 func (r *AgentRunner) Run(ctx context.Context, userPrompt string, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, "", nil, nil, reporter)
+	return r.runInternal(ctx, userPrompt, "", nil, nil, "", reporter)
 }
 
 // RunInCollaborationMode executes one prompt in the mode captured when the
 // user submitted it without changing the mode selected for later submissions.
 func (r *AgentRunner) RunInCollaborationMode(ctx context.Context, userPrompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, "", nil, collaborationModeOverride(mode), reporter)
+	return r.runInternal(ctx, userPrompt, "", nil, collaborationModeOverride(mode), "", reporter)
 }
 
 // RunWithDisplay executes one prompt while storing a separate human-facing
 // prompt for transcript and history views.
 func (r *AgentRunner) RunWithDisplay(ctx context.Context, userPrompt string, displayPrompt string, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, displayPrompt, nil, nil, reporter)
+	return r.runInternal(ctx, userPrompt, displayPrompt, nil, nil, "", reporter)
 }
 
 // RunWithDisplayInCollaborationMode is RunWithDisplay with an immutable mode
 // captured at user submission time.
 func (r *AgentRunner) RunWithDisplayInCollaborationMode(ctx context.Context, userPrompt string, displayPrompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, displayPrompt, nil, collaborationModeOverride(mode), reporter)
+	return r.runInternal(ctx, userPrompt, displayPrompt, nil, collaborationModeOverride(mode), "", reporter)
+}
+
+// RunWithDisplayAndEffortInCollaborationMode executes one prompt with a
+// prompt-command effort override for this run only.
+func (r *AgentRunner) RunWithDisplayAndEffortInCollaborationMode(ctx context.Context, userPrompt string, displayPrompt string, effort string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
+	return r.runInternal(ctx, userPrompt, displayPrompt, nil, collaborationModeOverride(mode), effort, reporter)
 }
 
 // RunRestricted executes one prompt with the tool registry filtered down
@@ -320,24 +330,31 @@ func (r *AgentRunner) RunWithDisplayInCollaborationMode(ctx context.Context, use
 //
 // allowedTools must be non-empty; pass nil/empty to Run instead.
 func (r *AgentRunner) RunRestricted(ctx context.Context, userPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, "", allowedTools, nil, reporter)
+	return r.runInternal(ctx, userPrompt, "", allowedTools, nil, "", reporter)
 }
 
 // RunRestrictedInCollaborationMode is RunRestricted with an immutable mode
 // captured at user submission time.
 func (r *AgentRunner) RunRestrictedInCollaborationMode(ctx context.Context, userPrompt string, allowedTools []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, "", allowedTools, collaborationModeOverride(mode), reporter)
+	return r.runInternal(ctx, userPrompt, "", allowedTools, collaborationModeOverride(mode), "", reporter)
 }
 
 // RunRestrictedWithDisplay is the restricted variant of RunWithDisplay.
 func (r *AgentRunner) RunRestrictedWithDisplay(ctx context.Context, userPrompt string, displayPrompt string, allowedTools []string, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, displayPrompt, allowedTools, nil, reporter)
+	return r.runInternal(ctx, userPrompt, displayPrompt, allowedTools, nil, "", reporter)
 }
 
 // RunRestrictedWithDisplayInCollaborationMode combines display text, a tool
 // allow-list, and the immutable mode captured at user submission time.
 func (r *AgentRunner) RunRestrictedWithDisplayInCollaborationMode(ctx context.Context, userPrompt string, displayPrompt string, allowedTools []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInternal(ctx, userPrompt, displayPrompt, allowedTools, collaborationModeOverride(mode), reporter)
+	return r.runInternal(ctx, userPrompt, displayPrompt, allowedTools, collaborationModeOverride(mode), "", reporter)
+}
+
+// RunRestrictedWithDisplayAndEffortInCollaborationMode combines display text,
+// tool restrictions, immutable collaboration mode, and a prompt-command effort
+// override for this run only.
+func (r *AgentRunner) RunRestrictedWithDisplayAndEffortInCollaborationMode(ctx context.Context, userPrompt string, displayPrompt string, allowedTools []string, effort string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
+	return r.runInternal(ctx, userPrompt, displayPrompt, allowedTools, collaborationModeOverride(mode), effort, reporter)
 }
 
 func collaborationModeOverride(mode collaboration.Mode) *collaboration.Mode {
@@ -345,7 +362,7 @@ func collaborationModeOverride(mode collaboration.Mode) *collaboration.Mode {
 	return &normalized
 }
 
-func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displayPrompt string, allowedTools []string, modeOverride *collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
+func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displayPrompt string, allowedTools []string, modeOverride *collaboration.Mode, runEffortOverride string, reporter engine.Reporter) (*engine.RunResult, error) {
 	r.runMu.Lock()
 	defer r.runMu.Unlock()
 
@@ -354,6 +371,7 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	store := r.store
 	autoMem := r.autoMemory
 	enableThinking := r.enableThinking
+	effortOverride := r.effortOverride
 	collaborationMode := collaboration.Normalize(r.collaborationMode)
 	llmProvider := r.llmProvider
 	cp := r.checkpointer
@@ -363,6 +381,9 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	r.mu.Unlock()
 	if modeOverride != nil {
 		collaborationMode = collaboration.Normalize(*modeOverride)
+	}
+	if strings.TrimSpace(runEffortOverride) != "" {
+		effortOverride = strings.TrimSpace(runEffortOverride)
 	}
 	if collaborationMode == collaboration.ModeFormalPlan && len(allowedTools) > 0 {
 		if err := validateFormalPlanAllowedTools(allowedTools); err != nil {
@@ -472,6 +493,7 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 		composer,
 		engine.Config{
 			EnableThinking:    enableThinking,
+			EffortOverride:    effortOverride,
 			MaxTurns:          maxTurns,
 			ProviderProtocol:  providerProtocol,
 			Model:             model,
@@ -814,6 +836,14 @@ func (r *AgentRunner) SetCollaborationMode(mode collaboration.Mode) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.collaborationMode = collaboration.Normalize(mode)
+}
+
+// SetEffortOverride updates the session-level effort override used for later
+// user-run model calls. An empty value clears the override.
+func (r *AgentRunner) SetEffortOverride(value string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.effortOverride = strings.TrimSpace(value)
 }
 
 // CompactNow performs a user-initiated compaction of the current session's

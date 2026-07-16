@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 )
@@ -124,7 +125,7 @@ func TestParseArgsPromptFlagKeepsDefaultTUIMode(t *testing.T) {
 }
 
 func TestParseArgsAliases(t *testing.T) {
-	cfg, mode, err := parseArgs([]string{"-C", "/tmp/project", "-c", "-r", "session-1", "-model", "test-model", "-llm-provider", "anthropic-main", "-protocol", "claude", "-base-url", "https://api.example.test", "-auth", "api-key", "-api-key-env", "ANTHROPIC_KEY", "-api-key", "direct-key", "-max-turns", "3"}, io.Discard)
+	cfg, mode, err := parseArgs([]string{"-C", "/tmp/project", "-c", "-r", "session-1", "-model", "test-model", "-llm-provider", "anthropic-main", "-protocol", "claude", "-base-url", "https://api.example.test", "-auth", "api-key", "-api-key-env", "ANTHROPIC_KEY", "-api-key", "direct-key", "-effort", "max", "-max-turns", "3"}, io.Discard)
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
@@ -157,6 +158,63 @@ func TestParseArgsAliases(t *testing.T) {
 	}
 	if cfg.MaxTurns != 3 {
 		t.Fatalf("MaxTurns = %d, want 3", cfg.MaxTurns)
+	}
+	if cfg.EffortOverride != "max" {
+		t.Fatalf("EffortOverride = %q, want max", cfg.EffortOverride)
+	}
+}
+
+func TestValidateEffortConfig(t *testing.T) {
+	tests := []struct {
+		name     string
+		effort   string
+		protocol string
+		wantErr  bool
+	}{
+		{name: "empty effort", protocol: llmconfig.ProtocolOpenAI},
+		{name: "openai minimal", effort: "minimal", protocol: llmconfig.ProtocolOpenAI},
+		{name: "claude max", effort: "max", protocol: llmconfig.ProtocolClaude},
+		{name: "claude rejects minimal", effort: "minimal", protocol: llmconfig.ProtocolClaude, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := app.CLIConfig{EffortOverride: tt.effort}
+			err := validateEffortConfig(&cfg, llmconfig.ResolvedConfig{Protocol: tt.protocol})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("validateEffortConfig() error = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateEffortConfig() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestApplyPersistedEffortUsesProtocolPreferenceUnlessCLIOverrideSet(t *testing.T) {
+	home := t.TempDir()
+	writeSettings(t, home, map[string]any{
+		"llm": map[string]any{
+			"effort": map[string]any{
+				"openai": "minimal",
+				"claude": "max",
+			},
+		},
+	})
+
+	cfg := app.CLIConfig{}
+	applyPersistedEffort(home, &cfg, llmconfig.ResolvedConfig{Protocol: llmconfig.ProtocolOpenAI})
+	if cfg.EffortOverride != "minimal" {
+		t.Fatalf("EffortOverride = %q, want minimal", cfg.EffortOverride)
+	}
+
+	cfg = app.CLIConfig{EffortOverride: "high"}
+	applyPersistedEffort(home, &cfg, llmconfig.ResolvedConfig{Protocol: llmconfig.ProtocolOpenAI})
+	if cfg.EffortOverride != "high" {
+		t.Fatalf("EffortOverride = %q, want CLI override high", cfg.EffortOverride)
 	}
 }
 

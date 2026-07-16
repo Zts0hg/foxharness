@@ -50,6 +50,18 @@ func TestNewAgentRunnerMissingLLMConfigReturnsHelpfulError(t *testing.T) {
 	}
 }
 
+func TestAgentRunnerConfigFromCLIPropagatesEffortOverride(t *testing.T) {
+	got := agentRunnerConfigFromCLI(CLIConfig{
+		WorkDir:        "/tmp/work",
+		Model:          "m",
+		ResolvedLLM:    testResolvedLLM(llmconfig.ProtocolOpenAI, "m"),
+		EffortOverride: "minimal",
+	})
+	if got.EffortOverride != "minimal" {
+		t.Fatalf("EffortOverride = %q, want minimal", got.EffortOverride)
+	}
+}
+
 func TestAgentRunnerSetModelUpdatesModel(t *testing.T) {
 	workDir := t.TempDir()
 	store := memory.NewStore(workDir)

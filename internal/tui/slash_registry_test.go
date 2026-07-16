@@ -19,6 +19,13 @@ type restrictedFakeRunner struct {
 	restrictedResult *engine.RunResult
 }
 
+type effortFakeRunner struct {
+	*fakeRunner
+	effortRuns     []string
+	effortValues   []string
+	effortDisplays []string
+}
+
 type recordingTUIForkRunner struct {
 	calls int
 }
@@ -50,6 +57,13 @@ func (r *restrictedFakeRunner) RunRestrictedInCollaborationMode(ctx context.Cont
 	}
 	reporter.OnRunComplete(ctx, *res)
 	return res, nil
+}
+
+func (r *effortFakeRunner) RunWithDisplayAndEffortInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, effort string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
+	r.effortRuns = append(r.effortRuns, prompt)
+	r.effortDisplays = append(r.effortDisplays, displayPrompt)
+	r.effortValues = append(r.effortValues, effort)
+	return r.fakeRunner.runInCollaborationMode(ctx, prompt, mode, reporter)
 }
 
 func newRegistryWithPromptCommand(t *testing.T, name, body string) *slash.Registry {
@@ -459,6 +473,44 @@ func TestModel_NoAllowedTools_UsesRegularRun(t *testing.T) {
 	}
 	if len(runner.fakeRunner.runs) != 1 {
 		t.Errorf("expected unrestricted Run, got %v", runner.fakeRunner.runs)
+	}
+}
+
+func TestModel_PromptCommandEffortRoutesToEffortRunner(t *testing.T) {
+	runner := &effortFakeRunner{fakeRunner: newFakeRunner()}
+	r := newRegistryWithPromptCommandFrontmatter(t, "deep", "Deep body", slash.Frontmatter{
+		UserInvocable: true,
+		Effort:        "xhigh",
+	})
+	m := NewModel(context.Background(), runner, Config{ProviderProtocol: "openai"}).WithRegistry(r, slash.NewExecutor())
+
+	m, _ = update(t, m, keyRunes("/deep"))
+	m = drivePromptCommand(t, m)
+
+	if len(runner.effortValues) != 1 || runner.effortValues[0] != "xhigh" {
+		t.Fatalf("effort values = %v, want xhigh", runner.effortValues)
+	}
+	if len(runner.effortRuns) != 1 || !strings.Contains(runner.effortRuns[0], "Deep body") {
+		t.Fatalf("effort runs = %v, want Deep body", runner.effortRuns)
+	}
+}
+
+func TestModel_PromptCommandInvalidEffortFailsBeforeRun(t *testing.T) {
+	runner := &effortFakeRunner{fakeRunner: newFakeRunner()}
+	r := newRegistryWithPromptCommandFrontmatter(t, "deep", "Deep body", slash.Frontmatter{
+		UserInvocable: true,
+		Effort:        "minimal",
+	})
+	m := NewModel(context.Background(), runner, Config{ProviderProtocol: "claude"}).WithRegistry(r, slash.NewExecutor())
+
+	m, _ = update(t, m, keyRunes("/deep"))
+	m = drivePromptCommand(t, m)
+
+	if len(runner.effortValues) != 0 || len(runner.fakeRunner.runs) != 0 {
+		t.Fatalf("runner was called for invalid effort: effort=%v runs=%v", runner.effortValues, runner.fakeRunner.runs)
+	}
+	if !entriesContain(m.entries, "error", "invalid effort") {
+		t.Fatalf("entries = %#v, want invalid effort error", m.entries)
 	}
 }
 

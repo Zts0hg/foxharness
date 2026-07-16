@@ -38,6 +38,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/configcmd"
+	"github.com/Zts0hg/foxharness/internal/effort"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/provider"
@@ -83,6 +84,10 @@ func main() {
 	cfg.ResolvedLLM = resolvedLLM
 	cfg.Model = resolvedLLM.Model
 	cfg.LLM.Model = resolvedLLM.Model
+	applyPersistedEffort(homeDir, &cfg, resolvedLLM)
+	if err := validateEffortConfig(&cfg, resolvedLLM); err != nil {
+		exitWithError(err)
+	}
 
 	if mode == launchAutodev {
 		// The positional argument, when present, is the backlog path.
@@ -215,6 +220,7 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 	fs.StringVar(&cfg.LLM.Auth, "auth", "", "LLM auth mode: api-key or none")
 	fs.StringVar(&cfg.LLM.APIKeyEnv, "api-key-env", "", "environment variable containing the LLM API key")
 	fs.StringVar(&cfg.LLM.APIKey, "api-key", "", "LLM API key value; prefer -api-key-env for routine use")
+	fs.StringVar(&cfg.EffortOverride, "effort", "", "reasoning effort override for the resolved provider protocol")
 	fs.BoolVar(&cfg.EnableThinking, "thinking", false, "enable legacy per-turn Thinking mode")
 	fs.IntVar(&cfg.MaxTurns, "max-turns", 0, "maximum number of agent turns; 0 means unlimited")
 	fs.StringVar(&cfg.SessionID, "session", "", "resume a specific session ID")
@@ -265,6 +271,32 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 
 func resolveLLMConfig(homeDir string, cli llmconfig.CLIOverrides, lookup llmconfig.EnvLookup) (llmconfig.ResolvedConfig, error) {
 	return llmresolve.FromUserSettings(homeDir, cli, lookup)
+}
+
+func validateEffortConfig(cfg *app.CLIConfig, resolved llmconfig.ResolvedConfig) error {
+	if cfg == nil || strings.TrimSpace(cfg.EffortOverride) == "" {
+		return nil
+	}
+	normalized, err := effort.Validate(resolved.Protocol, cfg.EffortOverride)
+	if err != nil {
+		return err
+	}
+	cfg.EffortOverride = normalized
+	return nil
+}
+
+func applyPersistedEffort(homeDir string, cfg *app.CLIConfig, resolved llmconfig.ResolvedConfig) {
+	if cfg == nil || strings.TrimSpace(cfg.EffortOverride) != "" {
+		return
+	}
+	loaded, err := settings.Load(homeDir)
+	if err != nil || loaded == nil {
+		return
+	}
+	value := strings.TrimSpace(loaded.LLM.Effort[strings.ToLower(strings.TrimSpace(resolved.Protocol))])
+	if value != "" {
+		cfg.EffortOverride = value
+	}
 }
 
 func readPrompt(input string) (string, error) {
