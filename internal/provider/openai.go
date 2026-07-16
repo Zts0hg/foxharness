@@ -10,6 +10,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/shared"
 )
 
@@ -177,6 +178,18 @@ func (p *OpenAIProvider) GenerateWithOptions(ctx context.Context, messages []sch
 		return nil, err
 	} else if explicitEffort != "" {
 		params.ReasoningEffort = shared.ReasoningEffort(explicitEffort)
+	}
+	if options.StructuredOutput != nil {
+		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
+				JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
+					Name:        options.StructuredOutput.Name,
+					Description: param.NewOpt(options.StructuredOutput.Description),
+					Schema:      options.StructuredOutput.Schema,
+					Strict:      param.NewOpt(options.StructuredOutput.Strict),
+				},
+			},
+		}
 	}
 
 	resp, err := p.chatCompletionWithRetry(ctx, params)

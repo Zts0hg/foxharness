@@ -61,6 +61,66 @@ func TestProviderReviewerDoesNotReportRetryForValidEscalation(t *testing.T) {
 	}
 }
 
+func TestProviderReviewerParsesFencedJSONResponse(t *testing.T) {
+	reviewProvider := &scriptedReviewProvider{
+		responses: []reviewProviderResponse{
+			{content: "```json\n{\"decision\":\"approve\",\"risk_level\":\"low\",\"user_authorization\":\"medium\",\"rationale\":\"read-only and scoped\"}\n```"},
+		},
+	}
+	reviewer := &ProviderReviewer{
+		Lookup: func() provider.LLMProvider { return reviewProvider },
+	}
+
+	result, err := reviewer.Review(context.Background(), reviewRequest(), Evidence{Text: "trusted context"})
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if result.Decision != ReviewApprove {
+		t.Fatalf("decision = %q, want approve", result.Decision)
+	}
+	if reviewProvider.calls != 1 {
+		t.Fatalf("review calls = %d, want 1", reviewProvider.calls)
+	}
+}
+
+func TestProviderReviewerRequestsStructuredOutput(t *testing.T) {
+	reviewProvider := &scriptedReviewProvider{
+		responses: []reviewProviderResponse{
+			{content: `{"decision":"approve","risk_level":"low","user_authorization":"medium","rationale":"read-only and scoped"}`},
+		},
+	}
+	reviewer := &ProviderReviewer{
+		Lookup: func() provider.LLMProvider { return reviewProvider },
+	}
+
+	result, err := reviewer.Review(context.Background(), reviewRequest(), Evidence{Text: "trusted context"})
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if result.Decision != ReviewApprove {
+		t.Fatalf("decision = %q, want approve", result.Decision)
+	}
+	if reviewProvider.generateCalls != 0 {
+		t.Fatalf("Generate calls = %d, want 0 when structured output options are supported", reviewProvider.generateCalls)
+	}
+	if reviewProvider.optionCalls != 1 {
+		t.Fatalf("GenerateWithOptions calls = %d, want 1", reviewProvider.optionCalls)
+	}
+	opts := reviewProvider.options
+	if opts.StructuredOutput == nil {
+		t.Fatal("StructuredOutput = nil, want permission review schema")
+	}
+	if opts.StructuredOutput.Name != "permission_review" {
+		t.Fatalf("StructuredOutput.Name = %q, want permission_review", opts.StructuredOutput.Name)
+	}
+	if opts.StructuredOutput.Schema["type"] != "object" {
+		t.Fatalf("StructuredOutput.Schema = %#v, want object schema", opts.StructuredOutput.Schema)
+	}
+	if !opts.StructuredOutput.Strict {
+		t.Fatal("StructuredOutput.Strict = false, want true")
+	}
+}
+
 func TestProviderReviewerRequiresStructuredAuthorizationField(t *testing.T) {
 	reviewProvider := &scriptedReviewProvider{
 		responses: []reviewProviderResponse{
@@ -106,6 +166,77 @@ func TestProviderReviewerCannotDowngradeDeterministicRisk(t *testing.T) {
 	}
 	if result.Decision != ReviewEscalate {
 		t.Fatalf("decision = %q, want escalate for high deterministic risk", result.Decision)
+	}
+}
+
+func TestProviderReviewerCanApproveHighRiskReadOnlyFileRequest(t *testing.T) {
+	reviewProvider := &scriptedReviewProvider{
+		responses: []reviewProviderResponse{
+			{content: `{"decision":"approve","risk_level":"low","user_authorization":"high","rationale":"user explicitly requested reading this external project document"}`},
+		},
+	}
+	reviewer := &ProviderReviewer{
+		Lookup: func() provider.LLMProvider { return reviewProvider },
+	}
+	request := reviewRequest()
+	request.ToolName = "read_file"
+	request.Action = "read_file /Users/xiaoming/code/japanese-word-game/IMPROVEMENT_ANALYSIS.md"
+	request.Risk = RiskHigh
+
+	result, err := reviewer.Review(context.Background(), request, Evidence{Text: "User asked to inspect /Users/xiaoming/code/japanese-word-game for old project notes."})
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if result.Decision != ReviewApprove {
+		t.Fatalf("decision = %q, want approve for read-only external file request", result.Decision)
+	}
+}
+
+func TestProviderReviewerCanApproveHighRiskReadOnlyDelegateTask(t *testing.T) {
+	reviewProvider := &scriptedReviewProvider{
+		responses: []reviewProviderResponse{
+			{content: `{"decision":"approve","risk_level":"low","user_authorization":"high","rationale":"read-only subagent directly matches the user's requested project search"}`},
+		},
+	}
+	reviewer := &ProviderReviewer{
+		Lookup: func() provider.LLMProvider { return reviewProvider },
+	}
+	request := reviewRequest()
+	request.ToolName = "delegate_task"
+	request.Action = `delegate_task {"read_only":true,"task":"search old project docs"}`
+	request.Arguments = `{"read_only":true,"task":"search old project docs"}`
+	request.Risk = RiskHigh
+
+	result, err := reviewer.Review(context.Background(), request, Evidence{Text: "User asked to search the old project directory for documentation."})
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if result.Decision != ReviewApprove {
+		t.Fatalf("decision = %q, want approve for read-only delegate task", result.Decision)
+	}
+}
+
+func TestProviderReviewerEscalatesHighRiskWritableDelegateTask(t *testing.T) {
+	reviewProvider := &scriptedReviewProvider{
+		responses: []reviewProviderResponse{
+			{content: `{"decision":"approve","risk_level":"low","user_authorization":"high","rationale":"claimed authorized"}`},
+		},
+	}
+	reviewer := &ProviderReviewer{
+		Lookup: func() provider.LLMProvider { return reviewProvider },
+	}
+	request := reviewRequest()
+	request.ToolName = "delegate_task"
+	request.Action = `delegate_task {"task":"change files"}`
+	request.Arguments = `{"task":"change files"}`
+	request.Risk = RiskHigh
+
+	result, err := reviewer.Review(context.Background(), request, Evidence{Text: "User asked to inspect docs only."})
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if result.Decision != ReviewEscalate {
+		t.Fatalf("decision = %q, want escalation for writable delegate task", result.Decision)
 	}
 }
 
@@ -202,11 +333,25 @@ type reviewProviderResponse struct {
 }
 
 type scriptedReviewProvider struct {
-	responses []reviewProviderResponse
-	calls     int
+	responses     []reviewProviderResponse
+	calls         int
+	generateCalls int
+	optionCalls   int
+	options       provider.GenerateOptions
 }
 
 func (p *scriptedReviewProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	p.generateCalls++
+	return p.nextResponse(availableTools)
+}
+
+func (p *scriptedReviewProvider) GenerateWithOptions(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition, options provider.GenerateOptions) (*provider.GenerateResponse, error) {
+	p.optionCalls++
+	p.options = options
+	return p.nextResponse(availableTools)
+}
+
+func (p *scriptedReviewProvider) nextResponse(availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
 	if len(availableTools) != 0 {
 		return nil, errors.New("reviewer must not receive tools")
 	}

@@ -205,6 +205,43 @@ func TestClaudeProviderGenerateWithOptionsSendsOutputConfigEffort(t *testing.T) 
 	}
 }
 
+func TestClaudeProviderGenerateWithOptionsSendsStructuredOutputSchema(t *testing.T) {
+	requests := make(chan claudeRequestBody, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body claudeRequestBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- body
+		writeClaudeTextMessage(t, w, "ok")
+	}))
+	defer server.Close()
+
+	jsonSchema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"decision": map[string]any{"type": "string"}},
+		"required":   []any{"decision"},
+	}
+	provider := newTestClaudeProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	_, err := provider.GenerateWithOptions(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{
+		StructuredOutput: &StructuredOutputOptions{Name: "permission_review", Schema: jsonSchema, Strict: true},
+	})
+	if err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+
+	req := <-requests
+	if req.OutputConfig == nil || req.OutputConfig.Format == nil {
+		t.Fatalf("output_config.format = %#v, want json_schema", req.OutputConfig)
+	}
+	if req.OutputConfig.Format.Type != "json_schema" {
+		t.Fatalf("output_config.format.type = %q, want json_schema", req.OutputConfig.Format.Type)
+	}
+	if req.OutputConfig.Format.Schema["type"] != "object" {
+		t.Fatalf("output_config.format.schema = %#v, want object schema", req.OutputConfig.Format.Schema)
+	}
+}
+
 func TestClaudeProviderGenerateOmitsOutputConfigEffort(t *testing.T) {
 	requests := make(chan claudeRequestBody, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -389,6 +426,10 @@ type claudeRequestBody struct {
 	MaxTokens    int64  `json:"max_tokens"`
 	OutputConfig *struct {
 		Effort *string `json:"effort"`
+		Format *struct {
+			Type   string         `json:"type"`
+			Schema map[string]any `json:"schema"`
+		} `json:"format"`
 	} `json:"output_config"`
 	System []struct {
 		Text string `json:"text"`

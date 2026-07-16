@@ -104,6 +104,9 @@ func (p *ClaudeProvider) GenerateWithOptions(ctx context.Context, messages []sch
 	} else if explicitEffort != "" {
 		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(explicitEffort)}
 	}
+	if options.StructuredOutput != nil {
+		params.OutputConfig.Format = anthropic.JSONOutputFormatParam{Schema: options.StructuredOutput.Schema}
+	}
 
 	resp, err := p.messagesNewWithRetry(ctx, params)
 	if err != nil {

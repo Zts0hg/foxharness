@@ -31,7 +31,17 @@ type GenerateResponse struct {
 // GenerateOptions contains optional per-call provider settings. Empty fields
 // preserve the provider default behavior.
 type GenerateOptions struct {
-	Effort string
+	Effort           string
+	StructuredOutput *StructuredOutputOptions
+}
+
+// StructuredOutputOptions requests provider-native JSON schema constrained
+// output for a single generation call.
+type StructuredOutputOptions struct {
+	Name        string
+	Description string
+	Schema      map[string]any
+	Strict      bool
 }
 
 // LLMProvider defines the interface for Large Language Model providers.

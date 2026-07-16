@@ -80,7 +80,7 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 			log.Printf("permission auto-review attempt %d/%d failed for %s: %v", attempt+1, reviewerAttempts, request.ToolName, lastErr)
 			continue
 		}
-		resp, err := p.Generate(ctx, reviewerMessages(request, evidence), nil)
+		resp, err := generateReview(ctx, p, reviewerMessages(request, evidence))
 		if err != nil {
 			lastErr = err
 			log.Printf("permission auto-review attempt %d/%d failed for %s: generate: %v", attempt+1, reviewerAttempts, request.ToolName, err)
@@ -95,7 +95,7 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 			log.Printf("permission auto-review attempt %d/%d failed for %s: parse: %v; response=%q", attempt+1, reviewerAttempts, request.ToolName, err, reviewResponsePreview(resp))
 			continue
 		}
-		if result.Decision == ReviewApprove && reviewerMayApprove(request.Risk) && reviewerMayApprove(result.Risk) && reviewerAuthorizationSufficient(result.UserAuthorization) {
+		if result.Decision == ReviewApprove && reviewerMayApproveRequest(request) && reviewerMayApprove(result.Risk) && reviewerAuthorizationSufficient(result.UserAuthorization) {
 			return result, nil
 		}
 		result.Decision = ReviewEscalate
@@ -103,6 +103,20 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 	}
 	log.Printf("permission auto-review unavailable after %d attempts for %s action=%q: last_error=%v", reviewerAttempts, request.ToolName, request.Action, lastErr)
 	return ReviewResult{Decision: ReviewEscalate, Risk: request.Risk, UserAuthorization: AuthorizationUnknown, Rationale: "Auto-review was unavailable after three attempts."}, lastErr
+}
+
+func generateReview(ctx context.Context, p provider.LLMProvider, messages []schema.Message) (*provider.GenerateResponse, error) {
+	if withOptions, ok := p.(provider.OptionsGenerator); ok {
+		return withOptions.GenerateWithOptions(ctx, messages, nil, provider.GenerateOptions{
+			StructuredOutput: &provider.StructuredOutputOptions{
+				Name:        "permission_review",
+				Description: "Tool-call permission review decision.",
+				Schema:      reviewResultJSONSchema(),
+				Strict:      true,
+			},
+		})
+	}
+	return p.Generate(ctx, messages, nil)
 }
 
 func reviewerMessages(request Request, evidence Evidence) []schema.Message {
@@ -114,6 +128,32 @@ func reviewerMessages(request Request, evidence Evidence) []schema.Message {
 	}
 }
 
+func reviewResultJSONSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"decision": map[string]any{
+				"type": "string",
+				"enum": []any{string(ReviewApprove), string(ReviewEscalate)},
+			},
+			"risk_level": map[string]any{
+				"type": "string",
+				"enum": []any{string(RiskLow), string(RiskMedium), string(RiskHigh), string(RiskCritical)},
+			},
+			"user_authorization": map[string]any{
+				"type": "string",
+				"enum": []any{string(AuthorizationHigh), string(AuthorizationMedium), string(AuthorizationLow), string(AuthorizationUnknown)},
+			},
+			"rationale": map[string]any{
+				"type":      "string",
+				"minLength": 1,
+			},
+		},
+		"required": []any{"decision", "risk_level", "user_authorization", "rationale"},
+	}
+}
+
 func parseReviewResult(resp *provider.GenerateResponse) (ReviewResult, error) {
 	if resp == nil {
 		return ReviewResult{}, fmt.Errorf("nil review response")
@@ -122,6 +162,10 @@ func parseReviewResult(resp *provider.GenerateResponse) (ReviewResult, error) {
 		return ReviewResult{}, fmt.Errorf("nil review message")
 	}
 	content := strings.TrimSpace(resp.Message.Content)
+	content, err := extractReviewJSON(content)
+	if err != nil {
+		return ReviewResult{}, err
+	}
 	var result ReviewResult
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
 		return ReviewResult{}, err
@@ -145,6 +189,47 @@ func parseReviewResult(resp *provider.GenerateResponse) (ReviewResult, error) {
 	return result, nil
 }
 
+func extractReviewJSON(content string) (string, error) {
+	if content == "" {
+		return "", fmt.Errorf("empty review response")
+	}
+	start := strings.IndexByte(content, '{')
+	if start < 0 {
+		return "", fmt.Errorf("missing review JSON object")
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(content); i++ {
+		ch := content[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return content[start : i+1], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("unterminated review JSON object")
+}
+
 func reviewResponsePreview(resp *provider.GenerateResponse) string {
 	if resp == nil || resp.Message == nil {
 		return ""
@@ -159,6 +244,33 @@ func reviewResponsePreview(resp *provider.GenerateResponse) string {
 
 func reviewerMayApprove(risk Risk) bool {
 	return risk == RiskLow || risk == RiskMedium
+}
+
+func reviewerMayApproveRequest(request Request) bool {
+	if reviewerMayApprove(request.Risk) {
+		return true
+	}
+	if request.Risk != RiskHigh {
+		return false
+	}
+	switch request.ToolName {
+	case "read_file":
+		return true
+	case "delegate_task", "subagent":
+		return requestReadOnly(request)
+	default:
+		return false
+	}
+}
+
+func requestReadOnly(request Request) bool {
+	var args struct {
+		ReadOnly bool `json:"read_only"`
+	}
+	if err := json.Unmarshal([]byte(request.Arguments), &args); err != nil {
+		return false
+	}
+	return args.ReadOnly
 }
 
 func reviewerAuthorizationSufficient(authorization UserAuthorization) bool {

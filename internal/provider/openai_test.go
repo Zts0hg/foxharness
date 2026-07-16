@@ -227,6 +227,49 @@ func TestOpenAIProviderGenerateWithOptionsSendsReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestOpenAIProviderGenerateWithOptionsSendsStructuredOutputSchema(t *testing.T) {
+	requests := make(chan openAIRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body openAIRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- body
+		writeChatCompletion(t, w, "ok")
+	}))
+	defer server.Close()
+
+	jsonSchema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"decision": map[string]any{"type": "string"}},
+		"required":   []any{"decision"},
+	}
+	provider := newTestOpenAIProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	_, err := provider.GenerateWithOptions(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{
+		StructuredOutput: &StructuredOutputOptions{Name: "permission_review", Schema: jsonSchema, Strict: true},
+	})
+	if err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+
+	req := <-requests
+	if req.ResponseFormat == nil {
+		t.Fatal("response_format = nil, want json_schema")
+	}
+	if req.ResponseFormat.Type != "json_schema" {
+		t.Fatalf("response_format.type = %q, want json_schema", req.ResponseFormat.Type)
+	}
+	if req.ResponseFormat.JSONSchema.Name != "permission_review" {
+		t.Fatalf("response_format.json_schema.name = %q, want permission_review", req.ResponseFormat.JSONSchema.Name)
+	}
+	if req.ResponseFormat.JSONSchema.Strict == nil || !*req.ResponseFormat.JSONSchema.Strict {
+		t.Fatalf("response_format.json_schema.strict = %v, want true", req.ResponseFormat.JSONSchema.Strict)
+	}
+	if req.ResponseFormat.JSONSchema.Schema["type"] != "object" {
+		t.Fatalf("response_format.json_schema.schema = %#v, want object schema", req.ResponseFormat.JSONSchema.Schema)
+	}
+}
+
 func TestOpenAIProviderGenerateOmitsReasoningEffort(t *testing.T) {
 	requests := make(chan openAIRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -378,10 +421,18 @@ func TestNewProviderOpenAIAuthNoneIgnoresOpenAIEnvironmentDefaults(t *testing.T)
 type openAIRequest struct {
 	Model           string  `json:"model"`
 	ReasoningEffort *string `json:"reasoning_effort"`
-	Authorization   string
-	XAPIKey         string
-	Organization    string
-	LeakedSecret    string
+	ResponseFormat  *struct {
+		Type       string `json:"type"`
+		JSONSchema struct {
+			Name   string         `json:"name"`
+			Schema map[string]any `json:"schema"`
+			Strict *bool          `json:"strict"`
+		} `json:"json_schema"`
+	} `json:"response_format"`
+	Authorization string
+	XAPIKey       string
+	Organization  string
+	LeakedSecret  string
 }
 
 func newTestOpenAIProvider(baseURL string, retry RetryConfig) *OpenAIProvider {
