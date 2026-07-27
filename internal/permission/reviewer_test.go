@@ -157,6 +157,27 @@ func TestProviderReviewerFallsBackAfterStructuredOutputRejection(t *testing.T) {
 	}
 }
 
+func TestProviderReviewerFallsBackAfterMalformedStructuredOutput(t *testing.T) {
+	reviewProvider := &scriptedReviewProvider{
+		responses: []reviewProviderResponse{
+			{content: "```json\n{\n  \"decision\": \"approve\",\n  \"risk_level\": \"low\",\n  \"user_authorization\": \"high\",\n  \" \"malformed rationale"},
+			{content: "```json\n{\"decision\":\"approve\",\"risk_level\":\"low\",\"user_authorization\":\"high\",\"rationale\":\"plain JSON fallback\"}\n```"},
+		},
+	}
+	reviewer := &ProviderReviewer{Lookup: func() provider.LLMProvider { return reviewProvider }}
+
+	result, err := reviewer.Review(context.Background(), reviewRequest(), Evidence{Text: "trusted context"})
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if result.Decision != ReviewApprove {
+		t.Fatalf("decision = %q, want approve", result.Decision)
+	}
+	if reviewProvider.optionCalls != 1 || reviewProvider.generateCalls != 1 {
+		t.Fatalf("calls = options %d, plain %d; want 1, 1", reviewProvider.optionCalls, reviewProvider.generateCalls)
+	}
+}
+
 func TestReviewerPromptIncludesCapabilitiesWithoutRiskHintAnchoring(t *testing.T) {
 	request := reviewRequest()
 	request.Risk = RiskCritical

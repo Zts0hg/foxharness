@@ -82,7 +82,7 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 			log.Printf("permission auto-review attempt %d/%d failed for %s: %v", attempt+1, reviewerAttempts, request.ToolName, lastErr)
 			continue
 		}
-		resp, nextUseStructuredOutput, err := generateReview(ctx, p, reviewerMessages(request, evidence), useStructuredOutput)
+		resp, nextUseStructuredOutput, nativeStructuredResponse, err := generateReview(ctx, p, reviewerMessages(request, evidence), useStructuredOutput)
 		useStructuredOutput = nextUseStructuredOutput
 		if err != nil {
 			lastErr = err
@@ -95,6 +95,10 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 		result, err := parseReviewResult(resp)
 		if err != nil {
 			lastErr = err
+			if nativeStructuredResponse {
+				useStructuredOutput = false
+				log.Printf("permission auto-review native structured response was invalid; using plain JSON on the next attempt: %v", err)
+			}
 			log.Printf("permission auto-review attempt %d/%d failed for %s: parse: %v; response=%q", attempt+1, reviewerAttempts, request.ToolName, err, reviewResponsePreview(resp))
 			continue
 		}
@@ -108,7 +112,7 @@ func (r *ProviderReviewer) Review(ctx context.Context, request Request, evidence
 	return ReviewResult{Decision: ReviewEscalate, Risk: request.Risk, UserAuthorization: AuthorizationUnknown, Rationale: "Auto-review was unavailable after three attempts."}, lastErr
 }
 
-func generateReview(ctx context.Context, p provider.LLMProvider, messages []schema.Message, useStructuredOutput bool) (*provider.GenerateResponse, bool, error) {
+func generateReview(ctx context.Context, p provider.LLMProvider, messages []schema.Message, useStructuredOutput bool) (*provider.GenerateResponse, bool, bool, error) {
 	if withOptions, ok := p.(provider.OptionsGenerator); ok && useStructuredOutput {
 		resp, err := withOptions.GenerateWithOptions(ctx, messages, nil, provider.GenerateOptions{
 			StructuredOutput: &provider.StructuredOutputOptions{
@@ -119,17 +123,17 @@ func generateReview(ctx context.Context, p provider.LLMProvider, messages []sche
 			},
 		})
 		if err == nil || !errors.Is(err, provider.ErrStructuredOutputUnsupported) {
-			return resp, true, err
+			return resp, true, true, err
 		}
 		log.Printf("permission auto-review provider rejected native structured output; using plain JSON fallback: %v", err)
 		resp, fallbackErr := p.Generate(ctx, messages, nil)
 		if fallbackErr != nil {
-			return nil, false, fmt.Errorf("plain JSON fallback failed after %v: %w", err, fallbackErr)
+			return nil, false, false, fmt.Errorf("plain JSON fallback failed after %v: %w", err, fallbackErr)
 		}
-		return resp, false, nil
+		return resp, false, false, nil
 	}
 	resp, err := p.Generate(ctx, messages, nil)
-	return resp, false, err
+	return resp, false, false, err
 }
 
 func reviewerMessages(request Request, evidence Evidence) []schema.Message {

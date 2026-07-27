@@ -2643,6 +2643,7 @@ func TestModelInputHistoryWithArrowKeys(t *testing.T) {
 func TestModelSlashCommandInputHistoryWithArrowKeys(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
+	m.inputHistory = []string{"earlier task"}
 
 	m, _ = update(t, m, keyRunes("/permissions"))
 	m, _ = update(t, m, keyEnter())
@@ -2658,6 +2659,11 @@ func TestModelSlashCommandInputHistoryWithArrowKeys(t *testing.T) {
 	m, _ = update(t, m, keyUp())
 	if got := string(m.input); got != "/permissions" {
 		t.Fatalf("slash command history recall = %q, want /permissions", got)
+	}
+
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != "earlier task" {
+		t.Fatalf("history before slash command = %q, want earlier task", got)
 	}
 }
 

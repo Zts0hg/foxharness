@@ -1347,6 +1347,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.updateCompletions()
 		return m, nil
 	case "up":
+		if m.historyIndex != -1 {
+			m.recallPreviousInput()
+			return m, nil
+		}
 		if m.hasSlashMenu() {
 			m.moveSlashSelection(-1)
 			return m, nil
@@ -1362,6 +1366,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.recallPreviousInput()
 		return m, nil
 	case "down":
+		if m.historyIndex != -1 {
+			m.recallNextInput()
+			return m, nil
+		}
 		if m.hasSlashMenu() {
 			m.moveSlashSelection(1)
 			return m, nil
