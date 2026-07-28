@@ -3692,9 +3692,55 @@ func (m *Model) drainRunEvents() {
 
 func (m *Model) applyRunEvent(msg runEventMsg) {
 	m.status = msg.status
+	if msg.delta {
+		m.appendAssistantDelta(msg.body)
+		return
+	}
+	if msg.streamFinal {
+		m.replaceStreamingAssistant(msg.title, msg.body)
+		return
+	}
 	if msg.role != "" || msg.body != "" {
 		m.appendEntry(msg.role, msg.title, msg.body, msg.err)
 	}
+}
+
+func (m *Model) appendAssistantDelta(delta string) {
+	if delta == "" {
+		return
+	}
+	if len(m.entries) > 0 {
+		last := &m.entries[len(m.entries)-1]
+		if last.role == "assistant" && last.title == "stream" {
+			last.body += delta
+			m.cachedLayout = nil
+			return
+		}
+	}
+	m.entries = append(m.entries, entry{
+		role:  "assistant",
+		title: "stream",
+		body:  delta,
+		time:  time.Now(),
+	})
+	m.cachedLayout = nil
+}
+
+func (m *Model) replaceStreamingAssistant(title string, body string) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return
+	}
+	if len(m.entries) > 0 {
+		last := &m.entries[len(m.entries)-1]
+		if last.role == "assistant" && last.title == "stream" {
+			last.title = title
+			last.body = body
+			m.cachedLayout = nil
+			return
+		}
+	}
+	m.appendEntry("assistant", title, body, false)
 }
 
 func (m Model) workingFrame() string {
@@ -3781,11 +3827,13 @@ func mouseTailCmd(id uint64) tea.Cmd {
 }
 
 type runEventMsg struct {
-	role   string
-	title  string
-	body   string
-	status string
-	err    bool
+	role        string
+	title       string
+	body        string
+	status      string
+	err         bool
+	delta       bool
+	streamFinal bool
 }
 
 type runFinishedMsg struct {

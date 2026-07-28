@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 type channelReporter struct {
-	events chan<- tea.Msg
+	events    chan<- tea.Msg
+	mu        sync.Mutex
+	streaming bool
 }
 
 func (r *channelReporter) OnRunStart(ctx context.Context, sessionID string, runID string) {
@@ -63,11 +66,41 @@ func (r *channelReporter) OnMessage(ctx context.Context, content string) {
 	if content == "" {
 		return
 	}
+	r.mu.Lock()
+	streaming := r.streaming
+	r.streaming = false
+	r.mu.Unlock()
+	if streaming {
+		r.send(ctx, runEventMsg{
+			role:        "assistant",
+			title:       "foxharness",
+			body:        content,
+			status:      "Assistant responded",
+			streamFinal: true,
+		})
+		return
+	}
 	r.send(ctx, runEventMsg{
 		role:   "assistant",
 		title:  "foxharness",
 		body:   content,
 		status: "Assistant responded",
+	})
+}
+
+func (r *channelReporter) OnMessageDelta(ctx context.Context, content string) {
+	if content == "" {
+		return
+	}
+	r.mu.Lock()
+	r.streaming = true
+	r.mu.Unlock()
+	r.send(ctx, runEventMsg{
+		role:   "assistant",
+		title:  "stream",
+		body:   content,
+		status: "Assistant responding",
+		delta:  true,
 	})
 }
 
@@ -98,6 +131,7 @@ func (r *channelReporter) send(ctx context.Context, msg tea.Msg) {
 }
 
 var _ engine.Reporter = (*channelReporter)(nil)
+var _ engine.MessageDeltaReporter = (*channelReporter)(nil)
 
 func formatToolInvocation(toolName string, args string) string {
 	fields := parseToolArgs(args)

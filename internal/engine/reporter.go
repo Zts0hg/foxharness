@@ -25,3 +25,11 @@ type DetailedReporter interface {
 	OnToolCallDetail(ctx context.Context, call schema.ToolCall)
 	OnToolResultDetail(ctx context.Context, call schema.ToolCall, result schema.ToolResult)
 }
+
+/*
+MessageDeltaReporter optionally receives visible assistant text deltas while a
+model response is still streaming.
+*/
+type MessageDeltaReporter interface {
+	OnMessageDelta(ctx context.Context, content string)
+}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/effort"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
@@ -100,6 +102,52 @@ func (p *OpenAIProvider) Generate(ctx context.Context, messages []schema.Message
 // GenerateWithOptions produces a response from the OpenAI-compatible API with
 // optional per-call user-run generation settings.
 func (p *OpenAIProvider) GenerateWithOptions(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition, options GenerateOptions) (*GenerateResponse, error) {
+	params, err := p.chatCompletionParams(messages, availableTools, options)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := p.chatCompletionWithRetry(ctx, params)
+	if err != nil {
+		if options.StructuredOutput != nil {
+			err = normalizeStructuredOutputError(err)
+		}
+		return nil, err
+	}
+
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("API 返回了空的 Choices")
+	}
+
+	choice := resp.Choices[0].Message
+	resultMessage := &schema.Message{
+		Role:    schema.RoleAssistant,
+		Content: choice.Content,
+	}
+
+	for _, toolCall := range choice.ToolCalls {
+		if toolCall.Type == "function" {
+			resultMessage.ToolCalls = append(resultMessage.ToolCalls, schema.ToolCall{
+				ID:        toolCall.ID,
+				Name:      toolCall.Function.Name,
+				Arguments: schema.NormalizeToolArguments([]byte(toolCall.Function.Arguments)),
+			})
+		}
+
+	}
+
+	normalized := schema.NormalizeMessage(*resultMessage)
+	usage := schema.Usage{
+		InputTokens:  resp.Usage.PromptTokens,
+		OutputTokens: resp.Usage.CompletionTokens,
+	}
+	return &GenerateResponse{
+		Message: &normalized,
+		Usage:   usage,
+	}, nil
+}
+
+func (p *OpenAIProvider) chatCompletionParams(messages []schema.Message, availableTools []schema.ToolDefinition, options GenerateOptions) (openai.ChatCompletionNewParams, error) {
 	var openaiMessages []openai.ChatCompletionMessageParamUnion
 
 	for _, message := range messages {
@@ -175,7 +223,7 @@ func (p *OpenAIProvider) GenerateWithOptions(ctx context.Context, messages []sch
 		params.Tools = openaiTools
 	}
 	if explicitEffort, err := effort.ExplicitForProvider(effort.ProtocolOpenAI, options.Effort); err != nil {
-		return nil, err
+		return openai.ChatCompletionNewParams{}, err
 	} else if explicitEffort != "" {
 		params.ReasoningEffort = shared.ReasoningEffort(explicitEffort)
 	}
@@ -192,46 +240,113 @@ func (p *OpenAIProvider) GenerateWithOptions(ctx context.Context, messages []sch
 		}
 	}
 
-	resp, err := p.chatCompletionWithRetry(ctx, params)
-	if err != nil {
-		if options.StructuredOutput != nil {
-			err = normalizeStructuredOutputError(err)
-		}
-		return nil, err
-	}
-
-	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("API 返回了空的 Choices")
-	}
-
-	choice := resp.Choices[0].Message
-	resultMessage := &schema.Message{
-		Role:    schema.RoleAssistant,
-		Content: choice.Content,
-	}
-
-	for _, toolCall := range choice.ToolCalls {
-		if toolCall.Type == "function" {
-			resultMessage.ToolCalls = append(resultMessage.ToolCalls, schema.ToolCall{
-				ID:        toolCall.ID,
-				Name:      toolCall.Function.Name,
-				Arguments: schema.NormalizeToolArguments([]byte(toolCall.Function.Arguments)),
-			})
-		}
-
-	}
-
-	normalized := schema.NormalizeMessage(*resultMessage)
-	usage := schema.Usage{
-		InputTokens:  resp.Usage.PromptTokens,
-		OutputTokens: resp.Usage.CompletionTokens,
-	}
-	return &GenerateResponse{
-		Message: &normalized,
-		Usage:   usage,
-	}, nil
+	return params, nil
 }
 
 func (p *OpenAIProvider) chatCompletionWithRetry(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
 	return chatCompletionWithRetry(ctx, p.client, params, p.retry)
 }
+
+type openAIStreamToolCall struct {
+	id        string
+	name      string
+	arguments string
+}
+
+// GenerateStream streams visible OpenAI-compatible text deltas and returns the
+// normalized final assistant message.
+func (p *OpenAIProvider) GenerateStream(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition, options GenerateOptions, callbacks StreamCallbacks) (*GenerateResponse, error) {
+	if options.StructuredOutput != nil {
+		return p.GenerateWithOptions(ctx, messages, availableTools, options)
+	}
+	params, err := p.chatCompletionParams(messages, availableTools, options)
+	if err != nil {
+		return nil, err
+	}
+	params.StreamOptions.IncludeUsage = param.NewOpt(true)
+	resp, receivedChunk, err := p.generateOpenAIStream(ctx, params, callbacks)
+	if err != nil && !receivedChunk && isOpenAIStreamOptionsRejected(err) {
+		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{}
+		resp, _, err = p.generateOpenAIStream(ctx, params, callbacks)
+	}
+	return resp, err
+}
+
+func (p *OpenAIProvider) generateOpenAIStream(ctx context.Context, params openai.ChatCompletionNewParams, callbacks StreamCallbacks) (*GenerateResponse, bool, error) {
+	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
+	defer stream.Close()
+
+	var content string
+	toolCalls := map[int]*openAIStreamToolCall{}
+	usage := schema.Usage{}
+	receivedChunk := false
+	for stream.Next() {
+		receivedChunk = true
+		chunk := stream.Current()
+		if chunk.Usage.PromptTokens != 0 || chunk.Usage.CompletionTokens != 0 {
+			usage.InputTokens = chunk.Usage.PromptTokens
+			usage.OutputTokens = chunk.Usage.CompletionTokens
+		}
+		for _, choice := range chunk.Choices {
+			delta := choice.Delta
+			if delta.Content != "" {
+				content += delta.Content
+				callbacks.EmitTextDelta(delta.Content)
+			}
+			for _, toolCall := range delta.ToolCalls {
+				index := int(toolCall.Index)
+				accumulated := toolCalls[index]
+				if accumulated == nil {
+					accumulated = &openAIStreamToolCall{}
+					toolCalls[index] = accumulated
+				}
+				if toolCall.ID != "" {
+					accumulated.id = toolCall.ID
+				}
+				if toolCall.Function.Name != "" {
+					accumulated.name = toolCall.Function.Name
+				}
+				if toolCall.Function.Arguments != "" {
+					accumulated.arguments += toolCall.Function.Arguments
+				}
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return nil, receivedChunk, err
+	}
+	if !receivedChunk {
+		return nil, false, fmt.Errorf("%w: openai stream ended without events", ErrEmptyStream)
+	}
+
+	resultMessage := &schema.Message{Role: schema.RoleAssistant, Content: content}
+	indexes := make([]int, 0, len(toolCalls))
+	for index := range toolCalls {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	for _, index := range indexes {
+		toolCall := toolCalls[index]
+		if toolCall.name == "" {
+			continue
+		}
+		resultMessage.ToolCalls = append(resultMessage.ToolCalls, schema.ToolCall{
+			ID:        toolCall.id,
+			Name:      toolCall.name,
+			Arguments: schema.NormalizeToolArguments([]byte(toolCall.arguments)),
+		})
+	}
+
+	normalized := schema.NormalizeMessage(*resultMessage)
+	return &GenerateResponse{Message: &normalized, Usage: usage}, receivedChunk, nil
+}
+
+func isOpenAIStreamOptionsRejected(err error) bool {
+	if err == nil || !IsStreamingUnsupported(err) {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "stream_options") || strings.Contains(message, "stream options")
+}
+
+var _ StreamGenerator = (*OpenAIProvider)(nil)

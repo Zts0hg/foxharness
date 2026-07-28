@@ -116,6 +116,10 @@ func (p *ClaudeProvider) GenerateWithOptions(ctx context.Context, messages []sch
 		return nil, err
 	}
 
+	return anthropicMessageToGenerateResponse(resp), nil
+}
+
+func anthropicMessageToGenerateResponse(resp *anthropic.Message) *GenerateResponse {
 	result := &schema.Message{
 		Role: schema.RoleAssistant,
 	}
@@ -142,7 +146,7 @@ func (p *ClaudeProvider) GenerateWithOptions(ctx context.Context, messages []sch
 	return &GenerateResponse{
 		Message: &normalized,
 		Usage:   usage,
-	}, nil
+	}
 }
 
 func (p *ClaudeProvider) messagesNewWithRetry(ctx context.Context, params anthropic.MessageNewParams) (*anthropic.Message, error) {
@@ -169,6 +173,58 @@ func (p *ClaudeProvider) messagesNewWithRetry(ctx context.Context, params anthro
 		return nil, fmt.Errorf("Claude-compatible API 请求失败（已尝试 %d 次）: %w", retry.MaxAttempts, lastErr)
 	}
 	return nil, fmt.Errorf("Claude-compatible API 请求失败: %w", lastErr)
+}
+
+// GenerateStream streams visible Claude-compatible text deltas and returns the
+// normalized final assistant message.
+func (p *ClaudeProvider) GenerateStream(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition, options GenerateOptions, callbacks StreamCallbacks) (*GenerateResponse, error) {
+	if options.StructuredOutput != nil {
+		return p.GenerateWithOptions(ctx, messages, availableTools, options)
+	}
+	anthropicMessages, systemBlocks := toAnthropicMessages(messages)
+	anthropicTools := toAnthropicTools(availableTools)
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model(p.model),
+		MaxTokens: 4096,
+		Messages:  anthropicMessages,
+	}
+	if len(systemBlocks) > 0 {
+		params.System = systemBlocks
+	}
+	if len(anthropicTools) > 0 {
+		params.Tools = anthropicTools
+	}
+	if explicitEffort, err := effort.ExplicitForProvider(effort.ProtocolClaude, options.Effort); err != nil {
+		return nil, err
+	} else if explicitEffort != "" {
+		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(explicitEffort)}
+	}
+
+	stream := p.client.Messages.NewStreaming(ctx, params)
+	defer stream.Close()
+
+	var message anthropic.Message
+	receivedEvent := false
+	for stream.Next() {
+		receivedEvent = true
+		event := stream.Current()
+		if deltaEvent, ok := event.AsAny().(anthropic.ContentBlockDeltaEvent); ok {
+			if delta, ok := deltaEvent.Delta.AsAny().(anthropic.TextDelta); ok {
+				callbacks.EmitTextDelta(delta.Text)
+			}
+		}
+		if err := message.Accumulate(event); err != nil {
+			return nil, err
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+	if !receivedEvent {
+		return nil, fmt.Errorf("%w: claude stream ended without events", ErrEmptyStream)
+	}
+	return anthropicMessageToGenerateResponse(&message), nil
 }
 
 func toAnthropicMessages(messages []schema.Message) ([]anthropic.MessageParam, []anthropic.TextBlockParam) {
@@ -281,3 +337,4 @@ func stringSliceFromAny(value any) []string {
 }
 
 var _ LLMProvider = (*ClaudeProvider)(nil)
+var _ StreamGenerator = (*ClaudeProvider)(nil)

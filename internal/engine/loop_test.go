@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,6 +73,57 @@ func (p *optionCapturingProvider) GenerateWithOptions(ctx context.Context, messa
 	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}}, nil
 }
 
+type streamingTestProvider struct {
+	generateCalls int
+	streamCalls   int
+	options       []provider.GenerateOptions
+	deltas        []string
+	streamErr     error
+	responses     []*provider.GenerateResponse
+}
+
+func (p *streamingTestProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	p.generateCalls++
+	if len(p.responses) > 0 {
+		idx := p.generateCalls - 1
+		if idx >= len(p.responses) {
+			idx = len(p.responses) - 1
+		}
+		return p.responses[idx], nil
+	}
+	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "fallback"}}, nil
+}
+
+func (p *streamingTestProvider) GenerateStream(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition, options provider.GenerateOptions, callbacks provider.StreamCallbacks) (*provider.GenerateResponse, error) {
+	p.streamCalls++
+	p.options = append(p.options, options)
+	for _, delta := range p.deltas {
+		callbacks.EmitTextDelta(delta)
+	}
+	if p.streamErr != nil {
+		return nil, p.streamErr
+	}
+	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: strings.Join(p.deltas, "")}}, nil
+}
+
+type deltaRecordingReporter struct {
+	recordingReporter
+	deltas []string
+}
+
+func (r *deltaRecordingReporter) OnMessageDelta(ctx context.Context, content string) {
+	r.deltas = append(r.deltas, content)
+}
+
+type statusCodeError struct {
+	StatusCode int
+	message    string
+}
+
+func (e statusCodeError) Error() string {
+	return e.message
+}
+
 type engineTurnRegistry struct {
 	tools.Registry
 	turns int
@@ -120,6 +173,212 @@ func TestEngineUsesDefaultGenerateWithoutEffortOverride(t *testing.T) {
 	}
 	if p.optionCalls != 0 {
 		t.Fatalf("GenerateWithOptions calls = %d, want 0 without effort override", p.optionCalls)
+	}
+}
+
+func TestEngineStreamsModelDeltasWhenProviderSupportsStreaming(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	p := &streamingTestProvider{deltas: []string{"hello ", "world"}}
+	reporter := &deltaRecordingReporter{}
+	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1, EffortOverride: "high"})
+	result, err := eng.RunWithReporter(context.Background(), sess, "test", reporter)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if p.generateCalls != 0 || p.streamCalls != 1 {
+		t.Fatalf("provider calls Generate=%d Stream=%d, want 0/1", p.generateCalls, p.streamCalls)
+	}
+	if len(p.options) != 1 || p.options[0].Effort != "high" {
+		t.Fatalf("stream options = %#v, want effort high", p.options)
+	}
+	if got := strings.Join(reporter.deltas, ""); got != "hello world" {
+		t.Fatalf("streamed deltas = %q, want hello world", got)
+	}
+	if result.FinalMessage != "hello world" {
+		t.Fatalf("FinalMessage = %q, want hello world", result.FinalMessage)
+	}
+}
+
+func TestEngineFallsBackWhenStreamingUnsupportedBeforeDelta(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	p := &streamingTestProvider{streamErr: errors.New("unsupported stream_options parameter")}
+	reporter := &deltaRecordingReporter{}
+	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	result, err := eng.RunWithReporter(context.Background(), sess, "test", reporter)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if p.streamCalls != 1 || p.generateCalls != 1 {
+		t.Fatalf("provider calls Stream=%d Generate=%d, want 1/1", p.streamCalls, p.generateCalls)
+	}
+	if len(reporter.deltas) != 0 {
+		t.Fatalf("streamed deltas = %#v, want none before fallback", reporter.deltas)
+	}
+	if result.FinalMessage != "fallback" {
+		t.Fatalf("FinalMessage = %q, want fallback", result.FinalMessage)
+	}
+}
+
+func TestEngineFallsBackWhenStreamingReturnsEmptyStreamBeforeDelta(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	p := &streamingTestProvider{streamErr: provider.ErrEmptyStream}
+	reporter := &deltaRecordingReporter{}
+	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	result, err := eng.RunWithReporter(context.Background(), sess, "test", reporter)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if p.streamCalls != 1 || p.generateCalls != 1 {
+		t.Fatalf("provider calls Stream=%d Generate=%d, want 1/1", p.streamCalls, p.generateCalls)
+	}
+	if len(reporter.deltas) != 0 {
+		t.Fatalf("streamed deltas = %#v, want none before fallback", reporter.deltas)
+	}
+	if result.FinalMessage != "fallback" {
+		t.Fatalf("FinalMessage = %q, want fallback", result.FinalMessage)
+	}
+}
+
+func TestEngineDisablesStreamingAfterEmptyStreamFallback(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(&bigOutputTool{name: "turn_tool", output: "ok"})
+	p := &streamingTestProvider{
+		streamErr: provider.ErrEmptyStream,
+		responses: []*provider.GenerateResponse{
+			{Message: &schema.Message{
+				Role: schema.RoleAssistant,
+				ToolCalls: []schema.ToolCall{{
+					ID:        "call-turn",
+					Name:      "turn_tool",
+					Arguments: json.RawMessage(`{}`),
+				}},
+			}},
+			{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+		},
+	}
+	reporter := &deltaRecordingReporter{}
+	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
+	result, err := eng.RunWithReporter(context.Background(), sess, "test", reporter)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if p.streamCalls != 1 || p.generateCalls != 2 {
+		t.Fatalf("provider calls Stream=%d Generate=%d, want 1/2", p.streamCalls, p.generateCalls)
+	}
+	if result.FinalMessage != "done" {
+		t.Fatalf("FinalMessage = %q, want done", result.FinalMessage)
+	}
+}
+
+func TestEngineDisablesStreamingAfterUnsupportedFallback(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(&bigOutputTool{name: "turn_tool", output: "ok"})
+	p := &streamingTestProvider{
+		streamErr: errors.New("streaming is not supported by this endpoint"),
+		responses: []*provider.GenerateResponse{
+			{Message: &schema.Message{
+				Role: schema.RoleAssistant,
+				ToolCalls: []schema.ToolCall{{
+					ID:        "call-turn",
+					Name:      "turn_tool",
+					Arguments: json.RawMessage(`{}`),
+				}},
+			}},
+			{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+		},
+	}
+	reporter := &deltaRecordingReporter{}
+	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
+	result, err := eng.RunWithReporter(context.Background(), sess, "test", reporter)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if p.streamCalls != 1 || p.generateCalls != 2 {
+		t.Fatalf("provider calls Stream=%d Generate=%d, want 1/2", p.streamCalls, p.generateCalls)
+	}
+	if result.FinalMessage != "done" {
+		t.Fatalf("FinalMessage = %q, want done", result.FinalMessage)
+	}
+}
+
+func TestEngineDoesNotFallbackWhenStreamingFailsAfterDelta(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	p := &streamingTestProvider{deltas: []string{"partial"}, streamErr: errors.New("unsupported stream_options parameter")}
+	reporter := &deltaRecordingReporter{}
+	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	_, err = eng.RunWithReporter(context.Background(), sess, "test", reporter)
+	if err == nil {
+		t.Fatalf("RunWithReporter() error = nil, want stream error")
+	}
+	if p.streamCalls != 1 || p.generateCalls != 0 {
+		t.Fatalf("provider calls Stream=%d Generate=%d, want 1/0", p.streamCalls, p.generateCalls)
+	}
+	if got := strings.Join(reporter.deltas, ""); got != "partial" {
+		t.Fatalf("streamed deltas = %q, want partial", got)
+	}
+}
+
+func TestEngineFallsBackWhenStreamingFailsWithRetryableStartError(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	p := &streamingTestProvider{streamErr: statusCodeError{StatusCode: http.StatusTooManyRequests, message: "rate limited"}}
+	reporter := &deltaRecordingReporter{}
+	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	result, err := eng.RunWithReporter(context.Background(), sess, "test", reporter)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if p.streamCalls != 1 || p.generateCalls != 1 {
+		t.Fatalf("provider calls Stream=%d Generate=%d, want 1/1", p.streamCalls, p.generateCalls)
+	}
+	if len(reporter.deltas) != 0 {
+		t.Fatalf("streamed deltas = %#v, want none before retry fallback", reporter.deltas)
+	}
+	if result.FinalMessage != "fallback" {
+		t.Fatalf("FinalMessage = %q, want fallback", result.FinalMessage)
 	}
 }
 

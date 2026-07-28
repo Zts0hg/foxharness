@@ -13,7 +13,7 @@ import (
 const (
 	maxQueuedNoticeItems        = 3
 	minTranscriptHeight         = 6
-	maxCollapsedToolOutputLines = 3
+	maxCollapsedToolOutputLines = 5
 	toolCallGlyph               = "⬢"
 	workingNoticeText           = "working..."
 
@@ -39,24 +39,24 @@ const (
 )
 
 var (
-	cBg             = lipgloss.Color(amberBgHex)
-	cAccent         = lipgloss.Color(amberHex)
-	cAccentHi       = lipgloss.Color(amberHiHex)
-	cWarn           = lipgloss.Color(amberWarnHex)
-	cTextPri        = lipgloss.Color(amberHiHex)
-	cTextSec        = lipgloss.Color(amberHex)
-	cTextMuted      = lipgloss.Color(amberMutedHex)
-	cTextDim        = lipgloss.Color(amberDimHex)
-	cTextVeryDim    = lipgloss.Color(amberDividerHex)
-	cMsgBg          = lipgloss.Color(amberPanelHex)
-	cProgressEmpty  = lipgloss.Color(amberProgressEmptyHex)
-	cWorkingText    = lipgloss.Color(claudeWorkingHex)
-	cWorkingShimmer = lipgloss.Color(claudeShimmerHex)
-	cSelectionBg    = lipgloss.Color(selectionBgHex)
-	cSelectionFg    = lipgloss.Color(selectionFgHex)
+	cBg             = lipgloss.Color("")
+	cAccent         = lipgloss.Color("6")
+	cAccentHi       = lipgloss.Color("5")
+	cWarn           = lipgloss.Color("1")
+	cTextPri        = lipgloss.Color("")
+	cTextSec        = lipgloss.Color("")
+	cTextMuted      = lipgloss.Color("8")
+	cTextDim        = lipgloss.Color("8")
+	cTextVeryDim    = lipgloss.Color("8")
+	cMsgBg          = lipgloss.Color("")
+	cProgressEmpty  = lipgloss.Color("8")
+	cWorkingText    = lipgloss.Color("8")
+	cWorkingShimmer = lipgloss.Color("6")
+	cSelectionBg    = lipgloss.Color("6")
+	cSelectionFg    = lipgloss.Color("")
 
 	outerStyle = lipgloss.NewStyle().
-			Foreground(cAccent).
+			Foreground(cTextPri).
 			Padding(viewPaddingTop, viewPaddingRight, viewPaddingBottom, viewPaddingLeft)
 
 	headerStyle = lipgloss.NewStyle().
@@ -75,15 +75,15 @@ var (
 			BorderForeground(cTextVeryDim)
 
 	runningNoticeStyle = lipgloss.NewStyle().
-				Foreground(cWorkingText)
+				Foreground(cTextMuted)
 	workingGlyphStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(cWorkingText)
+				Foreground(cAccent)
 	workingTextStyle = lipgloss.NewStyle().
-				Foreground(cWorkingText)
+				Foreground(cTextMuted)
 	workingShimmerStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(cWorkingShimmer)
+				Foreground(cAccent)
 
 	suggestionStyle = lipgloss.NewStyle().
 			Foreground(cTextSec).
@@ -107,16 +107,11 @@ var (
 			Background(cSelectionBg)
 
 	userBubbleStyle = lipgloss.NewStyle().
-			Foreground(cAccent).
-			Background(cMsgBg).
-			Border(lipgloss.Border{Left: "▌"}, false, false, false, true).
-			BorderForeground(cAccent).
-			BorderBackground(cMsgBg).
-			Padding(0, 1)
+			Foreground(cTextPri)
 
 	userMetaStyle       = lipgloss.NewStyle().Bold(true).Foreground(cAccentHi)
-	assistantLabelStyle = lipgloss.NewStyle().Foreground(cAccentHi)
-	toolLabelStyle      = lipgloss.NewStyle().Foreground(cWarn)
+	assistantLabelStyle = lipgloss.NewStyle().Foreground(cTextPri)
+	toolLabelStyle      = lipgloss.NewStyle().Foreground(cTextMuted)
 	systemLabelStyle    = lipgloss.NewStyle().Bold(true).Foreground(cTextSec)
 	errorLabelStyle     = lipgloss.NewStyle().Bold(true).Foreground(cWarn)
 	commandLabelStyle   = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
@@ -449,7 +444,7 @@ func (m Model) transcriptLayout(width int, height int) transcriptLayout {
 	}
 	plainLines := make([]string, len(lines))
 	for i, line := range lines {
-		plainLines[i] = xansi.Strip(line)
+		plainLines[i] = stripTerminalControl(line)
 	}
 
 	visible := max(height-bodyStyle.GetVerticalFrameSize(), 1)
@@ -571,7 +566,7 @@ func (m Model) sidebarLayout(width int, height int) sidebarLayout {
 	plainLines := make([]string, len(lines))
 	for i := range lines {
 		lines[i] = fitLine(lines[i], contentWidth)
-		plainLines[i] = xansi.Strip(lines[i])
+		plainLines[i] = stripTerminalControl(lines[i])
 	}
 	return sidebarLayout{
 		styledLines: lines,
@@ -918,16 +913,39 @@ func renderEntryWithOptions(e entry, width int, toolOutputExpanded bool) string 
 }
 
 func renderUserEntry(e entry, width int) string {
-	bodyWidth := max(width-1, 20)
-	body := renderPlainBlock(e.body, max(bodyWidth-2, 20))
+	body := renderPlainBlock(e.body, max(width-2, 20))
 	if body == "" {
 		body = " "
 	}
-	return userBubbleStyle.Width(bodyWidth).Render(body)
+	return renderCodexPrefixedCell(body, "› ", "  ")
 }
 
 func renderAssistantEntry(e entry, width int) string {
-	return assistantLabelStyle.Width(width).Render(renderMarkdown(e.body, max(width, 20)))
+	if e.title == "stream" {
+		stream := newMarkdownStreamController(width)
+		_ = stream.Push(e.body)
+		return stream.Finish()
+	}
+	body := renderMarkdown(e.body, max(width-2, 20))
+	if body == "" {
+		return ""
+	}
+	return renderCodexPrefixedCell(body, "• ", "  ")
+}
+
+func renderCodexPrefixedCell(body string, firstPrefix string, restPrefix string) string {
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, len(lines)+2)
+	out = append(out, "")
+	for i, line := range lines {
+		prefix := restPrefix
+		if i == 0 {
+			prefix = firstPrefix
+		}
+		out = append(out, mutedStyle.Render(prefix)+line)
+	}
+	out = append(out, "")
+	return strings.Join(out, "\n")
 }
 
 func renderCommandEntry(e entry, width int, expanded bool) string {
@@ -935,30 +953,38 @@ func renderCommandEntry(e entry, width int, expanded bool) string {
 	if title == "" {
 		title = "Result"
 	}
-	headerStyle := commandLabelStyle
-	if e.err {
-		headerStyle = errorLabelStyle
-		title = "FAILED " + title
+	if isShellCommandEntry(e) {
+		return renderShellCommandEntry(e, width, expanded)
 	}
-	header := fitLine(headerStyle.Render(title), width)
+	header := fitLine(commandLabelStyle.Render(title), width)
 	bodyWidth := max(width-2, 20)
 	var body string
-	if isShellCommandEntry(e) {
-		body = renderPlainBlockPreserveWhitespace(e.body, bodyWidth)
-	} else {
-		body = renderPlainBlock(e.body, bodyWidth)
-	}
+	body = renderPlainBlock(e.body, bodyWidth)
 	if body == "" {
 		return header
-	}
-	if isShellCommandEntry(e) {
-		body = collapseCommandOutput(body, expanded)
 	}
 	return header + "\n" + indentLines(body, "  ")
 }
 
 func isShellCommandEntry(e entry) bool {
 	return e.role == "command" && strings.HasPrefix(strings.TrimSpace(e.title), "Shell: !")
+}
+
+func renderShellCommandEntry(e entry, width int, expanded bool) string {
+	command := strings.TrimPrefix(strings.TrimSpace(e.title), "Shell: !")
+	verb := "Ran"
+	headerStyle := commandLabelStyle
+	if e.err {
+		verb = "Failed"
+		headerStyle = errorLabelStyle
+	}
+	header := fitLine(headerStyle.Render("• "+verb+" "+command), width)
+	body := renderPlainBlockPreserveWhitespace(e.body, max(width-4, 20))
+	if body == "" {
+		return header
+	}
+	body = collapseCommandOutput(body, expanded)
+	return header + "\n" + renderCodexOutputBlock(body, width, e.err)
 }
 
 func collapseCommandOutput(body string, expanded bool) string {
@@ -970,16 +996,12 @@ func collapseCommandOutput(body string, expanded bool) string {
 		return body
 	}
 	hidden := len(lines) - maxCollapsedToolOutputLines
-	lines = append(lines[:maxCollapsedToolOutputLines], fmt.Sprintf("+%d lines (ctrl+o to expand)", hidden))
+	lines = append(lines[:maxCollapsedToolOutputLines], fmt.Sprintf("… +%d lines (ctrl+o to expand)", hidden))
 	return strings.Join(lines, "\n")
 }
 
 func renderToolCall(e entry, width int) string {
-	label := strings.TrimSpace(e.body)
-	if label == "" {
-		label = strings.TrimPrefix(strings.TrimSpace(e.title), "call ")
-	}
-	line := toolLabelStyle.Render(toolCallGlyph + " " + label)
+	line := commandLabelStyle.Render("• " + codexToolCallTitle(e))
 	return fitLine(line, width)
 }
 
@@ -988,26 +1010,62 @@ func renderToolResult(e entry, width int, expanded bool) string {
 	if output == "" {
 		output = "(no output)"
 	}
-	prefix := "└─ "
-	bodyWidth := max(width-lipgloss.Width(prefix), 20)
+	bodyWidth := max(width-4, 20)
 	wrapped := wrapText(output, bodyWidth)
 	lines := strings.Split(wrapped, "\n")
 	if !expanded && len(lines) > maxCollapsedToolOutputLines {
 		hidden := len(lines) - maxCollapsedToolOutputLines
-		lines = append(lines[:maxCollapsedToolOutputLines], fmt.Sprintf("+%d lines (ctrl+o to expand)", hidden))
+		lines = append(lines[:maxCollapsedToolOutputLines], fmt.Sprintf("… +%d lines (ctrl+o to expand)", hidden))
 	}
-	for i := range lines {
-		if i == 0 {
-			lines[i] = prefix + lines[i]
-			continue
-		}
-		lines[i] = strings.Repeat(" ", lipgloss.Width(prefix)) + lines[i]
-	}
+	return renderCodexOutputBlock(strings.Join(lines, "\n"), width, e.err)
+}
+
+func renderCodexOutputBlock(body string, width int, isError bool) string {
+	lines := strings.Split(body, "\n")
 	style := mutedStyle
-	if e.err {
+	if isError {
 		style = errorLabelStyle
 	}
-	return style.Width(width).Render(strings.Join(lines, "\n"))
+	for i := range lines {
+		prefix := "    "
+		if i == 0 {
+			prefix = "  └ "
+		}
+		lines[i] = style.Render(prefix + lines[i])
+	}
+	return strings.Join(lines, "\n")
+}
+
+func codexToolCallTitle(e entry) string {
+	body := strings.TrimSpace(e.body)
+	if inside, ok := trimWrappedLabel(body, "Bash"); ok {
+		return "Ran " + inside
+	}
+	if inside, ok := trimWrappedLabel(body, "Read"); ok {
+		return "Explored " + inside
+	}
+	if inside, ok := trimWrappedLabel(body, "Write"); ok {
+		return "Wrote " + inside
+	}
+	if inside, ok := trimWrappedLabel(body, "Edit"); ok {
+		return "Edited " + inside
+	}
+	if body == "Read TODO" {
+		return "Explored TODO"
+	}
+	if body != "" {
+		return "Ran " + body
+	}
+	name := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(e.title), "call "))
+	return "Ran " + name
+}
+
+func trimWrappedLabel(label string, prefix string) (string, bool) {
+	open := prefix + " ("
+	if !strings.HasPrefix(label, open) || !strings.HasSuffix(label, ")") {
+		return "", false
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(label, open), ")"), true
 }
 
 func isToolResultPair(prev entry, current entry) bool {

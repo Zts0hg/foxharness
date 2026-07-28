@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -147,6 +148,71 @@ func TestClaudeProviderReturnsUsage(t *testing.T) {
 	}
 	if resp.Usage.CacheReadTokens != 50 {
 		t.Fatalf("Usage.CacheReadTokens = %d, want 50", resp.Usage.CacheReadTokens)
+	}
+}
+
+func TestClaudeProviderGenerateStreamEmitsTextDeltas(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("request path = %q, want /v1/messages", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeClaudeSSE(t, w, "message_start", `{"type":"message_start","message":{"id":"msg-test","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}`)
+		writeClaudeSSE(t, w, "content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+		writeClaudeSSE(t, w, "content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello "}}`)
+		writeClaudeSSE(t, w, "content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}`)
+		writeClaudeSSE(t, w, "content_block_stop", `{"type":"content_block_stop","index":0}`)
+		writeClaudeSSE(t, w, "message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`)
+		writeClaudeSSE(t, w, "message_stop", `{"type":"message_stop"}`)
+	}))
+	defer server.Close()
+
+	provider := newTestClaudeProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	var deltas []string
+	resp, err := provider.GenerateStream(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{}, StreamCallbacks{
+		OnTextDelta: func(delta string) {
+			deltas = append(deltas, delta)
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateStream() error = %v", err)
+	}
+	if got := strings.Join(deltas, ""); got != "hello world" {
+		t.Fatalf("streamed deltas = %q, want hello world", got)
+	}
+	if resp.Message.Content != "hello world" {
+		t.Fatalf("Message.Content = %q, want hello world", resp.Message.Content)
+	}
+	if resp.Usage.InputTokens != 10 || resp.Usage.OutputTokens != 2 {
+		t.Fatalf("Usage = %#v, want input 10 output 2", resp.Usage)
+	}
+}
+
+func TestClaudeProviderGenerateStreamRejectsEmptyStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, err := fmt.Fprint(w, `{
+			"id": "msg-test",
+			"type": "message",
+			"role": "assistant",
+			"model": "test-model",
+			"content": [{"type": "text", "text": "non-stream response"}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 1, "output_tokens": 1}
+		}`)
+		if err != nil {
+			t.Fatalf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestClaudeProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	resp, err := provider.GenerateStream(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{}, StreamCallbacks{})
+	if !errors.Is(err, ErrEmptyStream) {
+		t.Fatalf("GenerateStream() error = %v, want ErrEmptyStream", err)
+	}
+	if resp != nil {
+		t.Fatalf("GenerateStream() response = %#v, want nil", resp)
 	}
 }
 
@@ -496,6 +562,17 @@ func writeClaudeTextMessage(t *testing.T, w http.ResponseWriter, content string)
 	}`, content)
 	if err != nil {
 		t.Fatalf("write response: %v", err)
+	}
+}
+
+func writeClaudeSSE(t *testing.T, w http.ResponseWriter, event string, data string) {
+	t.Helper()
+	_, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+	if err != nil {
+		t.Fatalf("write SSE event: %v", err)
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 

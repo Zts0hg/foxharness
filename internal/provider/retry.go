@@ -102,6 +102,12 @@ func shouldRetryProviderError(ctx context.Context, err error) bool {
 	return false
 }
 
+// IsRetryableProviderError reports whether the provider error matches the
+// existing retry policy for transient model-provider failures.
+func IsRetryableProviderError(ctx context.Context, err error) bool {
+	return shouldRetryProviderError(ctx, err)
+}
+
 func errorStatusCode(err error) (int, bool) {
 	for err != nil {
 		if statusCode, ok := statusCodeFromValue(reflect.ValueOf(err)); ok {

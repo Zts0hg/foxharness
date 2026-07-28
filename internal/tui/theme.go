@@ -28,19 +28,19 @@ type tuiTheme struct {
 var builtInThemes = map[string]tuiTheme{
 	"codex": {
 		name:          "codex",
-		bg:            "#0b0d10",
-		panel:         "#15181d",
-		accent:        "#8ec5ff",
-		accentHi:      "#d7e8ff",
-		warn:          "#ffb86b",
-		textPri:       "#e6edf3",
-		textSec:       "#c9d1d9",
-		textMuted:     "#8b949e",
-		textDim:       "#6e7681",
-		divider:       "#30363d",
-		progressEmpty: "#30363d",
-		selectionBg:   "#264f78",
-		selectionFg:   "#ffffff",
+		bg:            "",
+		panel:         "",
+		accent:        "6",
+		accentHi:      "5",
+		warn:          "1",
+		textPri:       "",
+		textSec:       "",
+		textMuted:     "8",
+		textDim:       "8",
+		divider:       "8",
+		progressEmpty: "8",
+		selectionBg:   "6",
+		selectionFg:   "",
 	},
 	"amber": {
 		name:          "amber",
@@ -141,7 +141,7 @@ func applyTheme(name string) string {
 
 func rebuildStyles() {
 	outerStyle = lipgloss.NewStyle().
-		Foreground(cAccent).
+		Foreground(cTextPri).
 		Padding(viewPaddingTop, viewPaddingRight, viewPaddingBottom, viewPaddingLeft)
 	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	headerMetaStyle = lipgloss.NewStyle().Foreground(cTextDim)
@@ -150,10 +150,10 @@ func rebuildStyles() {
 		Foreground(cTextSec).
 		Border(lipgloss.Border{Top: "─", Bottom: "─"}, true, false, true, false).
 		BorderForeground(cTextVeryDim)
-	runningNoticeStyle = lipgloss.NewStyle().Foreground(cWorkingText)
-	workingGlyphStyle = lipgloss.NewStyle().Bold(true).Foreground(cWorkingText)
-	workingTextStyle = lipgloss.NewStyle().Foreground(cWorkingText)
-	workingShimmerStyle = lipgloss.NewStyle().Bold(true).Foreground(cWorkingShimmer)
+	runningNoticeStyle = lipgloss.NewStyle().Foreground(cTextMuted)
+	workingGlyphStyle = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
+	workingTextStyle = lipgloss.NewStyle().Foreground(cTextMuted)
+	workingShimmerStyle = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	suggestionStyle = lipgloss.NewStyle().
 		Foreground(cTextSec).
 		Border(lipgloss.Border{Left: "┊"}, false, false, false, true).
@@ -164,16 +164,10 @@ func rebuildStyles() {
 	suggestionDescriptionStyle = lipgloss.NewStyle().Foreground(cTextMuted)
 	footerStyle = lipgloss.NewStyle().Foreground(cTextMuted)
 	selectionStyle = lipgloss.NewStyle().Foreground(cSelectionFg).Background(cSelectionBg)
-	userBubbleStyle = lipgloss.NewStyle().
-		Foreground(cAccent).
-		Background(cMsgBg).
-		Border(lipgloss.Border{Left: "▌"}, false, false, false, true).
-		BorderForeground(cAccent).
-		BorderBackground(cMsgBg).
-		Padding(0, 1)
+	userBubbleStyle = lipgloss.NewStyle().Foreground(cTextPri)
 	userMetaStyle = lipgloss.NewStyle().Bold(true).Foreground(cAccentHi)
-	assistantLabelStyle = lipgloss.NewStyle().Foreground(cAccentHi)
-	toolLabelStyle = lipgloss.NewStyle().Foreground(cWarn)
+	assistantLabelStyle = lipgloss.NewStyle().Foreground(cTextPri)
+	toolLabelStyle = lipgloss.NewStyle().Foreground(cTextMuted)
 	systemLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(cTextSec)
 	errorLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(cWarn)
 	commandLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
