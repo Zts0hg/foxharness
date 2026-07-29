@@ -75,25 +75,27 @@ func (f *approvalForm) view(width int) string {
 	contentWidth := max(width-inputStyle.GetHorizontalFrameSize()-2, 20)
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("Approve tool call"))
-	b.WriteString("\n\n")
-	b.WriteString(wrapText("Action: "+req.Action, contentWidth) + "\n")
-	b.WriteString(wrapText("CWD: "+req.CWD, contentWidth) + "\n")
-	b.WriteString(wrapText("Scope: exact invocation in this session", contentWidth) + "\n")
-	b.WriteString(fmt.Sprintf("Risk: %s\n", req.Risk))
-	if req.Capabilities.Behavior == toolpolicy.BehaviorHumanOnly && req.Capabilities.Reason != "" {
-		b.WriteString(wrapText("Policy: "+req.Capabilities.Reason, contentWidth) + "\n")
+	if req.Risk != "" {
+		b.WriteString(mutedStyle.Render(fmt.Sprintf("  Risk: %s", req.Risk)))
 	}
-	if f.req.approval.Review != nil {
-		b.WriteString(wrapText("Review: "+f.req.approval.Review.Rationale, contentWidth) + "\n")
+	b.WriteString("\n\n")
+	b.WriteString(wrapText(approvalPrompt(req), contentWidth) + "\n\n")
+	f.writeField(&b, approvalActionTitle(req), approvalActionValue(req), contentWidth)
+	f.writeField(&b, "Directory", req.CWD, contentWidth)
+	f.writeField(&b, "Scope", "Exact invocation in this session", contentWidth)
+	if req.Capabilities.Behavior == toolpolicy.BehaviorHumanOnly && req.Capabilities.Reason != "" {
+		f.writeField(&b, "Policy", req.Capabilities.Reason, contentWidth)
+	}
+	if f.req.approval.Review != nil && !suppressReviewRationale(f.req.approval.Review.Rationale, f.req.approval.ReviewerFailure) {
+		f.writeField(&b, "Review", f.req.approval.Review.Rationale, contentWidth)
 	}
 	if f.req.approval.ReviewerFailure != "" {
-		b.WriteString("Auto-review unavailable after three attempts.\n")
-		b.WriteString(wrapText("Reviewer failure: "+f.req.approval.ReviewerFailure, contentWidth) + "\n")
+		f.writeField(&b, "Auto-review unavailable", f.req.approval.ReviewerFailure, contentWidth)
 	}
+	b.WriteString(mutedStyle.Render("Choose"))
 	b.WriteString("\n")
-	labels := []string{"Yes", "Yes, session", "No", "No + feedback"}
-	for i, label := range labels {
-		b.WriteString(f.renderAction(i, label))
+	for i, option := range approvalOptions() {
+		b.WriteString(f.renderAction(i, option.label, option.description))
 		b.WriteString("\n")
 	}
 	if f.action == 3 {
@@ -115,9 +117,66 @@ func (f *approvalForm) view(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (f *approvalForm) renderAction(index int, label string) string {
-	if f.action == index {
-		return askFocusedStyle.Render("❯ " + label)
+func (f *approvalForm) writeField(b *strings.Builder, title, value string, width int) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
 	}
-	return "  " + label
+	b.WriteString(mutedStyle.Render(title))
+	b.WriteString("\n")
+	wrapped := wrapText(value, max(width-2, 10))
+	b.WriteString(indentLines(wrapped, "  "))
+	b.WriteString("\n\n")
+}
+
+type approvalOption struct {
+	label       string
+	description string
+}
+
+func approvalOptions() []approvalOption {
+	return []approvalOption{
+		{label: "Yes", description: "Allow once"},
+		{label: "Yes, session", description: "Remember for this session"},
+		{label: "No", description: "Deny this request"},
+		{label: "No + feedback", description: "Deny and tell the agent why"},
+	}
+}
+
+func (f *approvalForm) renderAction(index int, label, description string) string {
+	line := fmt.Sprintf("%-14s %s", label, mutedStyle.Render(description))
+	if f.action == index {
+		return askFocusedStyle.Render("❯ " + line)
+	}
+	return "  " + line
+}
+
+func approvalPrompt(req permission.Request) string {
+	if req.ToolName == "bash" {
+		return "Would you like to run the following command?"
+	}
+	return "Would you like to run the following tool call?"
+}
+
+func approvalActionTitle(req permission.Request) string {
+	if req.ToolName == "bash" {
+		return "Command"
+	}
+	return "Action"
+}
+
+func approvalActionValue(req permission.Request) string {
+	action := strings.TrimSpace(req.Action)
+	if req.ToolName == "bash" {
+		action = strings.TrimPrefix(action, "bash ")
+		return "$ " + strings.TrimSpace(action)
+	}
+	return action
+}
+
+func suppressReviewRationale(rationale, reviewerFailure string) bool {
+	if strings.TrimSpace(reviewerFailure) == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(rationale), "auto-review was unavailable")
 }

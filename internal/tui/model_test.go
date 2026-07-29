@@ -3771,11 +3771,13 @@ func TestApprovalFormWideViewKeepsSidebarVisible(t *testing.T) {
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 
 	plainView := stripANSI(m.View())
-	if strings.Count(plainView, "TODO") < 2 {
-		t.Fatalf("approval popup should keep sidebar visible beside the card:\n%s", plainView)
+	for _, want := range []string{"MEMORY", "Popup layout should not cover", "PLAN", "Keep sidebar visible", "TODO", "Review approval"} {
+		if !strings.Contains(plainView, want) {
+			t.Fatalf("approval popup should keep sidebar content visible %q:\n%s", want, plainView)
+		}
 	}
 	for _, line := range strings.Split(plainView, "\n") {
-		if strings.Contains(line, "Approve tool call") && strings.Contains(line, "│") {
+		if strings.Contains(line, "Directory") && strings.Contains(line, "│") {
 			return
 		}
 	}
