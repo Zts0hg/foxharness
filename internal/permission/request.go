@@ -10,6 +10,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 )
 
 // Source identifies the runtime path that produced a tool call.
@@ -24,14 +25,15 @@ const (
 
 // Request is the canonical approval input for one tool invocation.
 type Request struct {
-	ToolCall  schema.ToolCall
-	ToolName  string
-	Arguments string
-	CWD       string
-	Workspace string
-	Action    string
-	Risk      Risk
-	Source    Source
+	ToolCall     schema.ToolCall
+	ToolName     string
+	Arguments    string
+	CWD          string
+	Workspace    string
+	Action       string
+	Risk         Risk
+	Source       Source
+	Capabilities toolpolicy.Assessment
 }
 
 // GrantKey identifies an exact session authorization scope.

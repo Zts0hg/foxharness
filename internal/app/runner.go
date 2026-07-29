@@ -81,9 +81,10 @@ type AgentRunner struct {
 	slashRegistry  *slash.Registry
 	slashExecutor  *slash.Executor
 
-	userAsker             tools.UserAsker
-	planReviewer          tools.PlanReviewer
-	permissionCoordinator *permission.Coordinator
+	userAsker              tools.UserAsker
+	planReviewer           tools.PlanReviewer
+	permissionCoordinator  *permission.Coordinator
+	permissionInstructions []string
 
 	pendingMu          sync.Mutex
 	pendingActivations []string
@@ -159,23 +160,24 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 	}
 
 	ar := &AgentRunner{
-		workDir:               workDir,
-		model:                 cfg.LLM.Model,
-		providerProtocol:      providerProtocol,
-		llmConfig:             cfg.LLM,
-		enableThinking:        cfg.EnableThinking,
-		effortOverride:        cfg.EffortOverride,
-		collaborationMode:     collaboration.ModeDefault,
-		maxTurns:              cfg.MaxTurns,
-		onModelChange:         cfg.OnModelChange,
-		permissionCoordinator: cfg.Permission,
-		store:                 store,
-		autoMemory:            autoMem,
-		manager:               manager,
-		llmProvider:           llmProvider,
-		currentSession:        sess,
-		checkpointer:          cp,
-		slashRegistry:         slashRegistry,
+		workDir:                workDir,
+		model:                  cfg.LLM.Model,
+		providerProtocol:       providerProtocol,
+		llmConfig:              cfg.LLM,
+		enableThinking:         cfg.EnableThinking,
+		effortOverride:         cfg.EffortOverride,
+		collaborationMode:      collaboration.ModeDefault,
+		maxTurns:               cfg.MaxTurns,
+		onModelChange:          cfg.OnModelChange,
+		permissionCoordinator:  cfg.Permission,
+		permissionInstructions: snapshotPermissionInstructions(workDir),
+		store:                  store,
+		autoMemory:             autoMem,
+		manager:                manager,
+		llmProvider:            llmProvider,
+		currentSession:         sess,
+		checkpointer:           cp,
+		slashRegistry:          slashRegistry,
 	}
 	ar.slashExecutor = slash.NewExecutor(
 		slash.WithWorkDir(workDir),
@@ -262,8 +264,59 @@ func (r *AgentRunner) currentSubagentManager() *subagent.Manager {
 	p := r.llmProvider
 	wd := r.workDir
 	permissions := r.permissionCoordinator
+	sess := r.currentSession
 	r.mu.Unlock()
-	return subagent.NewManager(p, wd).WithPermission(permissions)
+	return subagent.NewManager(p, wd).WithPermission(permissions).WithParentEvidence(r.permissionEvidenceProvider(sess, ""))
+}
+
+func (r *AgentRunner) permissionEvidenceProvider(sess *session.Session, currentPrompt string, trustCurrentPrompt ...bool) permission.EvidenceProvider {
+	trustPrompt := true
+	if len(trustCurrentPrompt) > 0 {
+		trustPrompt = trustCurrentPrompt[0]
+	}
+	instructions := append([]string(nil), r.permissionInstructions...)
+	return func(request permission.Request) permission.Evidence {
+		var messages []schema.Message
+		if sess != nil {
+			records, err := session.NewMessageLog(sess).LoadRecords()
+			if err == nil {
+				messages = make([]schema.Message, 0, len(records))
+				for _, record := range records {
+					message := record.Message
+					generatedDisplay := strings.TrimSpace(record.DisplayContent) != "" && record.DisplayContent != message.Content
+					if generatedDisplay {
+						messages = append(messages, schema.Message{Role: schema.RoleUser, Content: record.DisplayContent})
+					}
+					if message.Role == schema.RoleUser && message.ToolCallID == "" && (record.IsMeta || record.IsCompactSummary || record.IsVisibleInTranscriptOnly || generatedDisplay) {
+						message.Role = schema.RoleSystem
+					}
+					messages = append(messages, message)
+				}
+			}
+		}
+		if trustPrompt && strings.TrimSpace(currentPrompt) != "" && !containsDirectUserMessage(messages, currentPrompt) {
+			messages = append(messages, schema.Message{Role: schema.RoleUser, Content: currentPrompt})
+		}
+		return permission.BuildEvidence(messages, instructions, request)
+	}
+}
+
+func snapshotPermissionInstructions(workDir string) []string {
+	content, err := os.ReadFile(filepath.Join(workDir, "AGENTS.md"))
+	if err != nil || len(content) == 0 {
+		return nil
+	}
+	return []string{string(content)}
+}
+
+func containsDirectUserMessage(messages []schema.Message, content string) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if message.Role == schema.RoleUser && message.ToolCallID == "" && message.Content == content {
+			return true
+		}
+	}
+	return false
 }
 
 // currentSessionIDLocked returns the current session id, or "" when no
@@ -438,17 +491,11 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 		tracker = hooks.NewTracker()
 	}
 
-	toolRegistry := r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID)
-	if r.permissionCoordinator != nil {
-		reviewMessages := []schema.Message{{Role: schema.RoleUser, Content: userPrompt}}
-		r.permissionCoordinator.SetEvidenceProvider(func(request permission.Request) permission.Evidence {
-			return permission.BuildEvidence(reviewMessages, nil, request)
-		})
-		defer r.permissionCoordinator.SetEvidenceProvider(nil)
-	}
+	evidenceProvider := r.permissionEvidenceProvider(sess, userPrompt, displayPrompt == "" || displayPrompt == userPrompt)
+	toolRegistry := r.buildRegistry(sess, llmProvider, cp, getCurrentMessageID, evidenceProvider)
 	var planRun *planLifecycle
 	if collaborationMode == collaboration.ModeFormalPlan {
-		planRun = r.buildPlanLifecycle(sess, store, toolRegistry)
+		planRun = r.buildPlanLifecycle(sess, store, toolRegistry, evidenceProvider)
 		toolRegistry = planRun
 	}
 	if len(allowedTools) > 0 {
@@ -966,6 +1013,11 @@ type subagentForkRunner struct {
 	getSession func() string
 }
 
+func (s *subagentForkRunner) PermissionEnforced() bool {
+	manager := s.getManager()
+	return manager != nil && manager.PermissionEnforced()
+}
+
 func (s *subagentForkRunner) Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error) {
 	_ = agentType
 	mgr := s.getManager()
@@ -997,7 +1049,7 @@ func extractFilePath(raw []byte) string {
 	return args.Path
 }
 
-func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.LLMProvider, cp checkpoint.Checkpointer, getMessageID func() string) tools.Registry {
+func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.LLMProvider, cp checkpoint.Checkpointer, getMessageID func() string, evidenceProviders ...permission.EvidenceProvider) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Use(middleware.NewCheckpointMiddleware(cp, getMessageID, r.workDir))
 	registry.Register(tools.NewReadFileTool(r.workDir))
@@ -1011,7 +1063,11 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 	permissions := r.permissionCoordinator
 	r.mu.Unlock()
 
-	subManager := subagent.NewManager(llmProvider, r.workDir).WithPermission(permissions)
+	var evidenceProvider permission.EvidenceProvider
+	if len(evidenceProviders) > 0 {
+		evidenceProvider = evidenceProviders[0]
+	}
+	subManager := subagent.NewManager(llmProvider, r.workDir).WithPermission(permissions).WithParentEvidence(evidenceProvider)
 	registry.Register(subagent.NewTool(subManager, sess.ID))
 
 	r.mu.Lock()
@@ -1029,10 +1085,10 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 	if userAsker != nil {
 		registry.Register(tools.NewAskUserQuestionTool(userAsker))
 	}
-	return permission.DecorateRegistry(registry, permissions)
+	return permission.DecorateRegistry(registry, permissions, evidenceProviders...)
 }
 
-func (r *AgentRunner) buildPlanLifecycle(sess *session.Session, store *memory.Store, defaultRegistry tools.Registry) *planLifecycle {
+func (r *AgentRunner) buildPlanLifecycle(sess *session.Session, store *memory.Store, defaultRegistry tools.Registry, evidenceProviders ...permission.EvidenceProvider) *planLifecycle {
 	r.mu.Lock()
 	userAsker := r.userAsker
 	planReviewer := r.planReviewer
@@ -1045,7 +1101,7 @@ func (r *AgentRunner) buildPlanLifecycle(sess *session.Session, store *memory.St
 	checklistRegistry.Register(tools.NewReadTodoTool(sess.RootDir))
 	checklistRegistry.Register(tools.NewUpdateTodoTool(sess.RootDir))
 	if r.permissionCoordinator != nil {
-		checklistRegistry = permission.DecorateRegistry(checklistRegistry, r.permissionCoordinator)
+		checklistRegistry = permission.DecorateRegistry(checklistRegistry, r.permissionCoordinator, evidenceProviders...)
 	}
 
 	lifecycle := newPlanLifecycle(nil, checklistRegistry, defaultRegistry, func() {
@@ -1057,7 +1113,7 @@ func (r *AgentRunner) buildPlanLifecycle(sess *session.Session, store *memory.St
 	formalRegistry.Register(tools.NewAskUserQuestionTool(userAsker))
 	formalRegistry.Register(tools.NewSubmitPlanTool(store, planReviewer, lifecycle.approve))
 	if r.permissionCoordinator != nil {
-		formalRegistry = permission.DecorateRegistry(formalRegistry, r.permissionCoordinator)
+		formalRegistry = permission.DecorateRegistry(formalRegistry, r.permissionCoordinator, evidenceProviders...)
 	}
 	lifecycle.setFormalRegistry(formalRegistry)
 	return lifecycle

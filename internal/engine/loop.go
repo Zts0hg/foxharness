@@ -95,6 +95,9 @@ type AgentEngine struct {
 	// fs is the FileSystem used for tool-result persistence. Defaults to
 	// toolresult.OSFileSystem; tests can swap this via WithFileSystem.
 	fs toolresult.FileSystem
+
+	streamingMu       sync.RWMutex
+	streamingDisabled bool
 }
 
 type providerMetadata interface {
@@ -546,6 +549,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				"thinking",
 				contextHistory,
 				nil,
+				nil,
 			)
 			if err != nil {
 				wrapped := fmt.Errorf("Thinking 阶段生成失败: %w", err)
@@ -589,6 +593,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			"action",
 			contextHistory,
 			availableTools,
+			reporter,
 		)
 		if err != nil && e.compactor != nil && provider.IsPromptTooLong(err) {
 			log.Printf("[Engine] API 拒绝请求（prompt 过长），尝试响应式压缩后重试...")
@@ -607,7 +612,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				actionResponse, err = e.callModel(
 					ctx, sess, recorder, aggregator, estimator, tracer,
 					turnSpan.ID(), turnCount, "action",
-					contextHistory, availableTools,
+					contextHistory, availableTools, reporter,
 				)
 			}
 		}
@@ -871,6 +876,7 @@ func (e *AgentEngine) callModel(
 	phase string,
 	messages []schema.Message,
 	tools []schema.ToolDefinition,
+	reporter Reporter,
 ) (*schema.Message, error) {
 	attrs := map[string]any{
 		"phase":       phase,
@@ -890,7 +896,7 @@ func (e *AgentEngine) callModel(
 		metrics.EstimateToolDefinitions(estimator, tools)
 
 	started := time.Now()
-	resp, err := e.generate(ctx, messages, tools)
+	resp, err := e.generate(ctx, messages, tools, reporter)
 	duration := time.Since(started)
 	var message *schema.Message
 	if resp != nil && resp.Message != nil {
@@ -943,8 +949,52 @@ func (e *AgentEngine) callModel(
 	return message, nil
 }
 
-func (e *AgentEngine) generate(ctx context.Context, messages []schema.Message, tools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+func (e *AgentEngine) generate(ctx context.Context, messages []schema.Message, tools []schema.ToolDefinition, reporter Reporter) (*provider.GenerateResponse, error) {
 	effort := strings.TrimSpace(e.config.EffortOverride)
+	options := provider.GenerateOptions{Effort: effort}
+	if deltaReporter, ok := reporter.(MessageDeltaReporter); ok && !e.isStreamingDisabled() {
+		if streamer, ok := e.provider.(provider.StreamGenerator); ok {
+			emittedDelta := false
+			resp, err := streamer.GenerateStream(ctx, messages, tools, options, provider.StreamCallbacks{
+				OnTextDelta: func(delta string) {
+					emittedDelta = true
+					deltaReporter.OnMessageDelta(ctx, delta)
+				},
+			})
+			if err == nil || emittedDelta {
+				return resp, err
+			}
+			if provider.IsEmptyStream(err) {
+				e.disableStreaming()
+				return e.generateWithoutStreaming(ctx, messages, tools, options)
+			}
+			if provider.IsStreamingUnsupported(err) {
+				e.disableStreaming()
+				return e.generateWithoutStreaming(ctx, messages, tools, options)
+			}
+			if provider.IsRetryableProviderError(ctx, err) {
+				return e.generateWithoutStreaming(ctx, messages, tools, options)
+			}
+			return resp, err
+		}
+	}
+	return e.generateWithoutStreaming(ctx, messages, tools, options)
+}
+
+func (e *AgentEngine) isStreamingDisabled() bool {
+	e.streamingMu.RLock()
+	defer e.streamingMu.RUnlock()
+	return e.streamingDisabled
+}
+
+func (e *AgentEngine) disableStreaming() {
+	e.streamingMu.Lock()
+	defer e.streamingMu.Unlock()
+	e.streamingDisabled = true
+}
+
+func (e *AgentEngine) generateWithoutStreaming(ctx context.Context, messages []schema.Message, tools []schema.ToolDefinition, options provider.GenerateOptions) (*provider.GenerateResponse, error) {
+	effort := strings.TrimSpace(options.Effort)
 	if effort == "" {
 		return e.provider.Generate(ctx, messages, tools)
 	}
@@ -952,5 +1002,5 @@ func (e *AgentEngine) generate(ctx context.Context, messages []schema.Message, t
 	if !ok {
 		return nil, fmt.Errorf("provider does not support effort options")
 	}
-	return withOptions.GenerateWithOptions(ctx, messages, tools, provider.GenerateOptions{Effort: effort})
+	return withOptions.GenerateWithOptions(ctx, messages, tools, options)
 }

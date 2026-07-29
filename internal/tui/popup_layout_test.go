@@ -56,7 +56,7 @@ func optionLineIndex(text, label string) int {
 		trimmed := strings.TrimSpace(line)
 		trimmed = strings.TrimPrefix(trimmed, "❯ ")
 		trimmed = strings.TrimSpace(trimmed)
-		if trimmed == label {
+		if trimmed == label || strings.HasPrefix(trimmed, label+" ") {
 			return i
 		}
 	}

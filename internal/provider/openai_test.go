@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -55,6 +56,118 @@ func TestOpenAIProviderReturnsUsage(t *testing.T) {
 	}
 	if resp.Usage.OutputTokens != 500 {
 		t.Fatalf("Usage.OutputTokens = %d, want 500", resp.Usage.OutputTokens)
+	}
+}
+
+func TestOpenAIProviderGenerateStreamEmitsTextDeltas(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("request path = %q, want /chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeOpenAISSE(t, w, `{"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hello "},"finish_reason":""}]}`)
+		writeOpenAISSE(t, w, `{"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[{"index":0,"delta":{"content":"world"},"finish_reason":""}]}`)
+		writeOpenAISSE(t, w, `{"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+		_, err := fmt.Fprint(w, "data: [DONE]\n\n")
+		if err != nil {
+			t.Fatalf("write done event: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestOpenAIProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	var deltas []string
+	resp, err := provider.GenerateStream(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{}, StreamCallbacks{
+		OnTextDelta: func(delta string) {
+			deltas = append(deltas, delta)
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateStream() error = %v", err)
+	}
+	if got := strings.Join(deltas, ""); got != "hello world" {
+		t.Fatalf("streamed deltas = %q, want hello world", got)
+	}
+	if resp.Message.Content != "hello world" {
+		t.Fatalf("Message.Content = %q, want hello world", resp.Message.Content)
+	}
+}
+
+func TestOpenAIProviderGenerateStreamRejectsEmptyStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, err := fmt.Fprint(w, `{
+			"id": "chatcmpl-test",
+			"object": "chat.completion",
+			"created": 0,
+			"model": "test-model",
+			"choices": [{
+				"index": 0,
+				"message": {"role": "assistant", "content": "non-stream response"},
+				"finish_reason": "stop"
+			}]
+		}`)
+		if err != nil {
+			t.Fatalf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestOpenAIProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	resp, err := provider.GenerateStream(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{}, StreamCallbacks{})
+	if !errors.Is(err, ErrEmptyStream) {
+		t.Fatalf("GenerateStream() error = %v, want ErrEmptyStream", err)
+	}
+	if resp != nil {
+		t.Fatalf("GenerateStream() response = %#v, want nil", resp)
+	}
+}
+
+func TestOpenAIProviderGenerateStreamRetriesWithoutStreamOptions(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&attempts, 1)
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if attempt == 1 {
+			if _, ok := body["stream_options"]; !ok {
+				t.Fatalf("first streaming request body missing stream_options: %#v", body)
+			}
+			http.Error(w, `{"error":{"message":"Unrecognized request argument supplied: stream_options","type":"invalid_request_error"}}`, http.StatusBadRequest)
+			return
+		}
+		if _, ok := body["stream_options"]; ok {
+			t.Fatalf("fallback streaming request still included stream_options: %#v", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeOpenAISSE(t, w, `{"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":"recovered"},"finish_reason":""}]}`)
+		_, err := fmt.Fprint(w, "data: [DONE]\n\n")
+		if err != nil {
+			t.Fatalf("write done event: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestOpenAIProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	var deltas []string
+	resp, err := provider.GenerateStream(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{}, StreamCallbacks{
+		OnTextDelta: func(delta string) {
+			deltas = append(deltas, delta)
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateStream() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if got := strings.Join(deltas, ""); got != "recovered" {
+		t.Fatalf("streamed deltas = %q, want recovered", got)
+	}
+	if resp.Message.Content != "recovered" {
+		t.Fatalf("Message.Content = %q, want recovered", resp.Message.Content)
 	}
 }
 
@@ -227,6 +340,66 @@ func TestOpenAIProviderGenerateWithOptionsSendsReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestOpenAIProviderGenerateWithOptionsSendsStructuredOutputSchema(t *testing.T) {
+	requests := make(chan openAIRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body openAIRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- body
+		writeChatCompletion(t, w, "ok")
+	}))
+	defer server.Close()
+
+	jsonSchema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"decision": map[string]any{"type": "string"}},
+		"required":   []any{"decision"},
+	}
+	provider := newTestOpenAIProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	_, err := provider.GenerateWithOptions(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{
+		StructuredOutput: &StructuredOutputOptions{Name: "permission_review", Schema: jsonSchema, Strict: true},
+	})
+	if err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+
+	req := <-requests
+	if req.ResponseFormat == nil {
+		t.Fatal("response_format = nil, want json_schema")
+	}
+	if req.ResponseFormat.Type != "json_schema" {
+		t.Fatalf("response_format.type = %q, want json_schema", req.ResponseFormat.Type)
+	}
+	if req.ResponseFormat.JSONSchema.Name != "permission_review" {
+		t.Fatalf("response_format.json_schema.name = %q, want permission_review", req.ResponseFormat.JSONSchema.Name)
+	}
+	if req.ResponseFormat.JSONSchema.Strict == nil || !*req.ResponseFormat.JSONSchema.Strict {
+		t.Fatalf("response_format.json_schema.strict = %v, want true", req.ResponseFormat.JSONSchema.Strict)
+	}
+	if req.ResponseFormat.JSONSchema.Schema["type"] != "object" {
+		t.Fatalf("response_format.json_schema.schema = %#v, want object schema", req.ResponseFormat.JSONSchema.Schema)
+	}
+}
+
+func TestOpenAIProviderMarksUnsupportedStructuredOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"response_format json_schema is not supported by this model","type":"invalid_request_error","param":"response_format","code":"unsupported_parameter"}}`)
+	}))
+	defer server.Close()
+
+	p := newTestOpenAIProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	_, err := p.GenerateWithOptions(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{
+		StructuredOutput: &StructuredOutputOptions{Name: "permission_review", Schema: map[string]any{"type": "object"}, Strict: true},
+	})
+	if !errors.Is(err, ErrStructuredOutputUnsupported) {
+		t.Fatalf("GenerateWithOptions() error = %v, want ErrStructuredOutputUnsupported", err)
+	}
+}
+
 func TestOpenAIProviderGenerateOmitsReasoningEffort(t *testing.T) {
 	requests := make(chan openAIRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -378,10 +551,18 @@ func TestNewProviderOpenAIAuthNoneIgnoresOpenAIEnvironmentDefaults(t *testing.T)
 type openAIRequest struct {
 	Model           string  `json:"model"`
 	ReasoningEffort *string `json:"reasoning_effort"`
-	Authorization   string
-	XAPIKey         string
-	Organization    string
-	LeakedSecret    string
+	ResponseFormat  *struct {
+		Type       string `json:"type"`
+		JSONSchema struct {
+			Name   string         `json:"name"`
+			Schema map[string]any `json:"schema"`
+			Strict *bool          `json:"strict"`
+		} `json:"json_schema"`
+	} `json:"response_format"`
+	Authorization string
+	XAPIKey       string
+	Organization  string
+	LeakedSecret  string
 }
 
 func newTestOpenAIProvider(baseURL string, retry RetryConfig) *OpenAIProvider {
@@ -418,6 +599,17 @@ func writeChatCompletion(t *testing.T, w http.ResponseWriter, content string) {
 	}`, strings.ReplaceAll(content, "\n", " "))
 	if err != nil {
 		t.Fatalf("write response: %v", err)
+	}
+}
+
+func writeOpenAISSE(t *testing.T, w http.ResponseWriter, data string) {
+	t.Helper()
+	_, err := fmt.Fprintf(w, "data: %s\n\n", data)
+	if err != nil {
+		t.Fatalf("write SSE event: %v", err)
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 

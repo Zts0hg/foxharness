@@ -563,10 +563,10 @@ func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"hello, what's the day today?",
-		"⬢ Bash (date)",
-		"└─ 2026年 5月17日",
-		"answer: hello, what's the day today?",
+		"› hello, what's the day today?",
+		"⬢ Ran date",
+		"  └ 2026年 5月17日",
+		"• answer: hello, what's the day today?",
 	} {
 		if !strings.Contains(plainView, want) {
 			t.Fatalf("view missing compact fragment %q:\n%s", want, view)
@@ -580,11 +580,11 @@ func TestToolCallRenderingUsesReferenceStyleLabels(t *testing.T) {
 		body string
 		want string
 	}{
-		{name: "read", body: formatToolInvocation("read_file", `{"path":"internal/foo.go"}`), want: "⬢ Read (internal/foo.go)"},
-		{name: "write", body: formatToolInvocation("write_file", `{"path":"cmd/app.go"}`), want: "⬢ Write (cmd/app.go)"},
-		{name: "edit", body: formatToolInvocation("edit_file", `{"path":"internal/app.go"}`), want: "⬢ Edit (internal/app.go)"},
-		{name: "read todo", body: formatToolInvocation("read_todo", `{}`), want: "⬢ Read TODO"},
-		{name: "update todo", body: formatToolInvocation("update_todo", `{"content":"# TODO"}`), want: "⬢ Update TODO"},
+		{name: "read_file", body: formatToolInvocation("read_file", `{"path":"internal/foo.go"}`), want: "⬢ Explored internal/foo.go"},
+		{name: "write_file", body: formatToolInvocation("write_file", `{"path":"cmd/app.go"}`), want: "⬢ Wrote cmd/app.go"},
+		{name: "edit_file", body: formatToolInvocation("edit_file", `{"path":"internal/app.go"}`), want: "⬢ Edited internal/app.go"},
+		{name: "read_todo", body: formatToolInvocation("read_todo", `{}`), want: "⬢ Explored TODO"},
+		{name: "update_todo", body: formatToolInvocation("update_todo", `{"content":"# TODO"}`), want: "⬢ Ran Update TODO"},
 	}
 
 	for _, tt := range tests {
@@ -608,7 +608,7 @@ func TestToolInvocationMalformedKnownArgsFallsBackSafely(t *testing.T) {
 	}
 }
 
-func TestToolResultRenderingUsesTreePrefix(t *testing.T) {
+func TestToolResultRenderingUsesCodexOutputPrefix(t *testing.T) {
 	rendered := renderEntry(entry{
 		role:  "tool",
 		title: "result bash",
@@ -616,7 +616,7 @@ func TestToolResultRenderingUsesTreePrefix(t *testing.T) {
 	}, 100)
 	plain := stripANSI(rendered)
 
-	for _, want := range []string{"└─ first line", "   second line"} {
+	for _, want := range []string{"  └ first line", "    second line"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("rendered tool result missing %q:\n%s", want, rendered)
 		}
@@ -628,7 +628,7 @@ func TestToolResultRenderingShowsEmptyOutputFallback(t *testing.T) {
 		role:  "tool",
 		title: "result bash",
 	}, 100)
-	if plain := stripANSI(rendered); !strings.Contains(plain, "└─ (no output)") {
+	if plain := stripANSI(rendered); !strings.Contains(plain, "  └ (no output)") {
 		t.Fatalf("rendered empty tool result missing fallback:\n%s", rendered)
 	}
 }
@@ -639,17 +639,17 @@ func TestToolResultRenderingCollapsesLongOutput(t *testing.T) {
 	m.entries = []entry{{
 		role:  "tool",
 		title: "result bash",
-		body:  "line 1\nline 2\nline 3\nline 4\nline 5",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7",
 	}}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{"└─ line 1", "   line 2", "   line 3", "+2 lines (ctrl+o to expand)"} {
+	for _, want := range []string{"  └ line 1", "    line 2", "    line 5", "… +2 lines (ctrl+o to expand)"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("collapsed tool result missing %q:\n%s", want, plain)
 		}
 	}
-	if strings.Contains(plain, "line 4") || strings.Contains(plain, "line 5") {
-		t.Fatalf("collapsed tool result should hide lines after third:\n%s", plain)
+	if strings.Contains(plain, "line 6") || strings.Contains(plain, "line 7") {
+		t.Fatalf("collapsed tool result should hide lines after fifth:\n%s", plain)
 	}
 }
 
@@ -659,7 +659,7 @@ func TestCtrlOTogglesLongToolOutputExpansion(t *testing.T) {
 	m.entries = []entry{{
 		role:  "tool",
 		title: "result bash",
-		body:  "line 1\nline 2\nline 3\nline 4\nline 5",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7",
 	}}
 
 	m, _ = update(t, m, keyCtrlO())
@@ -675,7 +675,7 @@ func TestCtrlOTogglesLongToolOutputExpansion(t *testing.T) {
 
 	m, _ = update(t, m, keyCtrlO())
 	collapsed := stripANSI(m.View())
-	if !strings.Contains(collapsed, "+2 lines (ctrl+o to expand)") || strings.Contains(collapsed, "line 5") {
+	if !strings.Contains(collapsed, "… +2 lines (ctrl+o to expand)") || strings.Contains(collapsed, "line 7") {
 		t.Fatalf("second ctrl+o should collapse output again:\n%s", collapsed)
 	}
 }
@@ -686,17 +686,17 @@ func TestShellCommandRenderingCollapsesLongOutput(t *testing.T) {
 	m.entries = []entry{{
 		role:  "command",
 		title: "Shell: !printf lines",
-		body:  "line 1\nline 2\nline 3\nline 4\nline 5",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7",
 	}}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{"Shell: !printf lines", "line 1", "line 2", "line 3", "+2 lines (ctrl+o to expand)"} {
+	for _, want := range []string{"• Ran printf lines", "line 1", "line 2", "line 5", "… +2 lines (ctrl+o to expand)"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("collapsed shell command output missing %q:\n%s", want, plain)
 		}
 	}
-	if strings.Contains(plain, "line 4") || strings.Contains(plain, "line 5") {
-		t.Fatalf("collapsed shell command output should hide lines after third:\n%s", plain)
+	if strings.Contains(plain, "line 6") || strings.Contains(plain, "line 7") {
+		t.Fatalf("collapsed shell command output should hide lines after fifth:\n%s", plain)
 	}
 }
 
@@ -740,6 +740,9 @@ func TestShellCommandFailureRenderingUsesErrorState(t *testing.T) {
 	if !strings.Contains(stripANSI(failed), "exit status 1") {
 		t.Fatalf("failed shell command rendering lost output:\n%s", failed)
 	}
+	if !strings.Contains(stripANSI(failed), "• Failed false") {
+		t.Fatalf("failed shell command rendering missing Codex failure label:\n%s", failed)
+	}
 }
 
 func TestShellCommandRenderingPreservesWhitespace(t *testing.T) {
@@ -749,10 +752,10 @@ func TestShellCommandRenderingPreservesWhitespace(t *testing.T) {
 		body:  "  key: value  \n\n",
 	}, 80, true))
 
-	if !strings.Contains(rendered, "    key: value  ") {
+	if !strings.Contains(rendered, "  └   key: value  ") {
 		t.Fatalf("rendered shell output did not preserve leading/trailing spaces:\n%q", rendered)
 	}
-	if !strings.Contains(rendered, "\n  \n") {
+	if !strings.Contains(rendered, "\n    \n") {
 		t.Fatalf("rendered shell output did not preserve blank output line:\n%q", rendered)
 	}
 }
@@ -800,11 +803,34 @@ func TestAssistantMessagesRenderMarkdown(t *testing.T) {
 			t.Fatalf("rendered assistant markdown missing %q:\n%s", want, rendered)
 		}
 	}
+	if !strings.Contains(plainRendered, "• Today is") {
+		t.Fatalf("rendered assistant markdown missing Codex bullet prefix:\n%s", rendered)
+	}
 	if strings.Contains(plainRendered, "15:38:44") {
 		t.Fatalf("rendered assistant markdown contains timestamp:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "\x1b[") {
 		t.Fatalf("rendered assistant markdown missing terminal styling escape codes:\n%s", rendered)
+	}
+}
+
+func TestRunEventStreamingAssistantDeltasReplaceWithFinalMessage(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = nil
+
+	m.applyRunEvent(runEventMsg{role: "assistant", title: "stream", body: "hello ", delta: true})
+	m.applyRunEvent(runEventMsg{role: "assistant", title: "stream", body: "world", delta: true})
+	if len(m.entries) != 1 || m.entries[0].body != "hello world" || m.entries[0].title != "stream" {
+		t.Fatalf("streaming entries = %#v, want one accumulated stream entry", m.entries)
+	}
+
+	m.applyRunEvent(runEventMsg{role: "assistant", title: "foxharness", body: "hello **world**", streamFinal: true})
+	if len(m.entries) != 1 {
+		t.Fatalf("final stream replacement entries len = %d, want 1: %#v", len(m.entries), m.entries)
+	}
+	if m.entries[0].title != "foxharness" || m.entries[0].body != "hello **world**" {
+		t.Fatalf("final stream replacement entry = %#v", m.entries[0])
 	}
 }
 
@@ -824,11 +850,11 @@ func TestUserEntryRendersOnlyHighlightedBody(t *testing.T) {
 	if !strings.Contains(plainRendered, "inspect go.mod") {
 		t.Fatalf("rendered user entry missing body:\n%s", rendered)
 	}
-	if !strings.HasPrefix(plainRendered, "▌ ") {
-		t.Fatalf("rendered user entry missing v5 left bar:\n%s", rendered)
+	if strings.Contains(plainRendered, "▌") {
+		t.Fatalf("rendered user entry still contains old left bar:\n%s", rendered)
 	}
-	if got := lipgloss.Width(strings.Split(plainRendered, "\n")[0]); got != 80 {
-		t.Fatalf("rendered user entry width = %d, want 80:\n%s", got, rendered)
+	if !strings.Contains(plainRendered, "\n› inspect go.mod\n") {
+		t.Fatalf("rendered user entry missing Codex prompt prefix:\n%s", rendered)
 	}
 }
 
@@ -2045,8 +2071,8 @@ func TestTranscriptDragSelectionClampsOutsideBounds(t *testing.T) {
 	m, _ = update(t, m, tea.MouseMsg{X: -10, Y: -10, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
 	m, _ = update(t, m, tea.MouseMsg{X: -10, Y: -10, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
 
-	if *copied != "alpha " {
-		t.Fatalf("copied = %q, want %q", *copied, "alpha ")
+	if *copied != "\n• alpha " {
+		t.Fatalf("copied = %q, want %q", *copied, "\n• alpha ")
 	}
 }
 
@@ -2643,6 +2669,7 @@ func TestModelInputHistoryWithArrowKeys(t *testing.T) {
 func TestModelSlashCommandInputHistoryWithArrowKeys(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
+	m.inputHistory = []string{"earlier task"}
 
 	m, _ = update(t, m, keyRunes("/permissions"))
 	m, _ = update(t, m, keyEnter())
@@ -2658,6 +2685,11 @@ func TestModelSlashCommandInputHistoryWithArrowKeys(t *testing.T) {
 	m, _ = update(t, m, keyUp())
 	if got := string(m.input); got != "/permissions" {
 		t.Fatalf("slash command history recall = %q, want /permissions", got)
+	}
+
+	m, _ = update(t, m, keyUp())
+	if got := string(m.input); got != "earlier task" {
+		t.Fatalf("history before slash command = %q, want earlier task", got)
 	}
 }
 
@@ -3639,6 +3671,31 @@ func TestModelRunError(t *testing.T) {
 	}
 }
 
+func TestModelRunCancellationShowsCodexInterruptedNotice(t *testing.T) {
+	runner := newFakeRunner()
+	runner.runErr = context.Canceled
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("cancelled task"))
+	m, cmd := update(t, m, keyEnter())
+	m, _ = update(t, m, cmd())
+
+	if m.running {
+		t.Fatalf("model running = true after cancelled run")
+	}
+	if m.status != "Conversation interrupted" {
+		t.Fatalf("status = %q, want Conversation interrupted", m.status)
+	}
+	plainView := stripANSI(m.View())
+	if strings.Contains(plainView, "ERROR run failed") || strings.Contains(plainView, "context canceled") {
+		t.Fatalf("cancelled run rendered as error:\n%s", plainView)
+	}
+	if !strings.Contains(plainView, "Conversation interrupted - tell the model what to do differently.") ||
+		!strings.Contains(plainView, "Hit /feedback to report the issue.") {
+		t.Fatalf("cancelled run missing Codex interrupted notice:\n%s", plainView)
+	}
+}
+
 func TestModelViewContainsSessionAndInput(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{Model: "fake-model"})
@@ -3692,6 +3749,39 @@ func TestModelWideViewRendersSidebarDocuments(t *testing.T) {
 	if strings.Contains(plainView, "stale project plan") || strings.Contains(plainView, "stale project todo") {
 		t.Fatalf("sidebar should use session plan/todo instead of project files:\n%s", plainView)
 	}
+}
+
+func TestApprovalFormWideViewKeepsSidebarVisible(t *testing.T) {
+	workDir := t.TempDir()
+	sessionDir := t.TempDir()
+	writeTestFile(t, sessionDir, "PLAN.md", "- Keep sidebar visible")
+	writeTestFile(t, sessionDir, "TODO.md", "- [ ] Review approval")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	runner.sessionDir = sessionDir
+	runner.memoryIndex = "Popup layout should not cover the sidebar."
+	m := NewModel(context.Background(), runner, Config{})
+	m.approvalForm = newApprovalForm(permissionRequest{approval: permission.ApprovalRequest{Request: permission.Request{
+		ToolName: "bash",
+		Action:   "bash git status --short",
+		CWD:      workDir,
+		Risk:     permission.RiskLow,
+	}}})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+
+	plainView := stripANSI(m.View())
+	for _, want := range []string{"MEMORY", "Popup layout should not cover", "PLAN", "Keep sidebar visible", "TODO", "Review approval"} {
+		if !strings.Contains(plainView, want) {
+			t.Fatalf("approval popup should keep sidebar content visible %q:\n%s", want, plainView)
+		}
+	}
+	for _, line := range strings.Split(plainView, "\n") {
+		if strings.Contains(line, "Directory") && strings.Contains(line, "│") {
+			return
+		}
+	}
+	t.Fatalf("approval card row did not render beside the sidebar:\n%s", plainView)
 }
 
 func TestSidebarBoxHeightsSplitDocumentAreaEvenly(t *testing.T) {
@@ -4418,11 +4508,11 @@ func TestRenderWorkingTextShimmers(t *testing.T) {
 	if len([]rune(secondBefore)) <= len([]rune(firstBefore)) {
 		t.Fatalf("shimmer should move left-to-right: first before=%q second before=%q", firstBefore, secondBefore)
 	}
-	if workingTextStyle.GetForeground() != lipgloss.Color(claudeWorkingHex) {
-		t.Fatalf("working text foreground = %q, want Claude working color %q", workingTextStyle.GetForeground(), claudeWorkingHex)
+	if workingTextStyle.GetForeground() != cTextMuted {
+		t.Fatalf("working text foreground = %q, want muted Codex foreground %q", workingTextStyle.GetForeground(), cTextMuted)
 	}
-	if workingShimmerStyle.GetForeground() != lipgloss.Color(claudeShimmerHex) {
-		t.Fatalf("working shimmer foreground = %q, want Claude shimmer color %q", workingShimmerStyle.GetForeground(), claudeShimmerHex)
+	if workingShimmerStyle.GetForeground() != cAccent {
+		t.Fatalf("working shimmer foreground = %q, want Codex accent %q", workingShimmerStyle.GetForeground(), cAccent)
 	}
 }
 
@@ -4775,7 +4865,7 @@ func findTranscriptText(t *testing.T, m Model, text string) (int, int) {
 	for line := layout.visibleStart; line < layout.visibleEnd; line++ {
 		col := strings.Index(layout.plainLines[line], text)
 		if col >= 0 {
-			return line - layout.visibleStart, col
+			return line - layout.visibleStart, lipgloss.Width(layout.plainLines[line][:col])
 		}
 	}
 	t.Fatalf("did not find %q in visible transcript lines: %#v", text, layout.plainLines[layout.visibleStart:layout.visibleEnd])
@@ -5022,7 +5112,7 @@ func countEntriesContaining(entries []entry, role string, text string) int {
 	return count
 }
 
-var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+var ansiEscapePattern = regexp.MustCompile(`\x1b\][^\x1b]*(?:\x1b\\|\x07)|\x1b\[[0-?]*[ -/]*[@-~]`)
 
 func stripANSI(s string) string {
 	return ansiEscapePattern.ReplaceAllString(s, "")

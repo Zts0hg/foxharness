@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 )
 
 // aliasStubTool is a minimal BaseTool plus AliasableTool used to exercise the
@@ -90,11 +91,66 @@ func TestRegistryIsParallelSafeViaAlias(t *testing.T) {
 	}
 }
 
+func TestRegistryAssessesPermissionViaAlias(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&permissionAliasStub{aliasStubTool: aliasStubTool{name: "observe", aliases: []string{"Observe"}}})
+
+	permissionRegistry, ok := r.(PermissionRegistry)
+	if !ok {
+		t.Fatal("registry does not expose permission assessments")
+	}
+	assessment, found, err := permissionRegistry.AssessPermission("Observe", toolpolicy.Context{}, json.RawMessage(`{"target":"status"}`))
+	if err != nil {
+		t.Fatalf("AssessPermission() error = %v", err)
+	}
+	if !found {
+		t.Fatal("AssessPermission() found = false, want true")
+	}
+	if assessment.Behavior != toolpolicy.BehaviorFastAllow || assessment.Action != "observe status" {
+		t.Fatalf("assessment = %+v, want canonical tool assessment", assessment)
+	}
+}
+
+func TestRegistryReportsMissingPermissionAssessor(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&aliasStubTool{name: "unclassified"})
+
+	permissionRegistry := r.(PermissionRegistry)
+	_, found, err := permissionRegistry.AssessPermission("unclassified", toolpolicy.Context{}, nil)
+	if err != nil {
+		t.Fatalf("AssessPermission() error = %v", err)
+	}
+	if found {
+		t.Fatal("AssessPermission() found = true for tool without capability metadata")
+	}
+}
+
 // parallelAliasStub implements both AliasableTool and ParallelSafeTool so the
 // registry's alias resolution can be exercised through IsParallelSafe.
 type parallelAliasStub struct {
 	name    string
 	aliases []string
+}
+
+type permissionAliasStub struct {
+	aliasStubTool
+}
+
+func (t *permissionAliasStub) AssessPermission(_ toolpolicy.Context, args json.RawMessage) (toolpolicy.Assessment, error) {
+	var data struct {
+		Target string `json:"target"`
+	}
+	if err := json.Unmarshal(args, &data); err != nil {
+		return toolpolicy.Assessment{}, err
+	}
+	return toolpolicy.Assessment{
+		Behavior: toolpolicy.BehaviorFastAllow,
+		Action:   "observe " + data.Target,
+		Effects:  []toolpolicy.Effect{toolpolicy.EffectObserve},
+		Scope:    toolpolicy.ScopeWorkspace,
+		ReadOnly: true,
+		RiskHint: toolpolicy.RiskLow,
+	}, nil
 }
 
 func (t *parallelAliasStub) Name() string { return t.name }

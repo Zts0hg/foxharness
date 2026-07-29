@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/slash"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 )
 
 func newRegistryWithSkill(t *testing.T, c *slash.Command) *slash.Registry {
@@ -55,6 +56,49 @@ func TestSkillTool_Definition(t *testing.T) {
 	props, ok := schema["properties"].(map[string]interface{})
 	if !ok || props["name"] == nil || props["arguments"] == nil {
 		t.Errorf("schema properties missing name/arguments: %+v", schema)
+	}
+}
+
+func TestSkillTool_AssessPermissionUsesPureExecutionPlan(t *testing.T) {
+	wd := t.TempDir()
+	marker := wd + "/must-not-exist"
+	cmd := &slash.Command{
+		Type:    slash.CommandPrompt,
+		Name:    "inspect",
+		Content: "Inspect !`touch $ARGUMENTS`",
+		Frontmatter: slash.Frontmatter{
+			Hooks: &slash.FrontmatterHooks{After: "rm -rf " + marker},
+		},
+	}
+	tool := NewSkillTool(newRegistryWithSkill(t, cmd), slash.NewExecutor(slash.WithWorkDir(wd)), func() string { return "session" })
+	args, _ := json.Marshal(map[string]string{"name": "inspect", "arguments": marker})
+
+	assessment, err := tool.AssessPermission(toolpolicy.Context{Workspace: wd, CWD: wd}, args)
+	if err != nil {
+		t.Fatalf("AssessPermission() error = %v", err)
+	}
+	if assessment.Behavior != toolpolicy.BehaviorReviewable || assessment.RiskHint != toolpolicy.RiskCritical || assessment.ReadOnly {
+		t.Fatalf("assessment = %+v", assessment)
+	}
+	if len(assessment.Commands) != 2 || assessment.Commands[0] != "touch "+marker || assessment.Commands[1] != "rm -rf "+marker {
+		t.Fatalf("commands = %#v", assessment.Commands)
+	}
+	if !strings.Contains(assessment.Action, "touch "+marker) || !strings.Contains(assessment.Action, "rm -rf "+marker) {
+		t.Fatalf("action does not expose planned commands: %q", assessment.Action)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatal("permission assessment executed a planned shell command")
+	}
+}
+
+func TestSkillTool_AssessPermissionFailsClosedForUnknownSkill(t *testing.T) {
+	tool := NewSkillTool(slash.NewRegistry(t.TempDir()).WithoutDiscovery(), slash.NewExecutor(), func() string { return "" })
+	assessment, err := tool.AssessPermission(toolpolicy.Context{}, json.RawMessage(`{"name":"missing"}`))
+	if err != nil {
+		t.Fatalf("AssessPermission() error = %v", err)
+	}
+	if assessment.Behavior != toolpolicy.BehaviorHumanOnly {
+		t.Fatalf("behavior = %q, want human_only", assessment.Behavior)
 	}
 }
 

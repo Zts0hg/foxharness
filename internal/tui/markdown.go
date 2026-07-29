@@ -10,6 +10,9 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/alecthomas/chroma/v2/formatters"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
@@ -124,11 +127,18 @@ func (r *codexMarkdownRenderer) renderHeading(node *gast.Heading, ctx markdownCo
 }
 
 func (r *codexMarkdownRenderer) renderBlockquote(node gast.Node, ctx markdownContext) {
+	start := len(r.lines)
 	next := ctx
 	next.quotePrefix += "> "
 	next.firstPrefix = ""
 	next.restPrefix = ""
 	r.renderChildren(node, next)
+	for i := start; i < len(r.lines); i++ {
+		if strings.TrimSpace(xansi.Strip(r.lines[i])) == "" {
+			continue
+		}
+		r.lines[i] = markdownBlockquoteStyle().Render(r.lines[i])
+	}
 }
 
 func (r *codexMarkdownRenderer) renderList(list *gast.List, ctx markdownContext) {
@@ -140,6 +150,7 @@ func (r *codexMarkdownRenderer) renderList(list *gast.List, ctx markdownContext)
 		marker := "- "
 		if list.IsOrdered() {
 			marker = strconv.Itoa(index) + ". "
+			marker = markdownOrderedListMarkerStyle().Render(marker)
 			index++
 		}
 		r.renderListItem(item, ctx, marker, ctx.listDepth)
@@ -177,12 +188,11 @@ func (r *codexMarkdownRenderer) renderListItem(item gast.Node, ctx markdownConte
 
 func (r *codexMarkdownRenderer) renderThematicBreak(ctx markdownContext) {
 	available := max(r.width-lipgloss.Width(ctx.quotePrefix), 8)
-	r.pushLine(ctx.quotePrefix + markdownMutedStyle().Render(strings.Repeat("-", min(available, 80))))
+	r.pushLine(ctx.quotePrefix + markdownMutedStyle().Render(strings.Repeat("─", min(available, 80))))
 	r.ensureBlankAfterBlock()
 }
 
 func (r *codexMarkdownRenderer) renderCodeBlock(content []byte, ctx markdownContext, lang string) {
-	_ = lang
 	text := strings.TrimRight(string(content), "\n")
 	if text == "" {
 		return
@@ -195,7 +205,8 @@ func (r *codexMarkdownRenderer) renderCodeBlock(content []byte, ctx markdownCont
 	if rest == "" {
 		rest = ctx.quotePrefix
 	}
-	lines := strings.Split(text, "\n")
+	highlighted := highlightCodeBlock(text, lang)
+	lines := strings.Split(highlighted, "\n")
 	for i, line := range lines {
 		linePrefix := rest
 		if i == 0 {
@@ -204,6 +215,31 @@ func (r *codexMarkdownRenderer) renderCodeBlock(content []byte, ctx markdownCont
 		r.pushLine(linePrefix + markdownCodeBlockStyle().Render(line))
 	}
 	r.ensureBlankAfterBlock()
+}
+
+func highlightCodeBlock(text string, lang string) string {
+	lexer := lexers.Get(strings.TrimSpace(lang))
+	if lexer == nil {
+		lexer = lexers.Analyse(text)
+	}
+	if lexer == nil {
+		lexer = lexers.Fallback
+	}
+	iterator, err := lexer.Tokenise(nil, text)
+	if err != nil {
+		return markdownCodeBlockStyle().Render(text)
+	}
+	formatter := formatters.Get("terminal16m")
+	style := styles.Get("github-dark")
+	var out bytes.Buffer
+	if err := formatter.Format(&out, style, iterator); err != nil {
+		return markdownCodeBlockStyle().Render(text)
+	}
+	rendered := strings.TrimRight(out.String(), "\n")
+	if rendered == strings.TrimRight(text, "\n") {
+		return markdownCodeBlockStyle().Render(text)
+	}
+	return rendered
 }
 
 func (r *codexMarkdownRenderer) renderPlainText(content string, ctx markdownContext) {
@@ -255,7 +291,11 @@ func (r *codexMarkdownRenderer) renderInline(node gast.Node, style inlineStyle) 
 		if label == "" {
 			label = dest
 		}
-		return label + " (" + renderStyledText(markdownLinkStyle(), dest) + ")"
+		styledDest := renderStyledText(markdownLinkStyle(), dest)
+		if isClickableWebLink(dest) {
+			styledDest = renderTerminalHyperlink(dest, styledDest)
+		}
+		return label + " (" + styledDest + ")"
 	default:
 		if task, ok := node.(*east.TaskCheckBox); ok {
 			if task.IsChecked {
@@ -283,9 +323,6 @@ func (s inlineStyle) apply(text string) string {
 		return text
 	}
 	style := markdownStyleRenderer.NewStyle()
-	if s.bold || s.italic || s.strike {
-		style = style.Foreground(cAccentHi)
-	}
 	if s.bold {
 		style = style.Bold(true)
 	}
@@ -565,7 +602,7 @@ func wrapANSIText(content string, width int) []string {
 }
 
 func markdownHeadingStyle(level int) lipgloss.Style {
-	style := markdownStyleRenderer.NewStyle().Foreground(cAccentHi)
+	style := markdownStyleRenderer.NewStyle()
 	switch level {
 	case 1:
 		return style.Bold(true).Underline(true)
@@ -579,23 +616,31 @@ func markdownHeadingStyle(level int) lipgloss.Style {
 }
 
 func markdownInlineCodeStyle() lipgloss.Style {
-	return markdownStyleRenderer.NewStyle().Foreground(cAccentHi)
+	return markdownStyleRenderer.NewStyle().Foreground(lipgloss.Color("6"))
 }
 
 func markdownCodeBlockStyle() lipgloss.Style {
-	return markdownStyleRenderer.NewStyle().Foreground(cAccentHi)
+	return markdownStyleRenderer.NewStyle().Foreground(lipgloss.Color("6"))
 }
 
 func markdownLinkStyle() lipgloss.Style {
-	return markdownStyleRenderer.NewStyle().Foreground(cAccentHi).Underline(true)
+	return markdownStyleRenderer.NewStyle().Foreground(lipgloss.Color("6")).Underline(true)
 }
 
 func markdownTableHeaderStyle() lipgloss.Style {
-	return markdownStyleRenderer.NewStyle().Bold(true).Foreground(cAccentHi)
+	return markdownStyleRenderer.NewStyle().Bold(true)
 }
 
 func markdownMutedStyle() lipgloss.Style {
 	return markdownStyleRenderer.NewStyle().Foreground(cTextMuted)
+}
+
+func markdownBlockquoteStyle() lipgloss.Style {
+	return markdownStyleRenderer.NewStyle().Foreground(lipgloss.Color("2"))
+}
+
+func markdownOrderedListMarkerStyle() lipgloss.Style {
+	return markdownStyleRenderer.NewStyle().Foreground(lipgloss.Color("12"))
 }
 
 func (r *codexMarkdownRenderer) localLinkDisplay(dest string) (string, bool) {
@@ -656,22 +701,22 @@ func unwrapMarkdownTableFences(input string) string {
 		}
 		marker := match[1]
 		var body []string
-		closed := false
+		closingIndex := -1
 		for j := i + 1; j < len(lines); j++ {
 			candidate := strings.TrimSpace(strings.TrimSuffix(lines[j], "\n"))
 			if strings.HasPrefix(candidate, marker[:1]) && len(candidate) >= len(marker) && strings.Trim(candidate, marker[:1]) == "" {
-				i = j
-				closed = true
+				closingIndex = j
 				break
 			}
 			body = append(body, lines[j])
 		}
 		content := strings.Join(body, "")
-		if closed && containsMarkdownTable(content) {
+		if closingIndex >= 0 && containsMarkdownTable(content) {
 			out.WriteString(content)
 			if !strings.HasSuffix(content, "\n") {
 				out.WriteString("\n")
 			}
+			i = closingIndex
 			continue
 		}
 		out.WriteString(lines[i])

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/permission"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -29,9 +30,9 @@ func (f *approvalForm) update(msg tea.KeyMsg) tea.Cmd {
 	case tea.KeyEsc:
 		f.action = 2
 		return f.submit()
-	case tea.KeyTab, tea.KeyRight:
+	case tea.KeyTab, tea.KeyRight, tea.KeyDown:
 		f.action = (f.action + 1) % 4
-	case tea.KeyShiftTab, tea.KeyLeft:
+	case tea.KeyShiftTab, tea.KeyLeft, tea.KeyUp:
 		f.action = (f.action + 3) % 4
 	case tea.KeyBackspace, tea.KeyDelete:
 		if f.action == 3 && len(f.feedback) > 0 {
@@ -71,24 +72,30 @@ func (f *approvalForm) decision() permission.UserDecision {
 
 func (f *approvalForm) view(width int) string {
 	req := f.req.approval.Request
+	contentWidth := max(width-inputStyle.GetHorizontalFrameSize()-2, 20)
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("Approve tool call"))
+	if req.Risk != "" {
+		b.WriteString(mutedStyle.Render(fmt.Sprintf("  Risk: %s", req.Risk)))
+	}
 	b.WriteString("\n\n")
-	b.WriteString(fmt.Sprintf("Action: %s\n", req.Action))
-	b.WriteString(fmt.Sprintf("CWD: %s\n", req.CWD))
-	b.WriteString(fmt.Sprintf("Scope: exact invocation in this session\n"))
-	b.WriteString(fmt.Sprintf("Risk: %s\n", req.Risk))
-	if f.req.approval.Review != nil {
-		b.WriteString(fmt.Sprintf("Review: %s\n", f.req.approval.Review.Rationale))
+	b.WriteString(wrapText(approvalPrompt(req), contentWidth) + "\n\n")
+	f.writeField(&b, approvalActionTitle(req), approvalActionValue(req), contentWidth)
+	f.writeField(&b, "Directory", req.CWD, contentWidth)
+	f.writeField(&b, "Scope", "Exact invocation in this session", contentWidth)
+	if req.Capabilities.Behavior == toolpolicy.BehaviorHumanOnly && req.Capabilities.Reason != "" {
+		f.writeField(&b, "Policy", req.Capabilities.Reason, contentWidth)
+	}
+	if f.req.approval.Review != nil && !suppressReviewRationale(f.req.approval.Review.Rationale, f.req.approval.ReviewerFailure) {
+		f.writeField(&b, "Review", f.req.approval.Review.Rationale, contentWidth)
 	}
 	if f.req.approval.ReviewerFailure != "" {
-		b.WriteString("Auto-review unavailable after three attempts.\n")
-		b.WriteString(fmt.Sprintf("Reviewer failure: %s\n", fitLine(f.req.approval.ReviewerFailure, max(width-inputStyle.GetHorizontalFrameSize()-2, 20))))
+		f.writeField(&b, "Auto-review unavailable", f.req.approval.ReviewerFailure, contentWidth)
 	}
+	b.WriteString(mutedStyle.Render("Choose"))
 	b.WriteString("\n")
-	labels := []string{"Yes", "Yes, session", "No", "No + feedback"}
-	for i, label := range labels {
-		b.WriteString(f.renderAction(i, label))
+	for i, option := range approvalOptions() {
+		b.WriteString(f.renderAction(i, option.label, option.description))
 		b.WriteString("\n")
 	}
 	if f.action == 3 {
@@ -102,8 +109,7 @@ func (f *approvalForm) view(width int) string {
 		b.WriteString(cursorStyle.Render("▏"))
 	}
 	b.WriteString("\n\n")
-	b.WriteString(hintStyle.Render("Tab/←/→ choose · Enter confirm · Esc deny"))
-	contentWidth := max(width-inputStyle.GetHorizontalFrameSize()-2, 20)
+	b.WriteString(hintStyle.Render("Tab/↑/↓ choose · Enter confirm · Esc deny"))
 	lines := strings.Split(b.String(), "\n")
 	for i := range lines {
 		lines[i] = fitLine(lines[i], contentWidth)
@@ -111,9 +117,66 @@ func (f *approvalForm) view(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (f *approvalForm) renderAction(index int, label string) string {
-	if f.action == index {
-		return askFocusedStyle.Render("❯ " + label)
+func (f *approvalForm) writeField(b *strings.Builder, title, value string, width int) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
 	}
-	return "  " + label
+	b.WriteString(mutedStyle.Render(title))
+	b.WriteString("\n")
+	wrapped := wrapText(value, max(width-2, 10))
+	b.WriteString(indentLines(wrapped, "  "))
+	b.WriteString("\n\n")
+}
+
+type approvalOption struct {
+	label       string
+	description string
+}
+
+func approvalOptions() []approvalOption {
+	return []approvalOption{
+		{label: "Yes", description: "Allow once"},
+		{label: "Yes, session", description: "Remember for this session"},
+		{label: "No", description: "Deny this request"},
+		{label: "No + feedback", description: "Deny and tell the agent why"},
+	}
+}
+
+func (f *approvalForm) renderAction(index int, label, description string) string {
+	line := fmt.Sprintf("%-14s %s", label, mutedStyle.Render(description))
+	if f.action == index {
+		return askFocusedStyle.Render("❯ " + line)
+	}
+	return "  " + line
+}
+
+func approvalPrompt(req permission.Request) string {
+	if req.ToolName == "bash" {
+		return "Would you like to run the following command?"
+	}
+	return "Would you like to run the following tool call?"
+}
+
+func approvalActionTitle(req permission.Request) string {
+	if req.ToolName == "bash" {
+		return "Command"
+	}
+	return "Action"
+}
+
+func approvalActionValue(req permission.Request) string {
+	action := strings.TrimSpace(req.Action)
+	if req.ToolName == "bash" {
+		action = strings.TrimPrefix(action, "bash ")
+		return "$ " + strings.TrimSpace(action)
+	}
+	return action
+}
+
+func suppressReviewRationale(rationale, reviewerFailure string) bool {
+	if strings.TrimSpace(reviewerFailure) == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(rationale), "auto-review was unavailable")
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
@@ -65,7 +66,7 @@ type Coordinator struct {
 	approver  UserApprover
 	reviewer  Reviewer
 	sink      EventSink
-	evidence  *evidenceSlot
+	evidence  EvidenceProvider
 }
 
 // Config creates a coordinator for one interactive runtime.
@@ -80,23 +81,6 @@ type Config struct {
 	Evidence  EvidenceProvider
 }
 
-type evidenceSlot struct {
-	mu       sync.Mutex
-	provider EvidenceProvider
-}
-
-func (s *evidenceSlot) set(provider EvidenceProvider) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.provider = provider
-}
-
-func (s *evidenceSlot) get() EvidenceProvider {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.provider
-}
-
 // NewCoordinator creates a permission coordinator.
 func NewCoordinator(cfg Config) *Coordinator {
 	if cfg.State == nil {
@@ -105,7 +89,7 @@ func NewCoordinator(cfg Config) *Coordinator {
 	if cfg.Source == "" {
 		cfg.Source = SourceMain
 	}
-	return &Coordinator{state: cfg.State, workspace: cfg.Workspace, cwd: cfg.CWD, source: cfg.Source, approver: cfg.Approver, reviewer: cfg.Reviewer, sink: cfg.Sink, evidence: &evidenceSlot{provider: cfg.Evidence}}
+	return &Coordinator{state: cfg.State, workspace: cfg.Workspace, cwd: cfg.CWD, source: cfg.Source, approver: cfg.Approver, reviewer: cfg.Reviewer, sink: cfg.Sink, evidence: cfg.Evidence}
 }
 
 // State returns the shared permission state.
@@ -133,21 +117,17 @@ func (c *Coordinator) WithSource(source Source) *Coordinator {
 	}
 }
 
-// SetEvidenceProvider replaces the reviewer context provider for future calls.
-func (c *Coordinator) SetEvidenceProvider(provider EvidenceProvider) {
-	if c == nil || c.evidence == nil {
-		return
-	}
-	c.evidence.set(provider)
+// Authorize returns nil when a tool call may execute.
+func (c *Coordinator) Authorize(ctx context.Context, call schema.ToolCall, assessments ...toolpolicy.Assessment) error {
+	return c.authorize(ctx, call, c.evidence, assessments...)
 }
 
-// Authorize returns nil when a tool call may execute.
-func (c *Coordinator) Authorize(ctx context.Context, call schema.ToolCall) error {
+func (c *Coordinator) authorize(ctx context.Context, call schema.ToolCall, evidenceProvider EvidenceProvider, assessments ...toolpolicy.Assessment) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	snap := c.state.Snapshot()
-	decision := Classify(c.workspace, c.cwd, c.source, call)
+	decision := Classify(c.workspace, c.cwd, c.source, call, assessments...)
 	request := decision.Request
 	if snap.EffectiveMode == ModeFullAccess || decision.AllowFastPath {
 		return nil
@@ -155,15 +135,13 @@ func (c *Coordinator) Authorize(ctx context.Context, call schema.ToolCall) error
 	if _, ok := c.state.MatchingGrant(request); ok {
 		return nil
 	}
-	if snap.EffectiveMode == ModeApprove && c.reviewer != nil {
+	if snap.EffectiveMode == ModeApprove && c.reviewer != nil && !decision.HumanOnly {
 		if c.sink != nil {
 			c.sink.OnReviewStart(request)
 		}
 		evidence := BuildEvidence(nil, nil, request)
-		if c.evidence != nil {
-			if provider := c.evidence.get(); provider != nil {
-				evidence = provider(request)
-			}
+		if evidenceProvider != nil {
+			evidence = evidenceProvider(request)
 		}
 		result, err := c.reviewer.Review(ctx, request, evidence)
 		if err == nil && result.Decision == ReviewApprove {
@@ -218,14 +196,19 @@ func (c *Coordinator) askUser(ctx context.Context, request Request, review Revie
 type Registry struct {
 	base        tools.Registry
 	coordinator *Coordinator
+	evidence    EvidenceProvider
 }
 
 // DecorateRegistry wraps base with permission checks.
-func DecorateRegistry(base tools.Registry, coordinator *Coordinator) tools.Registry {
+func DecorateRegistry(base tools.Registry, coordinator *Coordinator, providers ...EvidenceProvider) tools.Registry {
 	if base == nil || coordinator == nil {
 		return base
 	}
-	return &Registry{base: base, coordinator: coordinator}
+	evidence := coordinator.evidence
+	if len(providers) > 0 {
+		evidence = providers[0]
+	}
+	return &Registry{base: base, coordinator: coordinator, evidence: evidence}
 }
 
 func (r *Registry) Register(tool tools.BaseTool) { r.base.Register(tool) }
@@ -239,7 +222,21 @@ func (r *Registry) Execute(ctx context.Context, call schema.ToolCall) schema.Too
 	if !toolAdvertised(r.base, call.Name) {
 		return r.base.Execute(ctx, call)
 	}
-	if err := r.coordinator.Authorize(ctx, call); err != nil {
+	assessment := missingAssessment(call.Name)
+	if registry, ok := r.base.(tools.PermissionRegistry); ok {
+		candidate, found, err := registry.AssessPermission(call.Name, toolpolicy.Context{
+			Workspace: r.coordinator.workspace,
+			CWD:       r.coordinator.cwd,
+			Source:    string(r.coordinator.source),
+		}, call.Arguments)
+		switch {
+		case err != nil:
+			assessment.Reason = "tool capability assessment failed: " + err.Error()
+		case found:
+			assessment = candidate
+		}
+	}
+	if err := r.coordinator.authorize(ctx, call, r.evidence, assessment); err != nil {
 		return schema.ToolResult{ToolCallID: call.ID, Output: "Tool execution denied by permission policy: " + err.Error(), IsError: true}
 	}
 	return r.base.Execute(ctx, call)
@@ -257,6 +254,16 @@ func toolAdvertised(registry tools.Registry, name string) bool {
 // IsParallelSafe disables parallel execution while approvals may be interactive.
 func (r *Registry) IsParallelSafe(toolName string) bool { return false }
 
+// AssessPermission preserves capability metadata through nested registry
+// decorators.
+func (r *Registry) AssessPermission(name string, ctx toolpolicy.Context, args json.RawMessage) (toolpolicy.Assessment, bool, error) {
+	registry, ok := r.base.(tools.PermissionRegistry)
+	if !ok {
+		return toolpolicy.Assessment{}, false, nil
+	}
+	return registry.AssessPermission(name, ctx, args)
+}
+
 // MarshalJSON supports small debug snapshots in tests.
 func (s Snapshot) MarshalJSON() ([]byte, error) {
 	type alias Snapshot
@@ -264,3 +271,4 @@ func (s Snapshot) MarshalJSON() ([]byte, error) {
 }
 
 var _ tools.Registry = (*Registry)(nil)
+var _ tools.PermissionRegistry = (*Registry)(nil)

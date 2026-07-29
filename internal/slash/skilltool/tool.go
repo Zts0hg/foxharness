@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/slash"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 )
 
 // SkillTool is the LLM-facing tool that lets the model invoke a prompt
@@ -60,32 +62,70 @@ type skillToolArgs struct {
 	Arguments string `json:"arguments"`
 }
 
+// AssessPermission plans the exact skill pipeline without executing shell,
+// hooks, or forked work.
+func (t *SkillTool) AssessPermission(ctx toolpolicy.Context, raw json.RawMessage) (toolpolicy.Assessment, error) {
+	args, cmd, err := t.resolve(raw)
+	if err != nil || t.executor == nil {
+		return skillHumanOnly(t.Name(), firstError(err, "skill executor not configured")), nil
+	}
+	plan, err := t.executor.Plan(cmd, args.Arguments, t.sessionID())
+	if err != nil {
+		return skillHumanOnly(t.Name()+" "+args.Name, err.Error()), nil
+	}
+	assessment := toolpolicy.Assessment{
+		Behavior: toolpolicy.BehaviorReviewable,
+		Action:   skillAction(t.Name(), args, plan.Commands),
+		Effects:  []toolpolicy.Effect{toolpolicy.EffectWorkflow},
+		Scope:    toolpolicy.ScopeWorkspace,
+		ReadOnly: true,
+		RiskHint: toolpolicy.RiskLow,
+		Reason:   "model-invoked skill requires contextual review",
+		Target:   args.Name,
+		Commands: append([]string(nil), plan.Commands...),
+	}
+	if len(plan.Commands) > 0 {
+		assessment.Effects = append(assessment.Effects, toolpolicy.EffectExecute)
+		assessment.Scope = toolpolicy.ScopeMixed
+		for _, command := range plan.Commands {
+			readOnly, risk, parsed := toolpolicy.AssessShell(command, ctx.Workspace, ctx.CWD)
+			if !parsed {
+				return asSkillHumanOnly(assessment, "skill shell syntax could not be parsed"), nil
+			}
+			assessment.ReadOnly = assessment.ReadOnly && readOnly
+			assessment.RiskHint = maxRisk(assessment.RiskHint, risk)
+		}
+		assessment.Reason = "skill executes planned shell commands"
+	}
+	if plan.Fork {
+		assessment.Effects = append(assessment.Effects, toolpolicy.EffectDelegate)
+		assessment.NestedEnforcement = t.executor.ForkPermissionEnforced()
+		if !assessment.NestedEnforcement {
+			return asSkillHumanOnly(assessment, "forked skill lacks nested permission enforcement"), nil
+		}
+		assessment.ReadOnly = false
+		assessment.RiskHint = maxRisk(assessment.RiskHint, toolpolicy.RiskMedium)
+		assessment.Reason = "forked skill inherits nested permission enforcement"
+	}
+	return assessment, nil
+}
+
+func skillAction(toolName string, args skillToolArgs, commands []string) string {
+	action := strings.TrimSpace(fmt.Sprintf("%s %s %s", toolName, args.Name, args.Arguments))
+	if len(commands) > 0 {
+		action += fmt.Sprintf("; planned commands=%q", commands)
+	}
+	return action
+}
+
 // Execute resolves the requested skill and runs the executor pipeline.
 // Returns the processed prompt body (inline mode) or the sub-agent's
 // report (fork mode). Unknown skills and skills with
 // `disable-model-invocation: true` return descriptive errors.
 func (t *SkillTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
-	var args skillToolArgs
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return "", fmt.Errorf("invalid skill arguments: %w", err)
-	}
-	if args.Name == "" {
-		return "", fmt.Errorf("skill name is required")
-	}
-	if t.registry == nil {
-		return "", fmt.Errorf("skill registry not configured")
-	}
-	cmd, ok := t.registry.Lookup(args.Name)
-	if !ok {
-		return "", fmt.Errorf("unknown skill: %q", args.Name)
-	}
-	if !cmd.IsModelInvocable() {
-		return "", fmt.Errorf("skill %q is not model-invocable", args.Name)
-	}
-	if len(cmd.Frontmatter.AllowedTools) > 0 && cmd.Frontmatter.Context != "fork" {
-		return "", fmt.Errorf("skill %q declares allowed-tools=%v but context=inline; "+
-			"model-side enforcement requires context: fork — change the skill's frontmatter or invoke from the TUI",
-			args.Name, cmd.Frontmatter.AllowedTools)
+	args, cmd, err := t.resolve(raw)
+	if err != nil {
+		return "", err
 	}
 	if t.executor == nil {
 		return "", fmt.Errorf("skill executor not configured")
@@ -94,15 +134,70 @@ func (t *SkillTool) Execute(ctx context.Context, raw json.RawMessage) (string, e
 	if err != nil {
 		return "", err
 	}
-	// Fire the after-hook synchronously before returning. For
-	// model-invoked skills the SkillTool returning IS the completion
-	// point (the engine continues the turn with the result as a tool
-	// output), so this is the moment that maps to "after the command
-	// finished" in REQ-012. Always fire — symmetry with the before-hook
-	// that already ran inside Execute, and so cleanup hooks observe
-	// rejected invocations the same way they observe accepted ones.
 	if res.AfterHook != nil {
 		defer res.AfterHook(ctx)
 	}
 	return res.Content, nil
+}
+
+func (t *SkillTool) resolve(raw json.RawMessage) (skillToolArgs, *slash.Command, error) {
+	var args skillToolArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return skillToolArgs{}, nil, fmt.Errorf("invalid skill arguments: %w", err)
+	}
+	if args.Name == "" {
+		return skillToolArgs{}, nil, fmt.Errorf("skill name is required")
+	}
+	if t.registry == nil {
+		return skillToolArgs{}, nil, fmt.Errorf("skill registry not configured")
+	}
+	cmd, ok := t.registry.Lookup(args.Name)
+	if !ok {
+		return skillToolArgs{}, nil, fmt.Errorf("unknown skill: %q", args.Name)
+	}
+	if !cmd.IsModelInvocable() {
+		return skillToolArgs{}, nil, fmt.Errorf("skill %q is not model-invocable", args.Name)
+	}
+	if len(cmd.Frontmatter.AllowedTools) > 0 && cmd.Frontmatter.Context != "fork" {
+		return skillToolArgs{}, nil, fmt.Errorf("skill %q declares allowed-tools=%v but context=inline; "+
+			"model-side enforcement requires context: fork — change the skill's frontmatter or invoke from the TUI",
+			args.Name, cmd.Frontmatter.AllowedTools)
+	}
+	return args, cmd, nil
+}
+
+func skillHumanOnly(action, reason string) toolpolicy.Assessment {
+	return toolpolicy.Assessment{
+		Behavior: toolpolicy.BehaviorHumanOnly,
+		Action:   action,
+		Effects:  []toolpolicy.Effect{toolpolicy.EffectUnknown},
+		Scope:    toolpolicy.ScopeUnknown,
+		RiskHint: toolpolicy.RiskHigh,
+		Reason:   reason,
+	}
+}
+
+func asSkillHumanOnly(assessment toolpolicy.Assessment, reason string) toolpolicy.Assessment {
+	assessment.Behavior = toolpolicy.BehaviorHumanOnly
+	assessment.RiskHint = toolpolicy.RiskHigh
+	assessment.Reason = reason
+	return assessment
+}
+
+func firstError(err error, fallback string) string {
+	if err != nil {
+		return err.Error()
+	}
+	return fallback
+}
+
+func maxRisk(left, right toolpolicy.Risk) toolpolicy.Risk {
+	rank := map[toolpolicy.Risk]int{
+		toolpolicy.RiskLow: 1, toolpolicy.RiskMedium: 2,
+		toolpolicy.RiskHigh: 3, toolpolicy.RiskCritical: 4,
+	}
+	if rank[right] > rank[left] {
+		return right
+	}
+	return left
 }

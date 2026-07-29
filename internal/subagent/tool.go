@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 )
 
 // Tool implements the agent tool interface for delegating tasks to a
@@ -57,6 +58,48 @@ func (t *Tool) Definition() schema.ToolDefinition {
 type args struct {
 	Task     string `json:"task"`
 	ReadOnly *bool  `json:"read_only"`
+}
+
+// AssessPermission describes delegation while preserving Execute's read-only
+// default and nested permission boundary.
+func (t *Tool) AssessPermission(_ toolpolicy.Context, raw json.RawMessage) (toolpolicy.Assessment, error) {
+	var input args
+	if err := json.Unmarshal(raw, &input); err != nil || strings.TrimSpace(input.Task) == "" {
+		return toolpolicy.Assessment{
+			Behavior: toolpolicy.BehaviorHumanOnly,
+			Action:   t.Name(),
+			Effects:  []toolpolicy.Effect{toolpolicy.EffectUnknown},
+			Scope:    toolpolicy.ScopeUnknown,
+			RiskHint: toolpolicy.RiskHigh,
+			Reason:   "invalid or missing delegated task",
+		}, nil
+	}
+	readOnly := true
+	if input.ReadOnly != nil {
+		readOnly = *input.ReadOnly
+	}
+	nested := t.manager != nil && t.manager.permissions != nil
+	assessment := toolpolicy.Assessment{
+		Behavior:          toolpolicy.BehaviorReviewable,
+		Action:            fmt.Sprintf("%s read_only=%t task=%s", t.Name(), readOnly, strings.TrimSpace(input.Task)),
+		Effects:           []toolpolicy.Effect{toolpolicy.EffectDelegate},
+		Scope:             toolpolicy.ScopeWorkspace,
+		ReadOnly:          readOnly,
+		NestedEnforcement: nested,
+		RiskHint:          toolpolicy.RiskLow,
+		Reason:            "read-only delegation with nested permission enforcement",
+		Target:            strings.TrimSpace(input.Task),
+	}
+	if !readOnly {
+		assessment.RiskHint = toolpolicy.RiskMedium
+		assessment.Reason = "writable delegation with nested permission enforcement"
+	}
+	if !nested {
+		assessment.Behavior = toolpolicy.BehaviorHumanOnly
+		assessment.RiskHint = toolpolicy.RiskHigh
+		assessment.Reason = "delegation lacks nested permission enforcement"
+	}
+	return assessment, nil
 }
 
 // Execute parses the JSON input, delegates the task to the subagent Manager,

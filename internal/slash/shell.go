@@ -19,6 +19,19 @@ const DefaultShellTimeout = 30 * time.Second
 // parsed independently.
 var shellEmbedRe = regexp.MustCompile("!`([^`]+)`")
 
+// EmbeddedShellCommands returns shell embeddings in execution order without
+// running them.
+func EmbeddedShellCommands(content string) []string {
+	matches := shellEmbedRe.FindAllStringSubmatch(content, -1)
+	commands := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 {
+			commands = append(commands, match[1])
+		}
+	}
+	return commands
+}
+
 // ExecuteEmbeddedShell replaces every !`command` occurrence in content
 // with the trimmed stdout produced by running the command via `sh -c`.
 // Failures (non-zero exit, timeout, missing binary, cancellation of

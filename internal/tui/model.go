@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -173,6 +174,8 @@ var slashCommands = []slashCommand{
 var workingFrames = []string{"✦", "✧"}
 
 const defaultThemeName = "codex"
+
+const interruptedTurnMessage = "Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue."
 
 var defaultStatuslineItems = []string{"model", "project", "git-branch", "context-used"}
 
@@ -423,6 +426,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cancelRun = nil
 		m.refreshRuntimeInfo()
 		if msg.err != nil {
+			if isRunCancellation(msg.err) {
+				m.status = "Conversation interrupted"
+				if !entriesContainText(m.entries, "system", interruptedTurnMessage) {
+					m.appendEntry("system", "interrupted", interruptedTurnMessage, false)
+				}
+				if len(m.queuedPrompts) > 0 {
+					return m.startNextQueuedPrompt()
+				}
+				return m, nil
+			}
 			m.status = "Run failed"
 			if len(m.queuedPrompts) > 0 {
 				m.status = fmt.Sprintf("Run failed; %d queued", len(m.queuedPrompts))
@@ -1347,6 +1360,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.updateCompletions()
 		return m, nil
 	case "up":
+		if m.historyIndex != -1 {
+			m.recallPreviousInput()
+			return m, nil
+		}
 		if m.hasSlashMenu() {
 			m.moveSlashSelection(-1)
 			return m, nil
@@ -1362,6 +1379,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.recallPreviousInput()
 		return m, nil
 	case "down":
+		if m.historyIndex != -1 {
+			m.recallNextInput()
+			return m, nil
+		}
 		if m.hasSlashMenu() {
 			m.moveSlashSelection(1)
 			return m, nil
@@ -3684,9 +3705,79 @@ func (m *Model) drainRunEvents() {
 
 func (m *Model) applyRunEvent(msg runEventMsg) {
 	m.status = msg.status
+	if msg.err && isRunCancellationText(msg.body) {
+		m.status = "Conversation interrupted"
+		if !entriesContainText(m.entries, "system", interruptedTurnMessage) {
+			m.appendEntry("system", "interrupted", interruptedTurnMessage, false)
+		}
+		return
+	}
+	if msg.delta {
+		m.appendAssistantDelta(msg.body)
+		return
+	}
+	if msg.streamFinal {
+		m.replaceStreamingAssistant(msg.title, msg.body)
+		return
+	}
 	if msg.role != "" || msg.body != "" {
 		m.appendEntry(msg.role, msg.title, msg.body, msg.err)
 	}
+}
+
+func isRunCancellation(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
+func isRunCancellationText(body string) bool {
+	return strings.Contains(strings.ToLower(body), "context canceled")
+}
+
+func entriesContainText(entries []entry, role string, text string) bool {
+	for _, e := range entries {
+		if e.role == role && strings.Contains(e.body, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) appendAssistantDelta(delta string) {
+	if delta == "" {
+		return
+	}
+	if len(m.entries) > 0 {
+		last := &m.entries[len(m.entries)-1]
+		if last.role == "assistant" && last.title == "stream" {
+			last.body += delta
+			m.cachedLayout = nil
+			return
+		}
+	}
+	m.entries = append(m.entries, entry{
+		role:  "assistant",
+		title: "stream",
+		body:  delta,
+		time:  time.Now(),
+	})
+	m.cachedLayout = nil
+}
+
+func (m *Model) replaceStreamingAssistant(title string, body string) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return
+	}
+	if len(m.entries) > 0 {
+		last := &m.entries[len(m.entries)-1]
+		if last.role == "assistant" && last.title == "stream" {
+			last.title = title
+			last.body = body
+			m.cachedLayout = nil
+			return
+		}
+	}
+	m.appendEntry("assistant", title, body, false)
 }
 
 func (m Model) workingFrame() string {
@@ -3773,11 +3864,13 @@ func mouseTailCmd(id uint64) tea.Cmd {
 }
 
 type runEventMsg struct {
-	role   string
-	title  string
-	body   string
-	status string
-	err    bool
+	role        string
+	title       string
+	body        string
+	status      string
+	err         bool
+	delta       bool
+	streamFinal bool
 }
 
 type runFinishedMsg struct {

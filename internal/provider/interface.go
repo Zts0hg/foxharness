@@ -15,6 +15,9 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
@@ -31,7 +34,88 @@ type GenerateResponse struct {
 // GenerateOptions contains optional per-call provider settings. Empty fields
 // preserve the provider default behavior.
 type GenerateOptions struct {
-	Effort string
+	Effort           string
+	StructuredOutput *StructuredOutputOptions
+}
+
+/*
+StreamCallbacks contains optional callbacks invoked while a streaming provider
+builds the final assistant message.
+*/
+type StreamCallbacks struct {
+	OnTextDelta func(delta string)
+}
+
+/*
+EmitTextDelta sends a text delta to the caller when a delta callback is
+configured.
+*/
+func (c StreamCallbacks) EmitTextDelta(delta string) {
+	if c.OnTextDelta == nil || delta == "" {
+		return
+	}
+	c.OnTextDelta(delta)
+}
+
+// ErrEmptyStream indicates that a streaming request completed without yielding
+// any stream events. This usually means a compatible endpoint ignored streaming
+// and returned a non-SSE response.
+var ErrEmptyStream = errors.New("empty streaming response")
+
+// IsEmptyStream reports whether err indicates a streaming response ended before
+// any stream event was received.
+func IsEmptyStream(err error) bool {
+	return errors.Is(err, ErrEmptyStream)
+}
+
+// IsStreamingUnsupported reports whether an API error looks like a provider or
+// endpoint rejecting streaming-specific request options.
+func IsStreamingUnsupported(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	if !strings.Contains(message, "stream") &&
+		!strings.Contains(message, "sse") &&
+		!strings.Contains(message, "event-stream") {
+		return false
+	}
+	if statusCode, ok := errorStatusCode(err); ok {
+		switch statusCode {
+		case http.StatusBadRequest,
+			http.StatusNotFound,
+			http.StatusMethodNotAllowed,
+			http.StatusNotAcceptable,
+			http.StatusUnsupportedMediaType,
+			http.StatusUnprocessableEntity,
+			http.StatusNotImplemented:
+		default:
+			return false
+		}
+	}
+	for _, token := range []string{
+		"not support",
+		"not implemented",
+		"unsupported",
+		"unknown",
+		"unrecognized",
+		"invalid",
+		"not allowed",
+	} {
+		if strings.Contains(message, token) {
+			return true
+		}
+	}
+	return false
+}
+
+// StructuredOutputOptions requests provider-native JSON schema constrained
+// output for a single generation call.
+type StructuredOutputOptions struct {
+	Name        string
+	Description string
+	Schema      map[string]any
+	Strict      bool
 }
 
 // LLMProvider defines the interface for Large Language Model providers.
@@ -59,4 +143,12 @@ type LLMProvider interface {
 // call-time options for user-run model calls.
 type OptionsGenerator interface {
 	GenerateWithOptions(ctx context.Context, message []schema.Message, availableTools []schema.ToolDefinition, options GenerateOptions) (*GenerateResponse, error)
+}
+
+/*
+StreamGenerator is implemented by providers that can stream visible assistant
+text while still returning the normalized final message and usage metadata.
+*/
+type StreamGenerator interface {
+	GenerateStream(ctx context.Context, message []schema.Message, availableTools []schema.ToolDefinition, options GenerateOptions, callbacks StreamCallbacks) (*GenerateResponse, error)
 }

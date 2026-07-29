@@ -28,6 +28,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 )
 
 // Registry defines the interface for tool registration and execution.
@@ -107,6 +108,18 @@ type AliasableTool interface {
 	// Aliases returns the additional call names for this tool, excluding the
 	// canonical Name(). An alias equal to the canonical name is ignored.
 	Aliases() []string
+}
+
+// PermissionAssessor is implemented by tools that can describe the effects of
+// an exact invocation before execution.
+type PermissionAssessor interface {
+	AssessPermission(ctx toolpolicy.Context, args json.RawMessage) (toolpolicy.Assessment, error)
+}
+
+// PermissionRegistry resolves tool aliases and exposes optional permission
+// assessments to policy decorators.
+type PermissionRegistry interface {
+	AssessPermission(name string, ctx toolpolicy.Context, args json.RawMessage) (toolpolicy.Assessment, bool, error)
 }
 
 type registryImpl struct {
@@ -254,3 +267,20 @@ func (r *registryImpl) IsParallelSafe(toolName string) bool {
 	safeTool, ok := tool.(ParallelSafeTool)
 	return ok && safeTool.ParallelSafe()
 }
+
+// AssessPermission resolves aliases before asking the canonical tool for its
+// invocation-specific capability metadata.
+func (r *registryImpl) AssessPermission(name string, ctx toolpolicy.Context, args json.RawMessage) (toolpolicy.Assessment, bool, error) {
+	tool, exists := r.tools[r.resolve(name)]
+	if !exists {
+		return toolpolicy.Assessment{}, false, nil
+	}
+	assessor, ok := tool.(PermissionAssessor)
+	if !ok {
+		return toolpolicy.Assessment{}, false, nil
+	}
+	assessment, err := assessor.AssessPermission(ctx, args)
+	return assessment, true, err
+}
+
+var _ PermissionRegistry = (*registryImpl)(nil)

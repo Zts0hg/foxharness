@@ -9,7 +9,7 @@ quotes needed to resolve later interpretation disputes.
 
 **Feature ID**: `2026-0712-2126nk`
 **Status**: Discovery Complete - Requirements Confirmed
-**Last Confirmed**: 2026-07-13 10:41:55 CST
+**Last Confirmed**: 2026-07-16 18:15:00 CST
 
 ## Authority Rules
 
@@ -322,6 +322,39 @@ quotes needed to resolve later interpretation disputes.
 - **Alternatives Rejected**: A deterministic-only reviewer, a full Claude Code-style classifier and rule system, or treating all LLM-based review as out of scope.
 - **Reason**: This preserves the confirmed low-interruption reviewer behavior while keeping the feature bounded to Codex-style tool-call approval rather than introducing a second generalized policy-classification architecture.
 - **User Evidence**: "按照建议修正。"
+
+### DEC-025: Tool-owned permission capability contract
+
+- **Status**: confirmed
+- **Supersedes**: The unknown-tool and centralized tool-name classification clauses of DEC-010.
+- **Decision**: Every tool that participates in automatic approval MUST describe the exact invocation through a permission capability assessment. The assessment MUST identify approval behavior, action, effects, scope, read-only status, nested enforcement, a coarse risk hint, and any directly executed commands. The permission coordinator MUST consume this assessment without inferring behavior from tool names. A registered tool with missing, invalid, or failed capability assessment MUST bypass the LLM reviewer and go directly to user approval.
+- **Alternatives Rejected**: Adding more tool-name exceptions to the reviewer or asking the LLM to infer unknown tool behavior from its name and arguments.
+- **Reason**: Tool implementations own argument defaults and execution semantics. A capability contract keeps approval behavior aligned as tools evolve and makes unknown extensions fail closed without pretending the reviewer understands them.
+- **User Evidence**: "检查作出的改动是否能够根源上解决reviwer过严的问题，而不是只硬编码delete_task任务通过"
+
+### DEC-026: Generic reviewer risk and authorization matrix
+
+- **Status**: confirmed
+- **Decision**: Reviewer approval validation MUST use one tool-independent matrix. An `approve` result for low or medium risk MAY pass. An `approve` result for high risk MAY pass only with medium or high user authorization. Critical risk MUST always escalate. The deterministic risk hint is contextual input for fallback and display, not a non-decreasing floor on the reviewer's contextual risk assessment. Validation MUST NOT contain per-tool approval exceptions.
+- **Alternatives Rejected**: Blocking every high-risk classification, requiring medium authorization for every low-risk call, or maintaining separate post-review allowlists by tool name.
+- **Reason**: The reviewer must be able to distinguish a narrowly authorized external read or delegation from a broad dangerous action while retaining a small fail-closed validator.
+- **User Evidence**: "我需要你全面审视reviwer审批的合理性，不然approve for me模式完全无法发挥作用"
+
+### DEC-027: Live trust-labeled reviewer evidence
+
+- **Status**: confirmed
+- **Decision**: Each reviewed call MUST load the current persisted session transcript at review time and applicable project instructions. Trusted and untrusted content MUST have independent limits of 16 KiB and 8 KiB and MUST retain recent content. Main-session direct user messages and direct `ask_user_question` answers are trusted; assistant content and ordinary tool results are untrusted. Child review evidence MUST preserve parent labels and treat the delegated child task, child assistant text, and child tool results as untrusted context. Evidence providers MUST be owned by registry wrappers rather than a shared mutable coordinator slot.
+- **Alternatives Rejected**: Capturing only the run's initial prompt, sharing one replaceable evidence callback across main and child registries, or treating a delegated task description as direct user authorization.
+- **Reason**: Automatic approval needs current authorization and execution context without allowing assistant-generated child instructions to broaden authority.
+- **User Evidence**: "设计更加合理的优化方案"
+
+### DEC-028: Composite tool planning and delegation defaults
+
+- **Status**: confirmed
+- **Decision**: `delegate_task` MUST remain reviewable and MUST assess omitted `read_only` as `true`, matching execution. Its assessment MUST state whether child calls inherit permission enforcement. Model-invoked skills MUST use a side-effect-free execution plan shared with execution to expose substituted embedded shell commands, hooks, fork mode, and nested enforcement before any pipeline side effect runs. Unparseable plans or missing nested enforcement MUST go directly to user approval.
+- **Alternatives Rejected**: Parsing composite arguments inside the reviewer, running skill preparation before approval, or assuming omitted delegation fields use zero-value semantics.
+- **Reason**: Composite tools otherwise hide the exact effects that matter to approval and can drift between assessment and execution.
+- **User Evidence**: "为什么只读subagent任务也没有被自动审批通过"
 
 ## Out of Scope
 
@@ -655,3 +688,10 @@ Superseded entries are retained in their original sections with replacement link
 - **Summary Presented**: Keep user-observable compatibility targets while removing source-code implementation claims from the requirements record. Require requirements, specification, plan, and task artifacts to describe FoxHarness behavior independently of Codex CLI or Claude Code source details; source research does not need to be persisted.
 - **User Confirmation**: "按照此边界清理 requirements，源码研究可以不持久化到文档。之后的spec/plan/task文档内容也不应该出现与源码相关的描述"
 - **Entries Confirmed**: CON-007
+
+### Session 2026-07-16 18:15:00 CST
+
+- **Summary Presented**: Replace tool-name reviewer exceptions with invocation-specific capability assessments; route missing metadata directly to the user; use one generic risk/authorization matrix; load live trust-labeled evidence with separate budgets; preserve delegation defaults and inspect Skill shell effects through pure planning before execution.
+- **User Confirmation**: "设计更加合理的优化方案，可以参考 codex 和 claude code的做法。" followed by "Implement the plan."
+- **Entries Confirmed**: DEC-025, DEC-026, DEC-027, DEC-028
+- **Entries Partially Superseded**: DEC-010 unknown-tool and centralized classification clauses

@@ -60,8 +60,9 @@ type Manager struct {
 	// maxTurns is the turn budget handed to the subagent engine. It defaults to
 	// DefaultMaxTurns (applied by NewManager) and may be overridden via
 	// WithMaxTurns, primarily for deterministic tests of the exhaustion path.
-	maxTurns    int
-	permissions *permission.Coordinator
+	maxTurns       int
+	permissions    *permission.Coordinator
+	parentEvidence permission.EvidenceProvider
 }
 
 // NewManager creates a Manager that delegates LLM calls to p and roots
@@ -89,6 +90,17 @@ func (m *Manager) WithPermission(coordinator *permission.Coordinator) *Manager {
 	return m
 }
 
+// WithParentEvidence supplies live parent-session context for child reviews.
+func (m *Manager) WithParentEvidence(provider permission.EvidenceProvider) *Manager {
+	m.parentEvidence = provider
+	return m
+}
+
+// PermissionEnforced reports whether child registries inherit a coordinator.
+func (m *Manager) PermissionEnforced() bool {
+	return m != nil && m.permissions != nil
+}
+
 // buildComposer assembles the subagent system-prompt composer, injecting the
 // cross-session persistent memory index (read-only) so delegated tasks share the
 // project/user memory that top-level runs see. Subagents do not write or
@@ -98,7 +110,7 @@ func (m *Manager) buildComposer(sess *session.Session) *prompt.Composer {
 	return prompt.NewComposer(m.workDir).WithReadOnlyMemory(sess.MemoryPath()).WithReadOnlyAutoMemory(store)
 }
 
-func (m *Manager) buildRegistry(readOnly bool, allowedTools []string) tools.Registry {
+func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessions ...*session.Session) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(m.workDir))
 	registry.Register(tools.NewBashTool(m.workDir))
@@ -108,10 +120,23 @@ func (m *Manager) buildRegistry(readOnly bool, allowedTools []string) tools.Regi
 		registry.Register(tools.NewEditFileTool(m.workDir))
 	}
 
-	if len(allowedTools) > 0 {
-		return tools.NewFilteredRegistry(permission.DecorateRegistry(registry, m.permissions), allowedTools)
+	var evidenceProvider permission.EvidenceProvider
+	if len(childSessions) > 0 && childSessions[0] != nil {
+		childSession := childSessions[0]
+		evidenceProvider = func(request permission.Request) permission.Evidence {
+			parent := permission.BuildEvidence(nil, nil, request)
+			if m.parentEvidence != nil {
+				parent = m.parentEvidence(request)
+			}
+			messages, _ := session.NewMessageLog(childSession).LoadMessages()
+			return permission.BuildChildEvidence(parent, messages, request)
+		}
 	}
-	return permission.DecorateRegistry(registry, m.permissions)
+	decorated := permission.DecorateRegistry(registry, m.permissions, evidenceProvider)
+	if len(allowedTools) > 0 {
+		return tools.NewFilteredRegistry(decorated, allowedTools)
+	}
+	return decorated
 }
 
 // Run executes the subagent task described by req. It creates a new session,
@@ -131,7 +156,7 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 		return nil, err
 	}
 
-	registry := m.buildRegistry(req.ReadOnly, req.AllowedTools)
+	registry := m.buildRegistry(req.ReadOnly, req.AllowedTools, sess)
 	composer := m.buildComposer(sess)
 	eng := engine.NewAgentEngine(
 		m.provider,

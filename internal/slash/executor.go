@@ -22,6 +22,12 @@ type ForkRunner interface {
 	Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error)
 }
 
+// PermissionAwareForkRunner reports whether forked tool calls inherit the
+// active permission coordinator.
+type PermissionAwareForkRunner interface {
+	PermissionEnforced() bool
+}
+
 // Executor orchestrates the per-command pipeline: argument substitution,
 // shell embedding, variable replacement, before/after hooks, and dispatch
 // to either inline (return the processed content) or fork (delegate to a
@@ -76,6 +82,16 @@ func NewExecutor(opts ...ExecutorOption) *Executor {
 	return e
 }
 
+// ForkPermissionEnforced reports whether the configured fork runner proves a
+// nested permission boundary.
+func (e *Executor) ForkPermissionEnforced() bool {
+	if e == nil || e.forkRunner == nil {
+		return false
+	}
+	reporter, ok := e.forkRunner.(PermissionAwareForkRunner)
+	return ok && reporter.PermissionEnforced()
+}
+
 // ExecutionResult bundles everything an inline-mode caller needs to start
 // the next agent turn: the processed prompt content and any per-turn
 // restrictions declared by the command's frontmatter. Fork-mode results
@@ -116,6 +132,55 @@ type ExecutionResult struct {
 	AfterHook func(ctx context.Context)
 }
 
+// ExecutionPlan is a side-effect-free description shared by permission
+// assessment and execution.
+type ExecutionPlan struct {
+	Template     string
+	Commands     []string
+	Fork         bool
+	AllowedTools []string
+	Effort       string
+	Hooks        *FrontmatterHooks
+	variables    map[string]string
+}
+
+// Plan applies pure substitutions and records every shell command that the
+// execution pipeline may run.
+func (e *Executor) Plan(cmd *Command, rawArgs, sessionID string) (ExecutionPlan, error) {
+	if cmd == nil {
+		return ExecutionPlan{}, errors.New("slash: nil command")
+	}
+	args := ParseArguments(rawArgs)
+	argNames := SplitArgumentNames(cmd.Frontmatter.Arguments)
+	template := SubstituteArguments(cmd.Content, args, argNames)
+	commands := EmbeddedShellCommands(template)
+	var hooks *FrontmatterHooks
+	if cmd.Frontmatter.Hooks != nil {
+		copy := *cmd.Frontmatter.Hooks
+		hooks = &copy
+		if copy.Before != "" {
+			commands = append(commands, copy.Before)
+		}
+		if copy.After != "" {
+			commands = append(commands, copy.After)
+		}
+	}
+	return ExecutionPlan{
+		Template:     template,
+		Commands:     commands,
+		Fork:         isForkMode(cmd),
+		AllowedTools: append([]string(nil), cmd.Frontmatter.AllowedTools...),
+		Effort:       cmd.Frontmatter.Effort,
+		Hooks:        hooks,
+		variables: map[string]string{
+			VarSkillDir:        cmd.SkillDir,
+			VarSessionID:       sessionID,
+			VarClaudeSkillDir:  cmd.SkillDir,
+			VarClaudeSessionID: sessionID,
+		},
+	}, nil
+}
+
 // Execute processes cmd through the pipeline and returns an
 // ExecutionResult.
 //
@@ -129,40 +194,30 @@ type ExecutionResult struct {
 // (or supplied by the model's tool call). sessionID is used for
 // ${FOXHARNESS_SESSION_ID} substitution and may be empty.
 func (e *Executor) Execute(ctx context.Context, cmd *Command, rawArgs, sessionID string) (ExecutionResult, error) {
-	if cmd == nil {
-		return ExecutionResult{}, errors.New("slash: nil command")
-	}
-
-	args := ParseArguments(rawArgs)
-	argNames := SplitArgumentNames(cmd.Frontmatter.Arguments)
-	processed := SubstituteArguments(cmd.Content, args, argNames)
-
-	shellWorkDir := e.workDir
-	processed, err := ExecuteEmbeddedShell(ctx, processed, shellWorkDir, e.shellTimeout)
+	plan, err := e.Plan(cmd, rawArgs, sessionID)
 	if err != nil {
 		return ExecutionResult{}, err
 	}
 
-	vars := map[string]string{
-		VarSkillDir:        cmd.SkillDir,
-		VarSessionID:       sessionID,
-		VarClaudeSkillDir:  cmd.SkillDir,
-		VarClaudeSessionID: sessionID,
+	shellWorkDir := e.workDir
+	processed, err := ExecuteEmbeddedShell(ctx, plan.Template, shellWorkDir, e.shellTimeout)
+	if err != nil {
+		return ExecutionResult{}, err
 	}
-	processed = ReplaceVariables(processed, vars)
+	processed = ReplaceVariables(processed, plan.variables)
 
-	_ = ExecuteHooks(ctx, cmd.Frontmatter.Hooks, shellWorkDir, e.hookTimeout)
+	_ = ExecuteHooks(ctx, plan.Hooks, shellWorkDir, e.hookTimeout)
 
-	if isForkMode(cmd) {
+	if plan.Fork {
 		if e.forkRunner == nil {
 			return ExecutionResult{}, errors.New("fork mode unavailable: no runner configured")
 		}
-		allowedCopy := append([]string(nil), cmd.Frontmatter.AllowedTools...)
+		allowedCopy := append([]string(nil), plan.AllowedTools...)
 		out, forkErr := e.forkRunner.Run(ctx, processed, cmd.Frontmatter.Agent, allowedCopy)
 		// Fork mode completes synchronously inside Execute, so the
 		// after-hook runs here — regardless of forkErr — to mirror
 		// "after the command's execution completes".
-		_ = ExecuteAfterHook(ctx, cmd.Frontmatter.Hooks, shellWorkDir, e.hookTimeout)
+		_ = ExecuteAfterHook(ctx, plan.Hooks, shellWorkDir, e.hookTimeout)
 		if forkErr != nil {
 			return ExecutionResult{}, forkErr
 		}
@@ -174,7 +229,7 @@ func (e *Executor) Execute(ctx context.Context, cmd *Command, rawArgs, sessionID
 	// is responsible for invoking AfterHook when that run completes.
 	// Deferring inside Execute would fire the hook before the model has
 	// touched the content, defeating REQ-012.
-	hooks := cmd.Frontmatter.Hooks
+	hooks := plan.Hooks
 	timeout := e.hookTimeout
 	var afterHook func(context.Context)
 	if hooks != nil && hooks.After != "" {
@@ -184,8 +239,8 @@ func (e *Executor) Execute(ctx context.Context, cmd *Command, rawArgs, sessionID
 	}
 	return ExecutionResult{
 		Content:      processed,
-		AllowedTools: append([]string(nil), cmd.Frontmatter.AllowedTools...),
-		Effort:       cmd.Frontmatter.Effort,
+		AllowedTools: append([]string(nil), plan.AllowedTools...),
+		Effort:       plan.Effort,
 		AfterHook:    afterHook,
 	}, nil
 }

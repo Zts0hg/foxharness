@@ -3,9 +3,11 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -149,6 +151,71 @@ func TestClaudeProviderReturnsUsage(t *testing.T) {
 	}
 }
 
+func TestClaudeProviderGenerateStreamEmitsTextDeltas(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("request path = %q, want /v1/messages", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeClaudeSSE(t, w, "message_start", `{"type":"message_start","message":{"id":"msg-test","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}`)
+		writeClaudeSSE(t, w, "content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+		writeClaudeSSE(t, w, "content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello "}}`)
+		writeClaudeSSE(t, w, "content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}`)
+		writeClaudeSSE(t, w, "content_block_stop", `{"type":"content_block_stop","index":0}`)
+		writeClaudeSSE(t, w, "message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`)
+		writeClaudeSSE(t, w, "message_stop", `{"type":"message_stop"}`)
+	}))
+	defer server.Close()
+
+	provider := newTestClaudeProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	var deltas []string
+	resp, err := provider.GenerateStream(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{}, StreamCallbacks{
+		OnTextDelta: func(delta string) {
+			deltas = append(deltas, delta)
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateStream() error = %v", err)
+	}
+	if got := strings.Join(deltas, ""); got != "hello world" {
+		t.Fatalf("streamed deltas = %q, want hello world", got)
+	}
+	if resp.Message.Content != "hello world" {
+		t.Fatalf("Message.Content = %q, want hello world", resp.Message.Content)
+	}
+	if resp.Usage.InputTokens != 10 || resp.Usage.OutputTokens != 2 {
+		t.Fatalf("Usage = %#v, want input 10 output 2", resp.Usage)
+	}
+}
+
+func TestClaudeProviderGenerateStreamRejectsEmptyStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, err := fmt.Fprint(w, `{
+			"id": "msg-test",
+			"type": "message",
+			"role": "assistant",
+			"model": "test-model",
+			"content": [{"type": "text", "text": "non-stream response"}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 1, "output_tokens": 1}
+		}`)
+		if err != nil {
+			t.Fatalf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestClaudeProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	resp, err := provider.GenerateStream(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{}, StreamCallbacks{})
+	if !errors.Is(err, ErrEmptyStream) {
+		t.Fatalf("GenerateStream() error = %v, want ErrEmptyStream", err)
+	}
+	if resp != nil {
+		t.Fatalf("GenerateStream() response = %#v, want nil", resp)
+	}
+}
+
 func TestClaudeProviderRetriesTransientHTTPFailure(t *testing.T) {
 	var attempts int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -202,6 +269,60 @@ func TestClaudeProviderGenerateWithOptionsSendsOutputConfigEffort(t *testing.T) 
 	req := <-requests
 	if req.OutputConfig == nil || req.OutputConfig.Effort == nil || *req.OutputConfig.Effort != "max" {
 		t.Fatalf("output_config.effort = %#v, want max", req.OutputConfig)
+	}
+}
+
+func TestClaudeProviderGenerateWithOptionsSendsStructuredOutputSchema(t *testing.T) {
+	requests := make(chan claudeRequestBody, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body claudeRequestBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- body
+		writeClaudeTextMessage(t, w, "ok")
+	}))
+	defer server.Close()
+
+	jsonSchema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"decision": map[string]any{"type": "string"}},
+		"required":   []any{"decision"},
+	}
+	provider := newTestClaudeProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	_, err := provider.GenerateWithOptions(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{
+		StructuredOutput: &StructuredOutputOptions{Name: "permission_review", Schema: jsonSchema, Strict: true},
+	})
+	if err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+
+	req := <-requests
+	if req.OutputConfig == nil || req.OutputConfig.Format == nil {
+		t.Fatalf("output_config.format = %#v, want json_schema", req.OutputConfig)
+	}
+	if req.OutputConfig.Format.Type != "json_schema" {
+		t.Fatalf("output_config.format.type = %q, want json_schema", req.OutputConfig.Format.Type)
+	}
+	if req.OutputConfig.Format.Schema["type"] != "object" {
+		t.Fatalf("output_config.format.schema = %#v, want object schema", req.OutputConfig.Format.Schema)
+	}
+}
+
+func TestClaudeProviderMarksUnsupportedStructuredOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"Extra inputs are not permitted: output_config.format"}}`)
+	}))
+	defer server.Close()
+
+	p := newTestClaudeProvider(server.URL, RetryConfig{MaxAttempts: 1})
+	_, err := p.GenerateWithOptions(context.Background(), []schema.Message{{Role: schema.RoleUser, Content: "hello"}}, nil, GenerateOptions{
+		StructuredOutput: &StructuredOutputOptions{Name: "permission_review", Schema: map[string]any{"type": "object"}, Strict: true},
+	})
+	if !errors.Is(err, ErrStructuredOutputUnsupported) {
+		t.Fatalf("GenerateWithOptions() error = %v, want ErrStructuredOutputUnsupported", err)
 	}
 }
 
@@ -389,6 +510,10 @@ type claudeRequestBody struct {
 	MaxTokens    int64  `json:"max_tokens"`
 	OutputConfig *struct {
 		Effort *string `json:"effort"`
+		Format *struct {
+			Type   string         `json:"type"`
+			Schema map[string]any `json:"schema"`
+		} `json:"format"`
 	} `json:"output_config"`
 	System []struct {
 		Text string `json:"text"`
@@ -437,6 +562,17 @@ func writeClaudeTextMessage(t *testing.T, w http.ResponseWriter, content string)
 	}`, content)
 	if err != nil {
 		t.Fatalf("write response: %v", err)
+	}
+}
+
+func writeClaudeSSE(t *testing.T, w http.ResponseWriter, event string, data string) {
+	t.Helper()
+	_, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+	if err != nil {
+		t.Fatalf("write SSE event: %v", err)
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 
