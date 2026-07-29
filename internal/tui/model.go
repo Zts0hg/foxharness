@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -173,6 +174,8 @@ var slashCommands = []slashCommand{
 var workingFrames = []string{"✦", "✧"}
 
 const defaultThemeName = "codex"
+
+const interruptedTurnMessage = "Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue."
 
 var defaultStatuslineItems = []string{"model", "project", "git-branch", "context-used"}
 
@@ -423,6 +426,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cancelRun = nil
 		m.refreshRuntimeInfo()
 		if msg.err != nil {
+			if isRunCancellation(msg.err) {
+				m.status = "Conversation interrupted"
+				if !entriesContainText(m.entries, "system", interruptedTurnMessage) {
+					m.appendEntry("system", "interrupted", interruptedTurnMessage, false)
+				}
+				if len(m.queuedPrompts) > 0 {
+					return m.startNextQueuedPrompt()
+				}
+				return m, nil
+			}
 			m.status = "Run failed"
 			if len(m.queuedPrompts) > 0 {
 				m.status = fmt.Sprintf("Run failed; %d queued", len(m.queuedPrompts))
@@ -3692,6 +3705,13 @@ func (m *Model) drainRunEvents() {
 
 func (m *Model) applyRunEvent(msg runEventMsg) {
 	m.status = msg.status
+	if msg.err && isRunCancellationText(msg.body) {
+		m.status = "Conversation interrupted"
+		if !entriesContainText(m.entries, "system", interruptedTurnMessage) {
+			m.appendEntry("system", "interrupted", interruptedTurnMessage, false)
+		}
+		return
+	}
 	if msg.delta {
 		m.appendAssistantDelta(msg.body)
 		return
@@ -3703,6 +3723,23 @@ func (m *Model) applyRunEvent(msg runEventMsg) {
 	if msg.role != "" || msg.body != "" {
 		m.appendEntry(msg.role, msg.title, msg.body, msg.err)
 	}
+}
+
+func isRunCancellation(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
+func isRunCancellationText(body string) bool {
+	return strings.Contains(strings.ToLower(body), "context canceled")
+}
+
+func entriesContainText(entries []entry, role string, text string) bool {
+	for _, e := range entries {
+		if e.role == role && strings.Contains(e.body, text) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Model) appendAssistantDelta(delta string) {

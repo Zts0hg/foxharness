@@ -3671,6 +3671,31 @@ func TestModelRunError(t *testing.T) {
 	}
 }
 
+func TestModelRunCancellationShowsCodexInterruptedNotice(t *testing.T) {
+	runner := newFakeRunner()
+	runner.runErr = context.Canceled
+	m := NewModel(context.Background(), runner, Config{})
+
+	m, _ = update(t, m, keyRunes("cancelled task"))
+	m, cmd := update(t, m, keyEnter())
+	m, _ = update(t, m, cmd())
+
+	if m.running {
+		t.Fatalf("model running = true after cancelled run")
+	}
+	if m.status != "Conversation interrupted" {
+		t.Fatalf("status = %q, want Conversation interrupted", m.status)
+	}
+	plainView := stripANSI(m.View())
+	if strings.Contains(plainView, "ERROR run failed") || strings.Contains(plainView, "context canceled") {
+		t.Fatalf("cancelled run rendered as error:\n%s", plainView)
+	}
+	if !strings.Contains(plainView, "Conversation interrupted - tell the model what to do differently.") ||
+		!strings.Contains(plainView, "Hit /feedback to report the issue.") {
+		t.Fatalf("cancelled run missing Codex interrupted notice:\n%s", plainView)
+	}
+}
+
 func TestModelViewContainsSessionAndInput(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{Model: "fake-model"})
