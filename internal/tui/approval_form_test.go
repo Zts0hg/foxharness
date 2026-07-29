@@ -6,6 +6,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/toolpolicy"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestApprovalFormShowsHumanOnlyPolicyReason(t *testing.T) {
@@ -33,5 +34,26 @@ func TestApprovalFormWrapsExactActionInsteadOfTruncatingIt(t *testing.T) {
 	view := form.view(36)
 	if !strings.Contains(view, "final_marker") {
 		t.Fatalf("approval view truncated the exact action:\n%s", view)
+	}
+}
+
+func TestApprovalFormVerticalArrowsMoveBetweenOptions(t *testing.T) {
+	form := newApprovalForm(permissionRequest{approval: permission.ApprovalRequest{Request: permission.Request{
+		Action: "bash date",
+		CWD:    "/tmp/work",
+		Risk:   permission.RiskLow,
+	}}})
+
+	form.update(tea.KeyMsg{Type: tea.KeyDown})
+	if form.action != 1 {
+		t.Fatalf("action after down = %d, want 1", form.action)
+	}
+	form.update(tea.KeyMsg{Type: tea.KeyUp})
+	if form.action != 0 {
+		t.Fatalf("action after up = %d, want 0", form.action)
+	}
+	form.update(tea.KeyMsg{Type: tea.KeyUp})
+	if form.action != 3 {
+		t.Fatalf("action after wrap up = %d, want 3", form.action)
 	}
 }

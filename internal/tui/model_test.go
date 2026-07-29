@@ -564,7 +564,7 @@ func TestModelViewUsesCompactMessageRendering(t *testing.T) {
 	}
 	for _, want := range []string{
 		"› hello, what's the day today?",
-		"• Ran date",
+		"⬢ Ran date",
 		"  └ 2026年 5月17日",
 		"• answer: hello, what's the day today?",
 	} {
@@ -580,11 +580,11 @@ func TestToolCallRenderingUsesReferenceStyleLabels(t *testing.T) {
 		body string
 		want string
 	}{
-		{name: "read_file", body: formatToolInvocation("read_file", `{"path":"internal/foo.go"}`), want: "• Explored internal/foo.go"},
-		{name: "write_file", body: formatToolInvocation("write_file", `{"path":"cmd/app.go"}`), want: "• Wrote cmd/app.go"},
-		{name: "edit_file", body: formatToolInvocation("edit_file", `{"path":"internal/app.go"}`), want: "• Edited internal/app.go"},
-		{name: "read_todo", body: formatToolInvocation("read_todo", `{}`), want: "• Explored TODO"},
-		{name: "update_todo", body: formatToolInvocation("update_todo", `{"content":"# TODO"}`), want: "• Ran Update TODO"},
+		{name: "read_file", body: formatToolInvocation("read_file", `{"path":"internal/foo.go"}`), want: "⬢ Explored internal/foo.go"},
+		{name: "write_file", body: formatToolInvocation("write_file", `{"path":"cmd/app.go"}`), want: "⬢ Wrote cmd/app.go"},
+		{name: "edit_file", body: formatToolInvocation("edit_file", `{"path":"internal/app.go"}`), want: "⬢ Edited internal/app.go"},
+		{name: "read_todo", body: formatToolInvocation("read_todo", `{}`), want: "⬢ Explored TODO"},
+		{name: "update_todo", body: formatToolInvocation("update_todo", `{"content":"# TODO"}`), want: "⬢ Ran Update TODO"},
 	}
 
 	for _, tt := range tests {
@@ -3724,6 +3724,37 @@ func TestModelWideViewRendersSidebarDocuments(t *testing.T) {
 	if strings.Contains(plainView, "stale project plan") || strings.Contains(plainView, "stale project todo") {
 		t.Fatalf("sidebar should use session plan/todo instead of project files:\n%s", plainView)
 	}
+}
+
+func TestApprovalFormWideViewKeepsSidebarVisible(t *testing.T) {
+	workDir := t.TempDir()
+	sessionDir := t.TempDir()
+	writeTestFile(t, sessionDir, "PLAN.md", "- Keep sidebar visible")
+	writeTestFile(t, sessionDir, "TODO.md", "- [ ] Review approval")
+
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	runner.sessionDir = sessionDir
+	runner.memoryIndex = "Popup layout should not cover the sidebar."
+	m := NewModel(context.Background(), runner, Config{})
+	m.approvalForm = newApprovalForm(permissionRequest{approval: permission.ApprovalRequest{Request: permission.Request{
+		ToolName: "bash",
+		Action:   "bash git status --short",
+		CWD:      workDir,
+		Risk:     permission.RiskLow,
+	}}})
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
+
+	plainView := stripANSI(m.View())
+	if strings.Count(plainView, "TODO") < 2 {
+		t.Fatalf("approval popup should keep sidebar visible beside the card:\n%s", plainView)
+	}
+	for _, line := range strings.Split(plainView, "\n") {
+		if strings.Contains(line, "Approve tool call") && strings.Contains(line, "│") {
+			return
+		}
+	}
+	t.Fatalf("approval card row did not render beside the sidebar:\n%s", plainView)
 }
 
 func TestSidebarBoxHeightsSplitDocumentAreaEvenly(t *testing.T) {

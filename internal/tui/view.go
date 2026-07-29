@@ -180,9 +180,11 @@ func (m Model) View() string {
 	}
 
 	if m.approvalForm != nil {
-		card := inputStyle.Width(width).Render(m.approvalForm.view(width))
+		cardWidth := m.popupCardWidth(width)
+		card := inputStyle.Width(cardWidth).Render(m.approvalForm.view(cardWidth))
+		cardRow := m.renderPopupRow(card)
 		chrome := outerStyle.GetVerticalFrameSize() +
-			lipgloss.Height(card) + 1 +
+			lipgloss.Height(cardRow) + 1 +
 			1 +
 			lipgloss.Height(m.renderStatusBar(width)) +
 			lipgloss.Height(m.renderKeybinds(width))
@@ -190,7 +192,7 @@ func (m Model) View() string {
 		parts := []string{
 			m.renderMainArea(bodyHeight),
 			"",
-			card,
+			cardRow,
 			"",
 			m.renderStatusBar(width),
 			m.renderKeybinds(width),
@@ -277,6 +279,27 @@ func (m Model) View() string {
 		m.renderKeybinds(width),
 	)
 	return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+}
+
+func (m Model) popupCardWidth(width int) int {
+	if !m.shouldRenderSidebar() {
+		return width
+	}
+	return m.chatWidth()
+}
+
+func (m Model) renderPopupRow(card string) string {
+	if !m.shouldRenderSidebar() {
+		return card
+	}
+	cardHeight := lipgloss.Height(card)
+	sidebar := m.renderSidebar(m.sidebarWidth(), cardHeight)
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		card,
+		strings.Repeat(" ", sidebarGap),
+		sidebar,
+	)
 }
 
 func (m Model) contentDimensions() (int, int) {
@@ -1001,7 +1024,7 @@ func collapseCommandOutput(body string, expanded bool) string {
 }
 
 func renderToolCall(e entry, width int) string {
-	line := commandLabelStyle.Render("• " + codexToolCallTitle(e))
+	line := commandLabelStyle.Render(toolCallGlyph + " " + codexToolCallTitle(e))
 	return fitLine(line, width)
 }
 

@@ -30,9 +30,9 @@ func (f *approvalForm) update(msg tea.KeyMsg) tea.Cmd {
 	case tea.KeyEsc:
 		f.action = 2
 		return f.submit()
-	case tea.KeyTab, tea.KeyRight:
+	case tea.KeyTab, tea.KeyRight, tea.KeyDown:
 		f.action = (f.action + 1) % 4
-	case tea.KeyShiftTab, tea.KeyLeft:
+	case tea.KeyShiftTab, tea.KeyLeft, tea.KeyUp:
 		f.action = (f.action + 3) % 4
 	case tea.KeyBackspace, tea.KeyDelete:
 		if f.action == 3 && len(f.feedback) > 0 {
@@ -107,7 +107,7 @@ func (f *approvalForm) view(width int) string {
 		b.WriteString(cursorStyle.Render("▏"))
 	}
 	b.WriteString("\n\n")
-	b.WriteString(hintStyle.Render("Tab/←/→ choose · Enter confirm · Esc deny"))
+	b.WriteString(hintStyle.Render("Tab/↑/↓ choose · Enter confirm · Esc deny"))
 	lines := strings.Split(b.String(), "\n")
 	for i := range lines {
 		lines[i] = fitLine(lines[i], contentWidth)
