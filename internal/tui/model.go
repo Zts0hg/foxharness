@@ -3704,6 +3704,9 @@ func (m *Model) drainRunEvents() {
 }
 
 func (m *Model) applyRunEvent(msg runEventMsg) {
+	if msg.delta && !m.running {
+		return
+	}
 	m.status = msg.status
 	if msg.err && isRunCancellationText(msg.body) {
 		m.status = "Conversation interrupted"

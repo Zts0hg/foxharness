@@ -818,6 +818,7 @@ func TestRunEventStreamingAssistantDeltasReplaceWithFinalMessage(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{})
 	m.entries = nil
+	m.running = true
 
 	m.applyRunEvent(runEventMsg{role: "assistant", title: "stream", body: "hello ", delta: true})
 	m.applyRunEvent(runEventMsg{role: "assistant", title: "stream", body: "world", delta: true})
@@ -831,6 +832,25 @@ func TestRunEventStreamingAssistantDeltasReplaceWithFinalMessage(t *testing.T) {
 	}
 	if m.entries[0].title != "foxharness" || m.entries[0].body != "hello **world**" {
 		t.Fatalf("final stream replacement entry = %#v", m.entries[0])
+	}
+}
+
+func TestRunEventIgnoresLateAssistantDeltaAfterRunFinished(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = nil
+	m.running = true
+
+	m.applyRunEvent(runEventMsg{role: "assistant", title: "stream", body: "Play", delta: true})
+	m.applyRunEvent(runEventMsg{role: "assistant", title: "foxharness", body: "Use Playwright.", streamFinal: true})
+	m.running = false
+	m.applyRunEvent(runEventMsg{role: "assistant", title: "stream", body: "wright", delta: true})
+
+	if len(m.entries) != 1 {
+		t.Fatalf("entries len = %d, want only final assistant entry: %#v", len(m.entries), m.entries)
+	}
+	if m.entries[0].body != "Use Playwright." {
+		t.Fatalf("final assistant entry = %#v", m.entries[0])
 	}
 }
 
