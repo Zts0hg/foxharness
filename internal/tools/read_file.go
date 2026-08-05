@@ -13,7 +13,6 @@ import (
 
 // ReadFileTool reads the contents of files from the filesystem.
 // Files are read relative to the configured working directory.
-// Large files are truncated to avoid excessive output.
 type ReadFileTool struct {
 	// workDir is the base directory for resolving relative file paths.
 	workDir string
@@ -58,7 +57,6 @@ type readFileArgs struct {
 
 // Execute reads the file at the specified path and returns its contents.
 // The path is resolved relative to the tool's working directory.
-// Files larger than 8000 bytes are truncated with a notification.
 // Returns the file contents, or an error if the file cannot be read.
 func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input readFileArgs
@@ -76,12 +74,6 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	content, err := io.ReadAll(file)
 	if err != nil {
 		return "", fmt.Errorf("读取文件内容失败: %w", err)
-	}
-
-	const maxLen = 8000
-	if len(content) > maxLen {
-		truncatedMessage := fmt.Sprintf("%s\n\n...[由于内容过长，已经被系统截断至前 %d 字节]...", string(content[:maxLen]), maxLen)
-		return truncatedMessage, nil
 	}
 
 	return string(content), nil

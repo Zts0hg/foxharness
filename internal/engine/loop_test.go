@@ -14,6 +14,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/toolresult"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
@@ -847,6 +848,73 @@ func TestEngine_ToolResultPersistence(t *testing.T) {
 	}
 	if len(toolMsg.Content) >= len(largeOutput) {
 		t.Fatalf("preview should be smaller than full output: got %d, full %d", len(toolMsg.Content), len(largeOutput))
+	}
+}
+
+func TestEngine_ReadFileLargeResultUsesUnifiedPersistence(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	content := strings.Repeat("R", toolresult.PersistenceThreshold+1000)
+	if err := os.WriteFile(filepath.Join(workDir, "large.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(tools.NewReadFileTool(workDir))
+
+	p := &sequencedProvider{responses: []*provider.GenerateResponse{
+		{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID:        "call_read_large",
+				Name:      "read_file",
+				Arguments: json.RawMessage(`{"path":"large.txt"}`),
+			}},
+		}},
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+	}}
+
+	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 4})
+	if _, err := eng.RunWithReporter(context.Background(), sess, "read large", nil); err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+
+	persistedPath := filepath.Join(sess.ToolResultsDir(), "call_read_large.txt")
+	data, err := os.ReadFile(persistedPath)
+	if err != nil {
+		t.Fatalf("expected persisted read_file result at %s: %v", persistedPath, err)
+	}
+	if string(data) != content {
+		t.Fatalf("persisted read_file result length = %d, want complete %d-byte file", len(data), len(content))
+	}
+
+	messages, err := session.NewMessageLog(sess).LoadMessages()
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	var toolMsg *schema.Message
+	for i := range messages {
+		if messages[i].ToolCallID == "call_read_large" {
+			toolMsg = &messages[i]
+			break
+		}
+	}
+	if toolMsg == nil {
+		t.Fatalf("expected read_file result message in history")
+	}
+	if !strings.Contains(toolMsg.Content, "<persisted-output>") {
+		t.Fatalf("read_file result should use persisted preview, got: %q", toolMsg.Content[:200])
+	}
+	if strings.Contains(toolMsg.Content, "截断至前 8000 字节") {
+		t.Fatalf("read_file result used the old 8000-byte truncation path")
 	}
 }
 
