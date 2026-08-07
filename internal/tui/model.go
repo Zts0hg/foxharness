@@ -400,6 +400,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = max(msg.Width, minWidth)
 		m.height = max(msg.Height, 1)
+		m.cachedLayout = nil
 		m.clearSelection()
 		m.clampSidebarScrollOffsets()
 		if !m.shouldRenderSidebar() {
@@ -421,6 +422,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case runFinishedMsg:
 		m.drainRunEvents()
+		runDuration := m.runningElapsed()
 		m.running = false
 		m.runStartedAt = time.Time{}
 		m.cancelRun = nil
@@ -450,8 +452,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.result != nil {
 			m.status = fmt.Sprintf("Run complete: %s", msg.result.RunID)
+			m.appendWorkedForSeparator(runDuration)
 		} else {
 			m.status = "Run complete"
+			m.appendWorkedForSeparator(runDuration)
 		}
 		if len(m.queuedPrompts) > 0 {
 			return m.startNextQueuedPrompt()
@@ -604,9 +608,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.cachedLayout == nil {
-		_, bodyHeight := m.contentDimensions()
-		layout := m.transcriptLayout(m.chatWidth(), bodyHeight)
+	_, bodyHeight := m.contentDimensions()
+	chatWidth := m.chatWidth()
+	if m.cachedLayout == nil || !m.cachedLayout.matches(chatWidth, bodyHeight) {
+		layout := m.transcriptLayout(chatWidth, bodyHeight)
 		m.cachedLayout = &layout
 	}
 	if m.selection.dragging && !isWheelMouse(msg) {
@@ -826,8 +831,9 @@ func (m Model) handleInputSelectionMouse(msg tea.MouseMsg) (Model, bool) {
 
 func (m Model) transcriptPointAt(x int, y int, clamp bool) (selectionPoint, bool) {
 	_, bodyHeight := m.contentDimensions()
+	chatWidth := m.chatWidth()
 	var layout transcriptLayout
-	if m.cachedLayout != nil {
+	if m.cachedLayout != nil && m.cachedLayout.matches(chatWidth, bodyHeight) {
 		layout = *m.cachedLayout
 		visible := max(bodyHeight-bodyStyle.GetVerticalFrameSize(), 1)
 		start := len(layout.styledLines) - visible - m.scrollOffset
@@ -837,7 +843,7 @@ func (m Model) transcriptPointAt(x int, y int, clamp bool) (selectionPoint, bool
 		layout.visibleStart = start
 		layout.visibleEnd = min(start+visible, len(layout.styledLines))
 	} else {
-		layout = m.transcriptLayout(m.chatWidth(), bodyHeight)
+		layout = m.transcriptLayout(chatWidth, bodyHeight)
 	}
 	if len(layout.plainLines) == 0 || layout.visibleEnd <= layout.visibleStart {
 		return selectionPoint{}, false
@@ -846,9 +852,9 @@ func (m Model) transcriptPointAt(x int, y int, clamp bool) (selectionPoint, bool
 	localX := x - viewPaddingLeft
 	localY := y - viewPaddingTop
 	if clamp {
-		localX = max(0, min(localX, m.chatWidth()))
+		localX = max(0, min(localX, chatWidth))
 		localY = max(0, min(localY, layout.visibleEnd-layout.visibleStart-1))
-	} else if localX < 0 || localX >= m.chatWidth() || localY < 0 || localY >= layout.visibleEnd-layout.visibleStart {
+	} else if localX < 0 || localX >= chatWidth || localY < 0 || localY >= layout.visibleEnd-layout.visibleStart {
 		return selectionPoint{}, false
 	}
 
@@ -2498,6 +2504,7 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 			m.status = "Invalid sidebar command"
 			return m, nil
 		}
+		m.cachedLayout = nil
 		m.clampSidebarScrollOffsets()
 		return m, nil
 	case "/compact":
@@ -3616,7 +3623,7 @@ func entriesFromMessageHistory(records []session.MessageRecord) []entry {
 			if toolName == "" {
 				toolName = "tool"
 			}
-			entries = append(entries, entry{
+			entries = appendTranscriptEntry(entries, entry{
 				role:  "tool",
 				title: "result " + toolName,
 				body:  msg.Content,
@@ -3668,18 +3675,26 @@ func (m Model) nowTime() time.Time {
 }
 
 func (m *Model) appendEntry(role, title, body string, isError bool) {
-	m.entries = append(m.entries, entry{
+	e := entry{
 		role:  role,
 		title: title,
 		body:  strings.TrimSpace(body),
 		err:   isError,
 		time:  time.Now(),
-	})
+	}
+	m.entries = appendTranscriptEntry(m.entries, e)
 	m.cachedLayout = nil
 }
 
 func (m *Model) appendCommandEntry(title, body string) {
 	m.appendEntry("command", title, body, false)
+}
+
+func (m *Model) appendWorkedForSeparator(duration time.Duration) {
+	if duration <= 0 {
+		return
+	}
+	m.appendEntry("separator", "", "Worked for "+formatDuration(duration), false)
 }
 
 func (m Model) lastEntryContainsError(err error) bool {

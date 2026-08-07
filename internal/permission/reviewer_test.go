@@ -264,6 +264,89 @@ func TestProviderReviewerDoesNotTreatRiskHintAsApprovalFloor(t *testing.T) {
 	}
 }
 
+// malformedReviewJSON reproduces the recurring glm-4.5-air failure captured in
+// tui.log: valid leading enum fields followed by a corrupted, unterminated
+// rationale that breaks strict JSON decoding.
+const malformedReviewJSON = "```json\n{\n  \"decision\": \"approve\",\n  \"risk_level\": \"low\",\n  \"user_authorization\": \"high\",\n  \" \"The command is a read-only inspection and directly supports the user's request"
+
+func TestParseReviewResultAcceptsMissingRationale(t *testing.T) {
+	resp := &provider.GenerateResponse{Message: &schema.Message{
+		Role:    schema.RoleAssistant,
+		Content: `{"decision":"approve","risk_level":"low","user_authorization":"high"," rationale":"key has a leading space"}`,
+	}}
+
+	result, err := parseReviewResult(resp)
+	if err != nil {
+		t.Fatalf("parseReviewResult() error = %v, want nil when only the rationale key is malformed", err)
+	}
+	if result.Decision != ReviewApprove || result.Risk != RiskLow || result.UserAuthorization != AuthorizationHigh {
+		t.Fatalf("result = %+v, want approve/low/high", result)
+	}
+	if result.Rationale != "" {
+		t.Fatalf("rationale = %q, want empty when the model mangles the rationale key", result.Rationale)
+	}
+}
+
+func TestSalvageReviewResultRecoversEnumsFromMalformedJSON(t *testing.T) {
+	result, ok := salvageReviewResult(malformedReviewJSON)
+	if !ok {
+		t.Fatalf("salvageReviewResult() ok = false, want recovery of the enum fields")
+	}
+	if result.Decision != ReviewApprove || result.Risk != RiskLow || result.UserAuthorization != AuthorizationHigh {
+		t.Fatalf("salvaged result = %+v, want approve/low/high", result)
+	}
+}
+
+func TestSalvageReviewResultFailsClosedWithoutAllEnums(t *testing.T) {
+	missingAuth := "```json\n{\"decision\":\"approve\",\"risk_level\":\"low\", oops"
+	if _, ok := salvageReviewResult(missingAuth); ok {
+		t.Fatalf("salvageReviewResult() ok = true, want fail-closed when user_authorization is absent")
+	}
+	invalidRisk := `{"decision":"approve","risk_level":"nonsense","user_authorization":"high"`
+	if _, ok := salvageReviewResult(invalidRisk); ok {
+		t.Fatalf("salvageReviewResult() ok = true, want fail-closed when an enum value is invalid")
+	}
+}
+
+func TestProviderReviewerSalvagesAfterAllAttemptsMalformed(t *testing.T) {
+	reviewProvider := &scriptedReviewProvider{
+		responses: []reviewProviderResponse{
+			{content: malformedReviewJSON},
+			{content: malformedReviewJSON},
+			{content: malformedReviewJSON},
+		},
+	}
+	reviewer := &ProviderReviewer{Lookup: func() provider.LLMProvider { return reviewProvider }}
+
+	result, err := reviewer.Review(context.Background(), reviewRequest(), Evidence{Text: "trusted context"})
+	if err != nil {
+		t.Fatalf("Review() error = %v, want nil after salvaging valid enums", err)
+	}
+	if result.Decision != ReviewApprove || result.Risk != RiskLow {
+		t.Fatalf("result = %+v, want approve/low salvaged from the malformed response", result)
+	}
+}
+
+func TestProviderReviewerEscalatesWhenSalvageIncomplete(t *testing.T) {
+	incomplete := "```json\n{\"decision\":\"approve\",\"risk_level\":\"low\", broken"
+	reviewProvider := &scriptedReviewProvider{
+		responses: []reviewProviderResponse{
+			{content: incomplete},
+			{content: incomplete},
+			{content: incomplete},
+		},
+	}
+	reviewer := &ProviderReviewer{Lookup: func() provider.LLMProvider { return reviewProvider }}
+
+	result, err := reviewer.Review(context.Background(), reviewRequest(), Evidence{Text: "trusted context"})
+	if err == nil {
+		t.Fatalf("Review() error = nil, want fail-closed error when salvage cannot recover all enums")
+	}
+	if result.Decision != ReviewEscalate {
+		t.Fatalf("decision = %q, want escalate when auto-review is unavailable", result.Decision)
+	}
+}
+
 func TestProviderReviewerCanApproveHighRiskReadOnlyFileRequest(t *testing.T) {
 	reviewProvider := &scriptedReviewProvider{
 		responses: []reviewProviderResponse{

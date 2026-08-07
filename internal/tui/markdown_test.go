@@ -137,6 +137,19 @@ func TestCodexMarkdownUsesKeyValueTableFallbackWhenGridIsUnreadable(t *testing.T
 	}
 }
 
+func TestCodexMarkdownTableUsesAvailableWidth(t *testing.T) {
+	plain := markdownPlain("| 项目 | 状态 |\n| --- | --- |\n| Markdown 转换 | ✅ 16 篇全部重新生成到 reference/geektime/996695/markdown/ |\n", 96)
+
+	if !strings.Contains(plain, "reference/geektime/996695/markdown/") {
+		t.Fatalf("wide table wrapped a path despite available width:\n%s", plain)
+	}
+	for _, line := range strings.Split(plain, "\n") {
+		if got := lipgloss.Width(line); got > 96 {
+			t.Fatalf("rendered table line width = %d, want <= 96: %q\n%s", got, line, plain)
+		}
+	}
+}
+
 func TestCodexMarkdownWrapsStyledTextWithoutLeakingANSI(t *testing.T) {
 	rendered := renderMarkdown("**alpha beta gamma delta epsilon zeta**", 18)
 	lines := strings.Split(rendered, "\n")

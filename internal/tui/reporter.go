@@ -138,19 +138,19 @@ func formatToolInvocation(toolName string, args string) string {
 	switch toolName {
 	case "bash":
 		if command := fields["command"]; command != "" {
-			return "Bash (" + truncateInline(command, 120) + ")"
+			return "Bash (" + normalizeInline(command) + ")"
 		}
 	case "read_file":
 		if path := fields["path"]; path != "" {
-			return "Read (" + truncateInline(path, 120) + ")"
+			return "Read (" + normalizeInline(path) + ")"
 		}
 	case "write_file":
 		if path := fields["path"]; path != "" {
-			return "Write (" + truncateInline(path, 120) + ")"
+			return "Write (" + normalizeInline(path) + ")"
 		}
 	case "edit_file":
 		if path := fields["path"]; path != "" {
-			return "Edit (" + truncateInline(path, 120) + ")"
+			return "Edit (" + normalizeInline(path) + ")"
 		}
 	case "read_todo":
 		return "Read TODO"
@@ -160,7 +160,7 @@ func formatToolInvocation(toolName string, args string) string {
 		return "Submit plan"
 	case "delegate_task":
 		if task := fields["task"]; task != "" {
-			return "Task (" + truncateInline(task, 80) + ")"
+			return "Task (" + normalizeInline(task) + ")"
 		}
 	}
 
@@ -186,7 +186,7 @@ func parseToolArgs(args string) map[string]string {
 }
 
 func truncateInline(s string, limit int) string {
-	s = strings.Join(strings.Fields(s), " ")
+	s = normalizeInline(s)
 	runes := []rune(s)
 	if len(runes) <= limit {
 		return s
@@ -195,4 +195,8 @@ func truncateInline(s string, limit int) string {
 		return string(runes[:limit])
 	}
 	return string(runes[:limit-3]) + "..."
+}
+
+func normalizeInline(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }

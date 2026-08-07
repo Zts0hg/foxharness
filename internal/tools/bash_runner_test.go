@@ -34,7 +34,7 @@ func TestRunBashCommandPreservesSignificantWhitespace(t *testing.T) {
 }
 
 func TestRunBashCommandBoundsBufferedOutput(t *testing.T) {
-	result := RunBashCommand(context.Background(), t.TempDir(), "yes x | head -c 20000", time.Second)
+	result := RunBashCommand(context.Background(), t.TempDir(), "yes x | head -c 405000", time.Second)
 
 	if result.Err != nil {
 		t.Fatalf("Err = %v, want nil", result.Err)
@@ -44,6 +44,20 @@ func TestRunBashCommandBoundsBufferedOutput(t *testing.T) {
 	}
 	if len(result.Output) > MaxBashOutputBytes {
 		t.Fatalf("len(Output) = %d, want <= %d", len(result.Output), MaxBashOutputBytes)
+	}
+}
+
+func TestRunBashCommandAllowsModerateOutput(t *testing.T) {
+	result := RunBashCommand(context.Background(), t.TempDir(), "yes x | head -c 20000", time.Second)
+
+	if result.Err != nil {
+		t.Fatalf("Err = %v, want nil", result.Err)
+	}
+	if result.Truncated {
+		t.Fatalf("Truncated = true, want false")
+	}
+	if len(result.Output) != 20000 {
+		t.Fatalf("len(Output) = %d, want 20000", len(result.Output))
 	}
 }
 
@@ -114,7 +128,7 @@ func TestRunBashCommandContextCancelStopsInfiniteOutput(t *testing.T) {
 
 func TestBashToolExecuteReportsTruncatedFailedOutput(t *testing.T) {
 	tool := NewBashTool(t.TempDir())
-	out, err := tool.Execute(context.Background(), bashCommandArgs(t, "yes x | head -c 20000; exit 7"))
+	out, err := tool.Execute(context.Background(), bashCommandArgs(t, "yes x | head -c 405000; exit 7"))
 
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)

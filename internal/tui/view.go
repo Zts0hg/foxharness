@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	maxQueuedNoticeItems        = 3
-	minTranscriptHeight         = 6
-	maxCollapsedToolOutputLines = 5
-	toolCallGlyph               = "⬢"
-	workingNoticeText           = "working..."
+	maxQueuedNoticeItems         = 3
+	minTranscriptHeight          = 6
+	maxCollapsedToolOutputLines  = 5
+	maxToolCallContinuationLines = 2
+	toolCallGlyph                = "⬢"
+	workingNoticeText            = "working..."
 
 	viewPaddingTop      = 1
 	viewPaddingRight    = 2
@@ -433,7 +434,7 @@ func contextUsageStyle(percent int) lipgloss.Style {
 
 func (m Model) renderBody(width int, height int) string {
 	var layout transcriptLayout
-	if m.cachedLayout != nil {
+	if m.cachedLayout != nil && m.cachedLayout.matches(width, height) {
 		layout = *m.cachedLayout
 		visible := max(height-bodyStyle.GetVerticalFrameSize(), 1)
 		start := len(layout.styledLines) - visible - m.scrollOffset
@@ -456,6 +457,12 @@ type transcriptLayout struct {
 	plainLines   []string
 	visibleStart int
 	visibleEnd   int
+	width        int
+	height       int
+}
+
+func (l transcriptLayout) matches(width int, height int) bool {
+	return l.width == width && l.height == height
 }
 
 func (m Model) transcriptLayout(width int, height int) transcriptLayout {
@@ -481,6 +488,8 @@ func (m Model) transcriptLayout(width int, height int) transcriptLayout {
 		plainLines:   plainLines,
 		visibleStart: start,
 		visibleEnd:   end,
+		width:        width,
+		height:       height,
 	}
 }
 
@@ -917,6 +926,8 @@ func renderEntryWithOptions(e entry, width int, toolOutputExpanded bool) string 
 		return renderToolResult(e, width, toolOutputExpanded)
 	case e.role == "assistant":
 		return renderAssistantEntry(e, width)
+	case e.role == "separator":
+		return renderSeparatorEntry(e, width)
 	case e.role == "command":
 		return renderCommandEntry(e, width, toolOutputExpanded)
 	}
@@ -954,6 +965,19 @@ func renderAssistantEntry(e entry, width int) string {
 		return ""
 	}
 	return renderCodexPrefixedCell(body, "• ", "  ")
+}
+
+func renderSeparatorEntry(e entry, width int) string {
+	label := strings.TrimSpace(e.body)
+	if label == "" {
+		return mutedStyle.Render(strings.Repeat("─", max(width, 0)))
+	}
+	prefix := "─ " + label + " "
+	prefixWidth := lipgloss.Width(prefix)
+	if prefixWidth >= width {
+		return mutedStyle.Render(fitLine(prefix, width))
+	}
+	return mutedStyle.Render(prefix + strings.Repeat("─", width-prefixWidth))
 }
 
 func renderCodexPrefixedCell(body string, firstPrefix string, restPrefix string) string {
@@ -1015,17 +1039,41 @@ func collapseCommandOutput(body string, expanded bool) string {
 		return body
 	}
 	lines := strings.Split(body, "\n")
-	if len(lines) <= maxCollapsedToolOutputLines {
-		return body
-	}
-	hidden := len(lines) - maxCollapsedToolOutputLines
-	lines = append(lines[:maxCollapsedToolOutputLines], fmt.Sprintf("… +%d lines (ctrl+o to expand)", hidden))
-	return strings.Join(lines, "\n")
+	return strings.Join(collapseToolOutputLines(lines, maxCollapsedToolOutputLines), "\n")
 }
 
 func renderToolCall(e entry, width int) string {
-	line := commandLabelStyle.Render(toolCallGlyph + " " + codexToolCallTitle(e))
-	return fitLine(line, width)
+	title := codexToolCallTitle(e)
+	firstPrefix := toolCallGlyph + " "
+	initialWidth := max(width-lipgloss.Width(firstPrefix), 1)
+	wrapped := wrapText(title, initialWidth)
+	if wrapped == "" {
+		return commandLabelStyle.Render(firstPrefix)
+	}
+	lines := strings.Split(wrapped, "\n")
+	out := []string{commandLabelStyle.Render(fitLine(firstPrefix+lines[0], width))}
+	if len(lines) == 1 {
+		return strings.Join(out, "\n")
+	}
+
+	continuationPrefix := "  │ "
+	continuationWidth := max(width-lipgloss.Width(continuationPrefix), 1)
+	var continuation []string
+	for _, line := range lines[1:] {
+		continuation = append(continuation, strings.Split(wrapText(line, continuationWidth), "\n")...)
+	}
+	omitted := 0
+	if len(continuation) > maxToolCallContinuationLines {
+		omitted = len(continuation) - maxToolCallContinuationLines
+		continuation = continuation[:maxToolCallContinuationLines]
+	}
+	for _, line := range continuation {
+		out = append(out, commandLabelStyle.Render(fitLine(continuationPrefix+line, width)))
+	}
+	if omitted > 0 {
+		out = append(out, mutedStyle.Render(fitLine(continuationPrefix+fmt.Sprintf("… +%d lines", omitted), width)))
+	}
+	return strings.Join(out, "\n")
 }
 
 func renderToolResult(e entry, width int, expanded bool) string {
@@ -1036,11 +1084,27 @@ func renderToolResult(e entry, width int, expanded bool) string {
 	bodyWidth := max(width-4, 20)
 	wrapped := wrapText(output, bodyWidth)
 	lines := strings.Split(wrapped, "\n")
-	if !expanded && len(lines) > maxCollapsedToolOutputLines {
-		hidden := len(lines) - maxCollapsedToolOutputLines
-		lines = append(lines[:maxCollapsedToolOutputLines], fmt.Sprintf("… +%d lines (ctrl+o to expand)", hidden))
+	if !expanded {
+		lines = collapseToolOutputLines(lines, maxCollapsedToolOutputLines)
 	}
 	return renderCodexOutputBlock(strings.Join(lines, "\n"), width, e.err)
+}
+
+// collapseToolOutputLines mirrors codex's exec output truncation
+// (exec_cell/render.rs output_lines): output is only collapsed when it exceeds
+// twice the per-side limit, keeping the first and last `limit` lines and
+// replacing the omitted middle with a single hint row.
+func collapseToolOutputLines(lines []string, limit int) []string {
+	total := len(lines)
+	if limit <= 0 || total <= 2*limit {
+		return lines
+	}
+	omitted := total - 2*limit
+	out := make([]string, 0, 2*limit+1)
+	out = append(out, lines[:limit]...)
+	out = append(out, fmt.Sprintf("… +%d lines (ctrl+o to expand)", omitted))
+	out = append(out, lines[total-limit:]...)
+	return out
 }
 
 func renderCodexOutputBlock(body string, width int, isError bool) string {
@@ -1095,7 +1159,52 @@ func isToolResultPair(prev entry, current entry) bool {
 	return prev.role == "tool" &&
 		current.role == "tool" &&
 		strings.HasPrefix(prev.title, "call ") &&
-		strings.HasPrefix(current.title, "result ")
+		strings.HasPrefix(current.title, "result ") &&
+		strings.TrimPrefix(prev.title, "call ") == strings.TrimPrefix(current.title, "result ")
+}
+
+// appendTranscriptEntry appends e, except that a tool "result <name>" entry is
+// placed directly after its matching "call <name>" header. The engine emits
+// every OnToolCall before any OnToolResult, so parallel tool calls would
+// otherwise render as [call, call, result, result] and show one call's output
+// under another call's header. Results arrive in call order, so each result is
+// paired with the earliest matching call that has no result yet.
+func appendTranscriptEntry(entries []entry, e entry) []entry {
+	if e.role != "tool" || !strings.HasPrefix(e.title, "result ") {
+		return append(entries, e)
+	}
+	name := strings.TrimPrefix(e.title, "result ")
+	callTitle := "call " + name
+	resultTitle := "result " + name
+
+	pairedResults := 0
+	for _, existing := range entries {
+		if existing.role == "tool" && existing.title == resultTitle {
+			pairedResults++
+		}
+	}
+
+	callsSeen := 0
+	for i, existing := range entries {
+		if existing.role != "tool" || existing.title != callTitle {
+			continue
+		}
+		if callsSeen == pairedResults {
+			return insertEntryAt(entries, i+1, e)
+		}
+		callsSeen++
+	}
+	return append(entries, e)
+}
+
+func insertEntryAt(entries []entry, index int, e entry) []entry {
+	if index >= len(entries) {
+		return append(entries, e)
+	}
+	entries = append(entries, entry{})
+	copy(entries[index+1:], entries[index:])
+	entries[index] = e
+	return entries
 }
 
 func (m Model) renderInput(width int) string {

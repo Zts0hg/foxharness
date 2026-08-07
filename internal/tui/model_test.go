@@ -608,6 +608,35 @@ func TestToolInvocationMalformedKnownArgsFallsBackSafely(t *testing.T) {
 	}
 }
 
+func TestToolCallRenderingWrapsLongTitles(t *testing.T) {
+	body := formatToolInvocation("bash", `{"command":"python -c \"import json; d=json.load(open('reference/geektime/996695/articles_index.json')); print('index 中的文章数:', len(d)); print('latest:', d[0]['title'])\""}`)
+	if strings.Contains(body, "...") {
+		t.Fatalf("formatted tool invocation should preserve full command for wrapping: %q", body)
+	}
+
+	rendered := renderEntry(entry{
+		role:  "tool",
+		title: "call bash",
+		body:  body,
+	}, 48)
+	plain := stripANSI(rendered)
+
+	if !strings.Contains(plain, "⬢ Ran python -c") || !strings.Contains(plain, "reference/geektime") {
+		t.Fatalf("wrapped tool call lost expected command content:\n%s", plain)
+	}
+	if !strings.Contains(plain, "  │ ") || !strings.Contains(plain, "… +") {
+		t.Fatalf("wrapped tool call should use Codex-style continuation and ellipsis:\n%s", plain)
+	}
+	if got := len(strings.Split(plain, "\n")); got != 4 {
+		t.Fatalf("wrapped tool call lines = %d, want first + 2 continuations + ellipsis:\n%s", got, plain)
+	}
+	for _, line := range strings.Split(plain, "\n") {
+		if got := lipgloss.Width(line); got > 48 {
+			t.Fatalf("wrapped tool call line width = %d, want <= 48: %q\n%s", got, line, plain)
+		}
+	}
+}
+
 func TestToolResultRenderingUsesCodexOutputPrefix(t *testing.T) {
 	rendered := renderEntry(entry{
 		role:  "tool",
@@ -620,6 +649,54 @@ func TestToolResultRenderingUsesCodexOutputPrefix(t *testing.T) {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("rendered tool result missing %q:\n%s", want, rendered)
 		}
+	}
+}
+
+func TestAppendTranscriptEntryPairsParallelToolResults(t *testing.T) {
+	var entries []entry
+	// The engine emits both OnToolCall events before either OnToolResult.
+	entries = appendTranscriptEntry(entries, entry{role: "tool", title: "call read_file", body: "Read (a.py)"})
+	entries = appendTranscriptEntry(entries, entry{role: "tool", title: "call read_file", body: "Read (b.md)"})
+	// Results arrive in call order.
+	entries = appendTranscriptEntry(entries, entry{role: "tool", title: "result read_file", body: "print('a')"})
+	entries = appendTranscriptEntry(entries, entry{role: "tool", title: "result read_file", body: "no such file: b.md", err: true})
+
+	got := make([]string, len(entries))
+	for i, e := range entries {
+		got[i] = e.title + "|" + e.body
+	}
+	want := []string{
+		"call read_file|Read (a.py)",
+		"result read_file|print('a')",
+		"call read_file|Read (b.md)",
+		"result read_file|no such file: b.md",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("paired transcript order = %#v, want %#v", got, want)
+	}
+}
+
+func TestParallelToolResultsRenderUnderOwnCallHeader(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = 100
+	m.height = 40
+	m.entries = nil
+	m.appendEntry("tool", "call read_file", formatToolInvocation("read_file", `{"path":"a.py"}`), false)
+	m.appendEntry("tool", "call read_file", formatToolInvocation("read_file", `{"path":"b.md"}`), false)
+	m.appendEntry("tool", "result read_file", "print('hello world')", false)
+	m.appendEntry("tool", "result read_file", "打开文件失败: no such file: b.md", true)
+
+	plain := stripANSI(m.View())
+	idxAHeader := strings.Index(plain, "Explored a.py")
+	idxContent := strings.Index(plain, "print('hello world')")
+	idxBHeader := strings.Index(plain, "Explored b.md")
+	idxError := strings.Index(plain, "no such file: b.md")
+	if idxAHeader < 0 || idxContent < 0 || idxBHeader < 0 || idxError < 0 {
+		t.Fatalf("missing expected transcript fragments:\n%s", plain)
+	}
+	if !(idxAHeader < idxContent && idxContent < idxBHeader && idxBHeader < idxError) {
+		t.Fatalf("parallel tool output not paired under its own call header:\n%s", plain)
 	}
 }
 
@@ -639,17 +716,39 @@ func TestToolResultRenderingCollapsesLongOutput(t *testing.T) {
 	m.entries = []entry{{
 		role:  "tool",
 		title: "result bash",
-		body:  "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13",
 	}}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{"  └ line 1", "    line 2", "    line 5", "… +2 lines (ctrl+o to expand)"} {
+	for _, want := range []string{"  └ line 1", "    line 5", "… +3 lines (ctrl+o to expand)", "    line 9", "    line 13"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("collapsed tool result missing %q:\n%s", want, plain)
 		}
 	}
-	if strings.Contains(plain, "line 6") || strings.Contains(plain, "line 7") {
-		t.Fatalf("collapsed tool result should hide lines after fifth:\n%s", plain)
+	for _, hidden := range []string{"line 6", "line 7", "line 8"} {
+		if strings.Contains(plain, hidden) {
+			t.Fatalf("collapsed tool result should hide omitted middle line %q:\n%s", hidden, plain)
+		}
+	}
+}
+
+func TestToolResultRenderingKeepsOutputWithinTwiceLimit(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = []entry{{
+		role:  "tool",
+		title: "result bash",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7",
+	}}
+
+	plain := stripANSI(m.View())
+	if strings.Contains(plain, "ctrl+o to expand") {
+		t.Fatalf("output within twice the limit should not collapse:\n%s", plain)
+	}
+	for _, want := range []string{"line 1", "line 6", "line 7"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("uncollapsed tool result missing %q:\n%s", want, plain)
+		}
 	}
 }
 
@@ -659,7 +758,7 @@ func TestCtrlOTogglesLongToolOutputExpansion(t *testing.T) {
 	m.entries = []entry{{
 		role:  "tool",
 		title: "result bash",
-		body:  "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13",
 	}}
 
 	m, _ = update(t, m, keyCtrlO())
@@ -667,7 +766,7 @@ func TestCtrlOTogglesLongToolOutputExpansion(t *testing.T) {
 	if strings.Contains(expanded, "ctrl+o to expand") {
 		t.Fatalf("expanded output still shows collapse hint:\n%s", expanded)
 	}
-	for _, want := range []string{"line 4", "line 5"} {
+	for _, want := range []string{"line 6", "line 7", "line 8"} {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expanded tool result missing %q:\n%s", want, expanded)
 		}
@@ -675,7 +774,7 @@ func TestCtrlOTogglesLongToolOutputExpansion(t *testing.T) {
 
 	m, _ = update(t, m, keyCtrlO())
 	collapsed := stripANSI(m.View())
-	if !strings.Contains(collapsed, "… +2 lines (ctrl+o to expand)") || strings.Contains(collapsed, "line 7") {
+	if !strings.Contains(collapsed, "… +3 lines (ctrl+o to expand)") || strings.Contains(collapsed, "line 7") {
 		t.Fatalf("second ctrl+o should collapse output again:\n%s", collapsed)
 	}
 }
@@ -686,17 +785,19 @@ func TestShellCommandRenderingCollapsesLongOutput(t *testing.T) {
 	m.entries = []entry{{
 		role:  "command",
 		title: "Shell: !printf lines",
-		body:  "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7",
+		body:  "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13",
 	}}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{"• Ran printf lines", "line 1", "line 2", "line 5", "… +2 lines (ctrl+o to expand)"} {
+	for _, want := range []string{"• Ran printf lines", "line 1", "line 5", "… +3 lines (ctrl+o to expand)", "line 9", "line 13"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("collapsed shell command output missing %q:\n%s", want, plain)
 		}
 	}
-	if strings.Contains(plain, "line 6") || strings.Contains(plain, "line 7") {
-		t.Fatalf("collapsed shell command output should hide lines after fifth:\n%s", plain)
+	for _, hidden := range []string{"line 6", "line 7", "line 8"} {
+		if strings.Contains(plain, hidden) {
+			t.Fatalf("collapsed shell command output should hide omitted middle line %q:\n%s", hidden, plain)
+		}
 	}
 }
 
@@ -851,6 +952,30 @@ func TestRunEventIgnoresLateAssistantDeltaAfterRunFinished(t *testing.T) {
 	}
 	if m.entries[0].body != "Use Playwright." {
 		t.Fatalf("final assistant entry = %#v", m.entries[0])
+	}
+}
+
+func TestRunFinishedAppendsWorkedForSeparator(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = nil
+	start := time.Date(2026, 5, 17, 14, 0, 0, 0, time.Local)
+	current := start.Add(65 * time.Second)
+	m.now = func() time.Time { return current }
+	m.running = true
+	m.runStartedAt = start
+
+	m, _ = update(t, m, runFinishedMsg{result: &engine.RunResult{RunID: "run-1"}})
+
+	if len(m.entries) != 1 {
+		t.Fatalf("entries len = %d, want worked-for separator: %#v", len(m.entries), m.entries)
+	}
+	if m.entries[0].role != "separator" || m.entries[0].body != "Worked for 1m 5s" {
+		t.Fatalf("separator entry = %#v", m.entries[0])
+	}
+	rendered := stripANSI(renderEntry(m.entries[0], 48))
+	if !strings.Contains(rendered, "Worked for 1m 5s") {
+		t.Fatalf("rendered separator missing worked-for text:\n%s", rendered)
 	}
 }
 
@@ -2028,6 +2153,31 @@ func TestTranscriptPointAtUsesVisibleScrollOffset(t *testing.T) {
 	}
 	if point.line != layout.visibleStart+localY || point.col != 3 {
 		t.Fatalf("point = %+v, want line %d col 3", point, layout.visibleStart+localY)
+	}
+}
+
+func TestTranscriptLayoutCacheInvalidatesOnResize(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	text := strings.TrimSpace(strings.Repeat("alpha ", 14))
+	m.entries = []entry{{role: "assistant", body: text}}
+
+	narrow := m.transcriptLayout(40, 20)
+	m.cachedLayout = &narrow
+
+	rendered := stripANSI(m.renderBody(100, 20))
+	lines := strings.Split(rendered, "\n")
+	matches := 0
+	for _, line := range lines {
+		if strings.Contains(line, text) {
+			matches++
+		}
+		if strings.Contains(line, "alpha alpha alpha alpha alpha alpha alpha") && !strings.Contains(line, text) {
+			t.Fatalf("renderBody reused stale narrow layout after width change:\n%s", rendered)
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("renderBody should render the 70-column message on one wide line, found %d:\n%s", matches, rendered)
 	}
 }
 

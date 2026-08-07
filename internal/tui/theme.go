@@ -23,24 +23,29 @@ type tuiTheme struct {
 	progressEmpty string
 	selectionBg   string
 	selectionFg   string
+	// followsTerminal marks a theme that inherits the terminal's own colors
+	// (empty foreground/background plus ANSI-indexed accents) and should be
+	// adapted to the detected terminal background, the way codex does.
+	followsTerminal bool
 }
 
 var builtInThemes = map[string]tuiTheme{
 	"codex": {
-		name:          "codex",
-		bg:            "",
-		panel:         "",
-		accent:        "6",
-		accentHi:      "5",
-		warn:          "1",
-		textPri:       "",
-		textSec:       "",
-		textMuted:     "8",
-		textDim:       "8",
-		divider:       "8",
-		progressEmpty: "8",
-		selectionBg:   "6",
-		selectionFg:   "",
+		name:            "codex",
+		bg:              "",
+		panel:           "",
+		accent:          "6",
+		accentHi:        "5",
+		warn:            "1",
+		textPri:         "",
+		textSec:         "",
+		textMuted:       "8",
+		textDim:         "8",
+		divider:         "8",
+		progressEmpty:   "8",
+		selectionBg:     "6",
+		selectionFg:     "",
+		followsTerminal: true,
 	},
 	"amber": {
 		name:          "amber",
@@ -115,6 +120,8 @@ func applyTheme(name string) string {
 	if !ok {
 		theme = builtInThemes[defaultThemeName]
 	}
+	bg, known := terminalBackground()
+	theme = adaptThemeToTerminal(theme, bg, known)
 	cBg = lipgloss.Color(theme.bg)
 	cAccent = lipgloss.Color(theme.accent)
 	cAccentHi = lipgloss.Color(theme.accentHi)
@@ -135,7 +142,7 @@ func applyTheme(name string) string {
 		Muted:    cTextMuted,
 		Selected: cAccent,
 	})
-	applyMarkdownTheme(theme)
+	applyMarkdownTheme(theme, known && bg.isLight())
 	return theme.name
 }
 

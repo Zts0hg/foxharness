@@ -29,8 +29,27 @@ var markdownStyleRenderer = newMarkdownStyleRenderer()
 var localLinkLocationSuffixRE = regexp.MustCompile(`:\d+(?::\d+)?(?:[-–]\d+(?::\d+)?)?$`)
 var markdownFenceOpenRE = regexp.MustCompile(`^\s*(` + "`{3,}|~{3,}" + `)\s*([A-Za-z0-9_-]+)?\s*$`)
 
-func applyMarkdownTheme(theme tuiTheme) {
-	_ = theme
+// markdownCodeHighlightStyle names the chroma style used for fenced code
+// blocks. It tracks the terminal background so highlighting stays legible on
+// both dark and light themes, the way codex adapts its syntax colors.
+var markdownCodeHighlightStyle = "github-dark"
+
+// markdownAccentColor is the accent applied to inline code, code blocks, and
+// links. It mirrors the active theme's accent so markdown follows the terminal
+// background instead of a fixed cyan.
+var markdownAccentColor = lipgloss.Color("6")
+
+func applyMarkdownTheme(theme tuiTheme, light bool) {
+	if strings.TrimSpace(theme.accent) != "" {
+		markdownAccentColor = lipgloss.Color(theme.accent)
+	} else {
+		markdownAccentColor = lipgloss.Color("6")
+	}
+	if light {
+		markdownCodeHighlightStyle = "github"
+	} else {
+		markdownCodeHighlightStyle = "github-dark"
+	}
 }
 
 func newMarkdownStyleRenderer() *lipgloss.Renderer {
@@ -230,7 +249,7 @@ func highlightCodeBlock(text string, lang string) string {
 		return markdownCodeBlockStyle().Render(text)
 	}
 	formatter := formatters.Get("terminal16m")
-	style := styles.Get("github-dark")
+	style := styles.Get(markdownCodeHighlightStyle)
 	var out bytes.Buffer
 	if err := formatter.Format(&out, style, iterator); err != nil {
 		return markdownCodeBlockStyle().Render(text)
@@ -435,7 +454,7 @@ func (r *codexMarkdownRenderer) collectTableRow(row gast.Node) []string {
 }
 
 func (r *codexMarkdownRenderer) tableNeedsKeyValue(header []string, rows [][]string) bool {
-	widths := tableColumnWidths(header, rows)
+	widths := desiredTableColumnWidths(header, rows)
 	total := 0
 	for i, w := range widths {
 		total += w
@@ -453,7 +472,7 @@ func (r *codexMarkdownRenderer) tableNeedsKeyValue(header []string, rows [][]str
 }
 
 func (r *codexMarkdownRenderer) renderGridTable(header []string, rows [][]string, ctx markdownContext) {
-	widths := tableColumnWidths(header, rows)
+	widths := tableColumnWidths(header, rows, r.width-lipgloss.Width(ctx.quotePrefix))
 	r.pushLine(ctx.quotePrefix + renderTableRow(header, widths, markdownTableHeaderStyle()))
 	r.pushLine(ctx.quotePrefix + renderTableSeparator(widths, "━"))
 	for i, row := range rows {
@@ -490,23 +509,69 @@ func (r *codexMarkdownRenderer) renderKeyValueTable(header []string, rows [][]st
 	r.ensureBlankAfterBlock()
 }
 
-func tableColumnWidths(header []string, rows [][]string) []int {
-	widths := make([]int, len(header))
+func tableColumnWidths(header []string, rows [][]string, maxWidth int) []int {
+	desired := desiredTableColumnWidths(header, rows)
+	widths := make([]int, len(desired))
+	for i := range widths {
+		headerWidth := 3
+		if i < len(header) {
+			headerWidth = max(lipgloss.Width(xansi.Strip(header[i])), 3)
+		}
+		widths[i] = max(min(desired[i], headerWidth), 3)
+	}
+	if len(widths) == 0 {
+		return widths
+	}
+	separatorWidth := max(len(widths)-1, 0) * 2
+	available := max(maxWidth-separatorWidth, len(widths)*3)
+	if sumInts(desired) <= available {
+		for i := range widths {
+			widths[i] = max(desired[i], 3)
+		}
+		return widths
+	}
+	remaining := available - sumInts(widths)
+	for remaining > 0 {
+		progressed := false
+		for i := range widths {
+			if remaining <= 0 {
+				break
+			}
+			if widths[i] < desired[i] {
+				widths[i]++
+				remaining--
+				progressed = true
+			}
+		}
+		if !progressed {
+			break
+		}
+	}
+	return widths
+}
+
+func desiredTableColumnWidths(header []string, rows [][]string) []int {
+	desired := make([]int, len(header))
 	for i, cell := range header {
-		widths[i] = max(widths[i], lipgloss.Width(xansi.Strip(cell)))
+		desired[i] = max(desired[i], lipgloss.Width(xansi.Strip(cell)))
 	}
 	for _, row := range rows {
 		for i, cell := range row {
-			if i >= len(widths) {
+			if i >= len(desired) {
 				continue
 			}
-			widths[i] = max(widths[i], min(lipgloss.Width(xansi.Strip(cell)), 38))
+			desired[i] = max(desired[i], lipgloss.Width(xansi.Strip(cell)))
 		}
 	}
-	for i := range widths {
-		widths[i] = max(widths[i], 3)
+	return desired
+}
+
+func sumInts(values []int) int {
+	total := 0
+	for _, value := range values {
+		total += value
 	}
-	return widths
+	return total
 }
 
 func renderTableRow(row []string, widths []int, style lipgloss.Style) string {
@@ -616,15 +681,15 @@ func markdownHeadingStyle(level int) lipgloss.Style {
 }
 
 func markdownInlineCodeStyle() lipgloss.Style {
-	return markdownStyleRenderer.NewStyle().Foreground(lipgloss.Color("6"))
+	return markdownStyleRenderer.NewStyle().Foreground(markdownAccentColor)
 }
 
 func markdownCodeBlockStyle() lipgloss.Style {
-	return markdownStyleRenderer.NewStyle().Foreground(lipgloss.Color("6"))
+	return markdownStyleRenderer.NewStyle().Foreground(markdownAccentColor)
 }
 
 func markdownLinkStyle() lipgloss.Style {
-	return markdownStyleRenderer.NewStyle().Foreground(lipgloss.Color("6")).Underline(true)
+	return markdownStyleRenderer.NewStyle().Foreground(markdownAccentColor).Underline(true)
 }
 
 func markdownTableHeaderStyle() lipgloss.Style {

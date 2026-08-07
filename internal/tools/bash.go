@@ -9,11 +9,12 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolresult"
 )
 
 const (
 	defaultBashTimeout = 30 * time.Second
-	MaxBashOutputBytes = 8000
+	MaxBashOutputBytes = toolresult.MaxToolResultBytes
 )
 
 // BashCommandResult captures the local shell process result before applying
