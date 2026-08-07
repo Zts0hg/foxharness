@@ -166,8 +166,8 @@ func rebuildStyles() {
 		Border(lipgloss.Border{Left: "┊"}, false, false, false, true).
 		BorderForeground(cTextVeryDim).
 		Padding(0, 1)
-	suggestionCommandStyle = lipgloss.NewStyle().Bold(true).Foreground(cAccentHi)
-	suggestionSelectedStyle = lipgloss.NewStyle().Foreground(cWarn)
+	suggestionCommandStyle = lipgloss.NewStyle().Foreground(cTextPri)
+	suggestionSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	suggestionDescriptionStyle = lipgloss.NewStyle().Foreground(cTextMuted)
 	footerStyle = lipgloss.NewStyle().Foreground(cTextMuted)
 	selectionStyle = lipgloss.NewStyle().Foreground(cSelectionFg).Background(cSelectionBg)
@@ -178,6 +178,7 @@ func rebuildStyles() {
 	systemLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(cTextSec)
 	errorLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(cWarn)
 	commandLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
+	userBarStyle = lipgloss.NewStyle().Foreground(cAccent)
 	mutedStyle = lipgloss.NewStyle().Foreground(cTextMuted)
 	placeholderStyle = lipgloss.NewStyle().Foreground(cTextDim).Italic(true)
 	cursorStyle = lipgloss.NewStyle().Foreground(cAccentHi)

@@ -487,6 +487,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = msg.status
 		return m, waitForRunEvent(m.ctx, m.events)
 
+	case permissionAutoApprovedMsg:
+		m.appendEntry("review", "", msg.action, false)
+		m.status = "Auto-approved"
+		return m, waitForRunEvent(m.ctx, m.events)
+
 	case permissionStateChangedMsg:
 		m.permissionSnapshot = permissionSnapshot(m.runner)
 		return m, waitForRunEvent(m.ctx, m.events)
@@ -1200,8 +1205,11 @@ func (m Model) handleApprovalDone() (tea.Model, tea.Cmd) {
 	if m.approvalForm == nil {
 		return m, nil
 	}
-	m.approvalForm.req.reply <- m.approvalForm.decision()
+	decision := m.approvalForm.decision()
+	action := m.approvalForm.req.approval.Request.Action
+	m.approvalForm.req.reply <- decision
 	m.approvalForm = nil
+	m.appendUserDecisionEntry(decision, action)
 	m.permissionSnapshot = permissionSnapshot(m.runner)
 	if m.permissionBridge != nil {
 		return m, listenForPermissionRequest(m.ctx, m.permissionBridge)
@@ -3684,6 +3692,24 @@ func (m *Model) appendEntry(role, title, body string, isError bool) {
 	}
 	m.entries = appendTranscriptEntry(m.entries, e)
 	m.cachedLayout = nil
+}
+
+// appendUserDecisionEntry records a user's approval-form decision as a
+// persistent transcript note, mirroring codex's "You approved …" / "You did not
+// approve …" cells so manual decisions stay visible after the prompt closes.
+func (m *Model) appendUserDecisionEntry(decision permission.UserDecision, action string) {
+	var kind string
+	switch decision.Kind {
+	case permission.UserAllowOnce:
+		kind = "you-once"
+	case permission.UserAllowSession:
+		kind = "you-session"
+	case permission.UserDeny, permission.UserDenyFeedback:
+		kind = "you-deny"
+	default:
+		return
+	}
+	m.appendEntry("review", kind, action, false)
 }
 
 func (m *Model) appendCommandEntry(title, body string) {

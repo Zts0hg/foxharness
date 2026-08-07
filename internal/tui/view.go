@@ -16,6 +16,7 @@ const (
 	maxCollapsedToolOutputLines  = 5
 	maxToolCallContinuationLines = 2
 	toolCallGlyph                = "⬢"
+	userBarGlyph                 = "▌"
 	workingNoticeText            = "working..."
 
 	viewPaddingTop      = 1
@@ -92,11 +93,14 @@ var (
 			BorderForeground(cTextVeryDim).
 			Padding(0, 1)
 
+	// The slash/command palette mirrors codex's selection popup: unselected
+	// command names use the terminal's default foreground, descriptions are
+	// muted, and the selected row is restyled to the accent (codex accent_style).
 	suggestionCommandStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(cAccentHi)
+				Foreground(cTextPri)
 	suggestionSelectedStyle = lipgloss.NewStyle().
-				Foreground(cWarn)
+				Bold(true).
+				Foreground(cAccent)
 	suggestionDescriptionStyle = lipgloss.NewStyle().
 					Foreground(cTextMuted)
 
@@ -116,6 +120,8 @@ var (
 	systemLabelStyle    = lipgloss.NewStyle().Bold(true).Foreground(cTextSec)
 	errorLabelStyle     = lipgloss.NewStyle().Bold(true).Foreground(cWarn)
 	commandLabelStyle   = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
+	reviewApprovedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
+	userBarStyle        = lipgloss.NewStyle().Foreground(cAccent)
 	mutedStyle          = lipgloss.NewStyle().Foreground(cTextMuted)
 	placeholderStyle    = lipgloss.NewStyle().Foreground(cTextDim).Italic(true)
 	cursorStyle         = lipgloss.NewStyle().Foreground(cAccentHi)
@@ -928,6 +934,8 @@ func renderEntryWithOptions(e entry, width int, toolOutputExpanded bool) string 
 		return renderAssistantEntry(e, width)
 	case e.role == "separator":
 		return renderSeparatorEntry(e, width)
+	case e.role == "review":
+		return renderReviewEntry(e, width)
 	case e.role == "command":
 		return renderCommandEntry(e, width, toolOutputExpanded)
 	}
@@ -946,12 +954,25 @@ func renderEntryWithOptions(e entry, width int, toolOutputExpanded bool) string 
 	return fitLine(label+" "+meta, width) + "\n" + body
 }
 
+// renderUserEntry draws a user message with an accent-colored left bar so user
+// turns are easy to locate while scrolling. The bar sits on each content line
+// (no surrounding blank lines); the muted "› "/"  " prompt markers follow it.
 func renderUserEntry(e entry, width int) string {
-	body := renderPlainBlock(e.body, max(width-2, 20))
+	body := renderPlainBlock(e.body, max(width-4, 20))
 	if body == "" {
 		body = " "
 	}
-	return renderCodexPrefixedCell(body, "› ", "  ")
+	bar := userBarStyle.Render(userBarGlyph) + " "
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, len(lines))
+	for i, line := range lines {
+		marker := "  "
+		if i == 0 {
+			marker = "› "
+		}
+		out = append(out, bar+mutedStyle.Render(marker)+line)
+	}
+	return strings.Join(out, "\n")
 }
 
 func renderAssistantEntry(e entry, width int) string {
@@ -965,6 +986,67 @@ func renderAssistantEntry(e entry, width int) string {
 		return ""
 	}
 	return renderCodexPrefixedCell(body, "• ", "  ")
+}
+
+// renderReviewEntry draws a persistent approval-decision note, mirroring codex's
+// approval-decision cell: a colored check or cross followed by a wrapped
+// one-line summary of who approved or denied what. The entry title selects the
+// decision kind ("auto", "you-once", "you-session", "you-deny").
+func renderReviewEntry(e entry, width int) string {
+	symbol, symbolStyle, summary := reviewNotice(e.title, reviewSnippet(e.body))
+	prefix := symbol + " "
+	firstWidth := max(width-lipgloss.Width(prefix), 1)
+	lines := strings.Split(wrapText(summary, firstWidth), "\n")
+	out := []string{symbolStyle.Render(prefix) + mutedStyle.Render(fitLine(lines[0], firstWidth))}
+	for _, line := range lines[1:] {
+		out = append(out, mutedStyle.Render(fitLine("  "+line, width)))
+	}
+	return strings.Join(out, "\n")
+}
+
+// reviewNotice returns the symbol, its style, and the summary text for an
+// approval-decision note, matching codex's wording per actor and decision.
+func reviewNotice(kind string, snippet string) (string, lipgloss.Style, string) {
+	target := snippet
+	has := snippet != ""
+	switch kind {
+	case "you-once":
+		if has {
+			return "✔", reviewApprovedStyle, "You approved " + target + " this time"
+		}
+		return "✔", reviewApprovedStyle, "You approved this request this time"
+	case "you-session":
+		if has {
+			return "✔", reviewApprovedStyle, "You approved " + target + " every time this session"
+		}
+		return "✔", reviewApprovedStyle, "You approved this request every time this session"
+	case "you-deny":
+		if has {
+			return "✗", errorLabelStyle, "You did not approve " + target
+		}
+		return "✗", errorLabelStyle, "You did not approve this request"
+	default:
+		if has {
+			return "✔", reviewApprovedStyle, "Auto-reviewer approved " + target + " this time"
+		}
+		return "✔", reviewApprovedStyle, "Auto-reviewer approved this request this time"
+	}
+}
+
+// reviewSnippet condenses a reviewed action to a single, bounded line, matching
+// codex's truncate_exec_snippet (first line, then capped length).
+func reviewSnippet(action string) string {
+	snippet := strings.TrimSpace(action)
+	if snippet == "" {
+		return ""
+	}
+	if idx := strings.IndexByte(snippet, '\n'); idx >= 0 {
+		snippet = strings.TrimSpace(snippet[:idx]) + " ..."
+	}
+	if runes := []rune(snippet); len(runes) > 80 {
+		snippet = strings.TrimSpace(string(runes[:80])) + "…"
+	}
+	return snippet
 }
 
 func renderSeparatorEntry(e entry, width int) string {

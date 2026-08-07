@@ -21,6 +21,12 @@ type permissionReviewMsg struct {
 	status string
 }
 
+// permissionAutoApprovedMsg records an auto-reviewer approval so the TUI can
+// leave a persistent transcript note, mirroring codex's approval-decision cell.
+type permissionAutoApprovedMsg struct {
+	action string
+}
+
 type permissionStateChangedMsg struct{}
 
 // PermissionBridge connects the permission coordinator to the TUI event loop.
@@ -67,9 +73,11 @@ func (b *PermissionBridge) OnReviewRetry(request permission.Request, attempt int
 	b.send(permissionReviewMsg{status: "Retrying permission review (attempt " + strconv.Itoa(attempt) + ")"})
 }
 
-// OnAutoApproved reports an automatic approval.
+// OnAutoApproved reports an automatic approval. It leaves a persistent
+// transcript note (not just a transient status line) so the auto-reviewer's
+// decision stays visible, the way codex records approval decisions.
 func (b *PermissionBridge) OnAutoApproved(request permission.Request, result permission.ReviewResult) {
-	b.send(permissionReviewMsg{status: "Auto-approved: " + request.ToolName + " (" + string(result.Risk) + ")"})
+	b.send(permissionAutoApprovedMsg{action: request.Action})
 }
 
 // OnEscalated reports escalation to user approval.

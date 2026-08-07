@@ -700,6 +700,129 @@ func TestParallelToolResultsRenderUnderOwnCallHeader(t *testing.T) {
 	}
 }
 
+func TestRenderReviewEntryShowsAutoApproval(t *testing.T) {
+	plain := stripANSI(renderEntry(entry{role: "review", body: "bash git status --short"}, 80))
+	for _, want := range []string{"✔", "Auto-reviewer approved", "bash git status --short", "this time"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("review entry missing %q:\n%s", want, plain)
+		}
+	}
+}
+
+func TestRenderReviewEntryUserDecisions(t *testing.T) {
+	tests := []struct {
+		title    string
+		wantAll  []string
+		wantNone []string
+	}{
+		{title: "you-once", wantAll: []string{"✔", "You approved", "bash rm -f x", "this time"}, wantNone: []string{"every time"}},
+		{title: "you-session", wantAll: []string{"✔", "You approved", "bash rm -f x", "every time this session"}},
+		{title: "you-deny", wantAll: []string{"✗", "You did not approve", "bash rm -f x"}, wantNone: []string{"this time", "✔"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			plain := stripANSI(renderEntry(entry{role: "review", title: tt.title, body: "bash rm -f x"}, 80))
+			for _, want := range tt.wantAll {
+				if !strings.Contains(plain, want) {
+					t.Fatalf("review entry %q missing %q:\n%s", tt.title, want, plain)
+				}
+			}
+			for _, none := range tt.wantNone {
+				if strings.Contains(plain, none) {
+					t.Fatalf("review entry %q should not contain %q:\n%s", tt.title, none, plain)
+				}
+			}
+		})
+	}
+}
+
+func TestApprovalDecisionLeavesTranscriptNote(t *testing.T) {
+	cases := []struct {
+		name     string
+		action   int
+		wantKind permission.UserDecisionKind
+		wantText string
+	}{
+		{name: "allow_once", action: 0, wantKind: permission.UserAllowOnce, wantText: "You approved"},
+		{name: "deny", action: 2, wantKind: permission.UserDeny, wantText: "You did not approve"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := newFakeRunner()
+			m := NewModel(context.Background(), runner, Config{})
+			m.width = 100
+			m.height = 40
+			m.entries = nil
+			reply := make(chan permission.UserDecision, 1)
+			m.approvalForm = &approvalForm{
+				req: permissionRequest{
+					approval: permission.ApprovalRequest{Request: permission.Request{Action: "bash rm -f x"}},
+					reply:    reply,
+				},
+				action: tc.action,
+			}
+
+			next, _ := m.handleApprovalDone()
+			m2 := next.(Model)
+
+			select {
+			case d := <-reply:
+				if d.Kind != tc.wantKind {
+					t.Fatalf("delivered decision = %v, want %v", d.Kind, tc.wantKind)
+				}
+			default:
+				t.Fatal("no decision delivered to the coordinator")
+			}
+
+			plain := stripANSI(m2.View())
+			if !strings.Contains(plain, tc.wantText) || !strings.Contains(plain, "bash rm -f x") {
+				t.Fatalf("approval decision note missing (%s):\n%s", tc.wantText, plain)
+			}
+		})
+	}
+}
+
+func TestReviewSnippetCondensesAction(t *testing.T) {
+	if got := reviewSnippet("bash echo hi\nsecond line"); got != "bash echo hi ..." {
+		t.Fatalf("reviewSnippet multiline = %q, want %q", got, "bash echo hi ...")
+	}
+	got := reviewSnippet("bash " + strings.Repeat("x", 200))
+	if lipgloss.Width(got) > 81 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("reviewSnippet long = %q (width %d), want capped with ellipsis", got, lipgloss.Width(got))
+	}
+}
+
+func TestOnAutoApprovedEmitsPersistentReviewNotice(t *testing.T) {
+	events := make(chan tea.Msg, 1)
+	bridge := NewPermissionBridge()
+	bridge.SetEvents(events)
+	bridge.OnAutoApproved(permission.Request{Action: "bash rm -f x"}, permission.ReviewResult{Risk: permission.RiskLow})
+
+	select {
+	case msg := <-events:
+		auto, ok := msg.(permissionAutoApprovedMsg)
+		if !ok {
+			t.Fatalf("message type = %T, want permissionAutoApprovedMsg", msg)
+		}
+		if auto.action != "bash rm -f x" {
+			t.Fatalf("action = %q, want %q", auto.action, "bash rm -f x")
+		}
+	default:
+		t.Fatal("OnAutoApproved did not emit a message")
+	}
+
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	m.width = 100
+	m.height = 40
+	m.entries = nil
+	m, _ = update(t, m, permissionAutoApprovedMsg{action: "bash rm -f x"})
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "Auto-reviewer approved") || !strings.Contains(plain, "bash rm -f x") {
+		t.Fatalf("auto-approval notice not rendered in transcript:\n%s", plain)
+	}
+}
+
 func TestToolResultRenderingShowsEmptyOutputFallback(t *testing.T) {
 	rendered := renderEntry(entry{
 		role:  "tool",
@@ -995,11 +1118,14 @@ func TestUserEntryRendersOnlyHighlightedBody(t *testing.T) {
 	if !strings.Contains(plainRendered, "inspect go.mod") {
 		t.Fatalf("rendered user entry missing body:\n%s", rendered)
 	}
-	if strings.Contains(plainRendered, "▌") {
-		t.Fatalf("rendered user entry still contains old left bar:\n%s", rendered)
+	if !strings.Contains(plainRendered, "▌") {
+		t.Fatalf("rendered user entry missing left highlight bar:\n%s", rendered)
 	}
-	if !strings.Contains(plainRendered, "\n› inspect go.mod\n") {
+	if !strings.Contains(plainRendered, "› inspect go.mod") {
 		t.Fatalf("rendered user entry missing Codex prompt prefix:\n%s", rendered)
+	}
+	if userBarStyle.GetForeground() != cAccent {
+		t.Fatalf("user bar foreground = %q, want accent (terminal-adaptive)", userBarStyle.GetForeground())
 	}
 }
 
@@ -2623,14 +2749,20 @@ func TestSlashDropdownSelectedRowsDoNotWrapDescriptions(t *testing.T) {
 }
 
 func TestSlashDropdownUsesForegroundOnlySelection(t *testing.T) {
-	if suggestionCommandStyle.GetForeground() != cAccentHi {
-		t.Fatalf("non-selected slash command foreground = %q, want amber highlight", suggestionCommandStyle.GetForeground())
+	// Align with codex's selection popup: unselected command names use the
+	// terminal default foreground, descriptions are muted, and the selected row
+	// is the accent (codex accent_style: foreground accent, bold, no background).
+	if suggestionCommandStyle.GetForeground() != cTextPri {
+		t.Fatalf("non-selected slash command foreground = %q, want terminal default (cTextPri)", suggestionCommandStyle.GetForeground())
 	}
 	if suggestionDescriptionStyle.GetForeground() != cTextMuted {
-		t.Fatalf("non-selected slash description foreground = %q, want muted amber", suggestionDescriptionStyle.GetForeground())
+		t.Fatalf("non-selected slash description foreground = %q, want muted", suggestionDescriptionStyle.GetForeground())
 	}
-	if suggestionSelectedStyle.GetForeground() != cWarn {
-		t.Fatalf("selected slash command foreground = %q, want warning amber", suggestionSelectedStyle.GetForeground())
+	if suggestionSelectedStyle.GetForeground() != cAccent {
+		t.Fatalf("selected slash command foreground = %q, want accent", suggestionSelectedStyle.GetForeground())
+	}
+	if !suggestionSelectedStyle.GetBold() {
+		t.Fatalf("selected slash command should be bold to match codex accent_style")
 	}
 
 	runner := newFakeRunner()
