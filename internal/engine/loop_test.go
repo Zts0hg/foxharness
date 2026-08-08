@@ -16,6 +16,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/toolresult"
 	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/tracing"
 )
 
 type bigOutputTool struct {
@@ -33,6 +34,21 @@ func (t *bigOutputTool) Definition() schema.ToolDefinition {
 }
 func (t *bigOutputTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	return t.output, nil
+}
+
+type structuredFailureTool struct {
+	name string
+}
+
+func (t *structuredFailureTool) Name() string { return t.name }
+func (t *structuredFailureTool) Definition() schema.ToolDefinition {
+	return schema.ToolDefinition{Name: t.name, Description: "structured failure test"}
+}
+func (t *structuredFailureTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	return "legacy success", nil
+}
+func (t *structuredFailureTool) ExecuteResult(ctx context.Context, args json.RawMessage) (tools.ExecutionResult, error) {
+	return tools.ExecutionResult{Output: "structured failure", Failed: true}, nil
 }
 
 type sequencedProvider struct {
@@ -414,6 +430,68 @@ func TestEngineBeginsRegistryTurnBeforeToolDiscovery(t *testing.T) {
 	if len(p.seenTools) != 2 || !containsString(p.seenTools[0], "turn_tool") {
 		t.Fatalf("provider tool surfaces = %#v, want turn_tool on first call", p.seenTools)
 	}
+}
+
+func TestEngineMakesStructuredToolFailuresVisibleToRecoveryMetricsAndTracing(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(&structuredFailureTool{name: "fail_structured"})
+	p := &sequencedProvider{responses: []*provider.GenerateResponse{
+		{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID:        "call-fail",
+				Name:      "fail_structured",
+				Arguments: json.RawMessage(`{}`),
+			}},
+		}},
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+	}}
+	var observed schema.ToolResult
+	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{
+		MaxTurns: 3,
+		OnToolCalled: func(call schema.ToolCall, result schema.ToolResult) {
+			if call.ID == "call-fail" {
+				observed = result
+			}
+		},
+	})
+
+	result, err := eng.RunWithReporter(context.Background(), sess, "test", nil)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if !observed.IsError {
+		t.Fatalf("OnToolCalled IsError = false, want true")
+	}
+	if len(p.seen) < 2 || !messagesContain(p.seen[1], "Error Recovery Notice") {
+		t.Fatalf("second model call missing recovery prompt: %#v", p.seen)
+	}
+
+	metricsData, err := os.ReadFile(result.MetricsPath)
+	if err != nil {
+		t.Fatalf("read metrics: %v", err)
+	}
+	if !strings.Contains(string(metricsData), `"is_error":true`) || !strings.Contains(string(metricsData), `"error_count":1`) {
+		t.Fatalf("metrics did not record failed tool result:\n%s", metricsData)
+	}
+
+	events, err := tracing.Load(result.TracePath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	for _, event := range events {
+		if event.Type == tracing.EventSpanEnd && event.Name == "tool_call" && event.Status == "error" && event.Attrs["is_error"] == true {
+			return
+		}
+	}
+	t.Fatalf("trace did not contain an error tool_call span: %#v", events)
 }
 
 func TestEngineCompletionGateInjectsReminderThenAllowsCompletion(t *testing.T) {

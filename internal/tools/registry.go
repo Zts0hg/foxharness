@@ -92,6 +92,19 @@ type ParallelSafeTool interface {
 	ParallelSafe() bool
 }
 
+// ExecutionResult carries tool output together with a tool-level failure flag.
+// Infrastructure failures should still be returned as errors from ExecuteResult.
+type ExecutionResult struct {
+	Output string
+	Failed bool
+}
+
+// ResultTool is an optional richer execution interface for tools whose
+// successful process invocation can still represent a failed user action.
+type ResultTool interface {
+	ExecuteResult(ctx context.Context, args json.RawMessage) (ExecutionResult, error)
+}
+
 // AliasableTool is an optional interface that tools implement to advertise
 // additional names under which the same tool is callable.
 //
@@ -234,6 +247,23 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 				IsError:    true,
 			}
 
+		}
+	}
+
+	if resultTool, ok := tool.(ResultTool); ok {
+		result, err := resultTool.ExecuteResult(ctx, call.Arguments)
+		if err != nil {
+			errMsg := fmt.Sprintf("Error executing %s: %v", call.Name, err)
+			return schema.ToolResult{
+				ToolCallID: call.ID,
+				Output:     errMsg,
+				IsError:    true,
+			}
+		}
+		return schema.ToolResult{
+			ToolCallID: call.ID,
+			Output:     result.Output,
+			IsError:    result.Failed,
 		}
 	}
 

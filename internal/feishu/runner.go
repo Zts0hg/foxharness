@@ -14,8 +14,9 @@ import (
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/middleware"
+	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/subagent"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -100,7 +101,13 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	hooks := automemory.NewPerRunHooks(r.provider, autoStore, r.workDir)
 	tracker := hooks.NewTracker()
 
-	registry := r.buildRegistry(sess, task.ChatID)
+	taskPrompt := fmt.Sprintf(
+		"以下任务来自飞书用户 %s，消息 ID 为 %s。\n\n%s",
+		task.SenderID,
+		task.MessageID,
+		taskText,
+	)
+	registry := r.buildRegistry(sess, task.ChatID, taskPrompt)
 
 	composer := r.buildComposer(sess, autoStore)
 	eng := engine.NewAgentEngine(
@@ -123,12 +130,6 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 		return
 	}
 	eng.WithCompactor(compactor)
-	taskPrompt := fmt.Sprintf(
-		"以下任务来自飞书用户 %s，消息 ID 为 %s。\n\n%s",
-		task.SenderID,
-		task.MessageID,
-		taskText,
-	)
 
 	reporter := NewReporter(r.messenger, task.ChatID, task.TaskID)
 	result, err := eng.RunWithReporter(runCtx, sess, taskPrompt, reporter)
@@ -173,9 +174,23 @@ func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *sessi
 	hooks.Fire(sess, runID, tracker)
 }
 
-func (r *Runner) buildRegistry(sess *session.Session, chatID string) tools.Registry {
-	approver := approval.NewFeishuApprover(chatID, r.messenger, r.approvalStore)
-	subManager := subagent.NewManager(r.provider, r.workDir)
+func (r *Runner) buildRegistry(sess *session.Session, chatID string, currentPrompt ...string) tools.Registry {
+	evidenceProvider := remotePermissionEvidenceProvider(sess, firstPrompt(currentPrompt))
+	var approver permission.UserApprover
+	if r.messenger != nil && r.approvalStore != nil {
+		approver = approval.NewPermissionApprover(chatID, r.messenger, r.approvalStore)
+	}
+	coordinator := permission.NewCoordinator(permission.Config{
+		State:     permission.NewState(permission.ModeAsk, false),
+		Workspace: r.workDir,
+		CWD:       r.workDir,
+		Source:    permission.SourceMain,
+		Approver:  approver,
+		Evidence:  evidenceProvider,
+	})
+	subManager := subagent.NewManager(r.provider, r.workDir).
+		WithPermission(coordinator).
+		WithParentEvidence(evidenceProvider)
 
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(r.workDir))
@@ -185,8 +200,42 @@ func (r *Runner) buildRegistry(sess *session.Session, chatID string) tools.Regis
 	registry.Register(tools.NewReadTodoTool(sess.RootDir))
 	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
 	registry.Register(subagent.NewTool(subManager, sess.ID))
-	registry.Use(middleware.NewDangerMiddleware(approver))
-	return registry
+	return permission.DecorateRegistry(registry, coordinator, evidenceProvider)
+}
+
+func remotePermissionEvidenceProvider(sess *session.Session, currentPrompt string) permission.EvidenceProvider {
+	return func(request permission.Request) permission.Evidence {
+		var messages []schema.Message
+		if sess != nil {
+			records, err := session.NewMessageLog(sess).LoadRecords()
+			if err == nil {
+				messages = make([]schema.Message, 0, len(records)+1)
+				for _, record := range records {
+					messages = append(messages, record.Message)
+				}
+			}
+		}
+		if strings.TrimSpace(currentPrompt) != "" && !containsDirectUserMessage(messages, currentPrompt) {
+			messages = append(messages, schema.Message{Role: schema.RoleUser, Content: currentPrompt})
+		}
+		return permission.BuildEvidence(messages, nil, request)
+	}
+}
+
+func firstPrompt(prompts []string) string {
+	if len(prompts) == 0 {
+		return ""
+	}
+	return prompts[0]
+}
+
+func containsDirectUserMessage(messages []schema.Message, content string) bool {
+	for _, message := range messages {
+		if message.Role == schema.RoleUser && message.ToolCallID == "" && message.Content == content {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runner) resolveSession(forceNew bool, task Task) (*session.Session, bool, error) {
