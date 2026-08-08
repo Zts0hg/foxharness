@@ -72,6 +72,7 @@ func runShellOnce(parent context.Context, command, workDir string, timeout time.
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	configureEmbeddedShellCommand(cmd)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
