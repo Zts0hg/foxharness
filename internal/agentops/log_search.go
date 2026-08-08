@@ -1,9 +1,11 @@
 package agentops
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,13 +18,18 @@ import (
 // lines matching a keyword query.  It is the primary evidence-gathering tool
 // for AgentOps incident analysis and is registered as parallel-safe.
 type LogSearchTool struct {
-	logDir string
+	logDir  string
+	openLog func(string) (io.ReadCloser, error)
 }
+
+const maxLogSearchLineBytes = 1 << 20
 
 // NewLogSearchTool creates a LogSearchTool rooted at logDir.  Log files are
 // expected at <logDir>/<service>.log.
 func NewLogSearchTool(logDir string) *LogSearchTool {
-	return &LogSearchTool{logDir: logDir}
+	return &LogSearchTool{logDir: logDir, openLog: func(path string) (io.ReadCloser, error) {
+		return os.Open(path)
+	}}
 }
 
 // Name returns the tool identifier "log_search".
@@ -126,25 +133,35 @@ func (t *LogSearchTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	}
 
 	path := filepath.Join(t.logDir, args.Service+".log")
-	data, err := os.ReadFile(path)
+	reader, err := t.open(path)
 	if err != nil {
 		return "", fmt.Errorf("读取日志失败: %w", err)
 	}
+	defer reader.Close()
 
 	var matched []string
-	for _, line := range strings.Split(string(data), "\n") {
+	query := strings.ToLower(args.Query)
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLogSearchLineBytes)
+	for {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		default:
 		}
-
-		if strings.Contains(strings.ToLower(line), strings.ToLower(args.Query)) {
+		if !scanner.Scan() {
+			break
+		}
+		line := scanner.Text()
+		if strings.Contains(strings.ToLower(line), query) {
 			matched = append(matched, line)
 			if len(matched) >= args.Limit {
 				break
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("读取日志失败: %w", err)
 	}
 
 	if len(matched) == 0 {
@@ -159,4 +176,11 @@ func validServiceName(service string) bool {
 		return false
 	}
 	return !strings.ContainsAny(service, `/\`)
+}
+
+func (t *LogSearchTool) open(path string) (io.ReadCloser, error) {
+	if t.openLog != nil {
+		return t.openLog(path)
+	}
+	return os.Open(path)
 }

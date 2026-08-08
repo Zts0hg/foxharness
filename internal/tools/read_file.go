@@ -11,6 +11,10 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+// MaxReadFileBytes bounds the amount of file content read into memory by the
+// read_file tool before returning a truncated response.
+const MaxReadFileBytes = 1 << 20
+
 // ReadFileTool reads the contents of files from the filesystem.
 // Files are read relative to the configured working directory.
 type ReadFileTool struct {
@@ -71,9 +75,15 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	}
 
 	defer file.Close()
-	content, err := io.ReadAll(file)
+	content, err := io.ReadAll(io.LimitReader(file, MaxReadFileBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("读取文件内容失败: %w", err)
+	}
+	if len(content) > MaxReadFileBytes {
+		return string(content[:MaxReadFileBytes]) + fmt.Sprintf(
+			"\n\n[read_file truncated at %d bytes; file content continues]",
+			MaxReadFileBytes,
+		), nil
 	}
 
 	return string(content), nil

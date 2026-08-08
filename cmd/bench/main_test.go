@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/benchmark"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
@@ -65,6 +67,45 @@ func TestResolveBenchmarkLLMConfigMissingConfigDoesNotMentionLegacyDefaults(t *t
 	if strings.Contains(err.Error(), "ZHIPU_API_KEY") || strings.Contains(err.Error(), "glm-4.5-air") {
 		t.Fatalf("error = %q, want no legacy fallback guidance", err.Error())
 	}
+}
+
+func TestBuildHarnessReportsRuntimeFidelity(t *testing.T) {
+	t.Setenv("FOXHARNESS_LLM_PROTOCOL", "openai")
+	t.Setenv("FOXHARNESS_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
+	t.Setenv("FOXHARNESS_LLM_MODEL", "local-model")
+	t.Setenv("FOXHARNESS_LLM_AUTH", llmconfig.AuthNone)
+
+	harness, err := buildHarness(context.Background(), t.TempDir(), &benchmark.Case{ID: "case-1", MaxTurns: 1})
+	if err != nil {
+		t.Fatalf("buildHarness() error = %v", err)
+	}
+	if harness.RuntimeFidelity.Warning == "" {
+		t.Fatalf("RuntimeFidelity warning missing: %+v", harness.RuntimeFidelity)
+	}
+	if !contains(harness.RuntimeFidelity.SharedInvariants, "todo tool surface") {
+		t.Fatalf("SharedInvariants = %+v, want todo tool surface", harness.RuntimeFidelity.SharedInvariants)
+	}
+	if !contains(harness.RuntimeFidelity.SharedInvariants, "context compaction") {
+		t.Fatalf("SharedInvariants = %+v, want context compaction", harness.RuntimeFidelity.SharedInvariants)
+	}
+	if !contains(harness.RuntimeFidelity.SharedInvariants, "structured tool failure semantics") {
+		t.Fatalf("SharedInvariants = %+v, want structured tool failure semantics", harness.RuntimeFidelity.SharedInvariants)
+	}
+	if !contains(harness.RuntimeFidelity.IntentionalDifferences, "no interactive approval surface") {
+		t.Fatalf("IntentionalDifferences = %+v, want no interactive approval surface", harness.RuntimeFidelity.IntentionalDifferences)
+	}
+	if !contains(harness.RuntimeFidelity.IntentionalDifferences, "no TUI ask_user_question surface") {
+		t.Fatalf("IntentionalDifferences = %+v, want no TUI ask_user_question surface", harness.RuntimeFidelity.IntentionalDifferences)
+	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 type mapEnv map[string]string

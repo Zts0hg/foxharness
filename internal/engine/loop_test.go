@@ -73,6 +73,17 @@ func (p *sequencedProvider) Generate(ctx context.Context, messages []schema.Mess
 	return p.responses[idx], nil
 }
 
+type mutatingFinalProvider struct {
+	mutate func()
+}
+
+func (p *mutatingFinalProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	if p.mutate != nil {
+		p.mutate()
+	}
+	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}}, nil
+}
+
 type optionCapturingProvider struct {
 	generateCalls int
 	optionCalls   int
@@ -492,6 +503,135 @@ func TestEngineMakesStructuredToolFailuresVisibleToRecoveryMetricsAndTracing(t *
 		}
 	}
 	t.Fatalf("trace did not contain an error tool_call span: %#v", events)
+}
+
+func TestRunWithReporterSurfacesTranscriptWriteWarnings(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := os.Mkdir(sess.TranscriptPath(), 0o755); err != nil {
+		t.Fatalf("Mkdir transcript path error = %v", err)
+	}
+
+	prov := &sequencedProvider{responses: []*provider.GenerateResponse{{
+		Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"},
+	}}}
+	eng := NewAgentEngine(prov, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+
+	result, err := eng.RunWithReporter(context.Background(), sess, "hello", nil)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if result == nil {
+		t.Fatalf("RunWithReporter() result = nil")
+	}
+	if !telemetryWarningsContain(result.TelemetryWarnings, "transcript") {
+		t.Fatalf("TelemetryWarnings = %+v, want transcript warning", result.TelemetryWarnings)
+	}
+}
+
+func TestRunWithReporterSurfacesMetricsWriteWarnings(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	prov := &mutatingFinalProvider{mutate: func() {
+		replaceCurrentRunFileWithDirectory(t, sess, "metrics.jsonl")
+	}}
+	eng := NewAgentEngine(prov, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+
+	result, err := eng.RunWithReporter(context.Background(), sess, "hello", nil)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if result == nil {
+		t.Fatalf("RunWithReporter() result = nil")
+	}
+	if !telemetryWarningsContain(result.TelemetryWarnings, "metrics") {
+		t.Fatalf("TelemetryWarnings = %+v, want metrics warning", result.TelemetryWarnings)
+	}
+}
+
+func TestRunWithReporterSurfacesTraceWriteWarnings(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{
+		Source:  session.SOURCECLI,
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	prov := &mutatingFinalProvider{mutate: func() {
+		replaceCurrentRunFileWithDirectory(t, sess, "trace.jsonl")
+	}}
+	eng := NewAgentEngine(prov, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+
+	result, err := eng.RunWithReporter(context.Background(), sess, "hello", nil)
+	if err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if result == nil {
+		t.Fatalf("RunWithReporter() result = nil")
+	}
+	if !telemetryWarningsContain(result.TelemetryWarnings, "trace") {
+		t.Fatalf("TelemetryWarnings = %+v, want trace warning", result.TelemetryWarnings)
+	}
+}
+
+func TestMessagesEqualDoesNotDependOnBackingArray(t *testing.T) {
+	original := []schema.Message{{Role: schema.RoleUser, Content: "same"}}
+	copied := append([]schema.Message(nil), original...)
+
+	if !messagesEqual(original, copied) {
+		t.Fatalf("copied unchanged messages should compare equal")
+	}
+
+	changed := append([]schema.Message(nil), original...)
+	changed[0].Content = "changed"
+	if messagesEqual(original, changed) {
+		t.Fatalf("same-length changed messages should compare different")
+	}
+}
+
+func telemetryWarningsContain(warnings []TelemetryWarning, sink string) bool {
+	for _, warning := range warnings {
+		if warning.Sink == sink {
+			return true
+		}
+	}
+	return false
+}
+
+func replaceCurrentRunFileWithDirectory(t *testing.T, sess *session.Session, name string) {
+	t.Helper()
+	entries, err := os.ReadDir(sess.RunsDir())
+	if err != nil {
+		t.Fatalf("ReadDir(%s) error = %v", sess.RunsDir(), err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("run directories = %d, want 1", len(entries))
+	}
+	path := filepath.Join(sess.RunsDir(), entries[0].Name(), name)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Remove(%s) error = %v", path, err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatalf("Mkdir(%s) error = %v", path, err)
+	}
 }
 
 func TestEngineCompletionGateInjectsReminderThenAllowsCompletion(t *testing.T) {

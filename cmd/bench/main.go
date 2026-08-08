@@ -22,6 +22,7 @@ import (
 	"os"
 
 	"github.com/Zts0hg/foxharness/internal/benchmark"
+	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
@@ -67,29 +68,30 @@ func main() {
 // buildHarness creates an AgentEngine and Session for a benchmark run.
 // It sets up the LLM provider, tool registry, memory store, and session
 // manager configured for the given benchmark case.
-func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engine.AgentEngine, *session.Session, error) {
+func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benchmark.Harness, error) {
+	_ = ctx
 	manager := session.NewManager(workDir)
 	sess, err := manager.Create(session.CreateOptions{
 		Source:  session.SOURCECLI,
 		WorkDir: workDir,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
 	store := memory.NewSessionStore(workDir, sess.RootDir)
 	if err := store.EnsureFiles(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	homeDir, _ := os.UserHomeDir()
 	llmConfig, err := resolveBenchmarkLLMConfig(homeDir, os.Getenv)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	llmProvider, err := provider.NewProvider(llmConfig)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	registry := buildBenchmarkRegistry(workDir, sess)
 
@@ -104,8 +106,32 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*engi
 			Model:            llmConfig.Model,
 		},
 	)
+	compCfg := compaction.DefaultCompactionConfig()
+	compCfg.Model = llmConfig.Model
+	compCfg.SessionDir = sess.RootDir
+	compCfg.TranscriptPath = sess.TranscriptPath()
+	compactor, err := compaction.NewCompactor(llmProvider, compCfg)
+	if err != nil {
+		return nil, err
+	}
+	eng.WithCompactor(compactor)
 
-	return eng, sess, nil
+	return &benchmark.Harness{
+		Engine:  eng,
+		Session: sess,
+		RuntimeFidelity: benchmark.RuntimeFidelity{
+			SharedInvariants: []string{
+				"todo tool surface",
+				"context compaction",
+				"structured tool failure semantics",
+			},
+			IntentionalDifferences: []string{
+				"no interactive approval surface",
+				"no TUI ask_user_question surface",
+			},
+			Warning: "benchmark runtime intentionally reports product-runtime differences",
+		},
+	}, nil
 }
 
 func buildBenchmarkRegistry(workDir string, sess *session.Session) tools.Registry {

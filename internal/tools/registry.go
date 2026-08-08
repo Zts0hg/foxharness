@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 
 	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -211,6 +212,9 @@ func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
 		aliasDef.Name = alias
 		defs = append(defs, aliasDef)
 	}
+	sort.Slice(defs, func(i, j int) bool {
+		return defs[i].Name < defs[j].Name
+	})
 	return defs
 }
 

@@ -46,6 +46,7 @@ type Tracer struct {
 	path    string
 	traceID string
 	mu      sync.Mutex
+	onError func(error)
 }
 
 // NewTracer creates a Tracer that writes to path and assigns a random
@@ -55,6 +56,12 @@ func NewTracer(path string) *Tracer {
 		path:    path,
 		traceID: newID(),
 	}
+}
+
+// WithErrorHandler registers a callback for non-fatal trace append failures.
+func (t *Tracer) WithErrorHandler(handler func(error)) *Tracer {
+	t.onError = handler
+	return t
 }
 
 func newID() string {
@@ -86,7 +93,7 @@ func (t *Tracer) StartSpan(parentID, name string, attrs map[string]any) *Span {
 		started:  time.Now(),
 	}
 
-	_ = t.append(SpanEvent{
+	t.recordAppend(t.append(SpanEvent{
 		Type:     EventSpanStart,
 		TraceID:  span.traceID,
 		SpanID:   span.spanID,
@@ -94,7 +101,7 @@ func (t *Tracer) StartSpan(parentID, name string, attrs map[string]any) *Span {
 		Name:     name,
 		Time:     span.started,
 		Attrs:    attrs,
-	})
+	}))
 
 	return span
 }
@@ -107,7 +114,7 @@ func (s *Span) ID() string {
 // End records a span_end event with the given status and computes the
 // elapsed duration since the span was started.
 func (s *Span) End(status string, attrs map[string]any) {
-	_ = s.tracer.append(SpanEvent{
+	s.tracer.recordAppend(s.tracer.append(SpanEvent{
 		Type:       EventSpanEnd,
 		TraceID:    s.traceID,
 		SpanID:     s.spanID,
@@ -116,19 +123,25 @@ func (s *Span) End(status string, attrs map[string]any) {
 		Status:     status,
 		DurationMS: time.Since(s.started).Milliseconds(),
 		Attrs:      attrs,
-	})
+	}))
 }
 
 // Annotate records an annotation event associated with the given span.
 func (t *Tracer) Annotate(spanID, name string, attrs map[string]any) {
-	_ = t.append(SpanEvent{
+	t.recordAppend(t.append(SpanEvent{
 		Type:    EventAnnotation,
 		TraceID: t.traceID,
 		SpanID:  spanID,
 		Name:    name,
 		Time:    time.Now(),
 		Attrs:   attrs,
-	})
+	}))
+}
+
+func (t *Tracer) recordAppend(err error) {
+	if err != nil && t.onError != nil {
+		t.onError(err)
+	}
 }
 
 func (t *Tracer) append(event SpanEvent) error {

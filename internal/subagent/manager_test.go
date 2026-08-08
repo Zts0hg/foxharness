@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
+	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -224,5 +225,37 @@ func TestRunHonorsInjectedMaxTurnsAndPreservesExhaustion(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "超过最大 Turn 数限制: 1") {
 		t.Fatalf("Run() error = %q, want error containing %q", err.Error(), "超过最大 Turn 数限制: 1")
+	}
+}
+
+func TestManagerRunAttachesCompactor(t *testing.T) {
+	workDir := t.TempDir()
+	manager := NewManager(&finalReportProvider{}, workDir)
+	var gotSession *session.Session
+	manager.compactorFactory = func(sess *session.Session) (*compaction.Compactor, error) {
+		gotSession = sess
+		cfg := compaction.DefaultCompactionConfig()
+		cfg.Enabled = false
+		cfg.SessionDir = sess.RootDir
+		cfg.TranscriptPath = sess.TranscriptPath()
+		return compaction.NewCompactor(&finalReportProvider{}, cfg)
+	}
+
+	result, err := manager.Run(context.Background(), Request{
+		ParentSessionID: "parent-session",
+		Task:            "inspect code",
+		ReadOnly:        true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == nil || result.Report != "subagent report" {
+		t.Fatalf("Run() result = %#v, want subagent report", result)
+	}
+	if gotSession == nil {
+		t.Fatalf("compactor factory was not called")
+	}
+	if gotSession.RootDir == "" {
+		t.Fatalf("compactor factory received session without RootDir")
 	}
 }
