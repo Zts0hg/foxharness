@@ -8,6 +8,8 @@
 //	fox -p "run this task once"
 //	echo "your task" | fox exec -
 //	fox autodev [backlog-path]
+//	fox render -scene transcript -out transcript.html
+//	fox render -list
 //
 // Flags:
 //
@@ -33,6 +35,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/app"
@@ -42,7 +45,9 @@ import (
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/settings"
+	"github.com/Zts0hg/foxharness/internal/tui"
 
 	"golang.org/x/term"
 )
@@ -60,6 +65,12 @@ func main() {
 	if subArgs, ok := splitConfigArgs(args); ok {
 		homeDir, _ := os.UserHomeDir()
 		if err := runConfig(homeDir, subArgs); err != nil {
+			exitWithError(err)
+		}
+		return
+	}
+	if subArgs, ok := splitRenderArgs(args); ok {
+		if err := runRender(subArgs, os.Stdout); err != nil {
 			exitWithError(err)
 		}
 		return
@@ -148,6 +159,123 @@ func splitConfigArgs(args []string) ([]string, bool) {
 		return args[1:], true
 	}
 	return nil, false
+}
+
+// splitRenderArgs reports whether args begins with the render subcommand and
+// returns the remaining arguments. The render subcommand renders a built-in TUI
+// scene to a self-contained HTML snapshot for offline visual inspection; it is
+// intercepted before flag parsing so its arguments are never treated as fox
+// flags or prompt text.
+func splitRenderArgs(args []string) ([]string, bool) {
+	if len(args) > 0 && args[0] == "render" {
+		return args[1:], true
+	}
+	return nil, false
+}
+
+// runRender parses the render subcommand flags and writes a self-contained HTML
+// snapshot of the selected TUI scene. Opening the file in any browser reproduces
+// the frame faithfully — including CJK, box-drawing, and symbol glyphs — because
+// the document embeds the Sarasa Mono SC font and the theme palette. With -list
+// it prints the available scene names and returns without rendering.
+func runRender(subArgs []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("fox render", flag.ContinueOnError)
+	fs.SetOutput(stdout)
+
+	var (
+		sceneName string
+		sessionID string
+		workDir   string
+		outPath   string
+		width     int
+		height    int
+		list      bool
+	)
+	fs.StringVar(&sceneName, "scene", "transcript", "built-in scene to render")
+	fs.StringVar(&sessionID, "session", "", "render a real session instead of a scene: a session id, its directory, or a messages.jsonl path")
+	fs.StringVar(&workDir, "workdir", ".", "working directory used to resolve a -session id")
+	fs.StringVar(&workDir, "C", ".", "working directory used to resolve a -session id")
+	fs.StringVar(&outPath, "out", "", "output HTML path (default: <scene|session>.html)")
+	fs.IntVar(&width, "width", 120, "terminal width in cells")
+	fs.IntVar(&height, "height", 34, "terminal height in cells")
+	fs.BoolVar(&list, "list", false, "list available scenes and exit")
+	fs.Usage = func() {
+		fmt.Fprintln(stdout, "Usage:")
+		fmt.Fprintln(stdout, "  fox render [options]              render a built-in TUI scene to a self-contained HTML file")
+		fmt.Fprintln(stdout, "  fox render -session <id|path>    render a real session's transcript instead of a scene")
+		fmt.Fprintln(stdout, "  fox render -list                 list available scenes")
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "Open the HTML in any browser to view the faithful render (CJK and symbols included).")
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "Options:")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(subArgs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+
+	if list {
+		for _, name := range tui.SceneNames() {
+			fmt.Fprintln(stdout, name)
+		}
+		return nil
+	}
+
+	var (
+		html        string
+		err         error
+		defaultBase = sceneName
+	)
+	if strings.TrimSpace(sessionID) != "" {
+		records, loadErr := loadSessionRecords(sessionID, workDir)
+		if loadErr != nil {
+			return loadErr
+		}
+		html = tui.RenderSessionHTML(records, width, height)
+		defaultBase = "session"
+	} else {
+		html, err = tui.RenderSceneHTML(sceneName, width, height)
+		if err != nil {
+			return err
+		}
+	}
+
+	if strings.TrimSpace(outPath) == "" {
+		outPath = defaultBase + ".html"
+	}
+	if err := os.WriteFile(outPath, []byte(html), 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "wrote %s\n", outPath)
+	return nil
+}
+
+// loadSessionRecords loads a session's model-visible message records for
+// replay rendering. The value may be a session directory, a `messages.jsonl`
+// path (a session directory is inferred from it), or a session id resolved
+// against workDir.
+func loadSessionRecords(value string, workDir string) ([]session.MessageRecord, error) {
+	if info, err := os.Stat(value); err == nil {
+		dir := value
+		if !info.IsDir() {
+			dir = filepath.Dir(value)
+		}
+		sess := &session.Session{RootDir: dir}
+		if _, statErr := os.Stat(sess.MessagesPath()); statErr != nil {
+			return nil, fmt.Errorf("render -session %q: no messages.jsonl found (looked at %s)", value, sess.MessagesPath())
+		}
+		return session.NewMessageLog(sess).LoadRecords()
+	}
+
+	sess, err := session.NewManager(workDir).Open(value)
+	if err != nil {
+		return nil, fmt.Errorf("render -session %q: not a readable path and not a known session id under %q: %w", value, workDir, err)
+	}
+	return session.NewMessageLog(sess).LoadRecords()
 }
 
 // runConfig builds the wizard dependencies from the real environment and runs
@@ -239,6 +367,7 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 		fmt.Fprintln(output, "  fox -p [options] [prompt]    run once and print the result")
 		fmt.Fprintln(output, "  echo \"prompt\" | fox exec -  read the one-shot prompt from stdin")
 		fmt.Fprintln(output, "  fox autodev [backlog-path]   drain the backlog autonomously (SDD pipeline per item)")
+		fmt.Fprintln(output, "  fox render [options]         render a built-in TUI scene to a self-contained HTML snapshot")
 		fmt.Fprintln(output)
 		fmt.Fprintln(output, "Options:")
 		fs.PrintDefaults()
