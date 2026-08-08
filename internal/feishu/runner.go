@@ -33,7 +33,25 @@ type Runner struct {
 	sessionManager *session.Manager
 	approvalStore  *approval.Store
 	locksMu        sync.Mutex
-	locks          map[string]*sync.Mutex
+	locks          map[string]*sessionLock
+
+	maxConcurrentTasks int
+	taskTimeout        time.Duration
+	lockTTL            time.Duration
+	clock              func() time.Time
+	runTask            func(context.Context, Task)
+}
+
+const (
+	defaultMaxConcurrentTasks = 4
+	defaultTaskTimeout        = 5 * time.Minute
+	defaultSessionLockTTL     = 30 * time.Minute
+)
+
+type sessionLock struct {
+	mu       sync.Mutex
+	refs     int
+	lastUsed time.Time
 }
 
 // NewRunner constructs a Runner with the given LLM provider, working
@@ -47,12 +65,16 @@ func NewRunner(
 	approvalStore *approval.Store,
 ) *Runner {
 	return &Runner{
-		provider:       provider,
-		workDir:        workDir,
-		messenger:      messenger,
-		sessionManager: sessionManager,
-		approvalStore:  approvalStore,
-		locks:          make(map[string]*sync.Mutex),
+		provider:           provider,
+		workDir:            workDir,
+		messenger:          messenger,
+		sessionManager:     sessionManager,
+		approvalStore:      approvalStore,
+		locks:              make(map[string]*sessionLock),
+		maxConcurrentTasks: defaultMaxConcurrentTasks,
+		taskTimeout:        defaultTaskTimeout,
+		lockTTL:            defaultSessionLockTTL,
+		clock:              time.Now,
 	}
 }
 
@@ -60,6 +82,7 @@ func NewRunner(
 // dispatched to a separate goroutine.  Start blocks until the context is
 // cancelled or the tasks channel is closed.
 func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
+	permits := make(chan struct{}, r.concurrentTaskLimit())
 	for {
 		select {
 		case <-ctx.Done():
@@ -68,21 +91,33 @@ func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 			if !ok {
 				return
 			}
-			go r.runOne(ctx, task)
+			select {
+			case permits <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			go func(task Task) {
+				defer func() {
+					<-permits
+					if rec := recover(); rec != nil {
+						log.Printf("[Feishu Runner] task=%s panic recovered: %v", task.TaskID, rec)
+					}
+				}()
+				r.taskRunner()(ctx, task)
+			}(task)
 		}
 	}
 }
 
 func (r *Runner) runOne(ctx context.Context, task Task) {
-	runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	runCtx, cancel := context.WithTimeout(ctx, r.taskTimeoutOrDefault())
 	defer cancel()
 
 	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("已收到任务 %s，开始执行。", task.TaskID))
 
 	sessionKey := task.ChatID + ":" + task.SenderID
-	lock := r.lockFor(sessionKey)
-	lock.Lock()
-	defer lock.Unlock()
+	releaseLock := r.acquireSessionLock(sessionKey)
+	defer releaseLock()
 
 	forceNew, taskText := parseSessionDirective(task.Text)
 	sess, created, err := r.resolveSession(forceNew, task)
@@ -265,16 +300,80 @@ func (r *Runner) resolveSession(forceNew bool, task Task) (*session.Session, boo
 	return sess, true, nil
 }
 
-func (r *Runner) lockFor(key string) *sync.Mutex {
-	r.locksMu.Lock()
-	defer r.locksMu.Unlock()
+func (r *Runner) concurrentTaskLimit() int {
+	if r.maxConcurrentTasks > 0 {
+		return r.maxConcurrentTasks
+	}
+	return defaultMaxConcurrentTasks
+}
 
+func (r *Runner) taskTimeoutOrDefault() time.Duration {
+	if r.taskTimeout > 0 {
+		return r.taskTimeout
+	}
+	return defaultTaskTimeout
+}
+
+func (r *Runner) lockTTLOrDefault() time.Duration {
+	if r.lockTTL > 0 {
+		return r.lockTTL
+	}
+	return defaultSessionLockTTL
+}
+
+func (r *Runner) now() time.Time {
+	if r.clock != nil {
+		return r.clock()
+	}
+	return time.Now()
+}
+
+func (r *Runner) taskRunner() func(context.Context, Task) {
+	if r.runTask != nil {
+		return r.runTask
+	}
+	return r.runOne
+}
+
+func (r *Runner) acquireSessionLock(key string) func() {
+	r.locksMu.Lock()
+	if r.locks == nil {
+		r.locks = make(map[string]*sessionLock)
+	}
+	now := r.now()
+	r.cleanupSessionLocksLocked(now)
 	lock, ok := r.locks[key]
 	if !ok {
-		lock = &sync.Mutex{}
+		lock = &sessionLock{lastUsed: now}
 		r.locks[key] = lock
 	}
-	return lock
+	lock.refs++
+	r.locksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		r.locksMu.Lock()
+		defer r.locksMu.Unlock()
+		lock.refs--
+		now := r.now()
+		lock.lastUsed = now
+		r.cleanupSessionLocksLocked(now)
+	}
+}
+
+func (r *Runner) cleanupSessionLocks() {
+	r.locksMu.Lock()
+	defer r.locksMu.Unlock()
+	r.cleanupSessionLocksLocked(r.now())
+}
+
+func (r *Runner) cleanupSessionLocksLocked(now time.Time) {
+	for key, lock := range r.locks {
+		if lock.refs == 0 && now.Sub(lock.lastUsed) > r.lockTTLOrDefault() {
+			delete(r.locks, key)
+		}
+	}
 }
 
 func parseSessionDirective(text string) (bool, string) {

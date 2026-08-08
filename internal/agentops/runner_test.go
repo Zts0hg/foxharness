@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/automemory"
@@ -43,16 +45,33 @@ func (p *agentOpsSurfaceProvider) firstSurface() []string {
 	return append([]string(nil), p.surfaces[0]...)
 }
 
-type recordingAgentOpsMessenger struct{}
+type recordingAgentOpsMessenger struct {
+	mu    sync.Mutex
+	texts []string
+}
 
-func (recordingAgentOpsMessenger) SendText(ctx context.Context, chatID, text string) error {
+func (m *recordingAgentOpsMessenger) SendText(ctx context.Context, chatID, text string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.texts = append(m.texts, text)
 	return nil
+}
+
+func (m *recordingAgentOpsMessenger) contains(substr string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, text := range m.texts {
+		if strings.Contains(text, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAgentOpsFirstModelCallUsesPrimaryRegistryWithoutPlannerPrepass(t *testing.T) {
 	workDir := t.TempDir()
 	provider := &agentOpsSurfaceProvider{}
-	runner := NewRunner(provider, workDir, t.TempDir(), recordingAgentOpsMessenger{}, approval.NewStore())
+	runner := NewRunner(provider, workDir, t.TempDir(), &recordingAgentOpsMessenger{}, approval.NewStore())
 	runner.sessions = session.NewManagerWithHome(workDir, t.TempDir())
 
 	err := runner.run(context.Background(), Task{
@@ -94,6 +113,93 @@ func TestRunnerBuildRegistryIncludesTodoTools(t *testing.T) {
 		if !names[name] {
 			t.Fatalf("registry missing %s", name)
 		}
+	}
+}
+
+func TestRunnerStartBoundsConcurrentTasks(t *testing.T) {
+	tasks := make(chan Task, 4)
+	for i := 0; i < 4; i++ {
+		tasks <- Task{TaskID: string(rune('a' + i)), ChatID: "chat", SenderID: "sender", Text: "task"}
+	}
+	close(tasks)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	started := make(chan struct{}, 4)
+	var active int32
+	var maxActive int32
+
+	runner := &Runner{
+		maxConcurrentTasks: 2,
+		taskTimeout:        time.Minute,
+		messenger:          &recordingAgentOpsMessenger{},
+		runTask: func(ctx context.Context, task Task) error {
+			current := atomic.AddInt32(&active, 1)
+			for {
+				seen := atomic.LoadInt32(&maxActive)
+				if current <= seen || atomic.CompareAndSwapInt32(&maxActive, seen, current) {
+					break
+				}
+			}
+			started <- struct{}{}
+			select {
+			case <-ctx.Done():
+				atomic.AddInt32(&active, -1)
+				return ctx.Err()
+			case <-release:
+				atomic.AddInt32(&active, -1)
+				return nil
+			}
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		runner.Start(ctx, tasks)
+		close(done)
+	}()
+
+	waitForAgentOpsStarts(t, started, 2)
+	assertNoAdditionalAgentOpsStart(t, started)
+	release <- struct{}{}
+	release <- struct{}{}
+	waitForAgentOpsStarts(t, started, 2)
+	close(release)
+	<-done
+
+	if got := atomic.LoadInt32(&maxActive); got > 2 {
+		t.Fatalf("max active tasks = %d, want <= 2", got)
+	}
+}
+
+func TestRunnerRunAppliesTaskTimeout(t *testing.T) {
+	messenger := &recordingAgentOpsMessenger{}
+	observedDeadline := make(chan bool, 1)
+	runner := &Runner{
+		taskTimeout: 10 * time.Millisecond,
+		messenger:   messenger,
+		runTask: func(ctx context.Context, task Task) error {
+			_, ok := ctx.Deadline()
+			observedDeadline <- ok
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+
+	runner.Run(context.Background(), Task{TaskID: "timeout", ChatID: "chat", SenderID: "sender", Text: "hang"})
+
+	select {
+	case ok := <-observedDeadline:
+		if !ok {
+			t.Fatalf("run task did not receive a deadline")
+		}
+	default:
+		t.Fatalf("run task was not invoked")
+	}
+	if !messenger.contains("AgentOps 任务失败") {
+		t.Fatalf("timeout failure was not sent to messenger: %#v", messenger.texts)
 	}
 }
 
@@ -297,4 +403,24 @@ func mustJSON(t *testing.T, value any) json.RawMessage {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
 	return data
+}
+
+func waitForAgentOpsStarts(t *testing.T, started <-chan struct{}, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for task start %d/%d", i+1, n)
+		}
+	}
+}
+
+func assertNoAdditionalAgentOpsStart(t *testing.T, started <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-started:
+		t.Fatalf("task started despite concurrency limit")
+	case <-time.After(50 * time.Millisecond):
+	}
 }

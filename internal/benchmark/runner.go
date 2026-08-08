@@ -17,9 +17,17 @@ import (
 	"github.com/Zts0hg/foxharness/internal/session"
 )
 
-// HarnessFactory creates an AgentEngine and Session for a benchmark case,
-// allowing callers to customize engine configuration per case.
-type HarnessFactory func(ctx context.Context, workDir string, c *Case) (*engine.AgentEngine, *session.Session, error)
+// HarnessFactory creates a benchmark harness for a case, allowing callers to
+// customize engine configuration per case.
+type HarnessFactory func(ctx context.Context, workDir string, c *Case) (*Harness, error)
+
+// Harness contains the engine/session pair used by a benchmark run and the
+// runtime fidelity metadata that will be copied into the benchmark result.
+type Harness struct {
+	Engine          *engine.AgentEngine
+	Session         *session.Session
+	RuntimeFidelity RuntimeFidelity
+}
 
 // Runner executes benchmark cases using a caller-provided HarnessFactory.
 type Runner struct {
@@ -34,13 +42,22 @@ func NewRunner(factory HarnessFactory) *Runner {
 // Result captures the outcome of a single benchmark case execution, including
 // timing, validation details, and any error that terminated the run.
 type Result struct {
-	CaseID      string             `json:"case_id"`
-	Success     bool               `json:"success"`
-	Workspace   string             `json:"workspace"`
-	SessionID   string             `json:"session_id"`
-	DurationMS  int64              `json:"duration_ms"`
-	Error       string             `json:"error,omitempty"`
-	Validations []ValidationResult `json:"validations"`
+	CaseID          string             `json:"case_id"`
+	Success         bool               `json:"success"`
+	Workspace       string             `json:"workspace"`
+	SessionID       string             `json:"session_id"`
+	DurationMS      int64              `json:"duration_ms"`
+	Error           string             `json:"error,omitempty"`
+	Validations     []ValidationResult `json:"validations"`
+	RuntimeFidelity RuntimeFidelity    `json:"runtime_fidelity"`
+}
+
+// RuntimeFidelity records which product runtime invariants a benchmark shares
+// and which differences are intentional for benchmark execution.
+type RuntimeFidelity struct {
+	SharedInvariants       []string `json:"shared_invariants"`
+	IntentionalDifferences []string `json:"intentional_differences"`
+	Warning                string   `json:"warning,omitempty"`
 }
 
 // RunCase copies the case fixture into a temporary workspace, runs the agent
@@ -57,19 +74,23 @@ func (r *Runner) RunCase(ctx context.Context, c *Case) (*Result, error) {
 		return nil, fmt.Errorf("复制 Fixture 失败: %w", err)
 	}
 
-	eng, sess, err := r.factory(ctx, workspace, c)
+	harness, err := r.factory(ctx, workspace, c)
 	if err != nil {
 		return nil, fmt.Errorf("创建 Harness 失败: %w", err)
 	}
+	if harness == nil || harness.Engine == nil || harness.Session == nil {
+		return nil, fmt.Errorf("创建 Harness 失败: harness missing engine or session")
+	}
 
 	result := &Result{
-		CaseID:    c.ID,
-		Workspace: workspace,
-		SessionID: sess.ID,
+		CaseID:          c.ID,
+		Workspace:       workspace,
+		SessionID:       harness.Session.ID,
+		RuntimeFidelity: harness.RuntimeFidelity,
 	}
 
 	started := time.Now()
-	runResult, err := eng.Run(ctx, sess, c.Prompt)
+	runResult, err := harness.Engine.Run(ctx, harness.Session, c.Prompt)
 	result.DurationMS = time.Since(started).Milliseconds()
 
 	if runResult != nil {

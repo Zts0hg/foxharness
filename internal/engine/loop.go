@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -61,6 +62,15 @@ type RunResult struct {
 	MetricsPath string
 	// TracePath is the run-local trace file.
 	TracePath string
+	// TelemetryWarnings records non-fatal observability write failures.
+	TelemetryWarnings []TelemetryWarning
+}
+
+// TelemetryWarning describes a non-fatal observability write failure.
+type TelemetryWarning struct {
+	Sink      string
+	Operation string
+	Error     string
 }
 
 // AgentEngine manages the main agent execution loop with turn-based reasoning.
@@ -120,6 +130,31 @@ type processedToolResult struct {
 	indexedToolResult
 	ContextContent string
 	Persisted      bool
+}
+
+type telemetryRecorder struct {
+	mu       sync.Mutex
+	warnings []TelemetryWarning
+}
+
+func (r *telemetryRecorder) Record(sink, operation string, err error) {
+	if err == nil {
+		return
+	}
+	log.Printf("[Telemetry] %s %s failed: %v", sink, operation, err)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.warnings = append(r.warnings, TelemetryWarning{
+		Sink:      sink,
+		Operation: operation,
+		Error:     err.Error(),
+	})
+}
+
+func (r *telemetryRecorder) Snapshot() []TelemetryWarning {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]TelemetryWarning(nil), r.warnings...)
 }
 
 // NewAgentEngine creates a new AgentEngine with the provided configuration.
@@ -302,6 +337,17 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	}
 	var runErr error
 	var finalResult *RunResult
+	telemetry := &telemetryRecorder{}
+	newRunResult := func(final string) *RunResult {
+		return &RunResult{
+			FinalMessage:      final,
+			SessionID:         sess.ID,
+			RunID:             run.ID,
+			MetricsPath:       run.MetricsPath(),
+			TracePath:         run.TracePath(),
+			TelemetryWarnings: telemetry.Snapshot(),
+		}
+	}
 	if reporter != nil {
 		reporter.OnRunStart(ctx, sess.ID, run.ID)
 	}
@@ -323,7 +369,9 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		}
 	}()
 
-	tracer := tracing.NewTracer(run.TracePath())
+	tracer := tracing.NewTracer(run.TracePath()).WithErrorHandler(func(err error) {
+		telemetry.Record("trace", "append", err)
+	})
 	runSpan := tracer.StartSpan("", "run", map[string]any{
 		"session_id": sess.ID,
 		"run_id":     run.ID,
@@ -349,7 +397,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	summaryWritten := false
 	defer func() {
 		if !summaryWritten {
-			_ = recorder.Append(aggregator.Summary(sess.ID))
+			telemetry.Record("metrics", "run_summary", recorder.Append(aggregator.Summary(sess.ID)))
 		}
 	}()
 
@@ -369,7 +417,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	if displayPrompt != userPrompt {
 		promptPayload["model_prompt"] = userPrompt
 	}
-	_ = transcript.AppendRun(run.ID, "user_prompt", promptPayload)
+	telemetry.Record("transcript", "user_prompt", transcript.AppendRun(run.ID, "user_prompt", promptPayload))
 
 	systemPrompt, err := e.composer.Compose(userPrompt)
 	if err != nil {
@@ -405,9 +453,9 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		return nil, wrapped
 	}
 	if compactedInitial {
-		_ = transcript.AppendRun(run.ID, "context_compacted", map[string]any{
+		telemetry.Record("transcript", "context_compacted", transcript.AppendRun(run.ID, "context_compacted", map[string]any{
 			"scope": "session_history",
-		})
+		}))
 		if reporter != nil {
 			reporter.OnCompaction(ctx, "session_history")
 		}
@@ -424,13 +472,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		if e.config.MaxTurns > 0 && turnCount > e.config.MaxTurns {
 			wrapped := fmt.Errorf("超过最大 Turn 数限制: %d", e.config.MaxTurns)
 			markRunError(wrapped)
-			return &RunResult{
-				FinalMessage: final,
-				SessionID:    sess.ID,
-				RunID:        run.ID,
-				MetricsPath:  run.MetricsPath(),
-				TracePath:    run.TracePath(),
-			}, wrapped
+			return newRunResult(final), wrapped
 		}
 		log.Printf("====== [Turn %d] 开始", turnCount)
 		turnSpan := tracer.StartSpan(runSpan.ID(), "turn", map[string]any{
@@ -457,13 +499,13 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			compacted, err := e.compactor.MaybeCompact(ctx, contextHistory)
 			if err != nil {
 				log.Printf("[Compactor] 压缩失败，将继续使用原始上下文: %v", err)
-			} else if !sameMessages(compacted, contextHistory) {
+			} else if !messagesEqual(compacted, contextHistory) {
 				log.Printf("[Compactor] 上下文已压缩: %d -> %d 条消息（含 boundary + summary）", len(contextHistory), len(compacted))
 				contextHistory = compacted
 				justCompacted = true
-				_ = transcript.AppendRun(run.ID, "context_compacted", map[string]any{
+				telemetry.Record("transcript", "context_compacted", transcript.AppendRun(run.ID, "context_compacted", map[string]any{
 					"turn": turnCount,
-				})
+				}))
 				if reporter != nil {
 					reporter.OnCompaction(ctx, "turn_context")
 				}
@@ -481,9 +523,9 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 					Content: "[Runtime System Notice]\n\n" + recoveryPrompt,
 				})
 
-				_ = transcript.AppendRun(run.ID, "error_recovery_injected", map[string]any{
+				telemetry.Record("transcript", "error_recovery_injected", transcript.AppendRun(run.ID, "error_recovery_injected", map[string]any{
 					"prompt": recoveryPrompt,
-				})
+				}))
 				log.Printf("[Recovery] 已注入错误恢复提示")
 				e.recovery.MarkInject()
 
@@ -499,10 +541,10 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				Content: "[Runtime System Reminder]\n\n" + msg,
 			})
 
-			_ = transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
+			telemetry.Record("transcript", "system_reminder_injected", transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
 				"turn":    turnCount,
 				"message": msg,
-			})
+			}))
 
 			log.Printf("[Reminder] 已注入系统提醒")
 
@@ -520,11 +562,11 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 					Role:    schema.RoleUser,
 					Content: "[Runtime System Reminder]\n\n" + extra,
 				})
-				_ = transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
+				telemetry.Record("transcript", "system_reminder_injected", transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
 					"turn":    turnCount,
 					"message": extra,
 					"source":  "next_turn_reminders",
-				})
+				}))
 				tracer.Annotate(turnSpan.ID(), "system_reminder_injected", map[string]any{
 					"turn":   turnCount,
 					"source": "next_turn_reminders",
@@ -543,6 +585,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				recorder,
 				aggregator,
 				estimator,
+				telemetry,
 				tracer,
 				turnSpan.ID(),
 				turnCount,
@@ -571,13 +614,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				wrapped := fmt.Errorf("上下文 token 数 (%d) 超过阻塞阈值 (%d)，无法继续发送请求", used, blocking)
 				finishTurn("error", map[string]any{"error": wrapped.Error()})
 				markRunError(wrapped)
-				return &RunResult{
-					FinalMessage: final,
-					SessionID:    sess.ID,
-					RunID:        run.ID,
-					MetricsPath:  run.MetricsPath(),
-					TracePath:    run.TracePath(),
-				}, wrapped
+				return newRunResult(final), wrapped
 			}
 		}
 		log.Println("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...")
@@ -587,6 +624,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			recorder,
 			aggregator,
 			estimator,
+			telemetry,
 			tracer,
 			turnSpan.ID(),
 			turnCount,
@@ -600,17 +638,17 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			reactiveCompacted, compactErr := e.compactor.ForceCompact(ctx, contextHistory)
 			if compactErr != nil {
 				log.Printf("[Compactor] 响应式压缩失败: %v", compactErr)
-			} else if !sameMessages(reactiveCompacted, contextHistory) {
+			} else if !messagesEqual(reactiveCompacted, contextHistory) {
 				contextHistory = reactiveCompacted
-				_ = transcript.AppendRun(run.ID, "context_compacted", map[string]any{
+				telemetry.Record("transcript", "context_compacted", transcript.AppendRun(run.ID, "context_compacted", map[string]any{
 					"turn":   turnCount,
 					"source": "reactive",
-				})
+				}))
 				if reporter != nil {
 					reporter.OnCompaction(ctx, "reactive")
 				}
 				actionResponse, err = e.callModel(
-					ctx, sess, recorder, aggregator, estimator, tracer,
+					ctx, sess, recorder, aggregator, estimator, telemetry, tracer,
 					turnSpan.ID(), turnCount, "action",
 					contextHistory, availableTools, reporter,
 				)
@@ -647,24 +685,18 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 						wrapped := fmt.Errorf("completion gate remained unsatisfied after reminder: %s", reminder)
 						finishTurn("error", map[string]any{"error": wrapped.Error()})
 						markRunError(wrapped)
-						return &RunResult{
-							FinalMessage: final,
-							SessionID:    sess.ID,
-							RunID:        run.ID,
-							MetricsPath:  run.MetricsPath(),
-							TracePath:    run.TracePath(),
-						}, wrapped
+						return newRunResult(final), wrapped
 					}
 					completionGateReminderSent = reminder
 					contextHistory = append(contextHistory, schema.Message{
 						Role:    schema.RoleUser,
 						Content: "[Runtime System Reminder]\n\n" + reminder,
 					})
-					_ = transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
+					telemetry.Record("transcript", "system_reminder_injected", transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
 						"turn":    turnCount,
 						"message": reminder,
 						"source":  "completion_gate",
-					})
+					}))
 					finishTurn("ok", map[string]any{
 						"tool_calls": 0,
 						"final":      false,
@@ -685,11 +717,11 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 					Role:    schema.RoleUser,
 					Content: todoCompletionReminderMessage(reminder),
 				})
-				_ = transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
+				telemetry.Record("transcript", "system_reminder_injected", transcript.AppendRun(run.ID, "system_reminder_injected", map[string]any{
 					"turn":    turnCount,
 					"message": reminder,
 					"source":  "todo_completion_gate",
-				})
+				}))
 				log.Printf("[TODO] Final response blocked until TODO.md is updated")
 				finishTurn("ok", map[string]any{
 					"tool_calls": 0,
@@ -699,7 +731,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				continue
 			}
 			log.Printf("[Engine] 模型不再需要调用工具，宣告任务完成！")
-			_ = recorder.Append(aggregator.Summary(sess.ID))
+			telemetry.Record("metrics", "run_summary", recorder.Append(aggregator.Summary(sess.ID)))
 			summaryWritten = true
 
 			finishTurn("ok", map[string]any{
@@ -707,13 +739,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				"final":      true,
 			})
 
-			result := &RunResult{
-				FinalMessage: final,
-				SessionID:    sess.ID,
-				RunID:        run.ID,
-				MetricsPath:  run.MetricsPath(),
-				TracePath:    run.TracePath(),
-			}
+			result := newRunResult(final)
 			finalResult = result
 			return result, nil
 		}
@@ -755,7 +781,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				}
 			}
 
-			_ = recorder.Append(metrics.ToolCall{
+			telemetry.Record("metrics", "tool_call", recorder.Append(metrics.ToolCall{
 				Time:        time.Now(),
 				Type:        metrics.EventToolCall,
 				SessionID:   sess.ID,
@@ -765,7 +791,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				DurationMS:  item.DurationMS,
 				OutputBytes: len(item.Result.Output),
 				IsError:     item.Result.IsError,
-			})
+			}))
 			aggregator.AddTool(item.Result.IsError)
 
 			observationMessage := schema.Message{
@@ -833,20 +859,8 @@ func (e *AgentEngine) processToolResults(
 	return out
 }
 
-// sameMessages reports whether two message slices refer to the same backing
-// array — the cheap "did compaction return the input unchanged?" check. We
-// cannot rely on len-equality because a compaction round can leave the count
-// unchanged (e.g., recent-keep window matches the input size) while still
-// mutating content; conversely the new format can produce more messages than
-// the input thanks to the boundary marker.
-func sameMessages(a, b []schema.Message) bool {
-	if len(a) == 0 && len(b) == 0 {
-		return true
-	}
-	if len(a) != len(b) {
-		return false
-	}
-	return &a[0] == &b[0]
+func messagesEqual(a, b []schema.Message) bool {
+	return reflect.DeepEqual(a, b)
 }
 
 func estimateToolTokens(est metrics.TokenEstimator, tools []schema.ToolDefinition) int {
@@ -870,6 +884,7 @@ func (e *AgentEngine) callModel(
 	recorder *metrics.Recorder,
 	aggregator *metrics.Aggregator,
 	estimator metrics.TokenEstimator,
+	telemetry *telemetryRecorder,
 	tracer *tracing.Tracer,
 	parentSpanID string,
 	turn int,
@@ -930,7 +945,11 @@ func (e *AgentEngine) callModel(
 		event.Error = err.Error()
 	}
 
-	_ = recorder.Append(event)
+	if telemetry != nil {
+		telemetry.Record("metrics", "model_call", recorder.Append(event))
+	} else {
+		_ = recorder.Append(event)
+	}
 	aggregator.AddModel(inputTokens, outputTokens, err != nil)
 	if err != nil {
 		span.End("error", map[string]any{"error": err.Error()})

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/automemory"
@@ -38,13 +39,21 @@ type Messenger interface {
 // session, wires up tools (log search, file I/O, bash, sub-agent) with unified
 // permission approval, and drives the engine loop to completion.
 type Runner struct {
-	provider      provider.LLMProvider
-	workDir       string
-	logDir        string
-	messenger     Messenger
-	sessions      *session.Manager
-	approvalStore *approval.Store
+	provider           provider.LLMProvider
+	workDir            string
+	logDir             string
+	messenger          Messenger
+	sessions           *session.Manager
+	approvalStore      *approval.Store
+	maxConcurrentTasks int
+	taskTimeout        time.Duration
+	runTask            func(context.Context, Task) error
 }
+
+const (
+	defaultMaxConcurrentTasks = 4
+	defaultTaskTimeout        = 5 * time.Minute
+)
 
 // NewRunner constructs a Runner with the given LLM provider, working and log
 // directories, messenger for user notifications, and approval store for
@@ -56,22 +65,80 @@ func NewRunner(
 	approvalStore *approval.Store,
 ) *Runner {
 	return &Runner{
-		provider:      p,
-		workDir:       workDir,
-		logDir:        logDir,
-		messenger:     messenger,
-		sessions:      session.NewManager(workDir),
-		approvalStore: approvalStore,
+		provider:           p,
+		workDir:            workDir,
+		logDir:             logDir,
+		messenger:          messenger,
+		sessions:           session.NewManager(workDir),
+		approvalStore:      approvalStore,
+		maxConcurrentTasks: defaultMaxConcurrentTasks,
+		taskTimeout:        defaultTaskTimeout,
+	}
+}
+
+// Start consumes tasks until ctx is cancelled or the channel is closed, running
+// at most the configured number of tasks concurrently.
+func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
+	permits := make(chan struct{}, r.concurrentTaskLimit())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case task, ok := <-tasks:
+			if !ok {
+				return
+			}
+			select {
+			case permits <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			go func(task Task) {
+				defer func() {
+					<-permits
+					if rec := recover(); rec != nil {
+						log.Printf("[AgentOps] task=%s panic recovered: %v", task.TaskID, rec)
+					}
+				}()
+				r.Run(ctx, task)
+			}(task)
+		}
 	}
 }
 
 // Run executes the task to completion.  On failure it logs the error and
 // attempts to notify the originating chat.
 func (r *Runner) Run(ctx context.Context, task Task) {
-	if err := r.run(ctx, task); err != nil {
+	runCtx, cancel := context.WithTimeout(ctx, r.taskTimeoutOrDefault())
+	defer cancel()
+
+	if err := r.taskRunner()(runCtx, task); err != nil {
 		log.Printf("[AgentOps] task=%s failed: %v", task.TaskID, err)
-		_ = r.messenger.SendText(ctx, task.ChatID, fmt.Sprintf("AgentOps 任务失败： %v", err))
+		if r.messenger != nil {
+			_ = r.messenger.SendText(ctx, task.ChatID, fmt.Sprintf("AgentOps 任务失败： %v", err))
+		}
 	}
+}
+
+func (r *Runner) concurrentTaskLimit() int {
+	if r.maxConcurrentTasks > 0 {
+		return r.maxConcurrentTasks
+	}
+	return defaultMaxConcurrentTasks
+}
+
+func (r *Runner) taskTimeoutOrDefault() time.Duration {
+	if r.taskTimeout > 0 {
+		return r.taskTimeout
+	}
+	return defaultTaskTimeout
+}
+
+func (r *Runner) taskRunner() func(context.Context, Task) error {
+	if r.runTask != nil {
+		return r.runTask
+	}
+	return r.run
 }
 
 func (r *Runner) run(ctx context.Context, task Task) error {

@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/automemory"
@@ -129,6 +131,89 @@ func TestRunnerBuildRegistryMarksWritableDelegationNestedPermissionEnforced(t *t
 	}
 }
 
+func TestRunnerStartBoundsConcurrentTasks(t *testing.T) {
+	tasks := make(chan Task, 4)
+	for i := 0; i < 4; i++ {
+		tasks <- Task{TaskID: string(rune('a' + i)), ChatID: "chat", SenderID: "sender", Text: "task"}
+	}
+	close(tasks)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	started := make(chan struct{}, 4)
+	var active int32
+	var maxActive int32
+
+	runner := &Runner{
+		maxConcurrentTasks: 2,
+		runTask: func(ctx context.Context, task Task) {
+			current := atomic.AddInt32(&active, 1)
+			for {
+				seen := atomic.LoadInt32(&maxActive)
+				if current <= seen || atomic.CompareAndSwapInt32(&maxActive, seen, current) {
+					break
+				}
+			}
+			started <- struct{}{}
+			select {
+			case <-ctx.Done():
+			case <-release:
+			}
+			atomic.AddInt32(&active, -1)
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		runner.Start(ctx, tasks)
+		close(done)
+	}()
+
+	waitForStarts(t, started, 2)
+	assertNoAdditionalStart(t, started)
+	release <- struct{}{}
+	release <- struct{}{}
+	waitForStarts(t, started, 2)
+	close(release)
+	cancel()
+	<-done
+
+	if got := atomic.LoadInt32(&maxActive); got > 2 {
+		t.Fatalf("max active tasks = %d, want <= 2", got)
+	}
+}
+
+func TestRunnerSessionLocksCleanupOnlyInactiveEntries(t *testing.T) {
+	now := time.Unix(1000, 0)
+	runner := &Runner{
+		locks:   make(map[string]*sessionLock),
+		lockTTL: time.Minute,
+		clock: func() time.Time {
+			return now
+		},
+	}
+
+	releaseActive := runner.acquireSessionLock("active")
+	releaseOld := runner.acquireSessionLock("old")
+	releaseOld()
+	now = now.Add(2 * time.Minute)
+	runner.cleanupSessionLocks()
+
+	if _, ok := runner.locks["old"]; ok {
+		t.Fatalf("inactive old lock was not reclaimed")
+	}
+	if _, ok := runner.locks["active"]; !ok {
+		t.Fatalf("active lock was reclaimed")
+	}
+	releaseActive()
+	now = now.Add(2 * time.Minute)
+	runner.cleanupSessionLocks()
+	if _, ok := runner.locks["active"]; ok {
+		t.Fatalf("released active lock was not reclaimed after TTL")
+	}
+}
+
 // TestFeishuBuildComposerInjectsPersistentMemory verifies the Feishu runner now
 // injects the cross-session persistent memory index (REQ-006), the P3 gap Codex
 // flagged.
@@ -236,4 +321,24 @@ func mustJSON(t *testing.T, value any) json.RawMessage {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
 	return data
+}
+
+func waitForStarts(t *testing.T, started <-chan struct{}, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for task start %d/%d", i+1, n)
+		}
+	}
+}
+
+func assertNoAdditionalStart(t *testing.T, started <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-started:
+		t.Fatalf("task started despite concurrency limit")
+	case <-time.After(50 * time.Millisecond):
+	}
 }

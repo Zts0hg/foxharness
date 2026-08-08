@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
@@ -32,7 +33,15 @@ type Gateway struct {
 	encryptKey        string
 	tasks             chan<- Task
 	approvalStore     *approval.Store
+	server            *http.Server
 }
+
+const (
+	defaultReadHeaderTimeout = 5 * time.Second
+	defaultReadTimeout       = 15 * time.Second
+	defaultWriteTimeout      = 60 * time.Second
+	defaultIdleTimeout       = 120 * time.Second
+)
 
 // NewGateway creates a Gateway that validates incoming events with the given
 // verificationToken and encryptKey, dispatches parsed tasks to the tasks
@@ -49,6 +58,17 @@ func NewGateway(verificationToken, encryptKey string, tasks chan<- Task, approva
 // Listen registers the Feishu event dispatcher on /webhook/event and starts
 // an HTTP server bound to addr.  It blocks until the server exits.
 func (g *Gateway) Listen(addr string) error {
+	g.server = g.Server(addr)
+	err := g.server.ListenAndServe()
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
+// Server constructs the gateway-owned HTTP server used by Listen.
+func (g *Gateway) Server(addr string) *http.Server {
+	mux := http.NewServeMux()
 	handler := dispatcher.NewEventDispatcher(g.verificationToken, g.encryptKey)
 
 	handler.OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
@@ -66,12 +86,31 @@ func (g *Gateway) Listen(addr string) error {
 		}
 	})
 
-	http.HandleFunc("/webhook/event", httpserverext.NewEventHandlerFunc(
+	mux.HandleFunc("/webhook/event", httpserverext.NewEventHandlerFunc(
 		handler,
 		larkevent.WithLogLevel(larkcore.LogLevelInfo),
 	))
 
-	return http.ListenAndServe(addr, nil)
+	return &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: defaultReadHeaderTimeout,
+		ReadTimeout:       defaultReadTimeout,
+		WriteTimeout:      defaultWriteTimeout,
+		IdleTimeout:       defaultIdleTimeout,
+	}
+}
+
+// Shutdown gracefully shuts down a server previously created by Listen.
+func (g *Gateway) Shutdown(ctx context.Context) error {
+	if g.server == nil {
+		return nil
+	}
+	err := g.server.Shutdown(ctx)
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
 }
 
 func taskFromMessageEvent(event *larkim.P2MessageReceiveV1) (Task, error) {

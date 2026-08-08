@@ -46,3 +46,26 @@ func TestLoadReportsParseAndOpenErrors(t *testing.T) {
 		t.Fatalf("Load() open error = %v", err)
 	}
 }
+
+func TestTracerReportsAppendErrors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trace-as-directory")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	tracer := NewTracer(path).WithErrorHandler(func(err error) {
+		got = append(got, err.Error())
+	})
+	span := tracer.StartSpan("", "run", nil)
+	span.End("ok", nil)
+	tracer.Annotate(span.ID(), "note", nil)
+
+	if len(got) == 0 {
+		t.Fatalf("trace append errors were not reported")
+	}
+	if !strings.Contains(got[0], "trace") {
+		t.Fatalf("error = %q, want trace context", got[0])
+	}
+}

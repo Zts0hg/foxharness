@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
+	"github.com/Zts0hg/foxharness/internal/compaction"
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/permission"
@@ -60,9 +61,10 @@ type Manager struct {
 	// maxTurns is the turn budget handed to the subagent engine. It defaults to
 	// DefaultMaxTurns (applied by NewManager) and may be overridden via
 	// WithMaxTurns, primarily for deterministic tests of the exhaustion path.
-	maxTurns       int
-	permissions    *permission.Coordinator
-	parentEvidence permission.EvidenceProvider
+	maxTurns         int
+	permissions      *permission.Coordinator
+	parentEvidence   permission.EvidenceProvider
+	compactorFactory func(*session.Session) (*compaction.Compactor, error)
 }
 
 // NewManager creates a Manager that delegates LLM calls to p and roots
@@ -168,6 +170,11 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 			MaxTurns:       m.maxTurns,
 		},
 	)
+	compactor, err := m.newCompactor(sess)
+	if err != nil {
+		return nil, err
+	}
+	eng.WithCompactor(compactor)
 
 	subPrompt := fmt.Sprintf(`
 你是一个 Subagent，负责为主 Agent 完成一个边界清晰的子任务。
@@ -198,4 +205,14 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 		SessionID: sess.ID,
 		Report:    report,
 	}, nil
+}
+
+func (m *Manager) newCompactor(sess *session.Session) (*compaction.Compactor, error) {
+	if m.compactorFactory != nil {
+		return m.compactorFactory(sess)
+	}
+	cfg := compaction.DefaultCompactionConfig()
+	cfg.SessionDir = sess.RootDir
+	cfg.TranscriptPath = sess.TranscriptPath()
+	return compaction.NewCompactor(m.provider, cfg)
 }

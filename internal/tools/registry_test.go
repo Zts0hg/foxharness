@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -62,6 +64,23 @@ func TestRegistryAdvertisesAliasInAvailableTools(t *testing.T) {
 	}
 	if !names["AskUserQuestion"] {
 		t.Errorf("alias name missing from available tools: %v", names)
+	}
+}
+
+func TestRegistryReturnsAvailableToolsInDeterministicNameOrder(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&aliasStubTool{name: "zeta", aliases: []string{"gamma"}, out: "z"})
+	r.Register(&aliasStubTool{name: "alpha", aliases: []string{"beta"}, out: "a"})
+
+	defs := r.GetAvailableTools()
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, def.Name)
+	}
+	want := append([]string(nil), names...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("tool definition names = %v, want sorted %v", names, want)
 	}
 }
 

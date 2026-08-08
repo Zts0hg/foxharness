@@ -7,7 +7,25 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/tools"
 )
+
+type benchmarkFinalProvider struct{}
+
+func (p benchmarkFinalProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}}, nil
+}
+
+type benchmarkComposer struct{}
+
+func (c benchmarkComposer) Compose(userPrompt string) (string, error) {
+	return "system", nil
+}
 
 func TestLoadCaseDefaultsAndValidatesRequiredFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "case.yml")
@@ -76,7 +94,17 @@ func TestValidateAllCoversSuccessAndFailurePaths(t *testing.T) {
 
 func TestWriteJSONWritesIndentedResultsWithTrailingNewline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "report.json")
-	results := []*Result{{CaseID: "case-1", Success: true, Workspace: "/tmp/work", SessionID: "sess"}}
+	results := []*Result{{
+		CaseID:    "case-1",
+		Success:   true,
+		Workspace: "/tmp/work",
+		SessionID: "sess",
+		RuntimeFidelity: RuntimeFidelity{
+			SharedInvariants:       []string{"tool surface"},
+			IntentionalDifferences: []string{"no interactive approval"},
+			Warning:                "benchmark runtime differs from product runtime",
+		},
+	}}
 
 	if err := WriteJSON(path, results); err != nil {
 		t.Fatalf("WriteJSON() error = %v", err)
@@ -94,5 +122,44 @@ func TestWriteJSONWritesIndentedResultsWithTrailingNewline(t *testing.T) {
 	}
 	if len(decoded) != 1 || decoded[0].CaseID != "case-1" || !decoded[0].Success {
 		t.Fatalf("decoded = %+v", decoded)
+	}
+	if decoded[0].RuntimeFidelity.Warning == "" || len(decoded[0].RuntimeFidelity.IntentionalDifferences) != 1 {
+		t.Fatalf("runtime fidelity metadata missing from decoded result: %+v", decoded[0].RuntimeFidelity)
+	}
+}
+
+func TestRunCaseIncludesRuntimeFidelityMetadata(t *testing.T) {
+	fixture := t.TempDir()
+	runner := NewRunner(func(ctx context.Context, workDir string, c *Case) (*Harness, error) {
+		manager := session.NewManagerWithHome(workDir, t.TempDir())
+		sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+		if err != nil {
+			return nil, err
+		}
+		eng := engine.NewAgentEngine(benchmarkFinalProvider{}, tools.NewRegistry(), workDir, benchmarkComposer{}, engine.Config{MaxTurns: 1})
+		return &Harness{
+			Engine:  eng,
+			Session: sess,
+			RuntimeFidelity: RuntimeFidelity{
+				SharedInvariants:       []string{"canonical tools"},
+				IntentionalDifferences: []string{"no interactive approval"},
+				Warning:                "benchmark runtime differs from product runtime",
+			},
+		}, nil
+	})
+
+	result, err := runner.RunCase(context.Background(), &Case{
+		ID:      "case-1",
+		Fixture: fixture,
+		Prompt:  "finish",
+	})
+	if err != nil {
+		t.Fatalf("RunCase() error = %v", err)
+	}
+	if result.RuntimeFidelity.Warning == "" {
+		t.Fatalf("RuntimeFidelity warning missing: %+v", result.RuntimeFidelity)
+	}
+	if len(result.RuntimeFidelity.SharedInvariants) != 1 || result.RuntimeFidelity.SharedInvariants[0] != "canonical tools" {
+		t.Fatalf("SharedInvariants = %+v", result.RuntimeFidelity.SharedInvariants)
 	}
 }
