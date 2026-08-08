@@ -14,6 +14,9 @@ import (
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
+	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/tui"
 )
 
 func TestParseArgsDefaultsToTUI(t *testing.T) {
@@ -536,5 +539,101 @@ func TestReadPromptReadsStdinForDash(t *testing.T) {
 	}
 	if prompt != "inspect main.go" {
 		t.Fatalf("prompt = %q, want %q", prompt, "inspect main.go")
+	}
+}
+
+func TestRunRenderListPrintsScenes(t *testing.T) {
+	var buf bytes.Buffer
+	if err := runRender([]string{"-list"}, &buf); err != nil {
+		t.Fatalf("runRender(-list) error = %v", err)
+	}
+	out := buf.String()
+	for _, name := range tui.SceneNames() {
+		if !strings.Contains(out, name) {
+			t.Fatalf("render -list output missing scene %q:\n%s", name, out)
+		}
+	}
+}
+
+func TestRunRenderUnknownSceneErrors(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "out.html")
+	err := runRender([]string{"-scene", "nope", "-out", outPath}, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for unknown scene, got nil")
+	}
+	if !strings.Contains(err.Error(), "nope") {
+		t.Fatalf("error does not mention the bad scene: %v", err)
+	}
+	for _, name := range tui.SceneNames() {
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("error does not list available scene %q: %v", name, err)
+		}
+	}
+	if _, statErr := os.Stat(outPath); !os.IsNotExist(statErr) {
+		t.Fatalf("output file should not exist on error, stat err = %v", statErr)
+	}
+}
+
+func TestRunRenderSessionReplayWritesHTML(t *testing.T) {
+	dir := t.TempDir()
+	records := []session.MessageRecord{
+		{Seq: 1, Message: schema.Message{Role: schema.RoleUser, Content: "回放测试 replay"}},
+		{Seq: 2, Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+	}
+	var b strings.Builder
+	for _, r := range records {
+		line, _ := json.Marshal(r)
+		b.Write(line)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, "messages.jsonl"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(dir, "session.html")
+	if err := runRender([]string{"-session", dir, "-out", out}, io.Discard); err != nil {
+		t.Fatalf("runRender(-session) error = %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("session HTML not written: %v", err)
+	}
+	if !strings.Contains(string(data), "回放测试 replay") {
+		t.Fatal("session HTML missing the transcript content")
+	}
+}
+
+func TestRunRenderSessionMissingSourceErrors(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out.html")
+	err := runRender([]string{"-session", filepath.Join(dir, "nope"), "-workdir", dir, "-out", out}, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for missing session source, got nil")
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatal("output file should not exist when the session source is missing")
+	}
+}
+
+func TestRunRenderWritesSelfContainedHTML(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "transcript.html")
+	if err := runRender([]string{"-scene", "transcript", "-out", outPath}, io.Discard); err != nil {
+		t.Fatalf("runRender error = %v", err)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("output HTML not written: %v", err)
+	}
+	html := string(data)
+	for _, want := range []string{
+		"@font-face",                 // embedded font
+		"base64,",                    // self-contained (no external refs)
+		"fix the sidebar layout bug", // scene content
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("rendered HTML missing %q", want)
+		}
 	}
 }

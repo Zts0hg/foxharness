@@ -299,6 +299,7 @@ fox exec [options] [prompt]  # run once and print the result
 fox -p [options] [prompt]    # run once and print the result
 fox autodev [backlog-path]   # drain the backlog autonomously (SDD pipeline per item)
 fox config [add|list|default [name]]  # interactively add/list/set-default an LLM provider
+fox render [options]         # render a built-in TUI scene to a self-contained HTML snapshot
 ```
 
 Common options:
@@ -329,6 +330,37 @@ fox exec -session 20260517-192517-a504c5 "Continue this session and summarize th
 fox exec -llm-provider local "Add tests for this project"
 fox exec -llm-provider primary -model gpt-4.1 "Summarize the architecture of this project"
 ```
+
+### TUI Render Snapshots
+
+`fox render` renders a built-in TUI scene to a **self-contained HTML file** so the
+rendered layout, colors, and styling can be inspected offline — useful when
+changing TUI rendering code. Open the file in any browser: it reproduces the
+frame faithfully, including CJK, box-drawing, and symbol glyphs, because the
+document embeds the theme palette and the Sarasa Mono SC font. Scenes are
+deterministic (fixed size, clock, and spinner).
+
+```bash
+fox render -list                                    # list available scenes
+fox render -scene transcript -out transcript.html   # render one built-in scene
+fox render -scene permission-form -width 100 -height 30 -out perm.html
+fox render -session 20260807-215427-7b01c4 -out session.html   # replay a real session
+fox render -session ~/.foxharness/.../sessions/<id> -out session.html
+```
+
+| Option | Description |
+| --- | --- |
+| `-scene` | Built-in scene to render (see `-list`). Defaults to `transcript`. |
+| `-session` | Render a real session instead of a scene: a session id, its directory, or a `messages.jsonl` path. |
+| `-workdir`, `-C` | Working directory used to resolve a `-session` id. Defaults to `.`. |
+| `-out` | Output HTML path. Defaults to `<scene|session>.html`. |
+| `-width`, `-height` | Terminal size in cells. Defaults to `120x34`. |
+| `-list` | Print available scenes and exit. |
+
+The HTML is fully self-contained (no external fonts or assets), so a browser —
+or a headless screenshot tool — renders it exactly, with no dependency on the
+host's terminal font. The embedded font is [Sarasa Mono SC](https://github.com/be5invis/Sarasa-Gothic)
+(SIL OFL 1.1).
 
 ### Autodev (Backlog Autopilot)
 
