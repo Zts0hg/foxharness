@@ -152,14 +152,12 @@ type bashArgs struct {
 	Command string `json:"command"`
 }
 
-// Execute runs a bash command with the provided arguments.
-// The command executes with a 30-second timeout in the tool's working directory.
-// Returns the command output (combined stdout and stderr), or an error if argument parsing fails.
-// Timeouts are reported in the output rather than returning an error.
-func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+// ExecuteResult runs a bash command and marks non-zero exits or timeouts as
+// tool-level failures while preserving useful stdout/stderr for the model.
+func (t *BashTool) ExecuteResult(ctx context.Context, args json.RawMessage) (ExecutionResult, error) {
 	var input bashArgs
 	if err := json.Unmarshal(args, &input); err != nil {
-		return "", fmt.Errorf("参数解析失败: %w", err)
+		return ExecutionResult{}, fmt.Errorf("参数解析失败: %w", err)
 	}
 
 	result := RunBashCommand(ctx, t.workDir, input.Command, defaultBashTimeout)
@@ -169,18 +167,37 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	if result.TimedOut {
-		return outputStr + "\n[警告: 命令执行超时(30s)，已被系统强制终止。如果是常驻服务，请尝试将其转入后台。] ", nil
+		return ExecutionResult{
+			Output: outputStr + "\n[警告: 命令执行超时(30s)，已被系统强制终止。如果是常驻服务，请尝试将其转入后台。] ",
+			Failed: true,
+		}, nil
 	}
 
 	if result.Err != nil {
-		return fmt.Sprintf("执行报错: %v\n输出:\n%s", result.Err, outputStr), nil
+		return ExecutionResult{
+			Output: fmt.Sprintf("执行报错: %v\n输出:\n%s", result.Err, outputStr),
+			Failed: true,
+		}, nil
 	}
 
 	if outputStr == "" {
-		return "命令执行成功，无终端输出。", nil
+		return ExecutionResult{Output: "命令执行成功，无终端输出。"}, nil
 	}
 
-	return outputStr, nil
+	return ExecutionResult{Output: outputStr}, nil
+
+}
+
+// Execute runs a bash command with the provided arguments.
+// The command executes with a 30-second timeout in the tool's working directory.
+// Returns the command output (combined stdout and stderr), or an error if argument parsing fails.
+// Timeouts are represented in the output for backward-compatible direct callers.
+func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	result, err := t.ExecuteResult(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	return result.Output, nil
 
 }
 

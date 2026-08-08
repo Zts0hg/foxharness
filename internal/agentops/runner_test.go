@@ -14,6 +14,8 @@ import (
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
+	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 type agentOpsSurfaceProvider struct {
@@ -92,6 +94,99 @@ func TestRunnerBuildRegistryIncludesTodoTools(t *testing.T) {
 		if !names[name] {
 			t.Fatalf("registry missing %s", name)
 		}
+	}
+}
+
+func TestRunnerBuildRegistryDeniesWorkspaceOutsideWriteWithUnifiedPermission(t *testing.T) {
+	base := t.TempDir()
+	workDir := filepath.Join(base, "work")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(base, "outside.txt")
+	relOutside, err := filepath.Rel(workDir, outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &Runner{workDir: workDir, approvalStore: approval.NewStore()}
+	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
+	registry := runner.buildRegistry(Task{ChatID: "chat", Text: "write outside workspace"}, sess)
+
+	result := registry.Execute(context.Background(), schema.ToolCall{
+		ID:        "write-outside",
+		Name:      "write_file",
+		Arguments: mustJSON(t, map[string]string{"path": relOutside, "content": "blocked"}),
+	})
+	if !result.IsError || !strings.Contains(result.Output, "permission policy") {
+		t.Fatalf("result = %+v, want unified permission denial", result)
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("outside file stat error = %v, want file not written", err)
+	}
+}
+
+func TestRunnerBuildRegistryDeniesUnparseableBashWithUnifiedPermission(t *testing.T) {
+	workDir := t.TempDir()
+	runner := &Runner{workDir: workDir, approvalStore: approval.NewStore()}
+	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
+	registry := runner.buildRegistry(Task{ChatID: "chat", Text: "inspect with shell"}, sess)
+
+	result := registry.Execute(context.Background(), schema.ToolCall{
+		ID:        "bad-bash",
+		Name:      "bash",
+		Arguments: mustJSON(t, map[string]string{"command": "echo $("}),
+	})
+	if !result.IsError || !strings.Contains(result.Output, "permission policy") {
+		t.Fatalf("result = %+v, want unified permission denial", result)
+	}
+}
+
+func TestRunnerBuildRegistryAllowsReadOnlyLogSearchWithoutApproval(t *testing.T) {
+	logDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(logDir, "payment.log"), []byte("INFO ok\nERROR timeout\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{workDir: t.TempDir(), logDir: logDir, approvalStore: approval.NewStore()}
+	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
+	registry := runner.buildRegistry(Task{ChatID: "chat", Text: "inspect logs"}, sess)
+
+	result := registry.Execute(context.Background(), schema.ToolCall{
+		ID:        "log-search",
+		Name:      "log_search",
+		Arguments: mustJSON(t, map[string]any{"service": "payment", "query": "timeout", "limit": 5}),
+	})
+	if result.IsError {
+		t.Fatalf("log_search was denied or failed: %+v", result)
+	}
+	if !strings.Contains(result.Output, "ERROR timeout") {
+		t.Fatalf("Output = %q, want matching log line", result.Output)
+	}
+}
+
+func TestRunnerBuildRegistryMarksWritableDelegationNestedPermissionEnforced(t *testing.T) {
+	workDir := t.TempDir()
+	runner := &Runner{workDir: workDir, approvalStore: approval.NewStore()}
+	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
+	registry := runner.buildRegistry(Task{ChatID: "chat", Text: "delegate a fix"}, sess)
+
+	permissionRegistry, ok := registry.(tools.PermissionRegistry)
+	if !ok {
+		t.Fatal("registry does not expose permission assessments")
+	}
+	assessment, found, err := permissionRegistry.AssessPermission(
+		"delegate_task",
+		toolpolicy.Context{Workspace: workDir, CWD: workDir},
+		mustJSON(t, map[string]any{"task": "edit the file", "read_only": false}),
+	)
+	if err != nil {
+		t.Fatalf("AssessPermission() error = %v", err)
+	}
+	if !found {
+		t.Fatal("delegate_task permission assessment not found")
+	}
+	if !assessment.NestedEnforcement || assessment.Behavior != toolpolicy.BehaviorReviewable {
+		t.Fatalf("assessment = %+v, want reviewable delegation with nested enforcement", assessment)
 	}
 }
 
@@ -193,4 +288,13 @@ func TestAgentOpsFireMemoryExtractionSwallowsPanic(t *testing.T) {
 	hooks.FireFunc = func(*session.Session, string, *automemory.Tracker) { panic("boom") }
 	runner := &Runner{}
 	runner.fireMemoryExtraction(hooks, &session.Session{ID: "s"}, "", nil) // must not panic
+}
+
+func mustJSON(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	return data
 }

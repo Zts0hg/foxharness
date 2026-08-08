@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 )
 
 // LogSearchTool is a read-only tool that searches local service log files for
@@ -67,6 +68,42 @@ type logSearchArgs struct {
 	Service string `json:"service"`
 	Query   string `json:"query"`
 	Limit   int    `json:"limit"`
+}
+
+// AssessPermission declares log_search as a read-only AgentOps evidence lookup
+// when its bounded service/query arguments are valid.
+func (t *LogSearchTool) AssessPermission(_ toolpolicy.Context, raw json.RawMessage) (toolpolicy.Assessment, error) {
+	var args logSearchArgs
+	if err := json.Unmarshal(raw, &args); err != nil || strings.TrimSpace(args.Service) == "" || strings.TrimSpace(args.Query) == "" {
+		return toolpolicy.Assessment{
+			Behavior: toolpolicy.BehaviorHumanOnly,
+			Action:   t.Name(),
+			Effects:  []toolpolicy.Effect{toolpolicy.EffectUnknown},
+			Scope:    toolpolicy.ScopeUnknown,
+			RiskHint: toolpolicy.RiskHigh,
+			Reason:   "invalid or missing log search arguments",
+		}, nil
+	}
+	if !validServiceName(args.Service) {
+		return toolpolicy.Assessment{
+			Behavior: toolpolicy.BehaviorHumanOnly,
+			Action:   t.Name() + " " + args.Service,
+			Effects:  []toolpolicy.Effect{toolpolicy.EffectUnknown},
+			Scope:    toolpolicy.ScopeUnknown,
+			RiskHint: toolpolicy.RiskHigh,
+			Reason:   "invalid log service name",
+		}, nil
+	}
+	return toolpolicy.Assessment{
+		Behavior: toolpolicy.BehaviorFastAllow,
+		Action:   t.Name() + " " + args.Service,
+		Effects:  []toolpolicy.Effect{toolpolicy.EffectObserve},
+		Scope:    toolpolicy.ScopeWorkspace,
+		ReadOnly: true,
+		RiskHint: toolpolicy.RiskLow,
+		Reason:   "read-only configured log search",
+		Target:   args.Service,
+	}, nil
 }
 
 // Execute deserialises the arguments, reads the matching log file, and

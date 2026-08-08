@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -303,6 +304,48 @@ func TestDetailedReporterReceivesToolCallIDs(t *testing.T) {
 	want := []string{"call:call-detail:detail_tool", "result:call-detail:call-detail"}
 	if fmt.Sprint(reporter.details) != fmt.Sprint(want) {
 		t.Fatalf("details = %#v, want %#v", reporter.details, want)
+	}
+}
+
+type reporterStructuredFailureTool struct{}
+
+func (t reporterStructuredFailureTool) Name() string { return "reporter_fail" }
+func (t reporterStructuredFailureTool) Definition() schema.ToolDefinition {
+	return schema.ToolDefinition{Name: t.Name(), Description: "reporter failure test"}
+}
+func (t reporterStructuredFailureTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	return "legacy success", nil
+}
+func (t reporterStructuredFailureTool) ExecuteResult(ctx context.Context, args json.RawMessage) (tools.ExecutionResult, error) {
+	return tools.ExecutionResult{Output: "structured failure", Failed: true}, nil
+}
+
+func TestReporterReceivesStructuredToolFailureFlag(t *testing.T) {
+	workDir := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, t.TempDir())
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(reporterStructuredFailureTool{})
+	p := &sequencedProvider{responses: []*provider.GenerateResponse{
+		{Message: &schema.Message{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{{
+			ID:        "call-fail",
+			Name:      "reporter_fail",
+			Arguments: json.RawMessage(`{}`),
+		}}}},
+		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+	}}
+	reporter := &recordingReporter{}
+	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
+
+	if _, err := eng.RunWithReporter(context.Background(), sess, "hello", reporter); err != nil {
+		t.Fatalf("RunWithReporter() error = %v", err)
+	}
+	if !containsString(reporter.events, "tool_result:reporter_fail:true") {
+		t.Fatalf("reporter events = %#v, want failed tool result event", reporter.events)
 	}
 }
 

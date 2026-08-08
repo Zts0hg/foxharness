@@ -159,6 +159,37 @@ func TestBashToolExecuteReportsTruncatedTimedOutOutput(t *testing.T) {
 	}
 }
 
+func TestBashToolExecuteResultMarksNonZeroExitAsFailed(t *testing.T) {
+	tool := NewBashTool(t.TempDir())
+	result, err := tool.ExecuteResult(context.Background(), bashCommandArgs(t, "printf nope; exit 7"))
+	if err != nil {
+		t.Fatalf("ExecuteResult returned error: %v", err)
+	}
+	if !result.Failed {
+		t.Fatalf("Failed = false, want true")
+	}
+	if !strings.Contains(result.Output, "nope") {
+		t.Fatalf("Output = %q, want command output preserved", result.Output)
+	}
+}
+
+func TestBashToolExecuteResultMarksTimeoutAsFailed(t *testing.T) {
+	tool := NewBashTool(t.TempDir())
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	result, err := tool.ExecuteResult(ctx, bashCommandArgs(t, "sleep 1"))
+	if err != nil {
+		t.Fatalf("ExecuteResult returned error: %v", err)
+	}
+	if !result.Failed {
+		t.Fatalf("Failed = false, want true")
+	}
+	if !strings.Contains(result.Output, "命令执行超时") {
+		t.Fatalf("Output = %q, want timeout warning", result.Output)
+	}
+}
+
 func bashCommandArgs(t *testing.T, command string) json.RawMessage {
 	t.Helper()
 

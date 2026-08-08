@@ -32,6 +32,15 @@ func (t *aliasStubTool) Execute(ctx context.Context, args json.RawMessage) (stri
 	return t.out, nil
 }
 
+type structuredResultStubTool struct {
+	aliasStubTool
+	result ExecutionResult
+}
+
+func (t *structuredResultStubTool) ExecuteResult(ctx context.Context, args json.RawMessage) (ExecutionResult, error) {
+	return t.result, nil
+}
+
 // availableToolNames collects the advertised tool names into a set for
 // membership assertions that do not depend on map iteration order.
 func availableToolNames(t *testing.T, r Registry) map[string]bool {
@@ -76,6 +85,35 @@ func TestRegistryUnknownToolStillErrors(t *testing.T) {
 	res := r.Execute(context.Background(), schema.ToolCall{ID: "1", Name: "no_such_tool"})
 	if !res.IsError {
 		t.Fatal("expected error result for an unknown tool name")
+	}
+}
+
+func TestRegistryMapsStructuredFailedResultToToolError(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&structuredResultStubTool{
+		aliasStubTool: aliasStubTool{name: "structured", out: "legacy"},
+		result:        ExecutionResult{Output: "failed but useful", Failed: true},
+	})
+
+	res := r.Execute(context.Background(), schema.ToolCall{ID: "1", Name: "structured", Arguments: json.RawMessage(`{}`)})
+	if !res.IsError {
+		t.Fatalf("IsError = false, want true")
+	}
+	if res.Output != "failed but useful" {
+		t.Fatalf("Output = %q, want structured output", res.Output)
+	}
+}
+
+func TestRegistryKeepsLegacyToolResultBehavior(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&aliasStubTool{name: "legacy", out: "ok"})
+
+	res := r.Execute(context.Background(), schema.ToolCall{ID: "1", Name: "legacy", Arguments: json.RawMessage(`{}`)})
+	if res.IsError {
+		t.Fatalf("IsError = true, want false: %s", res.Output)
+	}
+	if res.Output != "ok" {
+		t.Fatalf("Output = %q, want legacy output", res.Output)
 	}
 }
 

@@ -301,7 +301,7 @@ func replaceLineRange(content string, startLine, endLine int, replacement string
 		replacement += "\n"
 	}
 
-	return content[:start] + replacement + content[endLine:]
+	return content[:start] + replacement + content[end:]
 }
 
 func lineByteRange(content string, startLine, endLine int) (int, int) {
@@ -364,7 +364,7 @@ func replaceByFuzzyLines(content, oldString, newString string) (string, int, flo
 	bestEnd := -1
 
 	for window := minWindow; window <= maxWindow; window++ {
-		for i := 0; i+window < len(lines); i++ {
+		for i := 0; i+window <= len(lines); i++ {
 			candidates := normalizeFuzzyText(strings.Join(lines[i:i+window], "\n"))
 			score := similarity(target, candidates)
 

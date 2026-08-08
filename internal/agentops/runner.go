@@ -1,14 +1,15 @@
 // Package agentops provides an automated incident-analysis agent that receives
 // tasks from team IM (e.g. Feishu), searches local service logs, and runs an
 // LLM-powered engine loop to diagnose root causes and propose fixes. It
-// integrates context compaction, sub-agent delegation, and a danger-action
-// approval middleware so that high-risk operations require human confirmation.
+// integrates context compaction, sub-agent delegation, and unified permission
+// approval so that high-risk operations require human confirmation.
 package agentops
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/automemory"
@@ -16,8 +17,9 @@ import (
 	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/memory"
-	"github.com/Zts0hg/foxharness/internal/middleware"
+	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/subagent"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -33,8 +35,8 @@ type Messenger interface {
 }
 
 // Runner orchestrates a single AgentOps incident-analysis task.  It creates a
-// session, wires up tools (log search, file I/O, bash, sub-agent) with a
-// danger-action approval middleware, and drives the engine loop to completion.
+// session, wires up tools (log search, file I/O, bash, sub-agent) with unified
+// permission approval, and drives the engine loop to completion.
 type Runner struct {
 	provider      provider.LLMProvider
 	workDir       string
@@ -185,6 +187,19 @@ func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *sessi
 
 func (r *Runner) buildRegistry(task Task, sess *session.Session) tools.Registry {
 	registry := tools.NewRegistry()
+	evidenceProvider := agentOpsPermissionEvidenceProvider(sess, BuildPrompt(task))
+	var approver permission.UserApprover
+	if r.messenger != nil && r.approvalStore != nil {
+		approver = approval.NewPermissionApprover(task.ChatID, r.messenger, r.approvalStore)
+	}
+	coordinator := permission.NewCoordinator(permission.Config{
+		State:     permission.NewState(permission.ModeAsk, false),
+		Workspace: r.workDir,
+		CWD:       r.workDir,
+		Source:    permission.SourceMain,
+		Approver:  approver,
+		Evidence:  evidenceProvider,
+	})
 
 	registry.Register(NewLogSearchTool(r.logDir))
 	registry.Register(tools.NewReadFileTool(r.workDir))
@@ -194,11 +209,38 @@ func (r *Runner) buildRegistry(task Task, sess *session.Session) tools.Registry 
 	registry.Register(tools.NewReadTodoTool(sess.RootDir))
 	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
 
-	approver := approval.NewFeishuApprover(task.ChatID, r.messenger, r.approvalStore)
-	registry.Use(middleware.NewDangerMiddleware(approver))
-
-	subManager := subagent.NewManager(r.provider, r.workDir)
+	subManager := subagent.NewManager(r.provider, r.workDir).
+		WithPermission(coordinator).
+		WithParentEvidence(evidenceProvider)
 	registry.Register(subagent.NewTool(subManager, sess.ID))
 
-	return registry
+	return permission.DecorateRegistry(registry, coordinator, evidenceProvider)
+}
+
+func agentOpsPermissionEvidenceProvider(sess *session.Session, currentPrompt string) permission.EvidenceProvider {
+	return func(request permission.Request) permission.Evidence {
+		var messages []schema.Message
+		if sess != nil {
+			records, err := session.NewMessageLog(sess).LoadRecords()
+			if err == nil {
+				messages = make([]schema.Message, 0, len(records)+1)
+				for _, record := range records {
+					messages = append(messages, record.Message)
+				}
+			}
+		}
+		if strings.TrimSpace(currentPrompt) != "" && !agentOpsContainsDirectUserMessage(messages, currentPrompt) {
+			messages = append(messages, schema.Message{Role: schema.RoleUser, Content: currentPrompt})
+		}
+		return permission.BuildEvidence(messages, nil, request)
+	}
+}
+
+func agentOpsContainsDirectUserMessage(messages []schema.Message, content string) bool {
+	for _, message := range messages {
+		if message.Role == schema.RoleUser && message.ToolCallID == "" && message.Content == content {
+			return true
+		}
+	}
+	return false
 }
