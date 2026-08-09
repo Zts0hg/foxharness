@@ -553,40 +553,46 @@ func TestDVFEI008SelectedModelSnapshotConfiguresEngineAndCompactor(t *testing.T)
 	}
 }
 
-func TestDVFEI009PanicRecoveryEmitsNoTerminalReply(t *testing.T) {
-	httpClient := &countingHTTPClient{err: errors.New("unexpected delivery")}
+func TestDVFEI009PanicRecoveryEmitsOneOutcomeAndBoundedTerminalReply(t *testing.T) {
+	httpClient := &countingHTTPClient{
+		contextErrors:    make(chan error, 1),
+		contextDeadlines: make(chan bool, 1),
+	}
+	observer := &recordingTaskOutcomeObserver{}
+	afterStarted := make(chan struct{})
 	runner := &Runner{
-		messenger: newTestMessenger(httpClient),
+		messenger:           newTestMessenger(httpClient),
+		taskOutcomeObserver: observer,
 		runTask: func(_ context.Context, task Task) {
 			if task.TaskID == "panic" {
 				panic("task panic")
 			}
+			close(afterStarted)
 		},
 		maxConcurrentTasks: 1,
 	}
 	tasks := make(chan Task, 2)
-	tasks <- Task{TaskID: "panic", ChatID: "chat"}
-	tasks <- Task{TaskID: "after", ChatID: "chat"}
+	tasks <- Task{TaskID: "panic", ChatID: "chat", SenderID: "sender"}
+	tasks <- Task{TaskID: "after", ChatID: "chat", SenderID: "sender"}
 	close(tasks)
 
-	var logs bytes.Buffer
-	logWritten := make(chan struct{}, 1)
-	oldWriter := log.Writer()
-	log.SetOutput(io.MultiWriter(&logs, writerFunc(func(data []byte) (int, error) {
-		select {
-		case logWritten <- struct{}{}:
-		default:
-		}
-		return len(data), nil
-	})))
-	t.Cleanup(func() { log.SetOutput(oldWriter) })
 	runner.Start(context.Background(), tasks)
-	<-logWritten
-	if !strings.Contains(logs.String(), "panic recovered") {
-		t.Fatalf("panic log missing: %s", logs.String())
+	<-afterStarted
+	outcomes := observer.snapshot()
+	if len(outcomes) != 1 {
+		t.Fatalf("task outcomes = %#v, want exactly one", outcomes)
 	}
-	if calls := httpClient.calls.Load(); calls != 0 {
-		t.Fatalf("panic recovery sent %d terminal messages, want current zero", calls)
+	if outcome := outcomes[0]; outcome.TaskID != "panic" || outcome.ChatID != "chat" || outcome.Status != TaskOutcomeFailed || !strings.Contains(outcome.Error, "task panic") {
+		t.Fatalf("panic outcome = %#v", outcome)
+	}
+	if calls := httpClient.calls.Load(); calls != 1 {
+		t.Fatalf("panic terminal delivery calls = %d, want one", calls)
+	}
+	if contextErr := <-httpClient.contextErrors; contextErr != nil {
+		t.Fatalf("panic terminal delivery context error = %v, want fresh bounded context", contextErr)
+	}
+	if hasDeadline := <-httpClient.contextDeadlines; !hasDeadline {
+		t.Fatal("panic terminal delivery context has no deadline")
 	}
 }
 
@@ -704,8 +710,10 @@ func (p *rotatingNamedProvider) ModelName() string {
 func (*rotatingNamedProvider) ProviderProtocol() string { return "scripted" }
 
 type countingHTTPClient struct {
-	calls atomic.Int32
-	err   error
+	calls            atomic.Int32
+	err              error
+	contextErrors    chan error
+	contextDeadlines chan bool
 }
 
 type countingDeliveryStore struct {
@@ -723,12 +731,40 @@ type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(data []byte) (int, error) { return f(data) }
 
-func (c *countingHTTPClient) Do(*http.Request) (*http.Response, error) {
+func (c *countingHTTPClient) Do(request *http.Request) (*http.Response, error) {
 	c.calls.Add(1)
+	if c.contextErrors != nil {
+		c.contextErrors <- request.Context().Err()
+	}
+	if c.contextDeadlines != nil {
+		_, hasDeadline := request.Context().Deadline()
+		c.contextDeadlines <- hasDeadline
+	}
 	if c.err != nil {
 		return nil, c.err
 	}
-	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"code":0}`))}, nil
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"code":0}`)),
+	}, nil
+}
+
+type recordingTaskOutcomeObserver struct {
+	mu       sync.Mutex
+	outcomes []TaskOutcome
+}
+
+func (o *recordingTaskOutcomeObserver) ObserveTaskOutcome(outcome TaskOutcome) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.outcomes = append(o.outcomes, outcome)
+}
+
+func (o *recordingTaskOutcomeObserver) snapshot() []TaskOutcome {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]TaskOutcome(nil), o.outcomes...)
 }
 
 func newTestMessenger(client *countingHTTPClient) *Messenger {

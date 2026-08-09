@@ -148,3 +148,13 @@
 - **Green implementation**: Runner snapshots provider protocol and selected model once at task start, applies the same immutable value to `engine.Config` and `CompactionConfig`, and then constructs both collaborators. Explicit engine model metadata prevents a second dynamic provider read; compactor resolves known-model context windows from that same value.
 - **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu ./internal/engine ./internal/compaction -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu -run '^TestDVFEI008' -count=1 -v`.
 - **Green result**: PASS; `DV-FEI-008` is corrected with one rotating-provider metadata read and matching engine/compactor configuration.
+
+## T082 / D-FEI-009: Correlated Panic Outcome and Terminal Delivery
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu -run '^TestDVFEI009' -count=1`
+- **Compile Red result**: The desired test could not compile because Feishu defined neither `TaskOutcome` nor an outcome observer boundary.
+- **Behavior Red command**: The same focused command after adding only the outcome contract and Runner injection point.
+- **Behavior Red result**: Existing recovery logged the panic but emitted zero task outcomes and made no terminal delivery attempt.
+- **Green implementation**: Scheduler recovery now cancels the task context after stack cleanup, emits one failed `TaskOutcome` correlated by task/chat through a non-blocking observer contract, and attempts one bounded failure notification using a fresh background-derived context rather than the cancelled task context. Observer panic and transport failure cannot prevent scheduler completion; production Runner defaults to a logging task-outcome observer.
+- **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -count=1`, `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu -run '^TestDVFEI009' -count=1 -v`, and `env GOCACHE=/tmp/fox-go-build-cache go vet ./internal/feishu ./cmd/feishu`.
+- **Green result**: PASS; `DV-FEI-009` is corrected with exactly one outcome, one deadline-bearing successful terminal delivery fixture, and verified successor execution.

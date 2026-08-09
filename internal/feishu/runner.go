@@ -35,18 +35,20 @@ type Runner struct {
 	locksMu        sync.Mutex
 	locks          map[string]*sessionLock
 
-	maxConcurrentTasks int
-	taskTimeout        time.Duration
-	lockTTL            time.Duration
-	clock              func() time.Time
-	newTaskContext     func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	runTask            func(context.Context, Task)
+	maxConcurrentTasks  int
+	taskTimeout         time.Duration
+	lockTTL             time.Duration
+	clock               func() time.Time
+	newTaskContext      func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	runTask             func(context.Context, Task)
+	taskOutcomeObserver TaskOutcomeObserver
 }
 
 const (
-	defaultMaxConcurrentTasks = 4
-	defaultTaskTimeout        = 5 * time.Minute
-	defaultSessionLockTTL     = 30 * time.Minute
+	defaultMaxConcurrentTasks  = 4
+	defaultTaskTimeout         = 5 * time.Minute
+	defaultSessionLockTTL      = 30 * time.Minute
+	defaultTerminalSendTimeout = 10 * time.Second
 )
 
 type sessionLock struct {
@@ -66,16 +68,17 @@ func NewRunner(
 	approvalStore *approval.Store,
 ) *Runner {
 	return &Runner{
-		provider:           provider,
-		workDir:            workDir,
-		messenger:          messenger,
-		sessionManager:     sessionManager,
-		approvalStore:      approvalStore,
-		locks:              make(map[string]*sessionLock),
-		maxConcurrentTasks: defaultMaxConcurrentTasks,
-		taskTimeout:        defaultTaskTimeout,
-		lockTTL:            defaultSessionLockTTL,
-		clock:              time.Now,
+		provider:            provider,
+		workDir:             workDir,
+		messenger:           messenger,
+		sessionManager:      sessionManager,
+		approvalStore:       approvalStore,
+		locks:               make(map[string]*sessionLock),
+		maxConcurrentTasks:  defaultMaxConcurrentTasks,
+		taskTimeout:         defaultTaskTimeout,
+		lockTTL:             defaultSessionLockTTL,
+		clock:               time.Now,
+		taskOutcomeObserver: loggingTaskOutcomeObserver{},
 	}
 }
 
@@ -362,6 +365,37 @@ func (r *Runner) acceptedTaskContext(parent context.Context) (context.Context, c
 		return r.newTaskContext(parent, r.taskTimeoutOrDefault())
 	}
 	return context.WithTimeout(parent, r.taskTimeoutOrDefault())
+}
+
+func (r *Runner) handleTaskPanic(task Task, recovered any) {
+	cause := fmt.Sprintf("panic recovered: %v", recovered)
+	r.observeTaskOutcome(TaskOutcome{
+		TaskID: task.TaskID,
+		ChatID: task.ChatID,
+		Status: TaskOutcomeFailed,
+		Error:  cause,
+	})
+	if r.messenger == nil {
+		return
+	}
+	deliveryCtx, cancel := context.WithTimeout(context.Background(), defaultTerminalSendTimeout)
+	defer cancel()
+	message := fmt.Sprintf("任务 %s 执行失败：内部错误。", task.TaskID)
+	if err := r.messenger.SendText(deliveryCtx, task.ChatID, message); err != nil {
+		log.Printf("[Feishu Runner] task=%s panic terminal delivery failed: %v", task.TaskID, err)
+	}
+}
+
+func (r *Runner) observeTaskOutcome(outcome TaskOutcome) {
+	if r.taskOutcomeObserver == nil {
+		return
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("[Feishu Runner] task=%s outcome observer panic recovered: %v", outcome.TaskID, recovered)
+		}
+	}()
+	r.taskOutcomeObserver.ObserveTaskOutcome(outcome)
 }
 
 func (r *Runner) acquireSessionLock(ctx context.Context, key string) (func(), error) {

@@ -89,7 +89,7 @@ func (s *taskScheduler) run(key string, task *scheduledTask) {
 	defer func() {
 		task.cancel()
 		if rec := recover(); rec != nil {
-			log.Printf("[Feishu Runner] task=%s panic recovered: %v", task.task.TaskID, rec)
+			s.runner.handleTaskPanic(task.task, rec)
 		}
 		s.completed <- key
 	}()
