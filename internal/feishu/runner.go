@@ -127,6 +127,7 @@ func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 func (r *Runner) runOne(ctx context.Context, task Task) {
 	runCtx, cancel := context.WithTimeout(ctx, r.taskTimeoutOrDefault())
 	defer cancel()
+	providerMetadata := snapshotTaskProviderMetadata(r.provider)
 
 	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("已收到任务 %s，开始执行。", task.TaskID))
 
@@ -164,18 +165,20 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	registry := r.buildRegistry(sess, task.ChatID, taskPrompt)
 
 	composer := r.buildComposer(sess, autoStore)
+	engineConfig := engine.Config{
+		EnableThinking: false,
+		MaxTurns:       20,
+		OnToolCalled:   hooks.RecordCallback(tracker),
+	}
+	compCfg := compaction.DefaultCompactionConfig()
+	providerMetadata.apply(&engineConfig, &compCfg)
 	eng := engine.NewAgentEngine(
 		r.provider,
 		registry,
 		r.workDir,
 		composer,
-		engine.Config{
-			EnableThinking: false,
-			MaxTurns:       20,
-			OnToolCalled:   hooks.RecordCallback(tracker),
-		},
+		engineConfig,
 	)
-	compCfg := compaction.DefaultCompactionConfig()
 	compCfg.SessionDir = sess.RootDir
 	compCfg.TranscriptPath = sess.TranscriptPath()
 	compactor, err := compaction.NewCompactor(r.provider, compCfg)

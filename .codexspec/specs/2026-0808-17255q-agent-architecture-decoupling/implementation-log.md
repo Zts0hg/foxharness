@@ -138,3 +138,13 @@
 - **Green implementation**: Replaced result-channel capacity as authority with a mutex-arbitrated pending record. The first resolution atomically stores its result and closes one completion signal; duplicates while claimed return `ErrConflict`; cancellation, timeout, send failure, and resolved Wait completion remove the record so unknown/late attempts return `ErrNotFound`. Resolve-vs-cancel/timeout races linearize under the same mutex. Gateway maps conflict to 409 and not-found to 404 after authentication.
 - **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/approval ./internal/feishu ./cmd/feishu -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/approval ./internal/feishu -run 'TestStoreConcurrentResolveHasExactlyOneWinner|TestDVFEI007' -count=1 -v`.
 - **Green result**: PASS; `DV-FEI-007` is corrected, including deterministic timeout injection and a 32-resolver one-winner race proof.
+
+## T081 / D-FEI-008: Frozen Provider Model Snapshot
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu -run '^TestDVFEI008' -count=1`
+- **Compile Red result**: The desired test could not compile because Feishu had no task-scoped provider metadata snapshot boundary.
+- **Behavior Red command**: The same focused command after adding snapshot and engine-only application.
+- **Behavior Red result**: Engine received `claude-4-sonnet` while compactor model remained empty, reproducing the configuration divergence.
+- **Green implementation**: Runner snapshots provider protocol and selected model once at task start, applies the same immutable value to `engine.Config` and `CompactionConfig`, and then constructs both collaborators. Explicit engine model metadata prevents a second dynamic provider read; compactor resolves known-model context windows from that same value.
+- **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu ./internal/engine ./internal/compaction -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu -run '^TestDVFEI008' -count=1 -v`.
+- **Green result**: PASS; `DV-FEI-008` is corrected with one rotating-provider metadata read and matching engine/compactor configuration.

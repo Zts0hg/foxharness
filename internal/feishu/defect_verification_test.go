@@ -21,6 +21,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/compaction"
+	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
@@ -526,21 +527,29 @@ func TestDVFEI007ApprovalCallbackMapsConflictAndNotFound(t *testing.T) {
 	}
 }
 
-func TestDVFEI008CompactorFallsBackInsteadOfUsingProviderModel(t *testing.T) {
-	providerWithModel := namedProvider{model: "claude-4-sonnet"}
-	config := compaction.DefaultCompactionConfig()
-	compactor, err := compaction.NewCompactor(providerWithModel, config)
+func TestDVFEI008SelectedModelSnapshotConfiguresEngineAndCompactor(t *testing.T) {
+	providerWithModel := &rotatingNamedProvider{}
+	metadata := snapshotTaskProviderMetadata(providerWithModel)
+	engineConfig := engine.Config{}
+	compactionConfig := compaction.DefaultCompactionConfig()
+	metadata.apply(&engineConfig, &compactionConfig)
+	if calls := providerWithModel.modelCalls.Load(); calls != 1 {
+		t.Fatalf("ModelName() calls = %d, want one frozen read", calls)
+	}
+	if engineConfig.Model != "claude-4-sonnet" || compactionConfig.Model != engineConfig.Model {
+		t.Fatalf("model snapshot = engine %q, compactor %q", engineConfig.Model, compactionConfig.Model)
+	}
+	if engineConfig.ProviderProtocol != "scripted" {
+		t.Fatalf("provider protocol = %q, want scripted", engineConfig.ProviderProtocol)
+	}
+
+	compactor, err := compaction.NewCompactor(providerWithModel, compactionConfig)
 	if err != nil {
 		t.Fatalf("NewCompactor() error = %v", err)
 	}
-	selectedWindow := compaction.NewModelRegistry().Lookup(providerWithModel.model)
-	if compactor.ContextWindow() != compaction.DefaultContextWindow || compactor.ContextWindow() == selectedWindow {
-		t.Fatalf("current compactor window = %d, selected model window = %d", compactor.ContextWindow(), selectedWindow)
-	}
-
-	source := readPackageSource(t, "runner.go")
-	if strings.Contains(source, "compCfg.Model =") {
-		t.Fatal("runner now propagates compactor model; update DV-FEI-008 classification")
+	selectedWindow := compaction.NewModelRegistry().Lookup(engineConfig.Model)
+	if compactor.ContextWindow() != selectedWindow || compactor.ContextWindow() == compaction.DefaultContextWindow {
+		t.Fatalf("compactor window = %d, selected model window = %d", compactor.ContextWindow(), selectedWindow)
 	}
 }
 
@@ -677,14 +686,22 @@ func waitForLockRefs(t *testing.T, runner *Runner, key string, want int) {
 	t.Fatalf("session lock refs did not reach %d", want)
 }
 
-type namedProvider struct{ model string }
+type rotatingNamedProvider struct {
+	modelCalls atomic.Int32
+}
 
-func (p namedProvider) Generate(context.Context, []schema.Message, []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+func (*rotatingNamedProvider) Generate(context.Context, []schema.Message, []schema.ToolDefinition) (*provider.GenerateResponse, error) {
 	return nil, errors.New("not called")
 }
 
-func (p namedProvider) ModelName() string      { return p.model }
-func (namedProvider) ProviderProtocol() string { return "scripted" }
+func (p *rotatingNamedProvider) ModelName() string {
+	if p.modelCalls.Add(1) == 1 {
+		return "claude-4-sonnet"
+	}
+	return "unknown-later-model"
+}
+
+func (*rotatingNamedProvider) ProviderProtocol() string { return "scripted" }
 
 type countingHTTPClient struct {
 	calls atomic.Int32
