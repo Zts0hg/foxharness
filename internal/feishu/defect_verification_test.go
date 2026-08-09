@@ -425,10 +425,13 @@ func TestDVFEI006RunnerCancelsQueuedAndInflightTasksBeforeReturning(t *testing.T
 	}
 }
 
-func TestDVFEI007DuplicateApprovalCanBlockAndResolveTwice(t *testing.T) {
+func TestDVFEI007ApprovalResolutionIsNonBlockingAndExactlyOnce(t *testing.T) {
 	store := approval.NewStore()
 	sendEntered := make(chan struct{})
 	releaseSend := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseSend) }) }
+	t.Cleanup(release)
 	waitResult := make(chan approval.Result, 1)
 	go func() {
 		result, _ := store.Wait(context.Background(), approval.Request{ID: "approval-1"}, func(approval.Request) error {
@@ -445,25 +448,81 @@ func TestDVFEI007DuplicateApprovalCanBlockAndResolveTwice(t *testing.T) {
 	secondStarted := make(chan struct{})
 	secondReturned := make(chan error, 1)
 	go func() {
-		close(secondStarted)
 		secondReturned <- store.Resolve("approval-1", approval.Result{Reason: "duplicate"})
+		close(secondStarted)
 	}()
-	<-secondStarted
 	select {
 	case err := <-secondReturned:
-		t.Fatalf("duplicate Resolve() returned before the first result drained: %v", err)
-	default:
+		if !errors.Is(err, approval.ErrConflict) {
+			t.Fatalf("duplicate Resolve() error = %v, want ErrConflict", err)
+		}
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("duplicate Resolve() blocked behind the first result")
 	}
+	<-secondStarted
 
-	close(releaseSend)
+	release()
 	if result := <-waitResult; result.Reason != "first" {
 		t.Fatalf("Wait() result = %#v", result)
 	}
-	if err := <-secondReturned; err != nil {
-		t.Fatalf("duplicate Resolve() error after unblock = %v, want current second success", err)
+	if err := store.Resolve("approval-1", approval.Result{}); !errors.Is(err, approval.ErrNotFound) {
+		t.Fatalf("late Resolve() error = %v, want ErrNotFound", err)
 	}
-	if err := store.Resolve("approval-1", approval.Result{}); err == nil {
-		t.Fatal("late Resolve() error = nil, want removed pending request")
+}
+
+func TestDVFEI007CancelledApprovalCannotResolveLater(t *testing.T) {
+	store := approval.NewStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	sent := make(chan struct{})
+	waitResult := make(chan error, 1)
+	go func() {
+		_, err := store.Wait(ctx, approval.Request{ID: "approval-cancelled"}, func(approval.Request) error {
+			close(sent)
+			return nil
+		})
+		waitResult <- err
+	}()
+	<-sent
+	cancel()
+	if err := <-waitResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait() error = %v, want context.Canceled", err)
+	}
+	if err := store.Resolve("approval-cancelled", approval.Result{Approved: true}); !errors.Is(err, approval.ErrNotFound) {
+		t.Fatalf("post-cancellation Resolve() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDVFEI007ApprovalCallbackMapsConflictAndNotFound(t *testing.T) {
+	store := approval.NewStore()
+	releaseSend := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseSend) }) }
+	t.Cleanup(release)
+	sent := make(chan struct{})
+	waitDone := make(chan struct{})
+	go func() {
+		_, _ = store.Wait(context.Background(), approval.Request{ID: "approval-http"}, func(approval.Request) error {
+			close(sent)
+			<-releaseSend
+			return nil
+		})
+		close(waitDone)
+	}()
+	<-sent
+	handler := NewGateway("token", "", make(chan Task), store).Server(":0").Handler
+	first := postApprovalCallback(handler, "token", `{"approval_id":"approval-http","approved":true}`)
+	if first.Code != http.StatusNoContent {
+		t.Fatalf("first callback status = %d, want 204", first.Code)
+	}
+	duplicate := postApprovalCallback(handler, "token", `{"approval_id":"approval-http","approved":false}`)
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate callback status = %d, want 409", duplicate.Code)
+	}
+	release()
+	<-waitDone
+	late := postApprovalCallback(handler, "token", `{"approval_id":"approval-http","approved":false}`)
+	if late.Code != http.StatusNotFound {
+		t.Fatalf("late callback status = %d, want 404", late.Code)
 	}
 }
 

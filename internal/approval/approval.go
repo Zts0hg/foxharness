@@ -7,9 +7,17 @@ package approval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
+)
+
+var (
+	/* ErrNotFound reports an approval ID that is unknown or no longer pending. */
+	ErrNotFound = errors.New("approval request not found")
+	/* ErrConflict reports a duplicate resolution while the first result is claimed. */
+	ErrConflict = errors.New("approval request already resolved")
 )
 
 // Request represents a pending approval for a dangerous tool invocation.  It
@@ -28,18 +36,25 @@ type Result struct {
 	Reason   string
 }
 
-// Store is a concurrency-safe registry of pending approval requests.  Each
-// request is identified by a unique ID and backed by a buffered channel that
-// is closed when the request is resolved or expires.
+// Store is a concurrency-safe registry of pending approval requests. Each
+// request is identified by a unique ID and has one mutex-arbitrated terminal
+// transition before its waiter removes the record.
 type Store struct {
-	mu      sync.Mutex
-	waiting map[string]chan Result
+	mu         sync.Mutex
+	waiting    map[string]*pendingApproval
+	newTimeout func() (<-chan time.Time, func())
+}
+
+type pendingApproval struct {
+	done     chan struct{}
+	result   Result
+	resolved bool
 }
 
 // NewStore creates an empty Store ready to track approval requests.
 func NewStore() *Store {
 	return &Store{
-		waiting: make(map[string]chan Result),
+		waiting: make(map[string]*pendingApproval),
 	}
 }
 
@@ -48,31 +63,32 @@ func NewStore() *Store {
 // request, the 5-minute timeout expires (returns denied), or ctx is
 // cancelled.
 func (s *Store) Wait(ctx context.Context, req Request, send func(Request) error) (Result, error) {
-	ch := make(chan Result, 1)
-	s.mu.Lock()
-	s.waiting[req.ID] = ch
-	s.mu.Unlock()
-
-	defer func() {
-		s.mu.Lock()
-		delete(s.waiting, req.ID)
-		s.mu.Unlock()
-	}()
-
-	if err := send(req); err != nil {
+	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
+	pending := &pendingApproval{done: make(chan struct{})}
+	s.mu.Lock()
+	if _, exists := s.waiting[req.ID]; exists {
+		s.mu.Unlock()
+		return Result{}, fmt.Errorf("%w: %s", ErrConflict, req.ID)
+	}
+	s.waiting[req.ID] = pending
+	s.mu.Unlock()
 
-	timeout := time.NewTimer(5 * time.Minute)
-	defer timeout.Stop()
+	if err := send(req); err != nil {
+		return s.finishWait(req.ID, pending, Result{}, err)
+	}
+
+	timeout, stopTimeout := s.timeoutSignal()
+	defer stopTimeout()
 
 	select {
-	case result := <-ch:
-		return result, nil
-	case <-timeout.C:
-		return Result{Approved: false, Reason: "审批超时"}, nil
+	case <-pending.done:
+		return s.finishWait(req.ID, pending, Result{}, nil)
+	case <-timeout:
+		return s.finishWait(req.ID, pending, Result{Approved: false, Reason: "审批超时"}, nil)
 	case <-ctx.Done():
-		return Result{}, ctx.Err()
+		return s.finishWait(req.ID, pending, Result{}, ctx.Err())
 	}
 }
 
@@ -81,13 +97,38 @@ func (s *Store) Wait(ctx context.Context, req Request, send func(Request) error)
 // exists for the ID.
 func (s *Store) Resolve(id string, result Result) error {
 	s.mu.Lock()
-	ch, ok := s.waiting[id]
-	s.mu.Unlock()
-
+	defer s.mu.Unlock()
+	pending, ok := s.waiting[id]
 	if !ok {
-		return fmt.Errorf("审批请求不存在或已过期: %s", id)
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-
-	ch <- result
+	if pending.resolved {
+		return fmt.Errorf("%w: %s", ErrConflict, id)
+	}
+	pending.result = result
+	pending.resolved = true
+	close(pending.done)
 	return nil
+}
+
+func (s *Store) finishWait(id string, pending *pendingApproval, fallback Result, fallbackErr error) (Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.waiting[id]
+	if !ok || current != pending {
+		return fallback, fallbackErr
+	}
+	delete(s.waiting, id)
+	if pending.resolved {
+		return pending.result, nil
+	}
+	return fallback, fallbackErr
+}
+
+func (s *Store) timeoutSignal() (<-chan time.Time, func()) {
+	if s.newTimeout != nil {
+		return s.newTimeout()
+	}
+	timer := time.NewTimer(5 * time.Minute)
+	return timer.C, func() { timer.Stop() }
 }

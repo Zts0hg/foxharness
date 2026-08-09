@@ -128,3 +128,13 @@
 - **Green implementation**: Runner now stops acceptance and drains queued/active work on ordinary channel closure; process cancellation stops acceptance, explicitly cancels queued and active task contexts, and waits for active completion. The production entry uses `signal.NotifyContext` and a testable `serve` composition that shuts down and confirms the HTTP listener first, then closes task intake, cancels Runner work, and waits for listener/Runner completion within one explicit deadline. If listener termination times out, it does not close the still-reachable task channel.
 - **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu ./cmd/feishu -run '^TestDVFEI006' -count=1 -v`.
 - **Green result**: PASS; `DV-FEI-006` is corrected. Approval terminal-state semantics remain isolated to T080.
+
+## T080 / D-FEI-007: Non-Blocking Exactly-Once Approval Resolution
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/approval ./internal/feishu -run 'TestDVFEI007|TestStoreTimeoutRemovesPendingRequest' -count=1`
+- **Compile Red result**: The desired tests could not compile because Store exposed neither typed not-found/conflict errors nor an injectable timeout signal.
+- **Behavior Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu -run '^TestDVFEI007ApprovalResolutionIsNonBlockingAndExactlyOnce$' -count=1`
+- **Behavior Red result**: A duplicate `Resolve` remained blocked behind the first buffered result for the bounded 50-ms observation window.
+- **Green implementation**: Replaced result-channel capacity as authority with a mutex-arbitrated pending record. The first resolution atomically stores its result and closes one completion signal; duplicates while claimed return `ErrConflict`; cancellation, timeout, send failure, and resolved Wait completion remove the record so unknown/late attempts return `ErrNotFound`. Resolve-vs-cancel/timeout races linearize under the same mutex. Gateway maps conflict to 409 and not-found to 404 after authentication.
+- **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/approval ./internal/feishu ./cmd/feishu -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/approval ./internal/feishu -run 'TestStoreConcurrentResolveHasExactlyOneWinner|TestDVFEI007' -count=1 -v`.
+- **Green result**: PASS; `DV-FEI-007` is corrected, including deterministic timeout injection and a 32-resolver one-winner race proof.

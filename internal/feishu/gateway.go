@@ -167,6 +167,10 @@ func (g *Gateway) handleApprovalCallback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := g.OnApprovalCallback(request.ApprovalID, request.Approved, request.Reason); err != nil {
+		if errors.Is(err, approval.ErrConflict) {
+			http.Error(w, "approval request already resolved", http.StatusConflict)
+			return
+		}
 		http.Error(w, "approval request not found", http.StatusNotFound)
 		return
 	}
