@@ -551,6 +551,24 @@ quotes needed to resolve later interpretation disputes.
 - **Reason**: Bottom-up movement follows dependency direction and establishes stable data and execution contracts before stateful consumers move. Shared old/new black-box scenarios make each profile cutover observable, while profile-atomic commits avoid half-migrated entry points and preserve reliable review, bisection, and rollback.
 - **User Evidence**: The user explicitly confirmed the proposed baseline freeze, `M01` through `M27` production migration order, independent commit boundaries, profile-atomic cutover rule, decreasing architecture allowlist, and final compatibility gate.
 
+### DEC-042: Proven Feishu defects are corrected before baseline freeze
+
+- **Status**: confirmed
+- **Decision**: The executable T040 proofs classified `DV-FEI-001` through `DV-FEI-010` as pre-existing defects. They MUST be corrected before T041 and before immutable fixture generation. Each correction MUST follow Red-Green-Refactor, retain its trace evidence, and land as an independently Green defect-focused commit rather than as architecture refactoring.
+- **DV-FEI-001 correction**: `Gateway.Server` MUST expose `POST /webhook/approval`. It MUST authenticate `Authorization: Bearer <verification token>` using constant-time comparison, accept only bounded JSON containing `approval_id`, `approved`, and optional `reason`, call the shared approval store, and return deterministic `204`, `400`, `401`, `404`, or `409` outcomes without exposing approval existence to unauthenticated callers.
+- **DV-FEI-002 correction**: Production message acceptance MUST use a project-independent user-state file as a durable at-most-once idempotency authority keyed by non-empty Feishu `message_id`. Reservation and persistence MUST be atomic and concurrency-safe. Sequential, concurrent, post-completion, and post-restart duplicates MUST be acknowledged successfully without enqueueing another task. A persistence or enqueue failure MUST be observable and MUST roll back the reservation when the process remains alive. This correction does not claim distributed exactly-once execution after an unclean crash between an external side effect and local terminal persistence.
+- **DV-FEI-003 correction**: A message lacking a non-empty sender open ID MUST be acknowledged to Feishu but rejected before task construction, durable idempotency reservation, session lookup, or enqueue. The validation failure MUST be locally observable without causing retry amplification.
+- **DV-FEI-004 correction**: The task timeout MUST begin when the Runner accepts a task, include all same-session queue or lock waiting, and prevent an expired or cancelled task from beginning execution later. Cancellation while waiting MUST release all queue/lock references and produce one correlated terminal outcome.
+- **DV-FEI-005 correction**: Runner scheduling MUST preserve FIFO order per `(chat_id, sender_id)` session key. Waiting tasks MUST NOT consume global execution permits. A runnable task from another session may use available capacity, and completion of one session head MUST make only that session's next head eligible.
+- **DV-FEI-006 correction**: Shutdown MUST stop HTTP intake first, then stop task acceptance, drain accepted work on ordinary channel closure, and cancel queued/in-flight work on process cancellation into one correlated terminal state. `cmd/feishu` MUST use signal-aware context, call HTTP shutdown, close the task channel only after intake stops, and wait for Runner completion subject to an explicit shutdown deadline.
+- **DV-FEI-007 correction**: Approval resolution MUST be non-blocking and exactly once. The first valid resolution atomically claims the pending request; duplicate or concurrent resolution returns conflict immediately; unknown, late, expired, or cancelled IDs return not found; cancellation and timeout remove pending state without permitting a later success.
+- **DV-FEI-008 correction**: Feishu MUST freeze the selected provider model once per task and pass the same model snapshot to engine metadata and `CompactionConfig.Model`; known models MUST use their registered context window instead of the fallback.
+- **DV-FEI-009 correction**: A recovered task panic MUST release scheduling and run-scoped resources and emit exactly one correlated failed `TaskOutcome`. The Runner MUST attempt one bounded terminal failure delivery without using an already-cancelled task context; failure of that delivery is handled by the delivery-outcome rule rather than hidden.
+- **DV-FEI-010 correction**: Receipt, session, lifecycle, final, ordinary-failure, panic-failure, and cancellation delivery errors MUST be captured as typed delivery failures associated with task, chat, stage, and cause. Runner and Reporter MUST report them to an injected non-blocking outcome observer; the production composition root MUST observe and log them. User-visible text remains bounded before transport invocation. A failed transport cannot be represented as a successful user delivery.
+- **Alternatives Rejected**: An unauthenticated approval callback; process-local duplicate suppression; empty-sender fallback identity; mutex waiting outside timeout; global permits acquired before per-session eligibility; fire-and-forget shutdown; blocking duplicate approval sends; implicit 128K compaction fallback; panic-only logging; and silently ignored delivery errors.
+- **Reason**: These corrections establish the safe post-fix behavior that the refactor must preserve while keeping transport, scheduling, approval, and delivery concerns outside the future core engine.
+- **User Evidence**: After T040 proved all ten defects, the user explicitly confirmed the recommended correction principles: durable message idempotency, missing-sender rejection, context-aware FIFO session scheduling, coordinated shutdown and drain, non-blocking exactly-once approval, selected-model compaction, correlated panic terminal outcomes, and typed observable delivery failures.
+
 ## Confirmed Production Migration Sequence and Commit Boundaries
 
 This is the authoritative production migration order after NEED-007's complete Phase 0 gate. It is a controlled strangler migration inside one integration branch: the target implementation is proven through shared contracts while unmigrated profiles continue using the current production path. Parallel old and target implementations are permitted only through test adapters; each product profile has exactly one production path at every commit.
@@ -1298,6 +1316,13 @@ The profile names below describe required behavior bundles. Shared implementatio
 - **User Confirmation**: The user explicitly confirmed the proposed robust, testable, and traceable production-module migration sequence and commit boundaries.
 - **Entries Confirmed**: DEC-041
 - **Open Questions Resolved**: OPEN-003
+
+### Session 2026-08-09 21:31 +0800
+
+- **Summary Presented**: T040 executable proofs established every `DV-FEI-001` through `DV-FEI-010` risk as a pre-existing defect. The proposed corrections provide an authenticated approval callback, durable at-most-once message acceptance, missing-sender rejection, acceptance-scoped cancellation and timeout, per-session FIFO scheduling without permit starvation, coordinated shutdown, non-blocking exactly-once approval resolution, frozen compactor model propagation, correlated panic failure, and typed delivery-failure observation.
+- **User Confirmation**: The user explicitly confirmed the proposed Feishu correction principles and authorized the separate TDD defect-correction workflow before continuing automatically.
+- **Entries Confirmed**: DEC-042
+- **Entries Amended**: CON-005
 
 ## Appendix A: Scenario Prefix Glossary
 
