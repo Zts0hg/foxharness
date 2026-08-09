@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/compaction"
@@ -26,9 +27,9 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
-// These tests record proven pre-existing defects. They intentionally assert
-// current behavior so the verification gate remains executable before a
-// separately approved correction defines the new semantics.
+// These tests retain the executable evidence for pre-existing defects and are
+// updated to the confirmed correction semantics only after each TDD fix turns
+// Green.
 
 func TestDVFEI001ApprovalCallbackIsAuthenticatedBoundedAndReachable(t *testing.T) {
 	store := approval.NewStore()
@@ -167,37 +168,89 @@ func TestDVFEI003MissingOrBlankSenderIsRejectedBeforeReservationAndEnqueue(t *te
 	assertNoTask(t, tasks)
 }
 
-func TestDVFEI004CancelledWaiterStillAcquiresSessionLockLater(t *testing.T) {
+func TestDVFEI004CancelledWaiterLeavesSessionLockWithoutLaterExecution(t *testing.T) {
 	runner := &Runner{locks: make(map[string]*sessionLock)}
-	releaseFirst := runner.acquireSessionLock("chat:sender")
+	releaseFirst, err := runner.acquireSessionLock(context.Background(), "chat:sender")
+	if err != nil {
+		t.Fatalf("first acquireSessionLock() error = %v", err)
+	}
 
 	waiterEntered := make(chan struct{})
-	waiterAcquired := make(chan struct{})
-	waiterRelease := make(chan struct{})
+	waiterResult := make(chan error, 1)
+	waiterCtx, cancelWaiter := context.WithCancel(context.Background())
 	go func() {
 		close(waiterEntered)
-		release := runner.acquireSessionLock("chat:sender")
-		close(waiterAcquired)
-		<-waiterRelease
-		release()
+		release, acquireErr := runner.acquireSessionLock(waiterCtx, "chat:sender")
+		if acquireErr == nil {
+			release()
+		}
+		waiterResult <- acquireErr
 	}()
 	<-waiterEntered
 	waitForLockRefs(t, runner, "chat:sender", 2)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if !errors.Is(ctx.Err(), context.Canceled) {
-		t.Fatalf("context error = %v", ctx.Err())
-	}
-	select {
-	case <-waiterAcquired:
-		t.Fatal("waiter acquired a lock that is still held")
-	default:
+	cancelWaiter()
+	if err := <-waiterResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled acquireSessionLock() error = %v", err)
 	}
 
 	releaseFirst()
-	<-waiterAcquired
-	close(waiterRelease)
+	releaseNext, err := runner.acquireSessionLock(context.Background(), "chat:sender")
+	if err != nil {
+		t.Fatalf("next acquireSessionLock() error = %v", err)
+	}
+	releaseNext()
+}
+
+func TestDVFEI004AcceptedTaskTimeoutIncludesGlobalPermitWait(t *testing.T) {
+	createdContexts := make(chan context.CancelFunc, 2)
+	runner := &Runner{
+		maxConcurrentTasks: 1,
+		newTaskContext: func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+			taskCtx, cancel := context.WithCancel(parent)
+			createdContexts <- cancel
+			return taskCtx, cancel
+		},
+	}
+	firstRelease := make(chan struct{})
+	firstFinished := make(chan struct{})
+	secondStarted := make(chan struct{}, 1)
+	runner.runTask = func(_ context.Context, task Task) {
+		if task.TaskID == "first" {
+			<-firstRelease
+			close(firstFinished)
+			return
+		}
+		secondStarted <- struct{}{}
+	}
+
+	tasks := make(chan Task)
+	startReturned := make(chan struct{})
+	go func() {
+		runner.Start(context.Background(), tasks)
+		close(startReturned)
+	}()
+	tasks <- Task{TaskID: "first"}
+	cancelFirst := <-createdContexts
+	defer cancelFirst()
+
+	secondAccepted := make(chan struct{})
+	go func() {
+		tasks <- Task{TaskID: "second"}
+		close(secondAccepted)
+	}()
+	<-secondAccepted
+	cancelSecond := <-createdContexts
+	cancelSecond()
+	close(firstRelease)
+	<-firstFinished
+	close(tasks)
+	<-startReturned
+
+	select {
+	case <-secondStarted:
+		t.Fatal("expired accepted task executed after the global permit became available")
+	case <-time.After(50 * time.Millisecond):
+	}
 }
 
 func TestDVFEI005SessionWaitersConsumeGlobalCapacity(t *testing.T) {
@@ -209,7 +262,10 @@ func TestDVFEI005SessionWaitersConsumeGlobalCapacity(t *testing.T) {
 	}
 	started := make(chan string, 3)
 	runner.runTask = func(_ context.Context, task Task) {
-		releaseLock := runner.acquireSessionLock(task.ChatID + ":" + task.SenderID)
+		releaseLock, err := runner.acquireSessionLock(context.Background(), task.ChatID+":"+task.SenderID)
+		if err != nil {
+			return
+		}
 		defer releaseLock()
 		started <- task.TaskID
 		<-releases[task.TaskID]

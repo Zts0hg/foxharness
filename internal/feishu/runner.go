@@ -39,6 +39,7 @@ type Runner struct {
 	taskTimeout        time.Duration
 	lockTTL            time.Duration
 	clock              func() time.Time
+	newTaskContext     func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	runTask            func(context.Context, Task)
 }
 
@@ -49,7 +50,7 @@ const (
 )
 
 type sessionLock struct {
-	mu       sync.Mutex
+	permit   chan struct{}
 	refs     int
 	lastUsed time.Time
 }
@@ -91,20 +92,28 @@ func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 			if !ok {
 				return
 			}
+			taskCtx, cancel := r.acceptedTaskContext(ctx)
 			select {
 			case permits <- struct{}{}:
-			case <-ctx.Done():
-				return
+				if taskCtx.Err() != nil {
+					<-permits
+					cancel()
+					continue
+				}
+			case <-taskCtx.Done():
+				cancel()
+				continue
 			}
-			go func(task Task) {
+			go func(taskCtx context.Context, cancel context.CancelFunc, task Task) {
 				defer func() {
+					cancel()
 					<-permits
 					if rec := recover(); rec != nil {
 						log.Printf("[Feishu Runner] task=%s panic recovered: %v", task.TaskID, rec)
 					}
 				}()
-				r.taskRunner()(ctx, task)
-			}(task)
+				r.taskRunner()(taskCtx, task)
+			}(taskCtx, cancel, task)
 		}
 	}
 }
@@ -116,7 +125,11 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("已收到任务 %s，开始执行。", task.TaskID))
 
 	sessionKey := task.ChatID + ":" + task.SenderID
-	releaseLock := r.acquireSessionLock(sessionKey)
+	releaseLock, err := r.acquireSessionLock(runCtx, sessionKey)
+	if err != nil {
+		log.Printf("[Feishu Runner] task=%s session lock cancelled: %v", task.TaskID, err)
+		return
+	}
 	defer releaseLock()
 
 	forceNew, taskText := parseSessionDirective(task.Text)
@@ -335,7 +348,14 @@ func (r *Runner) taskRunner() func(context.Context, Task) {
 	return r.runOne
 }
 
-func (r *Runner) acquireSessionLock(key string) func() {
+func (r *Runner) acceptedTaskContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if r.newTaskContext != nil {
+		return r.newTaskContext(parent, r.taskTimeoutOrDefault())
+	}
+	return context.WithTimeout(parent, r.taskTimeoutOrDefault())
+}
+
+func (r *Runner) acquireSessionLock(ctx context.Context, key string) (func(), error) {
 	r.locksMu.Lock()
 	if r.locks == nil {
 		r.locks = make(map[string]*sessionLock)
@@ -344,22 +364,38 @@ func (r *Runner) acquireSessionLock(key string) func() {
 	r.cleanupSessionLocksLocked(now)
 	lock, ok := r.locks[key]
 	if !ok {
-		lock = &sessionLock{lastUsed: now}
+		lock = &sessionLock{
+			permit:   make(chan struct{}, 1),
+			lastUsed: now,
+		}
+		lock.permit <- struct{}{}
 		r.locks[key] = lock
 	}
 	lock.refs++
 	r.locksMu.Unlock()
 
-	lock.mu.Lock()
-	return func() {
-		lock.mu.Unlock()
-		r.locksMu.Lock()
-		defer r.locksMu.Unlock()
-		lock.refs--
-		now := r.now()
-		lock.lastUsed = now
-		r.cleanupSessionLocksLocked(now)
+	select {
+	case <-lock.permit:
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				lock.permit <- struct{}{}
+				r.releaseSessionLockReference(lock)
+			})
+		}, nil
+	case <-ctx.Done():
+		r.releaseSessionLockReference(lock)
+		return nil, ctx.Err()
 	}
+}
+
+func (r *Runner) releaseSessionLockReference(lock *sessionLock) {
+	r.locksMu.Lock()
+	defer r.locksMu.Unlock()
+	lock.refs--
+	now := r.now()
+	lock.lastUsed = now
+	r.cleanupSessionLocksLocked(now)
 }
 
 func (r *Runner) cleanupSessionLocks() {

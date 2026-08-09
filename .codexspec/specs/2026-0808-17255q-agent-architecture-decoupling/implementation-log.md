@@ -100,3 +100,14 @@
 - **Green implementation**: Trim and require sender `open_id` during event translation, before task ID generation, durable reservation, session lookup, or enqueue. The Gateway continues to log the invalid event and return Feishu's successful acknowledgement to avoid retry amplification.
 - **Green commands**: Feishu and cmd package suites plus the architecture test.
 - **Green result**: PASS; `DV-FEI-003` is corrected.
+
+## T077 / D-FEI-004: Acceptance-Scoped Timeout and Cancellable Session Waiting
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu -run '^TestDVFEI004' -count=1`
+- **Compile Red result**: The desired cancellation scenario could not compile because `acquireSessionLock` accepted no context and returned no error.
+- **Behavior Red command**: The same focused command after introducing a cancellable permit boundary with an intentionally incomplete cancellation result.
+- **Behavior Red result**: The cancelled waiter returned a nil error instead of `context.Canceled`, proving the test observed the required terminal cancellation semantics rather than only the new signature.
+- **Acceptance-timeout Red result**: `TestDVFEI004AcceptedTaskTimeoutIncludesGlobalPermitWait` could not compile because Runner had no accepted-task context boundary.
+- **Green implementation**: Runner now creates the timeout context when it accepts each task, uses it while waiting for global capacity and during execution, rejects an already-expired permit winner, and uses a context-selectable per-session permit whose cancelled waiters release their references without later execution.
+- **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu -run 'TestDVFEI004|TestRunnerSessionLocksCleanupOnlyInactiveEntries' -count=1`.
+- **Green result**: PASS; `DV-FEI-004` is corrected. Per-session FIFO/global fairness and coordinated drain remain isolated to T078 and T079.

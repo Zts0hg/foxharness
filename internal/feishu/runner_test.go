@@ -194,8 +194,14 @@ func TestRunnerSessionLocksCleanupOnlyInactiveEntries(t *testing.T) {
 		},
 	}
 
-	releaseActive := runner.acquireSessionLock("active")
-	releaseOld := runner.acquireSessionLock("old")
+	releaseActive, err := runner.acquireSessionLock(context.Background(), "active")
+	if err != nil {
+		t.Fatalf("acquire active session lock: %v", err)
+	}
+	releaseOld, err := runner.acquireSessionLock(context.Background(), "old")
+	if err != nil {
+		t.Fatalf("acquire old session lock: %v", err)
+	}
 	releaseOld()
 	now = now.Add(2 * time.Minute)
 	runner.cleanupSessionLocks()
