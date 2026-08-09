@@ -15,9 +15,14 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/feishu"
@@ -26,6 +31,17 @@ import (
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
+
+const defaultShutdownTimeout = 30 * time.Second
+
+type gatewayService interface {
+	Listen(string) error
+	Shutdown(context.Context) error
+}
+
+type runnerService interface {
+	Start(context.Context, <-chan feishu.Task)
+}
 
 func main() {
 	appID := mustEnv("FEISHU_APP_ID")
@@ -53,14 +69,80 @@ func main() {
 	}
 	gateway := feishu.NewGateway(verificationToken, encryptKey, tasks, approvalStore).WithDeliveryStore(deliveryStore)
 
-	ctx := context.Background()
-	go runner.Start(ctx, tasks)
-
-	log.Printf("[Feishu] listening on :7777")
-	if err := gateway.Listen(":7777"); err != nil {
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	if err := serve(signalCtx, gateway, runner, tasks, ":7777", defaultShutdownTimeout); err != nil {
 		log.Fatal(err)
 	}
+}
 
+func serve(
+	signalCtx context.Context,
+	gateway gatewayService,
+	runner runnerService,
+	tasks chan feishu.Task,
+	addr string,
+	shutdownTimeout time.Duration,
+) error {
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = defaultShutdownTimeout
+	}
+	runnerCtx, cancelRunner := context.WithCancel(context.Background())
+	defer cancelRunner()
+	runnerDone := make(chan struct{})
+	go func() {
+		runner.Start(runnerCtx, tasks)
+		close(runnerDone)
+	}()
+
+	listenResult := make(chan error, 1)
+	go func() {
+		log.Printf("[Feishu] listening on %s", addr)
+		listenResult <- gateway.Listen(addr)
+	}()
+
+	select {
+	case listenErr := <-listenResult:
+		close(tasks)
+		if listenErr != nil {
+			cancelRunner()
+		}
+		waitCtx, cancelWait := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancelWait()
+		return errors.Join(listenErr, waitForCompletion(waitCtx, "runner", runnerDone))
+	case <-signalCtx.Done():
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancelShutdown()
+		shutdownErr := gateway.Shutdown(shutdownCtx)
+		listenErr, listenerStopped := waitForListenResult(shutdownCtx, listenResult)
+		if !listenerStopped {
+			cancelRunner()
+			runnerErr := waitForCompletion(shutdownCtx, "runner", runnerDone)
+			return errors.Join(shutdownErr, listenErr, runnerErr)
+		}
+		close(tasks)
+		cancelRunner()
+		runnerErr := waitForCompletion(shutdownCtx, "runner", runnerDone)
+		return errors.Join(shutdownErr, listenErr, runnerErr)
+	}
+}
+
+func waitForListenResult(ctx context.Context, result <-chan error) (error, bool) {
+	select {
+	case err := <-result:
+		return err, true
+	case <-ctx.Done():
+		return fmt.Errorf("wait for Feishu listener: %w", ctx.Err()), false
+	}
+}
+
+func waitForCompletion(ctx context.Context, name string, done <-chan struct{}) error {
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("wait for %s: %w", name, ctx.Err())
+	}
 }
 
 func newDeliveryStore(homeDir string) (feishu.DeliveryStore, error) {

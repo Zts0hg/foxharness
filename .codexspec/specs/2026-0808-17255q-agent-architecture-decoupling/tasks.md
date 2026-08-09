@@ -33,7 +33,7 @@
 - [x] **T076 (`D-FEI-003`)** TDD missing/blank sender rejection before reservation, lookup, and enqueue while preserving successful webhook acknowledgement; update `DV-FEI-003` only after Green. Dependencies: T075. Covers: NFR-006, NFR-010.
 - [x] **T077 (`D-FEI-004`)** TDD acceptance-scoped timeout and cancellation-aware same-session waiting so expired work never starts; update `DV-FEI-004` only after Green. Dependencies: T076. Covers: NFR-006, NFR-010.
 - [x] **T078 (`D-FEI-005`)** TDD per-session FIFO scheduling and global-permit fairness; update `DV-FEI-005` only after Green. Dependencies: T077. Covers: NFR-006, NFR-010.
-- [ ] **T079 (`D-FEI-006`)** TDD Runner drain/cancel behavior and signal-aware HTTP/task shutdown in `cmd/feishu`; update `DV-FEI-006` only after Green. Dependencies: T078. Covers: NFR-006, NFR-010.
+- [x] **T079 (`D-FEI-006`)** TDD Runner drain/cancel behavior and signal-aware HTTP/task shutdown in `cmd/feishu`; update `DV-FEI-006` only after Green. Dependencies: T078. Covers: NFR-006, NFR-010.
 - [ ] **T080 (`D-FEI-007`)** TDD non-blocking exactly-once approval resolution and terminal cleanup; update `DV-FEI-007` only after Green. Dependencies: T079. Covers: NFR-006, NFR-010.
 - [ ] **T081 (`D-FEI-008`)** TDD frozen selected-model propagation to engine and compactor; update `DV-FEI-008` only after Green. Dependencies: T080. Covers: NFR-006, NFR-010.
 - [ ] **T082 (`D-FEI-009`)** TDD correlated panic terminal outcomes, bounded failure delivery, and cleanup; update `DV-FEI-009` only after Green. Dependencies: T081. Covers: NFR-006, NFR-010.

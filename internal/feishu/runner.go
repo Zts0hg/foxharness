@@ -84,16 +84,40 @@ func NewRunner(
 // cancelled or the tasks channel is closed.
 func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 	scheduler := newTaskScheduler(r)
+	taskInput := tasks
+	cancellation := ctx.Done()
+	cancelling := false
 	for {
-		scheduler.dispatch()
-		select {
-		case <-ctx.Done():
+		if cancellation != nil && ctx.Err() != nil {
+			scheduler.cancelAll(ctx.Err())
+			taskInput = nil
+			cancellation = nil
+			cancelling = true
+		}
+		if !cancelling {
+			scheduler.dispatch()
+		}
+		if taskInput == nil && scheduler.idle() {
 			return
-		case task, ok := <-tasks:
+		}
+		select {
+		case <-cancellation:
+			scheduler.cancelAll(ctx.Err())
+			taskInput = nil
+			cancellation = nil
+			cancelling = true
+		case task, ok := <-taskInput:
 			if !ok {
-				return
+				taskInput = nil
+				continue
 			}
 			scheduler.enqueue(ctx, task)
+			if ctx.Err() != nil {
+				scheduler.cancelAll(ctx.Err())
+				taskInput = nil
+				cancellation = nil
+				cancelling = true
+			}
 		case sessionKey := <-scheduler.completed:
 			scheduler.complete(sessionKey)
 		}

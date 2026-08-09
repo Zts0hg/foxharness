@@ -119,3 +119,12 @@
 - **Green implementation**: Added a Runner-private event-loop scheduler with one FIFO queue per `(chat_id, sender_id)`, an ordered ready-session queue, and event-loop-owned active capacity. Only a session head can run globally; queued successors hold no global capacity; unrelated ready sessions retain admission order; completion enables only the completed session's next head. Accepted task contexts remain scoped from enqueue through execution, and expired queue heads are skipped.
 - **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu -run '^TestDVFEI005PerSessionFIFOLeavesCapacityForOtherSessions$' -count=1 -v`.
 - **Green result**: PASS; `DV-FEI-005` is corrected. Runner drain/cancel and process shutdown remain isolated to T079.
+
+## T079 / D-FEI-006: Coordinated Drain, Cancellation, and Process Shutdown
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -run '^TestDVFEI006' -count=1`
+- **Compile Red result**: The production-order test could not compile because no `serve` coordination boundary existed.
+- **Behavior Red result**: In the same run, ordinary task-channel closure caused `Runner.Start` to return before its accepted task completed.
+- **Green implementation**: Runner now stops acceptance and drains queued/active work on ordinary channel closure; process cancellation stops acceptance, explicitly cancels queued and active task contexts, and waits for active completion. The production entry uses `signal.NotifyContext` and a testable `serve` composition that shuts down and confirms the HTTP listener first, then closes task intake, cancels Runner work, and waits for listener/Runner completion within one explicit deadline. If listener termination times out, it does not close the still-reachable task channel.
+- **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu ./cmd/feishu -run '^TestDVFEI006' -count=1 -v`.
+- **Green result**: PASS; `DV-FEI-006` is corrected. Approval terminal-state semantics remain isolated to T080.

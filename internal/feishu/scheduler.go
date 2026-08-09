@@ -12,9 +12,9 @@ type scheduledTask struct {
 }
 
 type sessionTaskQueue struct {
-	tasks  []scheduledTask
-	active bool
-	ready  bool
+	tasks      []scheduledTask
+	activeTask *scheduledTask
+	ready      bool
 }
 
 type taskScheduler struct {
@@ -57,7 +57,7 @@ func (s *taskScheduler) dispatch() {
 			continue
 		}
 		queue.ready = false
-		if queue.active {
+		if queue.activeTask != nil {
 			continue
 		}
 
@@ -66,26 +66,26 @@ func (s *taskScheduler) dispatch() {
 			delete(s.sessions, key)
 			continue
 		}
-		queue.active = true
+		queue.activeTask = task
 		s.active++
 		go s.run(key, task)
 	}
 }
 
-func (s *taskScheduler) nextRunnable(queue *sessionTaskQueue) (scheduledTask, bool) {
+func (s *taskScheduler) nextRunnable(queue *sessionTaskQueue) (*scheduledTask, bool) {
 	for len(queue.tasks) > 0 {
 		task := queue.tasks[0]
 		queue.tasks = queue.tasks[1:]
 		if task.ctx.Err() == nil {
-			return task, true
+			return &task, true
 		}
 		log.Printf("[Feishu Runner] task=%s expired before execution: %v", task.task.TaskID, task.ctx.Err())
 		task.cancel()
 	}
-	return scheduledTask{}, false
+	return nil, false
 }
 
-func (s *taskScheduler) run(key string, task scheduledTask) {
+func (s *taskScheduler) run(key string, task *scheduledTask) {
 	defer func() {
 		task.cancel()
 		if rec := recover(); rec != nil {
@@ -98,10 +98,10 @@ func (s *taskScheduler) run(key string, task scheduledTask) {
 
 func (s *taskScheduler) complete(key string) {
 	queue := s.sessions[key]
-	if queue == nil || !queue.active {
+	if queue == nil || queue.activeTask == nil {
 		return
 	}
-	queue.active = false
+	queue.activeTask = nil
 	s.active--
 	if len(queue.tasks) == 0 {
 		delete(s.sessions, key)
@@ -111,11 +111,32 @@ func (s *taskScheduler) complete(key string) {
 }
 
 func (s *taskScheduler) markReady(key string, queue *sessionTaskQueue) {
-	if queue.active || queue.ready || len(queue.tasks) == 0 {
+	if queue.activeTask != nil || queue.ready || len(queue.tasks) == 0 {
 		return
 	}
 	queue.ready = true
 	s.ready = append(s.ready, key)
+}
+
+func (s *taskScheduler) cancelAll(cause error) {
+	s.ready = nil
+	for key, queue := range s.sessions {
+		queue.ready = false
+		for _, task := range queue.tasks {
+			log.Printf("[Feishu Runner] task=%s cancelled before execution: %v", task.task.TaskID, cause)
+			task.cancel()
+		}
+		queue.tasks = nil
+		if queue.activeTask != nil {
+			queue.activeTask.cancel()
+			continue
+		}
+		delete(s.sessions, key)
+	}
+}
+
+func (s *taskScheduler) idle() bool {
+	return s.active == 0 && len(s.sessions) == 0
 }
 
 func taskSessionKey(task Task) string {

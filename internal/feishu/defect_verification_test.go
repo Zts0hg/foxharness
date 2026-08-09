@@ -344,43 +344,84 @@ func TestDVFEI005PerSessionFIFOLeavesCapacityForOtherSessions(t *testing.T) {
 	<-startReturned
 }
 
-func TestDVFEI006RunnerReturnsWithoutDrainingAcceptedTask(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		stop func(context.CancelFunc, chan Task)
-	}{
-		{name: "task channel closed", stop: func(_ context.CancelFunc, tasks chan Task) { close(tasks) }},
-		{name: "context cancelled", stop: func(cancel context.CancelFunc, _ chan Task) { cancel() }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			started := make(chan struct{})
-			release := make(chan struct{})
-			finished := make(chan struct{})
-			runner := &Runner{runTask: func(context.Context, Task) {
-				close(started)
-				<-release
-				close(finished)
-			}}
-			tasks := make(chan Task)
-			ctx, cancel := context.WithCancel(context.Background())
-			returned := make(chan struct{})
-			go func() {
-				runner.Start(ctx, tasks)
-				close(returned)
-			}()
-			tasks <- Task{TaskID: "accepted"}
-			<-started
-			test.stop(cancel, tasks)
-			<-returned
-			select {
-			case <-finished:
-				t.Fatal("in-flight task unexpectedly finished before Runner.Start returned")
-			default:
-			}
-			close(release)
-			<-finished
-			cancel()
-		})
+func TestDVFEI006RunnerDrainsAcceptedTasksOnChannelClose(t *testing.T) {
+	started := make(chan string, 2)
+	release := make(chan struct{}, 2)
+	runner := &Runner{maxConcurrentTasks: 1, runTask: func(_ context.Context, task Task) {
+		started <- task.TaskID
+		<-release
+	}}
+	tasks := make(chan Task)
+	returned := make(chan struct{})
+	go func() {
+		runner.Start(context.Background(), tasks)
+		close(returned)
+	}()
+
+	tasks <- Task{TaskID: "first", ChatID: "chat", SenderID: "sender"}
+	if got := <-started; got != "first" {
+		t.Fatalf("started task = %q, want first", got)
+	}
+	tasks <- Task{TaskID: "second", ChatID: "chat", SenderID: "sender"}
+	close(tasks)
+	select {
+	case <-returned:
+		t.Fatal("Runner.Start returned before draining accepted work")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	release <- struct{}{}
+	if got := <-started; got != "second" {
+		t.Fatalf("started task = %q, want second", got)
+	}
+	release <- struct{}{}
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("Runner.Start did not return after accepted work drained")
+	}
+}
+
+func TestDVFEI006RunnerCancelsQueuedAndInflightTasksBeforeReturning(t *testing.T) {
+	started := make(chan string, 2)
+	inflightCancelled := make(chan struct{})
+	allowInflightFinish := make(chan struct{})
+	runner := &Runner{maxConcurrentTasks: 1, runTask: func(ctx context.Context, task Task) {
+		started <- task.TaskID
+		<-ctx.Done()
+		close(inflightCancelled)
+		<-allowInflightFinish
+	}}
+	tasks := make(chan Task)
+	ctx, cancel := context.WithCancel(context.Background())
+	returned := make(chan struct{})
+	go func() {
+		runner.Start(ctx, tasks)
+		close(returned)
+	}()
+
+	tasks <- Task{TaskID: "first", ChatID: "chat", SenderID: "sender"}
+	if got := <-started; got != "first" {
+		t.Fatalf("started task = %q, want first", got)
+	}
+	tasks <- Task{TaskID: "second", ChatID: "chat", SenderID: "sender"}
+	cancel()
+	<-inflightCancelled
+	select {
+	case <-returned:
+		t.Fatal("Runner.Start returned before in-flight cancellation reached a terminal state")
+	default:
+	}
+	close(allowInflightFinish)
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("Runner.Start did not return after cancellation completed")
+	}
+	select {
+	case got := <-started:
+		t.Fatalf("queued task %q started during cancellation", got)
+	default:
 	}
 }
 
