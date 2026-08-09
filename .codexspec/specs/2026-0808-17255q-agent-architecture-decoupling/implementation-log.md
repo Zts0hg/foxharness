@@ -171,3 +171,17 @@
 - **Green implementation**: Added typed `DeliveryFailure` records for receipt, session, lifecycle, final, ordinary-failure, panic-failure, and cancellation stages. Runner and Reporter route every transport error through an injected non-blocking observer contract with panic isolation; queued/active cancellation and panic use fresh bounded delivery contexts. Messenger enforces a total 1800-rune pre-transport bound including its truncation marker. The Feishu composition root explicitly injects the production logging observer.
 - **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu ./internal/approval ./internal/engine ./internal/compaction -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu ./cmd/feishu -run 'TestDVFEI009|TestDVFEI010|TestDVFEI006' -count=1 -v`.
 - **Green result**: PASS; `DV-FEI-010` is corrected, all seven stages preserve correlation and wrapped cause, text is bounded before the fake transport, production observation is explicit, and the T040 correction stop is cleared.
+
+## T041: AgentOps Residual Defect Verification
+
+- **Workflow**: Verification-only task. Tests preserve controlled current behavior; no AgentOps production correction semantics were inferred or implemented.
+- **Commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./cmd/agentops ./internal/agentops -run 'TestDVAOP|TestDVAOPApproval' -count=1 -timeout=30s`, full AgentOps package tests, and the same verification set under `-race`.
+- **Result**: PASS, with all six risks classified as proven defects against production source commit `3dd89e1`.
+- **DV-AOP-001**: Shared Gateway validation now rejects missing/empty message IDs, but AgentOps adds a second process-local Deduper that accepts an empty key directly, claims before bridge delivery, never rolls back for bridge/task failure or completion, expires strictly after TTL, and forgets state on restart.
+- **DV-AOP-002**: Background HTTP, bridge, two task channels, and Runner have no coordinated shutdown. Runner returns before active work and cancellation drops an already accepted permit waiter without execution or terminal correlation.
+- **DV-AOP-003**: Panic recovery logs and releases capacity but emits no terminal delivery. Ordinary/timeout failures attempt one fallback, while parent cancellation uses an already-cancelled delivery context; no typed exactly-once terminal authority exists.
+- **DV-AOP-004**: Selected provider model is not propagated into `CompactionConfig.Model`, so registered context-window selection falls back.
+- **DV-AOP-005**: Initial delivery error is ignored, unbounded final content crosses the Runner messenger boundary, final failure triggers one fallback, and fallback failure is discarded with no controlling outcome.
+- **DV-AOP-006**: Lexically valid service names can resolve through a symlink outside `logDir`; controlled tests also prove the independent 200-line and one-MiB-per-line bounds remain effective.
+- **Shared approval reuse**: PASS. AgentOps constructs one `approval.Store`, shares it between Gateway and Runner, and the authenticated callback preserves corrected 204/409/404 exactly-once behavior. No second approval protocol is present or required.
+- **Gate outcome**: AgentOps correction stop is active. Baseline fixture generation and production architecture migration remain blocked until the user separately confirms correction semantics and each defect follows Red-Green-Refactor in an independent Green commit.

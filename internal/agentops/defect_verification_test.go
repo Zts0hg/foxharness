@@ -1,0 +1,343 @@
+package agentops
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/Zts0hg/foxharness/internal/approval"
+	"github.com/Zts0hg/foxharness/internal/compaction"
+	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/session"
+)
+
+func TestDVAOP002RunnerReturnsWithoutDrainingAcceptedWork(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		stop func(context.CancelFunc, chan Task)
+	}{
+		{name: "task channel closed", stop: func(_ context.CancelFunc, tasks chan Task) { close(tasks) }},
+		{name: "context cancelled", stop: func(cancel context.CancelFunc, _ chan Task) { cancel() }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			started := make(chan struct{})
+			release := make(chan struct{})
+			finished := make(chan struct{})
+			runner := &Runner{runTask: func(context.Context, Task) error {
+				close(started)
+				<-release
+				close(finished)
+				return nil
+			}}
+			tasks := make(chan Task)
+			ctx, cancel := context.WithCancel(context.Background())
+			returned := make(chan struct{})
+			go func() {
+				runner.Start(ctx, tasks)
+				close(returned)
+			}()
+			tasks <- Task{TaskID: "accepted"}
+			<-started
+			test.stop(cancel, tasks)
+			<-returned
+			select {
+			case <-finished:
+				t.Fatal("in-flight task finished before Runner.Start returned")
+			default:
+			}
+			close(release)
+			<-finished
+			cancel()
+		})
+	}
+}
+
+func TestDVAOP002AcceptedPermitWaiterIsDroppedOnCancellation(t *testing.T) {
+	firstStarted := make(chan struct{})
+	firstRelease := make(chan struct{})
+	secondStarted := make(chan struct{}, 1)
+	runner := &Runner{
+		maxConcurrentTasks: 1,
+		runTask: func(_ context.Context, task Task) error {
+			if task.TaskID == "first" {
+				close(firstStarted)
+				<-firstRelease
+				return nil
+			}
+			secondStarted <- struct{}{}
+			return nil
+		},
+	}
+	tasks := make(chan Task)
+	ctx, cancel := context.WithCancel(context.Background())
+	returned := make(chan struct{})
+	go func() {
+		runner.Start(ctx, tasks)
+		close(returned)
+	}()
+	tasks <- Task{TaskID: "first"}
+	<-firstStarted
+	secondAccepted := make(chan struct{})
+	go func() {
+		tasks <- Task{TaskID: "second"}
+		close(secondAccepted)
+	}()
+	<-secondAccepted
+	cancel()
+	<-returned
+	select {
+	case <-secondStarted:
+		t.Fatal("accepted permit waiter unexpectedly started")
+	default:
+	}
+	close(firstRelease)
+}
+
+func TestDVAOP003PanicHasNoCorrelatedTerminalDelivery(t *testing.T) {
+	messenger := &verificationMessenger{}
+	afterStarted := make(chan struct{})
+	runner := &Runner{
+		messenger:          messenger,
+		maxConcurrentTasks: 1,
+		runTask: func(_ context.Context, task Task) error {
+			if task.TaskID == "panic" {
+				panic("task panic")
+			}
+			close(afterStarted)
+			return nil
+		},
+	}
+	tasks := make(chan Task, 2)
+	tasks <- Task{TaskID: "panic", ChatID: "chat"}
+	tasks <- Task{TaskID: "after", ChatID: "chat"}
+	close(tasks)
+	runner.Start(context.Background(), tasks)
+	<-afterStarted
+	if calls := messenger.calls.Load(); calls != 0 {
+		t.Fatalf("panic terminal deliveries = %d, want current zero", calls)
+	}
+}
+
+func TestDVAOP003NonPanicFailuresAttemptOneFallbackWithCurrentContext(t *testing.T) {
+	tests := []struct {
+		name       string
+		parent     func() context.Context
+		runTask    func(context.Context, Task) error
+		wantCtxErr error
+	}{
+		{
+			name:   "ordinary failure",
+			parent: context.Background,
+			runTask: func(context.Context, Task) error {
+				return errors.New("ordinary")
+			},
+		},
+		{
+			name:   "timeout",
+			parent: context.Background,
+			runTask: func(ctx context.Context, _ Task) error {
+				<-ctx.Done()
+				return ctx.Err()
+			},
+		},
+		{
+			name: "parent cancellation",
+			parent: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			runTask: func(ctx context.Context, _ Task) error {
+				return ctx.Err()
+			},
+			wantCtxErr: context.Canceled,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			messenger := &verificationMessenger{contextErrors: make(chan error, 1)}
+			runner := &Runner{messenger: messenger, runTask: test.runTask}
+			if test.name == "timeout" {
+				runner.taskTimeout = time.Nanosecond
+			}
+			runner.Run(test.parent(), Task{TaskID: test.name, ChatID: "chat"})
+			if calls := messenger.calls.Load(); calls != 1 {
+				t.Fatalf("fallback deliveries = %d, want one", calls)
+			}
+			if got := <-messenger.contextErrors; !errors.Is(got, test.wantCtxErr) {
+				t.Fatalf("fallback context error = %v, want %v", got, test.wantCtxErr)
+			}
+		})
+	}
+}
+
+func TestDVAOP004CompactorDoesNotUseSelectedProviderModel(t *testing.T) {
+	selected := &agentOpsNamedProvider{model: "claude-4-sonnet"}
+	config := compaction.DefaultCompactionConfig()
+	compactor, err := compaction.NewCompactor(selected, config)
+	if err != nil {
+		t.Fatalf("NewCompactor() error = %v", err)
+	}
+	wantWindow := compaction.NewModelRegistry().Lookup(selected.model)
+	if compactor.ContextWindow() != compaction.DefaultContextWindow || compactor.ContextWindow() == wantWindow {
+		t.Fatalf("compactor window = %d, selected model window = %d", compactor.ContextWindow(), wantWindow)
+	}
+	source, err := os.ReadFile("runner.go")
+	if err != nil {
+		t.Fatalf("ReadFile(runner.go) error = %v", err)
+	}
+	if strings.Contains(string(source), "compCfg.Model =") {
+		t.Fatal("AgentOps now propagates compactor model; update DV-AOP-004 classification")
+	}
+}
+
+func TestDVAOP005DeliveryFailuresCanEndWithoutDeliveredTerminalOutcome(t *testing.T) {
+	workDir := t.TempDir()
+	messenger := &scriptedAgentOpsMessenger{
+		errors: []error{nil, errors.New("final delivery failed"), errors.New("fallback delivery failed")},
+	}
+	runner := NewRunner(&longFinalProvider{}, workDir, t.TempDir(), messenger, approval.NewStore())
+	runner.sessions = session.NewManagerWithHome(workDir, t.TempDir())
+	runner.Run(context.Background(), Task{TaskID: "delivery", ChatID: "chat", SenderID: "sender", Text: "incident"})
+
+	texts := messenger.snapshot()
+	if len(texts) != 3 {
+		t.Fatalf("delivery attempts = %d, want initial, final, fallback", len(texts))
+	}
+	if len([]rune(texts[1])) <= 5000 {
+		t.Fatalf("final delivery runes = %d, want unbounded model content evidence", len([]rune(texts[1])))
+	}
+	if !strings.Contains(texts[2], "AgentOps 任务失败") {
+		t.Fatalf("fallback text = %q", texts[2])
+	}
+}
+
+func TestDVAOP006LogSearchFollowsSymlinkOutsideLogRoot(t *testing.T) {
+	logDir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.log")
+	if err := os.WriteFile(outside, []byte("SECRET external evidence\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(logDir, "payment.log")); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewLogSearchTool(logDir)
+	result, err := tool.Execute(context.Background(), mustAgentOpsJSON(t, map[string]any{
+		"service": "payment",
+		"query":   "SECRET",
+		"limit":   10,
+	}))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(result, "external evidence") {
+		t.Fatalf("symlink result = %q, want outside content", result)
+	}
+}
+
+func TestDVAOP006LogSearchResourceBoundsRemainEffective(t *testing.T) {
+	logDir := t.TempDir()
+	lines := make([]string, 250)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("ERROR line %03d", i)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "bounded.log"), []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewLogSearchTool(logDir)
+	result, err := tool.Execute(context.Background(), mustAgentOpsJSON(t, map[string]any{
+		"service": "bounded",
+		"query":   "ERROR",
+		"limit":   200,
+	}))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := len(strings.Split(result, "\n")); got != 200 {
+		t.Fatalf("matched lines = %d, want 200", got)
+	}
+
+	oversized := strings.Repeat("x", maxLogSearchLineBytes+1) + " ERROR\n"
+	if err := os.WriteFile(filepath.Join(logDir, "oversized.log"), []byte(oversized), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tool.Execute(context.Background(), mustAgentOpsJSON(t, map[string]any{
+		"service": "oversized",
+		"query":   "ERROR",
+		"limit":   1,
+	}))
+	if err == nil || !strings.Contains(err.Error(), "token too long") {
+		t.Fatalf("oversized line error = %v, want scanner resource bound", err)
+	}
+}
+
+type verificationMessenger struct {
+	calls         atomic.Int32
+	contextErrors chan error
+}
+
+func (m *verificationMessenger) SendText(ctx context.Context, _ string, _ string) error {
+	m.calls.Add(1)
+	if m.contextErrors != nil {
+		m.contextErrors <- ctx.Err()
+	}
+	return nil
+}
+
+type scriptedAgentOpsMessenger struct {
+	mu     sync.Mutex
+	texts  []string
+	errors []error
+}
+
+func (m *scriptedAgentOpsMessenger) SendText(_ context.Context, _ string, text string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.texts = append(m.texts, text)
+	index := len(m.texts) - 1
+	if index < len(m.errors) {
+		return m.errors[index]
+	}
+	return nil
+}
+
+func (m *scriptedAgentOpsMessenger) snapshot() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.texts...)
+}
+
+type longFinalProvider struct{}
+
+func (*longFinalProvider) Generate(context.Context, []schema.Message, []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: strings.Repeat("x", 6000)}}, nil
+}
+
+type agentOpsNamedProvider struct {
+	model string
+}
+
+func (*agentOpsNamedProvider) Generate(context.Context, []schema.Message, []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	return nil, errors.New("not called")
+}
+
+func (p *agentOpsNamedProvider) ModelName() string      { return p.model }
+func (*agentOpsNamedProvider) ProviderProtocol() string { return "scripted" }
+
+func mustAgentOpsJSON(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
