@@ -108,6 +108,11 @@ func (g *Gateway) Server(addr string) *http.Server {
 				return errors.Join(ctx.Err(), fmt.Errorf("rollback Feishu delivery %s: %w", task.MessageID, releaseErr))
 			}
 			return ctx.Err()
+		default:
+			if releaseErr := g.deliveryStore.Release(task.MessageID); releaseErr != nil {
+				return errors.Join(errors.New("Feishu task queue unavailable"), fmt.Errorf("rollback Feishu delivery %s: %w", task.MessageID, releaseErr))
+			}
+			return errors.New("Feishu task queue unavailable")
 		}
 	})
 

@@ -1,7 +1,6 @@
 package feishu
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -90,25 +89,23 @@ func TestFileDeliveryStoreFailsClosedOnCorruptAuthority(t *testing.T) {
 	}
 }
 
-func TestGatewayRollsBackReservationWhenEnqueueIsCancelled(t *testing.T) {
+func TestGatewayRollsBackReservationWhenEnqueueIsUnavailable(t *testing.T) {
 	tasks := make(chan Task)
 	store := newMemoryDeliveryStore()
 	gateway := NewGateway("token", "", tasks, approval.NewStore()).WithDeliveryStore(store)
 	handler := gateway.Server(":0").Handler
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	request := httptest.NewRequest(http.MethodPost, "/webhook/event", nil).WithContext(ctx)
+	request := httptest.NewRequest(http.MethodPost, "/webhook/event", nil)
 	request.Body = readCloser(messageEventJSON("event-1", "message-1", true))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("cancelled enqueue status = %d, want 500", recorder.Code)
+		t.Fatalf("unavailable enqueue status = %d, want 500", recorder.Code)
 	}
 
 	received := make(chan Task, 1)
-	go func() { received <- <-tasks }()
+	gateway.tasks = received
 	retry := postMessageEvent(t, handler, "event-2", "message-1", true)
 	if retry.Code != http.StatusOK {
 		t.Fatalf("retry status = %d body=%q", retry.Code, retry.Body.String())
