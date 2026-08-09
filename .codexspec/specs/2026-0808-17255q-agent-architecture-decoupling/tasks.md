@@ -28,7 +28,7 @@
 ## Phase 0B: Residual Defect Verification and Fixture Authority
 
 - [x] **T040** Execute comprehensive hermetic proofs for `DV-FEI-001..010` in Feishu/cmd tests, record each defect/not-defect result and evidence, and stop for separate requirements on any proven defect. Dependencies: T006. Covers: NFR-005, NFR-006, NFR-010; Plan: Feishu defect gate. **Correction stop active:** all ten items are proven defects; T041 and later tasks remain blocked until correction semantics are separately confirmed and each defect correction is committed Green.
-- [ ] **T074 (`D-FEI-001`)** TDD the authenticated bounded approval HTTP callback and deterministic status mapping; update `DV-FEI-001` only after Green. Dependencies: T040, DEC-042 confirmation. Covers: NFR-006, NFR-010.
+- [x] **T074 (`D-FEI-001`)** TDD the authenticated bounded approval HTTP callback and deterministic status mapping; update `DV-FEI-001` only after Green. Dependencies: T040, DEC-042 confirmation. Covers: NFR-006, NFR-010.
 - [ ] **T075 (`D-FEI-002`)** TDD the atomic durable at-most-once Feishu message acceptance store, duplicate acknowledgement, restart behavior, and live rollback; update `DV-FEI-002` only after Green. Dependencies: T074. Covers: NFR-006, NFR-010.
 - [ ] **T076 (`D-FEI-003`)** TDD missing/blank sender rejection before reservation, lookup, and enqueue while preserving successful webhook acknowledgement; update `DV-FEI-003` only after Green. Dependencies: T075. Covers: NFR-006, NFR-010.
 - [ ] **T077 (`D-FEI-004`)** TDD acceptance-scoped timeout and cancellation-aware same-session waiting so expired work never starts; update `DV-FEI-004` only after Green. Dependencies: T076. Covers: NFR-006, NFR-010.

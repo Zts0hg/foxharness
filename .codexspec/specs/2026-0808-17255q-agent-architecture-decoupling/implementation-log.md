@@ -74,3 +74,11 @@
 - **DV-FEI-009**: Task panic recovery logs and releases capacity but emits no correlated terminal failure reply.
 - **DV-FEI-010**: Delivery failures are either logged by Reporter or discarded by Runner; no controlling adapter receives a terminal delivery-failure outcome.
 - **Gate outcome**: Correction stop is active. T041 and all later baseline/refactor tasks remain blocked until correction semantics are separately confirmed, each correction follows Red-Green-Refactor in an independent defect commit, and affected tests are rerun.
+
+## T074 / D-FEI-001: Authenticated Approval Callback
+
+- **Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu -run '^TestDVFEI001' -count=1`
+- **Red result**: The unauthenticated callback request returned 404 instead of 401 because `/webhook/approval` did not exist.
+- **Green implementation**: Added a gateway-owned POST route with constant-time Bearer-token verification, a 64-KiB body limit, strict single-object JSON decoding, required approval identity, shared Store resolution, and deterministic 204/400/401/404/405 mapping. Duplicate-conflict mapping remains assigned to T080.
+- **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu ./internal/approval -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/architecturetest -count=1`.
+- **Green result**: PASS; `DV-FEI-001` is corrected.

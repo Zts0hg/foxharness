@@ -9,9 +9,12 @@ package feishu
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -41,6 +44,7 @@ const (
 	defaultReadTimeout       = 15 * time.Second
 	defaultWriteTimeout      = 60 * time.Second
 	defaultIdleTimeout       = 120 * time.Second
+	approvalCallbackMaxBytes = 64 << 10
 )
 
 // NewGateway creates a Gateway that validates incoming events with the given
@@ -90,6 +94,7 @@ func (g *Gateway) Server(addr string) *http.Server {
 		handler,
 		larkevent.WithLogLevel(larkcore.LogLevelInfo),
 	))
+	mux.HandleFunc("/webhook/approval", g.handleApprovalCallback)
 
 	return &http.Server{
 		Addr:              addr,
@@ -99,6 +104,62 @@ func (g *Gateway) Server(addr string) *http.Server {
 		WriteTimeout:      defaultWriteTimeout,
 		IdleTimeout:       defaultIdleTimeout,
 	}
+}
+
+type approvalCallbackRequest struct {
+	ApprovalID string `json:"approval_id"`
+	Approved   bool   `json:"approved"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+func (g *Gateway) handleApprovalCallback(w http.ResponseWriter, r *http.Request) {
+	if !g.approvalCallbackAuthorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, approvalCallbackMaxBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var request approvalCallbackRequest
+	if err := decoder.Decode(&request); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	request.ApprovalID = strings.TrimSpace(request.ApprovalID)
+	if request.ApprovalID == "" || g.approvalStore == nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if err := g.OnApprovalCallback(request.ApprovalID, request.Approved, request.Reason); err != nil {
+		http.Error(w, "approval request not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (g *Gateway) approvalCallbackAuthorized(r *http.Request) bool {
+	const bearerPrefix = "Bearer "
+	header := r.Header.Get("Authorization")
+	if !strings.HasPrefix(header, bearerPrefix) || g.verificationToken == "" {
+		return false
+	}
+	provided := strings.TrimSpace(strings.TrimPrefix(header, bearerPrefix))
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(g.verificationToken)) == 1
 }
 
 // Shutdown gracefully shuts down a server previously created by Listen.

@@ -31,21 +31,56 @@ import (
 // current behavior so the verification gate remains executable before a
 // separately approved correction defines the new semantics.
 
-func TestDVFEI001ApprovalResolverHasNoReachableHTTPRoute(t *testing.T) {
+func TestDVFEI001ApprovalCallbackIsAuthenticatedBoundedAndReachable(t *testing.T) {
 	store := approval.NewStore()
 	gateway := NewGateway("token", "", make(chan Task, 1), store)
 	server := gateway.Server(":0")
 
-	request := httptest.NewRequest(http.MethodPost, "/webhook/approval", strings.NewReader(`{"approval_id":"approval-1","approved":true}`))
-	recorder := httptest.NewRecorder()
-	server.Handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("approval callback status = %d, want current unreachable 404", recorder.Code)
+	unauthorized := postApprovalCallback(server.Handler, "", `{"approval_id":"approval-1","approved":true}`)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d, want 401", unauthorized.Code)
 	}
 
-	_, pattern := server.Handler.(*http.ServeMux).Handler(request)
-	if pattern != "" {
-		t.Fatalf("approval callback unexpectedly matched route %q", pattern)
+	malformed := postApprovalCallback(server.Handler, "token", `{"approval_id":"approval-1","approved":true,"unknown":1}`)
+	if malformed.Code != http.StatusBadRequest {
+		t.Fatalf("malformed status = %d, want 400", malformed.Code)
+	}
+
+	tooLarge := postApprovalCallback(server.Handler, "token", `{"approval_id":"approval-1","approved":true,"reason":"`+strings.Repeat("x", 70<<10)+`"}`)
+	if tooLarge.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized status = %d, want 413", tooLarge.Code)
+	}
+
+	sendEntered := make(chan struct{})
+	resolved := make(chan approval.Result, 1)
+	go func() {
+		result, _ := store.Wait(context.Background(), approval.Request{ID: "approval-1"}, func(approval.Request) error {
+			close(sendEntered)
+			return nil
+		})
+		resolved <- result
+	}()
+	<-sendEntered
+
+	success := postApprovalCallback(server.Handler, "token", `{"approval_id":"approval-1","approved":true,"reason":"reviewed"}`)
+	if success.Code != http.StatusNoContent {
+		t.Fatalf("success status = %d body=%q, want 204", success.Code, success.Body.String())
+	}
+	if result := <-resolved; !result.Approved || result.Reason != "reviewed" {
+		t.Fatalf("resolved result = %#v", result)
+	}
+
+	unknown := postApprovalCallback(server.Handler, "token", `{"approval_id":"missing","approved":false}`)
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("unknown status = %d, want 404", unknown.Code)
+	}
+
+	wrongMethod := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/webhook/approval", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	server.Handler.ServeHTTP(wrongMethod, request)
+	if wrongMethod.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET status = %d, want 405", wrongMethod.Code)
 	}
 }
 
@@ -365,6 +400,16 @@ func postMessageEvent(t *testing.T, handler http.Handler, eventID, messageID str
 	payload := messageEventJSON(eventID, messageID, withSender)
 	request := httptest.NewRequest(http.MethodPost, "/webhook/event", strings.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func postApprovalCallback(handler http.Handler, token, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, "/webhook/approval", strings.NewReader(body))
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	return recorder
