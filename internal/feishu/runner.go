@@ -83,8 +83,9 @@ func NewRunner(
 // dispatched to a separate goroutine.  Start blocks until the context is
 // cancelled or the tasks channel is closed.
 func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
-	permits := make(chan struct{}, r.concurrentTaskLimit())
+	scheduler := newTaskScheduler(r)
 	for {
+		scheduler.dispatch()
 		select {
 		case <-ctx.Done():
 			return
@@ -92,28 +93,9 @@ func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 			if !ok {
 				return
 			}
-			taskCtx, cancel := r.acceptedTaskContext(ctx)
-			select {
-			case permits <- struct{}{}:
-				if taskCtx.Err() != nil {
-					<-permits
-					cancel()
-					continue
-				}
-			case <-taskCtx.Done():
-				cancel()
-				continue
-			}
-			go func(taskCtx context.Context, cancel context.CancelFunc, task Task) {
-				defer func() {
-					cancel()
-					<-permits
-					if rec := recover(); rec != nil {
-						log.Printf("[Feishu Runner] task=%s panic recovered: %v", task.TaskID, rec)
-					}
-				}()
-				r.taskRunner()(taskCtx, task)
-			}(taskCtx, cancel, task)
+			scheduler.enqueue(ctx, task)
+		case sessionKey := <-scheduler.completed:
+			scheduler.complete(sessionKey)
 		}
 	}
 }
@@ -124,7 +106,7 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 
 	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("已收到任务 %s，开始执行。", task.TaskID))
 
-	sessionKey := task.ChatID + ":" + task.SenderID
+	sessionKey := taskSessionKey(task)
 	releaseLock, err := r.acquireSessionLock(runCtx, sessionKey)
 	if err != nil {
 		log.Printf("[Feishu Runner] task=%s session lock cancelled: %v", task.TaskID, err)

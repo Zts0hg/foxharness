@@ -111,3 +111,11 @@
 - **Green implementation**: Runner now creates the timeout context when it accepts each task, uses it while waiting for global capacity and during execution, rejects an already-expired permit winner, and uses a context-selectable per-session permit whose cancelled waiters release their references without later execution.
 - **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu -run 'TestDVFEI004|TestRunnerSessionLocksCleanupOnlyInactiveEntries' -count=1`.
 - **Green result**: PASS; `DV-FEI-004` is corrected. Per-session FIFO/global fairness and coordinated drain remain isolated to T078 and T079.
+
+## T078 / D-FEI-005: Per-Session FIFO and Global Scheduling Fairness
+
+- **Behavior Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu -run '^TestDVFEI005' -count=1`
+- **Behavior Red result**: `same-2` started while `same-1` was still active, proving that the existing global semaphore admitted same-session waiters before session eligibility.
+- **Green implementation**: Added a Runner-private event-loop scheduler with one FIFO queue per `(chat_id, sender_id)`, an ordered ready-session queue, and event-loop-owned active capacity. Only a session head can run globally; queued successors hold no global capacity; unrelated ready sessions retain admission order; completion enables only the completed session's next head. Accepted task contexts remain scoped from enqueue through execution, and expired queue heads are skipped.
+- **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu -run '^TestDVFEI005PerSessionFIFOLeavesCapacityForOtherSessions$' -count=1 -v`.
+- **Green result**: PASS; `DV-FEI-005` is corrected. Runner drain/cancel and process shutdown remain isolated to T079.

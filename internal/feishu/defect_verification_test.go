@@ -202,7 +202,7 @@ func TestDVFEI004CancelledWaiterLeavesSessionLockWithoutLaterExecution(t *testin
 }
 
 func TestDVFEI004AcceptedTaskTimeoutIncludesGlobalPermitWait(t *testing.T) {
-	createdContexts := make(chan context.CancelFunc, 2)
+	createdContexts := make(chan context.CancelFunc, 3)
 	runner := &Runner{
 		maxConcurrentTasks: 1,
 		newTaskContext: func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
@@ -213,14 +213,14 @@ func TestDVFEI004AcceptedTaskTimeoutIncludesGlobalPermitWait(t *testing.T) {
 	}
 	firstRelease := make(chan struct{})
 	firstFinished := make(chan struct{})
-	secondStarted := make(chan struct{}, 1)
+	started := make(chan string, 2)
 	runner.runTask = func(_ context.Context, task Task) {
 		if task.TaskID == "first" {
 			<-firstRelease
 			close(firstFinished)
 			return
 		}
-		secondStarted <- struct{}{}
+		started <- task.TaskID
 	}
 
 	tasks := make(chan Task)
@@ -243,62 +243,103 @@ func TestDVFEI004AcceptedTaskTimeoutIncludesGlobalPermitWait(t *testing.T) {
 	cancelSecond()
 	close(firstRelease)
 	<-firstFinished
+	tasks <- Task{TaskID: "third", ChatID: "other", SenderID: "sender"}
+	cancelThird := <-createdContexts
+	defer cancelThird()
+	select {
+	case got := <-started:
+		if got != "third" {
+			t.Fatalf("started task = %q, want expired second task skipped before third", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("third task did not start after the global permit became available")
+	}
 	close(tasks)
 	<-startReturned
-
-	select {
-	case <-secondStarted:
-		t.Fatal("expired accepted task executed after the global permit became available")
-	case <-time.After(50 * time.Millisecond):
-	}
 }
 
-func TestDVFEI005SessionWaitersConsumeGlobalCapacity(t *testing.T) {
-	runner := &Runner{maxConcurrentTasks: 2, locks: make(map[string]*sessionLock)}
+func TestDVFEI005PerSessionFIFOLeavesCapacityForOtherSessions(t *testing.T) {
+	runner := &Runner{maxConcurrentTasks: 2}
 	releases := map[string]chan struct{}{
-		"same-1": make(chan struct{}),
-		"same-2": make(chan struct{}),
-		"other":  make(chan struct{}),
+		"same-1":  make(chan struct{}, 1),
+		"same-2":  make(chan struct{}, 1),
+		"same-3":  make(chan struct{}, 1),
+		"other-1": make(chan struct{}, 1),
+		"other-2": make(chan struct{}, 1),
 	}
-	started := make(chan string, 3)
+	started := make(chan string, len(releases))
+	finished := make(chan string, len(releases))
 	runner.runTask = func(_ context.Context, task Task) {
-		releaseLock, err := runner.acquireSessionLock(context.Background(), task.ChatID+":"+task.SenderID)
-		if err != nil {
-			return
-		}
-		defer releaseLock()
 		started <- task.TaskID
 		<-releases[task.TaskID]
+		finished <- task.TaskID
 	}
 
 	tasks := make(chan Task)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		for _, release := range releases {
+			select {
+			case release <- struct{}{}:
+			default:
+			}
+		}
+	})
 	startReturned := make(chan struct{})
 	go func() {
-		runner.Start(context.Background(), tasks)
+		runner.Start(ctx, tasks)
 		close(startReturned)
 	}()
+	wantStart := func(want string) {
+		t.Helper()
+		select {
+		case got := <-started:
+			if got != want {
+				t.Fatalf("started task = %q, want %q", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for task %q", want)
+		}
+	}
+	assertNoStart := func() {
+		t.Helper()
+		select {
+		case got := <-started:
+			t.Fatalf("same-session queued task %q started before its predecessor", got)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	releaseAndWait := func(taskID string) {
+		t.Helper()
+		releases[taskID] <- struct{}{}
+		select {
+		case got := <-finished:
+			if got != taskID {
+				t.Fatalf("finished task = %q, want %q", got, taskID)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for task %q to finish", taskID)
+		}
+	}
+
 	tasks <- Task{TaskID: "same-1", ChatID: "chat", SenderID: "sender"}
-	if got := <-started; got != "same-1" {
-		t.Fatalf("first started task = %q", got)
-	}
+	wantStart("same-1")
 	tasks <- Task{TaskID: "same-2", ChatID: "chat", SenderID: "sender"}
-	waitForLockRefs(t, runner, "chat:sender", 2)
-
-	acceptedOther := make(chan struct{})
-	go func() {
-		tasks <- Task{TaskID: "other", ChatID: "other-chat", SenderID: "other-sender"}
-		close(acceptedOther)
-	}()
-	<-acceptedOther
-	select {
-	case got := <-started:
-		t.Fatalf("unrelated task %q started despite both permits being held by one session", got)
-	default:
-	}
-
-	close(releases["same-1"])
-	close(releases["same-2"])
-	close(releases["other"])
+	assertNoStart()
+	tasks <- Task{TaskID: "same-3", ChatID: "chat", SenderID: "sender"}
+	tasks <- Task{TaskID: "other-1", ChatID: "other-chat", SenderID: "other-sender"}
+	wantStart("other-1")
+	releaseAndWait("other-1")
+	assertNoStart()
+	tasks <- Task{TaskID: "other-2", ChatID: "third-chat", SenderID: "third-sender"}
+	wantStart("other-2")
+	releaseAndWait("other-2")
+	releaseAndWait("same-1")
+	wantStart("same-2")
+	releaseAndWait("same-2")
+	wantStart("same-3")
+	releaseAndWait("same-3")
 	close(tasks)
 	<-startReturned
 }
