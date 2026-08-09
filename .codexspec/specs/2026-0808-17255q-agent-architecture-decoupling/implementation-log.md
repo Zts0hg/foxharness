@@ -92,3 +92,11 @@
 - **Green implementation**: Added memory and versioned file `DeliveryStore` implementations, atomic sorted file replacement with restrictive permissions, first-delivery reservation, successful duplicate acknowledgement, cancellation rollback, fail-closed corruption handling, and explicit production composition under the supplied user home.
 - **Green commands**: Feishu and cmd package suites, focused delivery-store tests, race tests for concurrent reservation and duplicate dispatch, and the architecture test.
 - **Green result**: PASS; `DV-FEI-002` is corrected.
+
+## T076 / D-FEI-003: Sender Identity Validation
+
+- **Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu -run '^TestDVFEI003' -count=1`
+- **Red result**: Missing and blank sender events both produced empty-identity tasks and each reached delivery reservation.
+- **Green implementation**: Trim and require sender `open_id` during event translation, before task ID generation, durable reservation, session lookup, or enqueue. The Gateway continues to log the invalid event and return Feishu's successful acknowledgement to avoid retry amplification.
+- **Green commands**: Feishu and cmd package suites plus the architecture test.
+- **Green result**: PASS; `DV-FEI-003` is corrected.

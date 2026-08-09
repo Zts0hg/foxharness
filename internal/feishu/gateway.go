@@ -215,7 +215,10 @@ func taskFromMessageEvent(event *larkim.P2MessageReceiveV1) (Task, error) {
 	if event.Event.Sender != nil &&
 		event.Event.Sender.SenderId != nil &&
 		event.Event.Sender.SenderId.OpenId != nil {
-		senderID = *event.Event.Sender.SenderId.OpenId
+		senderID = strings.TrimSpace(*event.Event.Sender.SenderId.OpenId)
+	}
+	if senderID == "" {
+		return Task{}, fmt.Errorf("消息事件缺少 sender open_id")
 	}
 
 	return Task{

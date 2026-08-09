@@ -22,7 +22,6 @@ import (
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
-	"github.com/Zts0hg/foxharness/internal/session"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
@@ -138,28 +137,34 @@ func TestDVFEI002DuplicateMessageDeliveriesUseDurableAtMostOnceAcceptance(t *tes
 	assertNoTask(t, restartedTasks)
 }
 
-func TestDVFEI003MissingSenderIsAcceptedAndSharesSessionIdentity(t *testing.T) {
-	eventOne := messageEvent("event-1", "message-1", false)
-	eventTwo := messageEvent("event-2", "message-2", false)
-	first, err := taskFromMessageEvent(eventOne)
-	if err != nil || first.SenderID != "" {
-		t.Fatalf("first missing-sender event = %#v, %v", first, err)
-	}
-	second, err := taskFromMessageEvent(eventTwo)
-	if err != nil || second.SenderID != "" {
-		t.Fatalf("second missing-sender event = %#v, %v", second, err)
+func TestDVFEI003MissingOrBlankSenderIsRejectedBeforeReservationAndEnqueue(t *testing.T) {
+	missing := messageEvent("event-1", "message-1", false)
+	blank := messageEvent("event-2", "message-2", true)
+	*blank.Event.Sender.SenderId.OpenId = ""
+	for name, event := range map[string]*larkim.P2MessageReceiveV1{"missing": missing, "blank": blank} {
+		t.Run(name+" parser", func(t *testing.T) {
+			if task, err := taskFromMessageEvent(event); err == nil || !strings.Contains(err.Error(), "sender") {
+				t.Fatalf("taskFromMessageEvent() = %#v, %v; want sender validation", task, err)
+			}
+		})
 	}
 
-	workDir := t.TempDir()
-	runner := &Runner{workDir: workDir, sessionManager: session.NewManagerWithHome(workDir, t.TempDir())}
-	firstSession, created, err := runner.resolveSession(false, first)
-	if err != nil || !created {
-		t.Fatalf("first resolveSession() = %#v, %v, created=%v", firstSession, err, created)
+	tasks := make(chan Task, 2)
+	deliveries := &countingDeliveryStore{}
+	handler := NewGateway("token", "", tasks, approval.NewStore()).WithDeliveryStore(deliveries).Server(":0").Handler
+	missingResponse := postMessageEvent(t, handler, "event-1", "message-1", false)
+	blankBody := strings.Replace(messageEventJSON("event-2", "message-2", true), `"sender-1"`, `""`, 1)
+	blankRequest := httptest.NewRequest(http.MethodPost, "/webhook/event", strings.NewReader(blankBody))
+	blankRequest.Header.Set("Content-Type", "application/json")
+	blankResponse := httptest.NewRecorder()
+	handler.ServeHTTP(blankResponse, blankRequest)
+	if missingResponse.Code != http.StatusOK || blankResponse.Code != http.StatusOK {
+		t.Fatalf("validation acknowledgements = %d, %d; want 200", missingResponse.Code, blankResponse.Code)
 	}
-	secondSession, created, err := runner.resolveSession(false, second)
-	if err != nil || created || secondSession.ID != firstSession.ID {
-		t.Fatalf("second resolveSession() = %#v, %v, created=%v; want shared session %s", secondSession, err, created, firstSession.ID)
+	if calls := deliveries.reserveCalls.Load(); calls != 0 {
+		t.Fatalf("delivery reservations = %d, want zero", calls)
 	}
+	assertNoTask(t, tasks)
 }
 
 func TestDVFEI004CancelledWaiterStillAcquiresSessionLockLater(t *testing.T) {
@@ -488,6 +493,17 @@ type countingHTTPClient struct {
 	calls atomic.Int32
 	err   error
 }
+
+type countingDeliveryStore struct {
+	reserveCalls atomic.Int32
+}
+
+func (s *countingDeliveryStore) Reserve(string) (bool, error) {
+	s.reserveCalls.Add(1)
+	return true, nil
+}
+
+func (*countingDeliveryStore) Release(string) error { return nil }
 
 type writerFunc func([]byte) (int, error)
 
