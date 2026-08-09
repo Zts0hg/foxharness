@@ -57,3 +57,20 @@
 - **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/testsupport/... -count=1` and focused current-adapter plus architecture-test commands.
 - **Green result**: PASS.
 - **Phase 0A gate**: `env GOCACHE=/tmp/fox-go-build-cache go test ./...` passed for every package when run with local-test networking and test-state writes enabled. The initial sandbox attempt failed only because existing provider tests require an ephemeral `httptest` listener and existing app/benchmark/subagent tests resolve the user HOME outside the writable sandbox; those environment denials are excluded from behavioral evidence.
+
+## T040: Feishu Residual Defect Verification
+
+- **Workflow**: Verification-only task. Tests assert controlled current behavior; no production behavior was changed and no desired correction semantics were inferred.
+- **Command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -run 'TestDVFEI' -count=1`
+- **Result**: PASS, with all ten risks classified as proven defects against production source commit `cdaa566`.
+- **DV-FEI-001**: The direct resolver has no authenticated externally reachable HTTP/event route; the candidate callback receives 404 with no mux match.
+- **DV-FEI-002**: Sequential, concurrent, post-completion, and post-restart duplicates all receive success acknowledgements and enqueue work again.
+- **DV-FEI-003**: Missing sender identity is accepted as empty and causes separate events in one chat to share one persisted session lookup key.
+- **DV-FEI-004**: Session-lock waiting cannot observe cancellation and starts previously expired work after the holder releases the mutex.
+- **DV-FEI-005**: A same-session lock waiter consumes global capacity, so one conversation can prevent an unrelated conversation from starting; the mutex supplies no FIFO contract.
+- **DV-FEI-006**: Runner cancellation and task-channel closure return before accepted in-flight work drains, and `cmd/feishu` has no coordinated signal/intake/server/task shutdown path.
+- **DV-FEI-007**: A duplicate approval resolution can block, later report success, and violate exactly-once terminal-state semantics before pending cleanup.
+- **DV-FEI-008**: Feishu does not populate the selected model in compactor config, so a known 200K provider model uses the 128K fallback.
+- **DV-FEI-009**: Task panic recovery logs and releases capacity but emits no correlated terminal failure reply.
+- **DV-FEI-010**: Delivery failures are either logged by Reporter or discarded by Runner; no controlling adapter receives a terminal delivery-failure outcome.
+- **Gate outcome**: Correction stop is active. T041 and all later baseline/refactor tasks remain blocked until correction semantics are separately confirmed, each correction follows Red-Green-Refactor in an independent defect commit, and affected tests are rerun.

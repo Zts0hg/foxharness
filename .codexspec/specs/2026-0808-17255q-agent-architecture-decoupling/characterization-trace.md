@@ -255,16 +255,16 @@ No row may become `pass` because of a document-only claim, coverage percentage, 
 | `UI-AUT-004` | pending | TBD | TBD | TBD | TBD | |
 | `UI-AUT-005` | pending | TBD | TBD | TBD | TBD | |
 | `UI-AUT-006` | pending | TBD | TBD | TBD | TBD | |
-| `DV-FEI-001` | pending-verification | TBD | TBD | TBD | TBD | |
-| `DV-FEI-002` | pending-verification | TBD | TBD | TBD | TBD | |
-| `DV-FEI-003` | pending-verification | TBD | TBD | TBD | TBD | |
-| `DV-FEI-004` | pending-verification | TBD | TBD | TBD | TBD | |
-| `DV-FEI-005` | pending-verification | TBD | TBD | TBD | TBD | |
-| `DV-FEI-006` | pending-verification | TBD | TBD | TBD | TBD | |
-| `DV-FEI-007` | pending-verification | TBD | TBD | TBD | TBD | |
-| `DV-FEI-008` | pending-verification | TBD | TBD | TBD | TBD | |
-| `DV-FEI-009` | pending-verification | TBD | TBD | TBD | TBD | |
-| `DV-FEI-010` | pending-verification | TBD | TBD | TBD | TBD | |
+| `DV-FEI-001` | blocked-defect | `TestDVFEI001ApprovalResolverHasNoReachableHTTPRoute` | Direct resolver exists, but authenticated server mux returns 404 and matches no approval callback route. | `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -run 'TestDVFEI' -count=1` | `cdaa566` | Proven defect; externally reachable approval resolution is absent. |
+| `DV-FEI-002` | blocked-defect | `TestDVFEI002DuplicateMessageDeliveriesAlwaysEnqueueNewTasks` | Sequential, concurrent, post-completion, and post-restart duplicate message IDs are all acknowledged 200 and enqueue duplicate tasks. | `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -run 'TestDVFEI' -count=1` | `cdaa566` | Proven defect; no process or durable idempotency authority exists. |
+| `DV-FEI-003` | blocked-defect | `TestDVFEI003MissingSenderIsAcceptedAndSharesSessionIdentity` | Missing sender is accepted as empty and separate messages in one chat resolve to the same persisted session. | `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -run 'TestDVFEI' -count=1` | `cdaa566` | Proven defect; unrelated missing-sender events share `chat:` identity. |
+| `DV-FEI-004` | blocked-defect | `TestDVFEI004CancelledWaiterStillAcquiresSessionLockLater` | A cancelled waiter remains blocked on `sync.Mutex` and acquires the session lock after the holder releases it. | `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -run 'TestDVFEI' -count=1` | `cdaa566` | Proven defect; lock waiting has no context boundary. |
+| `DV-FEI-005` | blocked-defect | `TestDVFEI005SessionWaitersConsumeGlobalCapacity` | Two same-session tasks consume both permits while one waits on the session lock, preventing an unrelated session from starting. | `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -run 'TestDVFEI' -count=1` | `cdaa566` | Proven defect; global scheduling can be blocked by one session and FIFO is not guaranteed. |
+| `DV-FEI-006` | blocked-defect | `TestDVFEI006RunnerReturnsWithoutDrainingAcceptedTask`, `TestDVFEI006ProductionEntryHasNoCoordinatedShutdown` | Runner returns on cancellation/channel close while accepted work is active; main uses background context and has no signal, intake stop, gateway shutdown, task-channel close, or drain protocol. | `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -run 'TestDVFEI' -count=1` | `cdaa566` | Proven defect; shutdown is not coordinated. |
+| `DV-FEI-007` | blocked-defect | `TestDVFEI007DuplicateApprovalCanBlockAndResolveTwice` | A duplicate approval blocks on the full result channel, then succeeds after the first result drains; a later response fails only after cleanup. | `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -run 'TestDVFEI' -count=1` | `cdaa566` | Proven defect; terminal resolution is blocking and not exactly once. |
+| `DV-FEI-008` | blocked-defect | `TestDVFEI008CompactorFallsBackInsteadOfUsingProviderModel` | Feishu leaves `CompactionConfig.Model` empty, producing the 128K fallback rather than the selected provider model's 200K window. | `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -run 'TestDVFEI' -count=1` | `cdaa566` | Proven defect; run and compactor model snapshots diverge. |
+| `DV-FEI-009` | blocked-defect | `TestDVFEI009PanicRecoveryEmitsNoTerminalReply` | Panic recovery logs and releases capacity but sends zero correlated terminal messages. | `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -run 'TestDVFEI' -count=1` | `cdaa566` | Proven defect; accepted task can disappear without a terminal reply. |
+| `DV-FEI-010` | blocked-defect | `TestDVFEI010DeliveryFailureIsOnlyLoggedAndNotReturned` | SDK delivery errors are detectable, but reporter reduces them to logs and runner ignores at least six receipt/session/final/failure send errors. | `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -run 'TestDVFEI' -count=1` | `cdaa566` | Proven defect; controlling adapter receives no terminal delivery failure. |
 | `DV-AOP-001` | pending-verification | TBD | TBD | TBD | TBD | |
 | `DV-AOP-002` | pending-verification | TBD | TBD | TBD | TBD | |
 | `DV-AOP-003` | pending-verification | TBD | TBD | TBD | TBD | |

@@ -27,7 +27,7 @@
 
 ## Phase 0B: Residual Defect Verification and Fixture Authority
 
-- [ ] **T040** Execute comprehensive hermetic proofs for `DV-FEI-001..010` in Feishu/cmd tests, record each defect/not-defect result and evidence, and stop for separate requirements on any proven defect. Dependencies: T006. Covers: NFR-005, NFR-006, NFR-010; Plan: Feishu defect gate.
+- [x] **T040** Execute comprehensive hermetic proofs for `DV-FEI-001..010` in Feishu/cmd tests, record each defect/not-defect result and evidence, and stop for separate requirements on any proven defect. Dependencies: T006. Covers: NFR-005, NFR-006, NFR-010; Plan: Feishu defect gate. **Correction stop active:** all ten items are proven defects; T041 and later tasks remain blocked until correction semantics are separately confirmed and each defect correction is committed Green.
 - [ ] **T041** Execute proofs for `DV-AOP-001..006` plus reuse `DV-FEI-001` and `DV-FEI-007` conclusions without a second approval protocol; record each result and stop on proven defects. Dependencies: T006, T040. Covers: NFR-005, NFR-006, NFR-010; Plan: AgentOps defect gate.
 - [ ] **T042** Execute proofs for `DV-BEN-001..007`, distinguishing runtime, evaluation, infrastructure, cancellation, timeout, path, process-tree, output-bound, provenance, and status outcomes; record and stop on defects. Dependencies: T006. Covers: REQ-013, NFR-005, NFR-006, NFR-010; Plan: Benchmark defect gate.
 - [ ] **T043** Execute proofs for `DV-CHD-001..006`, separating invocation-adapter and runtime-lifecycle behavior and preserving the one-level ceiling; record and stop on defects. Dependencies: T006. Covers: REQ-012, NFR-005, NFR-006, NFR-010; Plan: Child defect gate.
