@@ -134,7 +134,8 @@ func TestRunnerBuildRegistryMarksWritableDelegationNestedPermissionEnforced(t *t
 func TestRunnerStartBoundsConcurrentTasks(t *testing.T) {
 	tasks := make(chan Task, 4)
 	for i := 0; i < 4; i++ {
-		tasks <- Task{TaskID: string(rune('a' + i)), ChatID: "chat", SenderID: "sender", Text: "task"}
+		id := string(rune('a' + i))
+		tasks <- Task{TaskID: id, ChatID: "chat-" + id, SenderID: "sender", Text: "task"}
 	}
 	close(tasks)
 	ctx, cancel := context.WithCancel(context.Background())
