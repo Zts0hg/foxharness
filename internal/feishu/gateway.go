@@ -36,6 +36,7 @@ type Gateway struct {
 	encryptKey        string
 	tasks             chan<- Task
 	approvalStore     *approval.Store
+	deliveryStore     DeliveryStore
 	server            *http.Server
 }
 
@@ -56,7 +57,16 @@ func NewGateway(verificationToken, encryptKey string, tasks chan<- Task, approva
 		encryptKey:        encryptKey,
 		tasks:             tasks,
 		approvalStore:     approvalStore,
+		deliveryStore:     newMemoryDeliveryStore(),
 	}
+}
+
+// WithDeliveryStore installs the durable message acceptance authority.
+func (g *Gateway) WithDeliveryStore(store DeliveryStore) *Gateway {
+	if store != nil {
+		g.deliveryStore = store
+	}
+	return g
 }
 
 // Listen registers the Feishu event dispatcher on /webhook/event and starts
@@ -81,11 +91,22 @@ func (g *Gateway) Server(addr string) *http.Server {
 			log.Printf("[Feishu Gateway] ignore message event: %v", err)
 			return nil
 		}
+		accepted, err := g.deliveryStore.Reserve(task.MessageID)
+		if err != nil {
+			return fmt.Errorf("reserve Feishu delivery %s: %w", task.MessageID, err)
+		}
+		if !accepted {
+			log.Printf("[Feishu Gateway] duplicate message ignored: %s", task.MessageID)
+			return nil
+		}
 
 		select {
 		case g.tasks <- task:
 			return nil
 		case <-ctx.Done():
+			if releaseErr := g.deliveryStore.Release(task.MessageID); releaseErr != nil {
+				return errors.Join(ctx.Err(), fmt.Errorf("rollback Feishu delivery %s: %w", task.MessageID, releaseErr))
+			}
 			return ctx.Err()
 		}
 	})

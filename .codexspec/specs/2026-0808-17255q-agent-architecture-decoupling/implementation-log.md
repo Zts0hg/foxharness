@@ -82,3 +82,13 @@
 - **Green implementation**: Added a gateway-owned POST route with constant-time Bearer-token verification, a 64-KiB body limit, strict single-object JSON decoding, required approval identity, shared Store resolution, and deterministic 204/400/401/404/405 mapping. Duplicate-conflict mapping remains assigned to T080.
 - **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu ./internal/approval -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/architecturetest -count=1`.
 - **Green result**: PASS; `DV-FEI-001` is corrected.
+
+## T075 / D-FEI-002: Durable Message Acceptance
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu -run '^TestDVFEI002' -count=1`
+- **Compile Red result**: Expected missing `NewFileDeliveryStore` and `WithDeliveryStore` APIs.
+- **Behavior Red command**: The same command after adding the file authority without wiring it into event acceptance.
+- **Behavior Red result**: A sequential duplicate still appeared on the task channel, proving the Gateway bypassed the new authority.
+- **Green implementation**: Added memory and versioned file `DeliveryStore` implementations, atomic sorted file replacement with restrictive permissions, first-delivery reservation, successful duplicate acknowledgement, cancellation rollback, fail-closed corruption handling, and explicit production composition under the supplied user home.
+- **Green commands**: Feishu and cmd package suites, focused delivery-store tests, race tests for concurrent reservation and duplicate dispatch, and the architecture test.
+- **Green result**: PASS; `DV-FEI-002` is corrected.

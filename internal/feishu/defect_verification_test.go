@@ -84,10 +84,15 @@ func TestDVFEI001ApprovalCallbackIsAuthenticatedBoundedAndReachable(t *testing.T
 	}
 }
 
-func TestDVFEI002DuplicateMessageDeliveriesAlwaysEnqueueNewTasks(t *testing.T) {
+func TestDVFEI002DuplicateMessageDeliveriesUseDurableAtMostOnceAcceptance(t *testing.T) {
 	const concurrent = 8
 	tasks := make(chan Task, 32)
-	gateway := NewGateway("token", "", tasks, approval.NewStore())
+	storePath := filepath.Join(t.TempDir(), "deliveries.json")
+	deliveryStore, err := NewFileDeliveryStore(storePath)
+	if err != nil {
+		t.Fatalf("NewFileDeliveryStore() error = %v", err)
+	}
+	gateway := NewGateway("token", "", tasks, approval.NewStore()).WithDeliveryStore(deliveryStore)
 	handler := gateway.Server(":0").Handler
 
 	first := postMessageEvent(t, handler, "event-1", "message-1", true)
@@ -95,7 +100,8 @@ func TestDVFEI002DuplicateMessageDeliveriesAlwaysEnqueueNewTasks(t *testing.T) {
 	if first.Code != http.StatusOK || second.Code != http.StatusOK {
 		t.Fatalf("sequential duplicate acknowledgements = %d, %d", first.Code, second.Code)
 	}
-	assertDuplicateTasks(t, tasks, 2, "message-1")
+	assertDuplicateTasks(t, tasks, 1, "message-1")
+	assertNoTask(t, tasks)
 
 	start := make(chan struct{})
 	var wait sync.WaitGroup
@@ -116,15 +122,20 @@ func TestDVFEI002DuplicateMessageDeliveriesAlwaysEnqueueNewTasks(t *testing.T) {
 			t.Fatalf("concurrent duplicate acknowledgement = %d", status)
 		}
 	}
-	assertDuplicateTasks(t, tasks, concurrent, "message-concurrent")
+	assertDuplicateTasks(t, tasks, 1, "message-concurrent")
+	assertNoTask(t, tasks)
 
 	// Completion and restart have no durable duplicate authority either.
 	postMessageEvent(t, handler, "event-after", "message-1", true)
-	assertDuplicateTasks(t, tasks, 1, "message-1")
+	assertNoTask(t, tasks)
 	restartedTasks := make(chan Task, 1)
-	restarted := NewGateway("token", "", restartedTasks, approval.NewStore())
+	restartedStore, err := NewFileDeliveryStore(storePath)
+	if err != nil {
+		t.Fatalf("restart NewFileDeliveryStore() error = %v", err)
+	}
+	restarted := NewGateway("token", "", restartedTasks, approval.NewStore()).WithDeliveryStore(restartedStore)
 	postMessageEvent(t, restarted.Server(":0").Handler, "event-restart", "message-1", true)
-	assertDuplicateTasks(t, restartedTasks, 1, "message-1")
+	assertNoTask(t, restartedTasks)
 }
 
 func TestDVFEI003MissingSenderIsAcceptedAndSharesSessionIdentity(t *testing.T) {
@@ -438,6 +449,15 @@ func assertDuplicateTasks(t *testing.T, tasks <-chan Task, count int, messageID 
 		if task.MessageID != messageID {
 			t.Fatalf("task %d MessageID = %q", i, task.MessageID)
 		}
+	}
+}
+
+func assertNoTask(t *testing.T, tasks <-chan Task) {
+	t.Helper()
+	select {
+	case task := <-tasks:
+		t.Fatalf("unexpected duplicate task: %#v", task)
+	default:
 	}
 }
 

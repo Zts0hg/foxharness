@@ -17,6 +17,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/feishu"
@@ -46,7 +47,11 @@ func main() {
 	tasks := make(chan feishu.Task, 32)
 
 	runner := feishu.NewRunner(llmProvider, workDir, messenger, sessionManager, approvalStore)
-	gateway := feishu.NewGateway(verificationToken, encryptKey, tasks, approvalStore)
+	deliveryStore, err := newDeliveryStore(homeDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	gateway := feishu.NewGateway(verificationToken, encryptKey, tasks, approvalStore).WithDeliveryStore(deliveryStore)
 
 	ctx := context.Background()
 	go runner.Start(ctx, tasks)
@@ -56,6 +61,10 @@ func main() {
 		log.Fatal(err)
 	}
 
+}
+
+func newDeliveryStore(homeDir string) (feishu.DeliveryStore, error) {
+	return feishu.NewFileDeliveryStore(filepath.Join(homeDir, ".foxharness", "feishu", "deliveries.json"))
 }
 
 func newConfiguredLLMProvider(homeDir string, lookup llmconfig.EnvLookup) (provider.LLMProvider, error) {
