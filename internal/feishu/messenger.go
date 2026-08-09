@@ -9,6 +9,8 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
+const maxFeishuTextRunes = 1800
+
 // Messenger wraps the Lark SDK client and sends plain-text messages to
 // Feishu group chats.
 type Messenger struct {
@@ -27,6 +29,7 @@ func NewMessenger(appID, appSecret string) *Messenger {
 // chatID.  It returns an error if the Lark API call fails or the response
 // indicates a non-success status.
 func (m *Messenger) SendText(ctx context.Context, chatID, text string) error {
+	text = truncateFeishuText(text, maxFeishuTextRunes)
 	contentBytes, _ := json.Marshal(map[string]string{
 		"text": text,
 	})

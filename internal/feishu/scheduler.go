@@ -81,6 +81,7 @@ func (s *taskScheduler) nextRunnable(queue *sessionTaskQueue) (*scheduledTask, b
 		}
 		log.Printf("[Feishu Runner] task=%s expired before execution: %v", task.task.TaskID, task.ctx.Err())
 		task.cancel()
+		s.runner.deliverCancellation(task.task, task.ctx.Err())
 	}
 	return nil, false
 }
@@ -125,6 +126,7 @@ func (s *taskScheduler) cancelAll(cause error) {
 		for _, task := range queue.tasks {
 			log.Printf("[Feishu Runner] task=%s cancelled before execution: %v", task.task.TaskID, cause)
 			task.cancel()
+			s.runner.deliverCancellation(task.task, cause)
 		}
 		queue.tasks = nil
 		if queue.activeTask != nil {

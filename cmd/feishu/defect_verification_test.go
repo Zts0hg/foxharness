@@ -59,6 +59,26 @@ func TestDVFEI006ProductionEntryCoordinatesShutdown(t *testing.T) {
 	}
 }
 
+func TestDVFEI010ProductionEntryComposesDeliveryFailureObserver(t *testing.T) {
+	_, current, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller() failed")
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(current), "main.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(main.go) error = %v", err)
+	}
+	source := string(data)
+	for _, required := range []string{
+		"WithDeliveryFailureObserver",
+		"NewLoggingDeliveryFailureObserver(log.Default())",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("production entry does not compose %q", required)
+		}
+	}
+}
+
 type shutdownRecorder struct {
 	mu     sync.Mutex
 	events []string

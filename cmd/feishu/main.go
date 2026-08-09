@@ -62,7 +62,8 @@ func main() {
 
 	tasks := make(chan feishu.Task, 32)
 
-	runner := feishu.NewRunner(llmProvider, workDir, messenger, sessionManager, approvalStore)
+	runner := feishu.NewRunner(llmProvider, workDir, messenger, sessionManager, approvalStore).
+		WithDeliveryFailureObserver(feishu.NewLoggingDeliveryFailureObserver(log.Default()))
 	deliveryStore, err := newDeliveryStore(homeDir)
 	if err != nil {
 		log.Fatal(err)

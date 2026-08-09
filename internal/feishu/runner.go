@@ -35,13 +35,14 @@ type Runner struct {
 	locksMu        sync.Mutex
 	locks          map[string]*sessionLock
 
-	maxConcurrentTasks  int
-	taskTimeout         time.Duration
-	lockTTL             time.Duration
-	clock               func() time.Time
-	newTaskContext      func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	runTask             func(context.Context, Task)
-	taskOutcomeObserver TaskOutcomeObserver
+	maxConcurrentTasks      int
+	taskTimeout             time.Duration
+	lockTTL                 time.Duration
+	clock                   func() time.Time
+	newTaskContext          func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	runTask                 func(context.Context, Task)
+	taskOutcomeObserver     TaskOutcomeObserver
+	deliveryFailureObserver DeliveryFailureObserver
 }
 
 const (
@@ -80,6 +81,12 @@ func NewRunner(
 		clock:               time.Now,
 		taskOutcomeObserver: loggingTaskOutcomeObserver{},
 	}
+}
+
+/* WithDeliveryFailureObserver installs the non-blocking delivery failure observer. */
+func (r *Runner) WithDeliveryFailureObserver(observer DeliveryFailureObserver) *Runner {
+	r.deliveryFailureObserver = observer
+	return r
 }
 
 // Start begins consuming tasks from the tasks channel.  Each task is
@@ -132,12 +139,13 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	defer cancel()
 	providerMetadata := snapshotTaskProviderMetadata(r.provider)
 
-	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("已收到任务 %s，开始执行。", task.TaskID))
+	r.deliverTaskText(runCtx, task, DeliveryStageReceipt, fmt.Sprintf("已收到任务 %s，开始执行。", task.TaskID))
 
 	sessionKey := taskSessionKey(task)
 	releaseLock, err := r.acquireSessionLock(runCtx, sessionKey)
 	if err != nil {
 		log.Printf("[Feishu Runner] task=%s session lock cancelled: %v", task.TaskID, err)
+		r.deliverCancellation(task, err)
 		return
 	}
 	defer releaseLock()
@@ -145,14 +153,14 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	forceNew, taskText := parseSessionDirective(task.Text)
 	sess, created, err := r.resolveSession(forceNew, task)
 	if err != nil {
-		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("创建 Session 失败: %v", err))
+		r.deliverTaskText(runCtx, task, DeliveryStageSession, fmt.Sprintf("创建 Session 失败: %v", err))
 		return
 	}
 
 	if created {
-		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("任务已进入新 Session: %s", sess.ID))
+		r.deliverTaskText(runCtx, task, DeliveryStageSession, fmt.Sprintf("任务已进入新 Session: %s", sess.ID))
 	} else {
-		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("继续使用 Session: %s", sess.ID))
+		r.deliverTaskText(runCtx, task, DeliveryStageSession, fmt.Sprintf("继续使用 Session: %s", sess.ID))
 	}
 
 	autoStore := automemory.NewStore(r.sessionManager.HomeDir(), r.workDir)
@@ -187,27 +195,32 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	compactor, err := compaction.NewCompactor(r.provider, compCfg)
 	if err != nil {
 		log.Printf("[Feishu Runner] 初始化 Compactor 失败: %v", err)
+		r.deliverTaskText(runCtx, task, DeliveryStageFailure, fmt.Sprintf("初始化任务执行环境失败：%v", err))
 		return
 	}
 	eng.WithCompactor(compactor)
 
-	reporter := NewReporter(r.messenger, task.ChatID, task.TaskID)
+	reporter := NewReporter(r.messenger, task.ChatID, task.TaskID).WithDeliveryFailureObserver(r.deliveryFailureObserver)
 	result, err := eng.RunWithReporter(runCtx, sess, taskPrompt, reporter)
 	if result != nil {
 		r.fireMemoryExtraction(hooks, sess, result.RunID, tracker)
 	}
 	if err != nil {
 		log.Printf("[Feishu Runner] task=%s session=%s  failed: %v", task.TaskID, sess.ID, err)
-		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("Session %s 执行失败：%v", sess.ID, err))
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			r.deliverCancellation(task, err)
+		} else {
+			r.deliverTaskText(runCtx, task, DeliveryStageFailure, fmt.Sprintf("Session %s 执行失败：%v", sess.ID, err))
+		}
 		return
 	}
 
 	if result == nil || result.FinalMessage == "" {
-		_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("任务 %s 执行完成，Session: %s", task.TaskID, sess.ID))
+		r.deliverTaskText(runCtx, task, DeliveryStageFinal, fmt.Sprintf("任务 %s 执行完成，Session: %s", task.TaskID, sess.ID))
 		return
 	}
 
-	_ = r.messenger.SendText(runCtx, task.ChatID, fmt.Sprintf("任务 %s 已完成，Session: %s，Run: %s", task.TaskID, sess.ID, result.RunID))
+	r.deliverTaskText(runCtx, task, DeliveryStageFinal, fmt.Sprintf("任务 %s 已完成，Session: %s，Run: %s", task.TaskID, sess.ID, result.RunID))
 }
 
 // buildComposer assembles the system-prompt composer for a task, injecting the
@@ -375,15 +388,39 @@ func (r *Runner) handleTaskPanic(task Task, recovered any) {
 		Status: TaskOutcomeFailed,
 		Error:  cause,
 	})
-	if r.messenger == nil {
-		return
-	}
 	deliveryCtx, cancel := context.WithTimeout(context.Background(), defaultTerminalSendTimeout)
 	defer cancel()
 	message := fmt.Sprintf("任务 %s 执行失败：内部错误。", task.TaskID)
-	if err := r.messenger.SendText(deliveryCtx, task.ChatID, message); err != nil {
-		log.Printf("[Feishu Runner] task=%s panic terminal delivery failed: %v", task.TaskID, err)
+	r.deliverTaskText(deliveryCtx, task, DeliveryStagePanicFailure, message)
+}
+
+func (r *Runner) deliverTaskText(ctx context.Context, task Task, stage DeliveryStage, text string) {
+	if r.messenger == nil {
+		r.observeDeliveryFailure(DeliveryFailure{TaskID: task.TaskID, ChatID: task.ChatID, Stage: stage, Cause: errMessengerUnavailable})
+		return
 	}
+	if err := r.messenger.SendText(ctx, task.ChatID, text); err != nil {
+		r.observeDeliveryFailure(DeliveryFailure{TaskID: task.TaskID, ChatID: task.ChatID, Stage: stage, Cause: err})
+	}
+}
+
+func (r *Runner) deliverCancellation(task Task, cause error) {
+	deliveryCtx, cancel := context.WithTimeout(context.Background(), defaultTerminalSendTimeout)
+	defer cancel()
+	r.deliverTaskText(deliveryCtx, task, DeliveryStageCancellation, fmt.Sprintf("任务 %s 已取消：%v", task.TaskID, cause))
+}
+
+func (r *Runner) observeDeliveryFailure(failure DeliveryFailure) {
+	if r.deliveryFailureObserver == nil {
+		log.Printf("[Feishu Delivery] task=%s chat=%s stage=%s failed: %v", failure.TaskID, failure.ChatID, failure.Stage, failure.Cause)
+		return
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("[Feishu Runner] task=%s delivery observer panic recovered: %v", failure.TaskID, recovered)
+		}
+	}()
+	r.deliveryFailureObserver.ObserveDeliveryFailure(failure)
 }
 
 func (r *Runner) observeTaskOutcome(outcome TaskOutcome) {

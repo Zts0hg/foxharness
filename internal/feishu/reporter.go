@@ -12,9 +12,16 @@ import (
 // Reporter streams engine lifecycle events back to the Feishu chat that
 // originated a task.
 type Reporter struct {
-	messenger *Messenger
-	chatID    string
-	taskID    string
+	messenger               *Messenger
+	chatID                  string
+	taskID                  string
+	deliveryFailureObserver DeliveryFailureObserver
+}
+
+/* WithDeliveryFailureObserver installs the non-blocking delivery failure observer. */
+func (r *Reporter) WithDeliveryFailureObserver(observer DeliveryFailureObserver) *Reporter {
+	r.deliveryFailureObserver = observer
+	return r
 }
 
 // NewReporter creates a Feishu-backed engine reporter for one task.
@@ -92,7 +99,17 @@ func (r *Reporter) send(ctx context.Context, text string) {
 		return
 	}
 	if err := r.messenger.SendText(ctx, r.chatID, text); err != nil {
-		log.Printf("[Feishu Reporter] send task=%s chat=%s failed: %v", r.taskID, r.chatID, err)
+		failure := DeliveryFailure{TaskID: r.taskID, ChatID: r.chatID, Stage: DeliveryStageLifecycle, Cause: err}
+		if r.deliveryFailureObserver == nil {
+			log.Printf("[Feishu Reporter] send task=%s chat=%s failed: %v", r.taskID, r.chatID, err)
+			return
+		}
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("[Feishu Reporter] task=%s delivery observer panic recovered: %v", r.taskID, recovered)
+			}
+		}()
+		r.deliveryFailureObserver.ObserveDeliveryFailure(failure)
 	}
 }
 
@@ -104,7 +121,12 @@ func truncateFeishuText(s string, limit int) string {
 	if len(runes) <= limit {
 		return s
 	}
-	return fmt.Sprintf("%s\n... (已截断，原始内容约 %d 字节)", string(runes[:limit]), len(s))
+	suffix := fmt.Sprintf("\n... (已截断，原始内容约 %d 字节)", len(s))
+	suffixRunes := []rune(suffix)
+	if len(suffixRunes) >= limit {
+		return string(suffixRunes[:limit])
+	}
+	return string(runes[:limit-len(suffixRunes)]) + suffix
 }
 
 var _ engine.Reporter = (*Reporter)(nil)

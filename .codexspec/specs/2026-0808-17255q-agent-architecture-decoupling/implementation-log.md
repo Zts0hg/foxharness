@@ -92,6 +92,8 @@
 - **Green implementation**: Added memory and versioned file `DeliveryStore` implementations, atomic sorted file replacement with restrictive permissions, first-delivery reservation, successful duplicate acknowledgement, cancellation rollback, fail-closed corruption handling, and explicit production composition under the supplied user home.
 - **Green commands**: Feishu and cmd package suites, focused delivery-store tests, race tests for concurrent reservation and duplicate dispatch, and the architecture test.
 - **Green result**: PASS; `DV-FEI-002` is corrected.
+- **Post-correction full-gate Red**: The original request-cancellation fixture timed out because the Lark dispatcher did not propagate the HTTP request context into the event callback, leaving an unavailable unbuffered task queue blocked indefinitely.
+- **Follow-up Green**: Commit `28386a0` made unavailable local enqueue fail fast, atomically release the durable reservation, and return an observable handler error. `TestGatewayRollsBackReservationWhenEnqueueIsUnavailable` uses deterministic queue replacement to prove retry success without relying on SDK context propagation.
 
 ## T076 / D-FEI-003: Sender Identity Validation
 
@@ -119,6 +121,7 @@
 - **Green implementation**: Added a Runner-private event-loop scheduler with one FIFO queue per `(chat_id, sender_id)`, an ordered ready-session queue, and event-loop-owned active capacity. Only a session head can run globally; queued successors hold no global capacity; unrelated ready sessions retain admission order; completion enables only the completed session's next head. Accepted task contexts remain scoped from enqueue through execution, and expired queue heads are skipped.
 - **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu -run '^TestDVFEI005PerSessionFIFOLeavesCapacityForOtherSessions$' -count=1 -v`.
 - **Green result**: PASS; `DV-FEI-005` is corrected. Runner drain/cancel and process shutdown remain isolated to T079.
+- **Post-correction test alignment**: The complete package gate correctly rejected the old global-limit test's expectation that two tasks from one session could run concurrently. Commit `3dd89e1` assigns that test's four tasks to distinct sessions so it verifies only the global limit; DV-FEI-005 remains the separate FIFO authority.
 
 ## T079 / D-FEI-006: Coordinated Drain, Cancellation, and Process Shutdown
 
@@ -158,3 +161,13 @@
 - **Green implementation**: Scheduler recovery now cancels the task context after stack cleanup, emits one failed `TaskOutcome` correlated by task/chat through a non-blocking observer contract, and attempts one bounded failure notification using a fresh background-derived context rather than the cancelled task context. Observer panic and transport failure cannot prevent scheduler completion; production Runner defaults to a logging task-outcome observer.
 - **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu -count=1`, `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu -run '^TestDVFEI009' -count=1 -v`, and `env GOCACHE=/tmp/fox-go-build-cache go vet ./internal/feishu ./cmd/feishu`.
 - **Green result**: PASS; `DV-FEI-009` is corrected with exactly one outcome, one deadline-bearing successful terminal delivery fixture, and verified successor execution.
+
+## T083 / D-FEI-010: Typed Observable Delivery Failures
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu -run '^TestDVFEI010' -count=1`
+- **Compile Red result**: The desired tests could not compile because Feishu defined no delivery stage/failure/observer types, no stage-aware Runner methods, and no global transport text bound.
+- **Behavior Red command**: The same focused command after adding only the contracts, injection points, send helpers, and pre-transport truncation call.
+- **Behavior Red result**: All seven failed sends were only logged and yielded zero observer records; the nominal 1800-rune truncation produced 1824 runes after appending its marker.
+- **Green implementation**: Added typed `DeliveryFailure` records for receipt, session, lifecycle, final, ordinary-failure, panic-failure, and cancellation stages. Runner and Reporter route every transport error through an injected non-blocking observer contract with panic isolation; queued/active cancellation and panic use fresh bounded delivery contexts. Messenger enforces a total 1800-rune pre-transport bound including its truncation marker. The Feishu composition root explicitly injects the production logging observer.
+- **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/feishu ./cmd/feishu ./internal/approval ./internal/engine ./internal/compaction -count=1` and `env GOCACHE=/tmp/fox-go-build-cache go test -race ./internal/feishu ./cmd/feishu -run 'TestDVFEI009|TestDVFEI010|TestDVFEI006' -count=1 -v`.
+- **Green result**: PASS; `DV-FEI-010` is corrected, all seven stages preserve correlation and wrapped cause, text is bounded before the fake transport, production observation is explicit, and the T040 correction stop is cleared.

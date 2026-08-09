@@ -1,13 +1,11 @@
 package feishu
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -596,30 +594,62 @@ func TestDVFEI009PanicRecoveryEmitsOneOutcomeAndBoundedTerminalReply(t *testing.
 	}
 }
 
-func TestDVFEI010DeliveryFailureIsOnlyLoggedAndNotReturned(t *testing.T) {
+func TestDVFEI010DeliveryFailuresAreTypedAndObservedByStage(t *testing.T) {
 	deliveryErr := errors.New("delivery failed")
 	httpClient := &countingHTTPClient{err: deliveryErr}
+	observer := &recordingDeliveryFailureObserver{}
+	task := Task{TaskID: "task", ChatID: "chat"}
+	runner := &Runner{
+		messenger:               newTestMessenger(httpClient),
+		deliveryFailureObserver: observer,
+	}
+	runner.deliverTaskText(context.Background(), task, DeliveryStageReceipt, "receipt")
+	runner.deliverTaskText(context.Background(), task, DeliveryStageSession, "session")
+	runner.deliverTaskText(context.Background(), task, DeliveryStageFinal, "final")
+	runner.deliverTaskText(context.Background(), task, DeliveryStageFailure, "failure")
+	reporter := NewReporter(runner.messenger, task.ChatID, task.TaskID).WithDeliveryFailureObserver(observer)
+	reporter.OnMessage(context.Background(), "lifecycle")
+	runner.handleTaskPanic(task, "panic")
+	runner.deliverCancellation(task, context.Canceled)
+
+	failures := observer.snapshot()
+	wantStages := []DeliveryStage{
+		DeliveryStageReceipt,
+		DeliveryStageSession,
+		DeliveryStageFinal,
+		DeliveryStageFailure,
+		DeliveryStageLifecycle,
+		DeliveryStagePanicFailure,
+		DeliveryStageCancellation,
+	}
+	if len(failures) != len(wantStages) {
+		t.Fatalf("delivery failures = %#v, want %d", failures, len(wantStages))
+	}
+	for i, failure := range failures {
+		if failure.TaskID != task.TaskID || failure.ChatID != task.ChatID || failure.Stage != wantStages[i] || !errors.Is(failure.Cause, deliveryErr) {
+			t.Fatalf("delivery failure %d = %#v, want stage %q and correlated cause", i, failure, wantStages[i])
+		}
+	}
+	if calls := httpClient.calls.Load(); calls != int32(len(wantStages)) {
+		t.Fatalf("HTTP calls = %d, want one per observed stage", calls)
+	}
+	if source := readPackageSource(t, "runner.go"); strings.Contains(source, "_ = r.messenger.SendText") {
+		t.Fatal("Runner still contains a hidden direct delivery error")
+	}
+}
+
+func TestDVFEI010MessengerBoundsTextBeforeTransport(t *testing.T) {
+	httpClient := &countingHTTPClient{texts: make(chan string, 1)}
 	messenger := newTestMessenger(httpClient)
-	if err := messenger.SendText(context.Background(), "chat", "receipt"); err == nil || !strings.Contains(err.Error(), deliveryErr.Error()) {
-		t.Fatalf("Messenger.SendText() error = %v", err)
+	if err := messenger.SendText(context.Background(), "chat", strings.Repeat("x", 5000)); err != nil {
+		t.Fatalf("SendText() error = %v", err)
 	}
-
-	var logs bytes.Buffer
-	oldWriter := log.Writer()
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(oldWriter) })
-	reporter := NewReporter(messenger, "chat", "task")
-	reporter.OnMessage(context.Background(), strings.Repeat("x", 5000))
-	if !strings.Contains(logs.String(), deliveryErr.Error()) {
-		t.Fatalf("reporter did not log delivery failure: %s", logs.String())
+	text := <-httpClient.texts
+	if runes := len([]rune(text)); runes > maxFeishuTextRunes {
+		t.Fatalf("transport text runes = %d, want <= %d", runes, maxFeishuTextRunes)
 	}
-	if calls := httpClient.calls.Load(); calls != 2 {
-		t.Fatalf("HTTP calls = %d, want direct send plus reporter send", calls)
-	}
-
-	source := readPackageSource(t, "runner.go")
-	if count := strings.Count(source, "_ = r.messenger.SendText"); count < 6 {
-		t.Fatalf("ignored runner delivery sites = %d, want current behavior evidence", count)
+	if !strings.Contains(text, "已截断") {
+		t.Fatalf("bounded transport text lacks truncation marker: %q", text)
 	}
 }
 
@@ -714,6 +744,7 @@ type countingHTTPClient struct {
 	err              error
 	contextErrors    chan error
 	contextDeadlines chan bool
+	texts            chan string
 }
 
 type countingDeliveryStore struct {
@@ -727,10 +758,6 @@ func (s *countingDeliveryStore) Reserve(string) (bool, error) {
 
 func (*countingDeliveryStore) Release(string) error { return nil }
 
-type writerFunc func([]byte) (int, error)
-
-func (f writerFunc) Write(data []byte) (int, error) { return f(data) }
-
 func (c *countingHTTPClient) Do(request *http.Request) (*http.Response, error) {
 	c.calls.Add(1)
 	if c.contextErrors != nil {
@@ -739,6 +766,25 @@ func (c *countingHTTPClient) Do(request *http.Request) (*http.Response, error) {
 	if c.contextDeadlines != nil {
 		_, hasDeadline := request.Context().Deadline()
 		c.contextDeadlines <- hasDeadline
+	}
+	if c.texts != nil {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		var envelope struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			return nil, err
+		}
+		var content struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(envelope.Content), &content); err != nil {
+			return nil, err
+		}
+		c.texts <- content.Text
 	}
 	if c.err != nil {
 		return nil, c.err
@@ -765,6 +811,23 @@ func (o *recordingTaskOutcomeObserver) snapshot() []TaskOutcome {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return append([]TaskOutcome(nil), o.outcomes...)
+}
+
+type recordingDeliveryFailureObserver struct {
+	mu       sync.Mutex
+	failures []DeliveryFailure
+}
+
+func (o *recordingDeliveryFailureObserver) ObserveDeliveryFailure(failure DeliveryFailure) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.failures = append(o.failures, failure)
+}
+
+func (o *recordingDeliveryFailureObserver) snapshot() []DeliveryFailure {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]DeliveryFailure(nil), o.failures...)
 }
 
 func newTestMessenger(client *countingHTTPClient) *Messenger {
