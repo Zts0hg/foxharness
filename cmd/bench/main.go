@@ -45,6 +45,10 @@ func run(args []string) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
+	if *repeat <= 0 {
+		log.Print("-repeat 必须是正整数")
+		return 2
+	}
 
 	if *casePath == "" {
 		log.Print("请通过 -case 指定 benchmark case")

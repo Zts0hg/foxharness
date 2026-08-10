@@ -295,18 +295,73 @@ func TestDVBEN004PanicStillCleansWorkspace(t *testing.T) {
 	}
 }
 
-func TestDVBEN005InvalidCaseDomainsRemainAccepted(t *testing.T) {
-	casePath := filepath.Join(t.TempDir(), "case.yaml")
-	contents := "id: invalid\nfixture: fixture\nprompt: run\nmax_turns: -1\nvalidations:\n  - type: command\n    command: ''\n  - type: file_contains\n    path: ''\n    contains: ''\n"
+func TestDVBEN005CaseLoadingRejectsInvalidStructuralDomains(t *testing.T) {
+	validPrefix := "id: valid\nfixture: missing-fixture\nprompt: run\n"
+	tests := []struct {
+		name     string
+		contents string
+		want     string
+	}{
+		{name: "unknown top-level field", contents: validPrefix + "unexpected: true\nvalidations:\n  - type: command\n    command: true\n", want: "unexpected"},
+		{name: "duplicate field", contents: "id: first\nid: second\nfixture: f\nprompt: run\nvalidations:\n  - type: command\n    command: true\n", want: "id"},
+		{name: "blank id", contents: "id: '  '\nfixture: f\nprompt: run\nvalidations:\n  - type: command\n    command: true\n", want: "id"},
+		{name: "blank fixture", contents: "id: valid\nfixture: '  '\nprompt: run\nvalidations:\n  - type: command\n    command: true\n", want: "fixture"},
+		{name: "blank prompt", contents: "id: valid\nfixture: f\nprompt: '  '\nvalidations:\n  - type: command\n    command: true\n", want: "prompt"},
+		{name: "no validations", contents: validPrefix + "validations: []\n", want: "validation"},
+		{name: "negative max turns", contents: validPrefix + "max_turns: -1\nvalidations:\n  - type: command\n    command: true\n", want: "max_turns"},
+		{name: "null max turns", contents: validPrefix + "max_turns: null\nvalidations:\n  - type: command\n    command: true\n", want: "max_turns"},
+		{name: "zero timeout", contents: validPrefix + "timeout_seconds: 0\nvalidations:\n  - type: command\n    command: true\n", want: "timeout_seconds"},
+		{name: "negative timeout", contents: validPrefix + "timeout_seconds: -1\nvalidations:\n  - type: command\n    command: true\n", want: "timeout_seconds"},
+		{name: "null timeout", contents: validPrefix + "timeout_seconds: null\nvalidations:\n  - type: command\n    command: true\n", want: "timeout_seconds"},
+		{name: "overflowing timeout duration", contents: validPrefix + "timeout_seconds: 9223372037\nvalidations:\n  - type: command\n    command: true\n", want: "timeout_seconds"},
+		{name: "unknown validation", contents: validPrefix + "validations:\n  - type: unknown\n", want: "type"},
+		{name: "unknown validation field", contents: validPrefix + "validations:\n  - type: command\n    command: true\n    extra: value\n", want: "extra"},
+		{name: "duplicate validation field", contents: validPrefix + "validations:\n  - type: command\n    command: first\n    command: second\n", want: "command"},
+		{name: "command missing command", contents: validPrefix + "validations:\n  - type: command\n", want: "command"},
+		{name: "command blank command", contents: validPrefix + "validations:\n  - type: command\n    command: '  '\n", want: "command"},
+		{name: "command irrelevant path", contents: validPrefix + "validations:\n  - type: command\n    command: true\n    path: ''\n", want: "path"},
+		{name: "command irrelevant null path", contents: validPrefix + "validations:\n  - type: command\n    command: true\n    path: null\n", want: "path"},
+		{name: "file missing path", contents: validPrefix + "validations:\n  - type: file_contains\n    contains: text\n", want: "path"},
+		{name: "file blank path", contents: validPrefix + "validations:\n  - type: file_contains\n    path: '  '\n    contains: text\n", want: "path"},
+		{name: "file missing contains", contents: validPrefix + "validations:\n  - type: file_contains\n    path: result.txt\n", want: "contains"},
+		{name: "file blank contains", contents: validPrefix + "validations:\n  - type: file_contains\n    path: result.txt\n    contains: '  '\n", want: "contains"},
+		{name: "file irrelevant command", contents: validPrefix + "validations:\n  - type: file_contains\n    path: result.txt\n    contains: text\n    command: ''\n", want: "command"},
+		{name: "first validation wins", contents: validPrefix + "validations:\n  - type: command\n  - type: unknown\n", want: "validation[1]"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			casePath := filepath.Join(t.TempDir(), "case.yaml")
+			if err := os.WriteFile(casePath, []byte(test.contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadCase(casePath); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadCase() error = %v, want structural error containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestDVBEN005RelativeFixtureResolvesFromCaseDirectory(t *testing.T) {
+	root := t.TempDir()
+	caseDir := filepath.Join(root, "cases")
+	fixture := filepath.Join(root, "fixtures", "sample")
+	if err := os.MkdirAll(caseDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(fixture, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	casePath := filepath.Join(caseDir, "case.yaml")
+	contents := "id: relative\nfixture: ../fixtures/sample\nprompt: run\nvalidations:\n  - type: command\n    command: true\n"
 	if err := os.WriteFile(casePath, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := LoadCase(casePath)
 	if err != nil {
-		t.Fatalf("LoadCase() error = %v, want current acceptance", err)
+		t.Fatalf("LoadCase() error = %v", err)
 	}
-	if loaded.MaxTurns != -1 || loaded.Validations[0].Command != "" || loaded.Validations[1].Path != "" || loaded.Validations[1].Contains != "" {
-		t.Fatalf("loaded invalid domains = %#v", loaded)
+	if loaded.Fixture != fixture {
+		t.Fatalf("Fixture = %q, want %q", loaded.Fixture, fixture)
 	}
 }
 

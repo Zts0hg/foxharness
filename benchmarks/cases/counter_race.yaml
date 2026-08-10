@@ -1,6 +1,6 @@
 id: counter_race
 name: 修复 Counter 并发累加问题
-fixture: benchmarks/fixtures/counter_race
+fixture: ../fixtures/counter_race
 prompt: |
   修复 counter 包中的并发累加问题。
   要求：

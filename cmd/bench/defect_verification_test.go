@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -55,16 +56,21 @@ func TestDVBEN003CompositionUsesResolvedRuntimeSpec(t *testing.T) {
 	}
 }
 
-func TestDVBEN005NonPositiveRepeatCanProduceSuccessfulZeroRunReport(t *testing.T) {
-	source, err := os.ReadFile("main.go")
-	if err != nil {
+func TestDVBEN005RepeatMustBeStrictlyPositiveAndOverflowSafe(t *testing.T) {
+	casePath := filepath.Join(t.TempDir(), "case.yaml")
+	contents := "id: repeat\nfixture: fixture\nprompt: run\nvalidations:\n  - type: command\n    command: true\n"
+	if err := os.WriteFile(casePath, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	text := string(source)
-	if !strings.Contains(text, "for i := 0; i < *repeat; i++") {
-		t.Fatal("repeat orchestration changed")
-	}
-	if strings.Contains(text, "*repeat <= 0") {
-		t.Fatal("non-positive repeat is now rejected; update DV-BEN-005 classification")
+	for _, repeat := range []string{"0", "-1", "9223372036854775808"} {
+		t.Run(repeat, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "result.json")
+			if got := run([]string{"-case", casePath, "-repeat", repeat, "-out", out}); got != 2 {
+				t.Fatalf("run() = %d, want input-error exit 2", got)
+			}
+			if _, err := os.Stat(out); !os.IsNotExist(err) {
+				t.Fatalf("invalid repeat report stat = %v, want no report", err)
+			}
+		})
 	}
 }
