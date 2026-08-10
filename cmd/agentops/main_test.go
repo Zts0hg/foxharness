@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Zts0hg/foxharness/internal/provider"
 )
@@ -34,48 +33,6 @@ func TestConfiguredLLMProviderMissingConfigDoesNotMentionLegacyDefaults(t *testi
 	}
 	if strings.Contains(err.Error(), "ZHIPU_API_KEY") || strings.Contains(err.Error(), "glm-4.5-air") {
 		t.Fatalf("error = %q, want no legacy fallback guidance", err.Error())
-	}
-}
-
-func TestDeduperReclaimsExpiredMessageIDs(t *testing.T) {
-	now := time.Unix(1000, 0)
-	deduper := NewDeduperWithTTL(time.Minute)
-	deduper.now = func() time.Time {
-		return now
-	}
-
-	if !deduper.Mark("message-1") {
-		t.Fatalf("first message should be accepted")
-	}
-	if deduper.Mark("message-1") {
-		t.Fatalf("recent duplicate should be rejected")
-	}
-	now = now.Add(2 * time.Minute)
-	if !deduper.Mark("message-1") {
-		t.Fatalf("expired message should be accepted again after cleanup")
-	}
-	if got := deduper.Len(); got != 1 {
-		t.Fatalf("dedupe entries = %d, want 1 after cleanup", got)
-	}
-}
-
-func TestDeduperCleanupKeepsRecentMessageIDs(t *testing.T) {
-	now := time.Unix(1000, 0)
-	deduper := NewDeduperWithTTL(time.Minute)
-	deduper.now = func() time.Time {
-		return now
-	}
-
-	if !deduper.Mark("message-1") {
-		t.Fatalf("first message should be accepted")
-	}
-	now = now.Add(30 * time.Second)
-	deduper.Cleanup()
-	if got := deduper.Len(); got != 1 {
-		t.Fatalf("dedupe entries = %d, want recent entry preserved", got)
-	}
-	if deduper.Mark("message-1") {
-		t.Fatalf("recent duplicate should remain rejected after cleanup")
 	}
 }
 

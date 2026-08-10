@@ -185,3 +185,11 @@
 - **DV-AOP-006**: Lexically valid service names can resolve through a symlink outside `logDir`; controlled tests also prove the independent 200-line and one-MiB-per-line bounds remain effective.
 - **Shared approval reuse**: PASS. AgentOps constructs one `approval.Store`, shares it between Gateway and Runner, and the authenticated callback preserves corrected 204/409/404 exactly-once behavior. No second approval protocol is present or required.
 - **Gate outcome**: AgentOps correction stop is active. Baseline fixture generation and production architecture migration remain blocked until the user separately confirms correction semantics and each defect follows Red-Green-Refactor in an independent Green commit.
+
+## T084 / D-AOP-001: One Durable Task-Acceptance Authority
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./cmd/agentops -run '^TestDVAOP001' -count=1`
+- **Compile Red result**: The corrected contract could not compile because AgentOps exposed no `newDeliveryStore` composition boundary and still owned the process-local `Deduper`.
+- **Green implementation**: AgentOps now constructs the shared Feishu `FileDeliveryStore` at `~/.foxharness/feishu/deliveries.json`, installs it on the Gateway, and removes the complete process-local Deduper and its pre-bridge claim. The Gateway remains the sole acceptance authority and retains its invalid-ID rejection, concurrent reservation, durable duplicate acknowledgement, and live enqueue rollback semantics.
+- **Green commands**: `env GOCACHE=/tmp/fox-go-build-cache go test ./cmd/agentops ./internal/agentops ./internal/feishu -count=1`, focused delivery tests, `env GOCACHE=/tmp/fox-go-build-cache go test -race ./cmd/agentops ./internal/feishu -run 'TestDVAOP001|TestFileDeliveryStoreConcurrentReservationHasOneWinner|TestGatewayRollsBackReservation' -count=1`, and the architecture test.
+- **Green result**: PASS; `DV-AOP-001` is corrected. AgentOps and Feishu share one persisted message-ID namespace, sequential and restart duplicates enqueue once, concurrent reservation has one winner, and a live unavailable enqueue remains retryable after rollback.

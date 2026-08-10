@@ -9,73 +9,49 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/feishu"
 )
 
-func TestDVAOP001DeduperIsProcessLocalAndClaimsBeforeTerminalWork(t *testing.T) {
-	now := time.Unix(1000, 0)
-	deduper := NewDeduperWithTTL(time.Minute)
-	deduper.now = func() time.Time { return now }
-	if !deduper.Mark("") || deduper.Mark("") {
-		t.Fatal("empty message IDs currently share one accepted dedupe key")
+func TestDVAOP001AgentOpsUsesGatewayDurableAcceptanceAuthority(t *testing.T) {
+	home := t.TempDir()
+	store, err := newDeliveryStore(home)
+	if err != nil {
+		t.Fatalf("newDeliveryStore() error = %v", err)
 	}
-	if !deduper.Mark("sequential") || deduper.Mark("sequential") {
-		t.Fatal("sequential duplicate classification changed")
+	tasks := make(chan feishu.Task, 2)
+	handler := feishu.NewGateway("token", "", tasks, approval.NewStore()).WithDeliveryStore(store).Server(":0").Handler
+
+	first := postAgentOpsEvent(handler, agentOpsMessageEventJSON("first", "message-1"))
+	duplicate := postAgentOpsEvent(handler, agentOpsMessageEventJSON("duplicate", "message-1"))
+	if first.Code != http.StatusOK || duplicate.Code != http.StatusOK {
+		t.Fatalf("delivery statuses = %d, %d; want 200, 200", first.Code, duplicate.Code)
+	}
+	if got := len(tasks); got != 1 {
+		t.Fatalf("enqueued tasks = %d, want one", got)
 	}
 
-	const contenders = 32
-	start := make(chan struct{})
-	var winners atomic.Int32
-	var wait sync.WaitGroup
-	wait.Add(contenders)
-	for i := 0; i < contenders; i++ {
-		go func() {
-			defer wait.Done()
-			<-start
-			if deduper.Mark("concurrent") {
-				winners.Add(1)
-			}
-		}()
+	restartedStore, err := newDeliveryStore(home)
+	if err != nil {
+		t.Fatalf("restart newDeliveryStore() error = %v", err)
 	}
-	close(start)
-	wait.Wait()
-	if got := winners.Load(); got != 1 {
-		t.Fatalf("concurrent winners = %d, want one", got)
-	}
-
-	if !deduper.Mark("ttl") {
-		t.Fatal("first TTL message rejected")
-	}
-	now = now.Add(time.Minute)
-	if deduper.Mark("ttl") {
-		t.Fatal("message expired at the exact TTL boundary; current comparison is strictly greater")
-	}
-	now = now.Add(time.Nanosecond)
-	if !deduper.Mark("ttl") {
-		t.Fatal("message did not expire immediately after the TTL boundary")
-	}
-
-	if !deduper.Mark("bridge-failure") || deduper.Mark("bridge-failure") {
-		t.Fatal("claimed message unexpectedly became retryable after simulated bridge failure")
-	}
-	if !NewDeduperWithTTL(time.Minute).Mark("bridge-failure") {
-		t.Fatal("new process retained process-local dedupe state")
+	restartedTasks := make(chan feishu.Task, 1)
+	restarted := feishu.NewGateway("token", "", restartedTasks, approval.NewStore()).WithDeliveryStore(restartedStore).Server(":0").Handler
+	restartDuplicate := postAgentOpsEvent(restarted, agentOpsMessageEventJSON("restart", "message-1"))
+	if restartDuplicate.Code != http.StatusOK || len(restartedTasks) != 0 {
+		t.Fatalf("restart duplicate status/tasks = %d/%d, want 200/0", restartDuplicate.Code, len(restartedTasks))
 	}
 
 	source := readAgentOpsMain(t)
-	markIndex := strings.Index(source, "deduper.Mark(task.MessageID)")
-	bridgeIndex := strings.Index(source, "agentTasks <- agentTask")
-	if markIndex < 0 || bridgeIndex < 0 || markIndex > bridgeIndex {
-		t.Fatal("AgentOps no longer claims dedupe before bridge delivery")
+	for _, forbidden := range []string{"type Deduper struct", "NewDeduper()", "deduper.Mark("} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("production entry retains second acceptance authority %q", forbidden)
+		}
 	}
-	if strings.Contains(source, "WithDeliveryStore") || strings.Contains(source, "deduper.Release") {
-		t.Fatal("AgentOps now composes durable acceptance or rollback; update DV-AOP-001 classification")
+	if !strings.Contains(source, "WithDeliveryStore(deliveryStore)") {
+		t.Fatal("AgentOps Gateway does not compose the durable DeliveryStore")
 	}
 }
 

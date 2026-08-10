@@ -20,8 +20,7 @@ import (
 	"context"
 	"log"
 	"os"
-	"sync"
-	"time"
+	"path/filepath"
 
 	"github.com/Zts0hg/foxharness/internal/agentops"
 	"github.com/Zts0hg/foxharness/internal/approval"
@@ -47,11 +46,14 @@ func main() {
 	}
 	messenger := feishu.NewMessenger(appID, appSecret)
 	approvalStore := approval.NewStore()
+	deliveryStore, err := newDeliveryStore(homeDir)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	feishuTasks := make(chan feishu.Task, 64)
-	gateway := feishu.NewGateway(verificationToken, encryptKey, feishuTasks, approvalStore)
+	gateway := feishu.NewGateway(verificationToken, encryptKey, feishuTasks, approvalStore).WithDeliveryStore(deliveryStore)
 	runner := agentops.NewRunner(llmProvider, workDir, logDir, messenger, approvalStore)
-	deduper := NewDeduper()
 
 	ctx := context.Background()
 	agentTasks := make(chan agentops.Task, 64)
@@ -59,10 +61,6 @@ func main() {
 	go func() {
 		defer close(agentTasks)
 		for task := range feishuTasks {
-			if !deduper.Mark(task.MessageID) {
-				continue
-			}
-
 			agentTask := agentops.Parse(task.Text)
 			agentTask.TaskID = task.TaskID
 			agentTask.ChatID = task.ChatID
@@ -82,6 +80,10 @@ func main() {
 	}
 }
 
+func newDeliveryStore(homeDir string) (feishu.DeliveryStore, error) {
+	return feishu.NewFileDeliveryStore(filepath.Join(homeDir, ".foxharness", "feishu", "deliveries.json"))
+}
+
 func newConfiguredLLMProvider(homeDir string, lookup llmconfig.EnvLookup) (provider.LLMProvider, error) {
 	llmConfig, err := llmresolve.FromUserSettings(homeDir, llmconfig.CLIOverrides{}, lookup)
 	if err != nil {
@@ -97,71 +99,4 @@ func mustEnv(key string) string {
 		log.Fatalf("missing environment variable: %s", key)
 	}
 	return v
-}
-
-// Deduper prevents duplicate processing of Feishu messages by tracking seen message IDs.
-type Deduper struct {
-	mu   sync.Mutex
-	seen map[string]time.Time
-	ttl  time.Duration
-	now  func() time.Time
-}
-
-const defaultDedupeTTL = 24 * time.Hour
-
-// NewDeduper creates a new Deduper with an empty seen set.
-func NewDeduper() *Deduper {
-	return NewDeduperWithTTL(defaultDedupeTTL)
-}
-
-// NewDeduperWithTTL creates a Deduper that reclaims message IDs after ttl.
-func NewDeduperWithTTL(ttl time.Duration) *Deduper {
-	return &Deduper{seen: make(map[string]time.Time), ttl: ttl, now: time.Now}
-}
-
-// Mark records a message ID and reports whether it was seen for the first time.
-// Returns true if the ID is new (should be processed), false if already seen.
-func (d *Deduper) Mark(id string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	now := d.nowOrDefault()
-	d.cleanupLocked(now)
-	if _, ok := d.seen[id]; ok {
-		return false
-	}
-	d.seen[id] = now
-	return true
-}
-
-// Cleanup removes expired message IDs from the dedupe set.
-func (d *Deduper) Cleanup() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.cleanupLocked(d.nowOrDefault())
-}
-
-// Len returns the number of currently tracked message IDs.
-func (d *Deduper) Len() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return len(d.seen)
-}
-
-func (d *Deduper) cleanupLocked(now time.Time) {
-	ttl := d.ttl
-	if ttl <= 0 {
-		ttl = defaultDedupeTTL
-	}
-	for id, seenAt := range d.seen {
-		if now.Sub(seenAt) > ttl {
-			delete(d.seen, id)
-		}
-	}
-}
-
-func (d *Deduper) nowOrDefault() time.Time {
-	if d.now != nil {
-		return d.now()
-	}
-	return time.Now()
 }
