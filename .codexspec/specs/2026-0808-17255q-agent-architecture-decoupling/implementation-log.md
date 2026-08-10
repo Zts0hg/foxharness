@@ -225,3 +225,11 @@
 - **Green implementation**: All session, final, ordinary-failure, panic-failure, timeout, and cancellation text now crosses one Runner helper that bounds text to 1,800 runes before transport and observes typed correlated failures. Observer panic is isolated. A failed final send still causes one failure-delivery attempt, but failure of that attempt is only observed and cannot recursively send. Production installs the logging observer explicitly.
 - **Green commands**: focused `DV-AOP-005`, `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/agentops ./cmd/agentops ./internal/feishu -count=1 -timeout=60s`, focused `-race`, source-call audit, and package `go vet`.
 - **Green result**: PASS; `DV-AOP-005` is corrected. Session, final, and terminal failures remain separately observable, every transport receives bounded text, reason-to-stage mapping is typed, and task outcome remains independent from delivery outcome.
+
+## T089 / D-AOP-006: Rooted Regular-File Log Access
+
+- **Behavior Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/agentops -run '^TestDVAOP006' -count=1 -timeout=20s`
+- **Behavior Red result**: A lexically valid service still opened an outside-root symlink and returned external log content.
+- **Green implementation**: Production no longer joins a path and calls unrestricted `os.Open`. It opens the configured directory as `os.Root`, opens only the validated relative `<service>.log` through that root, and checks the opened handle is a regular file. The test-only reader seam remains available without weakening production open behavior.
+- **Green commands**: focused security, cancellation, ordering, and resource-bound tests; focused `-race`; AgentOps/Feishu entry and package tests; architecture tests; package `go vet`; and the complete repository gate `env HOME=/tmp/fox-test-home GOMODCACHE=/Users/xiaoming/go/pkg/mod GOCACHE=/tmp/fox-go-build-cache go test ./... -count=1 -timeout=180s` outside the network-listen sandbox.
+- **Green result**: PASS; `DV-AOP-006` is corrected and the T041 correction stop is cleared. Outside symlinks, traversal, separators, and non-regular targets fail closed while valid matching and all prior resource limits remain stable. The complete repository test suite passes.

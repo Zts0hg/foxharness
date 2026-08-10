@@ -378,7 +378,7 @@ func TestDVAOP005TerminalReasonsMapToTypedDeliveryStages(t *testing.T) {
 	}
 }
 
-func TestDVAOP006LogSearchFollowsSymlinkOutsideLogRoot(t *testing.T) {
+func TestDVAOP006LogSearchRejectsEscapeAndNonRegularTargets(t *testing.T) {
 	logDir := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.log")
 	if err := os.WriteFile(outside, []byte("SECRET external evidence\n"), 0o600); err != nil {
@@ -388,16 +388,36 @@ func TestDVAOP006LogSearchFollowsSymlinkOutsideLogRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := NewLogSearchTool(logDir)
-	result, err := tool.Execute(context.Background(), mustAgentOpsJSON(t, map[string]any{
+	_, err := tool.Execute(context.Background(), mustAgentOpsJSON(t, map[string]any{
 		"service": "payment",
 		"query":   "SECRET",
 		"limit":   10,
 	}))
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
+	if err == nil {
+		t.Fatal("outside-root symlink was opened")
 	}
-	if !strings.Contains(result, "external evidence") {
-		t.Fatalf("symlink result = %q, want outside content", result)
+
+	if err := os.Mkdir(filepath.Join(logDir, "directory.log"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tool.Execute(context.Background(), mustAgentOpsJSON(t, map[string]any{
+		"service": "directory",
+		"query":   "anything",
+		"limit":   10,
+	}))
+	if err == nil || !strings.Contains(err.Error(), "regular") {
+		t.Fatalf("directory target error = %v, want regular-file rejection", err)
+	}
+
+	for _, service := range []string{"..", "../outside", `..\outside`, "nested/service", `nested\service`} {
+		_, err = tool.Execute(context.Background(), mustAgentOpsJSON(t, map[string]any{
+			"service": service,
+			"query":   "anything",
+			"limit":   10,
+		}))
+		if err == nil {
+			t.Fatalf("invalid service %q was accepted", service)
+		}
 	}
 }
 

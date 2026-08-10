@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -27,9 +26,7 @@ const maxLogSearchLineBytes = 1 << 20
 // NewLogSearchTool creates a LogSearchTool rooted at logDir.  Log files are
 // expected at <logDir>/<service>.log.
 func NewLogSearchTool(logDir string) *LogSearchTool {
-	return &LogSearchTool{logDir: logDir, openLog: func(path string) (io.ReadCloser, error) {
-		return os.Open(path)
-	}}
+	return &LogSearchTool{logDir: logDir}
 }
 
 // Name returns the tool identifier "log_search".
@@ -132,8 +129,7 @@ func (t *LogSearchTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 		args.Limit = 50
 	}
 
-	path := filepath.Join(t.logDir, args.Service+".log")
-	reader, err := t.open(path)
+	reader, err := t.open(args.Service + ".log")
 	if err != nil {
 		return "", fmt.Errorf("读取日志失败: %w", err)
 	}
@@ -178,9 +174,27 @@ func validServiceName(service string) bool {
 	return !strings.ContainsAny(service, `/\`)
 }
 
-func (t *LogSearchTool) open(path string) (io.ReadCloser, error) {
+func (t *LogSearchTool) open(name string) (io.ReadCloser, error) {
 	if t.openLog != nil {
-		return t.openLog(path)
+		return t.openLog(name)
 	}
-	return os.Open(path)
+	root, err := os.OpenRoot(t.logDir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		file.Close()
+		return nil, fmt.Errorf("log target is not a regular file")
+	}
+	return file, nil
 }
