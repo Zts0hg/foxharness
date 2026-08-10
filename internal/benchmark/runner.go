@@ -31,8 +31,11 @@ type Harness struct {
 
 // Runner executes benchmark cases using a caller-provided HarnessFactory.
 type Runner struct {
-	factory HarnessFactory
+	factory     HarnessFactory
+	caseTimeout func(*Case) time.Duration
 }
+
+const defaultCaseTimeout = 10 * time.Minute
 
 // NewRunner creates a Runner that delegates engine creation to the given factory.
 func NewRunner(factory HarnessFactory) *Runner {
@@ -65,16 +68,19 @@ type RuntimeFidelity struct {
 // Result regardless of whether the engine run itself errored; the Success
 // field reflects both engine completion and validation outcomes.
 func (r *Runner) RunCase(ctx context.Context, c *Case) (*Result, error) {
+	caseCtx, cancelCase := context.WithTimeout(ctx, r.timeoutFor(c))
+	defer cancelCase()
+
 	workspace, err := os.MkdirTemp("", "foxharness-benchmark-*")
 	if err != nil {
 		return nil, err
 	}
 
-	if err := copyDir(c.Fixture, workspace); err != nil {
+	if err := copyDirContext(caseCtx, c.Fixture, workspace); err != nil {
 		return nil, fmt.Errorf("复制 Fixture 失败: %w", err)
 	}
 
-	harness, err := r.factory(ctx, workspace, c)
+	harness, err := r.factory(caseCtx, workspace, c)
 	if err != nil {
 		return nil, fmt.Errorf("创建 Harness 失败: %w", err)
 	}
@@ -90,7 +96,7 @@ func (r *Runner) RunCase(ctx context.Context, c *Case) (*Result, error) {
 	}
 
 	started := time.Now()
-	runResult, err := harness.Engine.Run(ctx, harness.Session, c.Prompt)
+	runResult, err := harness.Engine.Run(caseCtx, harness.Session, c.Prompt)
 	result.DurationMS = time.Since(started).Milliseconds()
 
 	if runResult != nil {
@@ -101,15 +107,32 @@ func (r *Runner) RunCase(ctx context.Context, c *Case) (*Result, error) {
 		result.Error = err.Error()
 	}
 
-	validationResults := ValidateAll(ctx, workspace, c.Validations)
+	validationResults := ValidateAll(caseCtx, workspace, c.Validations)
 	result.Validations = validationResults
 	result.Success = err == nil && allPassed(validationResults)
 
 	return result, nil
 }
 
+func (r *Runner) timeoutFor(c *Case) time.Duration {
+	if r.caseTimeout != nil {
+		return r.caseTimeout(c)
+	}
+	if c != nil && c.TimeoutSeconds > 0 {
+		return time.Duration(c.TimeoutSeconds) * time.Second
+	}
+	return defaultCaseTimeout
+}
+
 func copyDir(src, dst string) error {
+	return copyDirContext(context.Background(), src, dst)
+}
+
+func copyDirContext(ctx context.Context, src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err != nil {
 			return err
 		}

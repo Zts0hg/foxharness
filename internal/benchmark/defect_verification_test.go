@@ -2,19 +2,47 @@ package benchmark
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestDVBEN001NoWholeCaseDeadlineAndCancellationDoesNotStopAllValidations(t *testing.T) {
-	source := readBenchmarkSource(t, "runner.go")
-	if strings.Contains(source, "context.WithTimeout") {
-		t.Fatal("RunCase now owns a whole-case timeout; update DV-BEN-001 classification")
+func TestDVBEN001CaseDeadlineCoversFactoryAndStopsUnstartedValidations(t *testing.T) {
+	casePath := filepath.Join(t.TempDir(), "case.yaml")
+	caseYAML := "id: timeout-default\nfixture: fixture\nprompt: run\nvalidations:\n  - type: command\n    command: 'true'\n"
+	if err := os.WriteFile(casePath, []byte(caseYAML), 0o600); err != nil {
+		t.Fatal(err)
 	}
+	loaded, err := LoadCase(casePath)
+	if err != nil {
+		t.Fatalf("LoadCase() error = %v", err)
+	}
+	if loaded.TimeoutSeconds != 600 {
+		t.Fatalf("LoadCase() timeout = %d, want 600", loaded.TimeoutSeconds)
+	}
+
+	fixture := t.TempDir()
+	deadlineObserved := make(chan bool, 1)
+	runner := NewRunner(func(ctx context.Context, _ string, _ *Case) (*Harness, error) {
+		_, ok := ctx.Deadline()
+		deadlineObserved <- ok
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	runner.caseTimeout = func(*Case) time.Duration { return 10 * time.Millisecond }
+	_, err = runner.RunCase(context.Background(), &Case{ID: "timeout", Fixture: fixture, Prompt: "run", TimeoutSeconds: 600})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RunCase() error = %v, want whole-case timeout", err)
+	}
+	if !<-deadlineObserved {
+		t.Fatal("HarnessFactory did not receive the case deadline")
+	}
+
 	workDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workDir, "result.txt"), []byte("done"), 0o600); err != nil {
 		t.Fatal(err)
@@ -22,11 +50,22 @@ func TestDVBEN001NoWholeCaseDeadlineAndCancellationDoesNotStopAllValidations(t *
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	results := ValidateAll(ctx, workDir, []Validation{
-		{Type: "command", Command: "true"},
+		{Type: "command", Command: "touch should-not-run"},
 		{Type: "file_contains", Path: "result.txt", Contains: "done"},
 	})
-	if results[0].Passed || !results[1].Passed {
-		t.Fatalf("cancelled validation results = %#v, want command cancelled but later file validation still run", results)
+	if len(results) != 2 || results[0].Status != ValidationStatusCancelled || results[1].Status != ValidationStatusCancelled {
+		t.Fatalf("cancelled validation results = %#v, want ordered synthetic cancellation", results)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "should-not-run")); !os.IsNotExist(err) {
+		t.Fatalf("cancelled command executed, stat error = %v", err)
+	}
+
+	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer timeoutCancel()
+	<-timeoutCtx.Done()
+	timedOut := ValidateAll(timeoutCtx, workDir, []Validation{{Type: "command", Command: "true"}})
+	if len(timedOut) != 1 || timedOut[0].Status != ValidationStatusTimedOut {
+		t.Fatalf("timed-out validation results = %#v, want timed_out", timedOut)
 	}
 }
 

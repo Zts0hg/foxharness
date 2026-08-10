@@ -11,12 +11,13 @@ import (
 // the fixture directory to copy as the workspace, and the validations that
 // determine whether the run succeeded.
 type Case struct {
-	ID          string       `yaml:"id"`
-	Name        string       `yaml:"name"`
-	Fixture     string       `yaml:"fixture"`
-	Prompt      string       `yaml:"prompt"`
-	MaxTurns    int          `yaml:"max_turns"`
-	Validations []Validation `yaml:"validations"`
+	ID             string       `yaml:"id"`
+	Name           string       `yaml:"name"`
+	Fixture        string       `yaml:"fixture"`
+	Prompt         string       `yaml:"prompt"`
+	MaxTurns       int          `yaml:"max_turns"`
+	TimeoutSeconds int          `yaml:"timeout_seconds"`
+	Validations    []Validation `yaml:"validations"`
 }
 
 // Validation specifies a single post-run check. The Type field selects the
@@ -52,6 +53,9 @@ func LoadCase(path string) (*Case, error) {
 	}
 	if c.MaxTurns == 0 {
 		c.MaxTurns = 12
+	}
+	if c.TimeoutSeconds == 0 {
+		c.TimeoutSeconds = 600
 	}
 
 	return &c, nil

@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,10 +14,21 @@ import (
 // ValidationResult records the outcome of a single validation check, including
 // whether it passed and a human-readable message on failure.
 type ValidationResult struct {
-	Type    string `json:"type"`
-	Passed  bool   `json:"passed"`
-	Message string `json:"message,omitempty"`
+	Type    string           `json:"type"`
+	Passed  bool             `json:"passed"`
+	Status  ValidationStatus `json:"status"`
+	Message string           `json:"message,omitempty"`
 }
+
+// ValidationStatus identifies the terminal state of one ordered validation.
+type ValidationStatus string
+
+const (
+	ValidationStatusPassed    ValidationStatus = "passed"
+	ValidationStatusFailed    ValidationStatus = "failed"
+	ValidationStatusCancelled ValidationStatus = "cancelled"
+	ValidationStatusTimedOut  ValidationStatus = "timed_out"
+)
 
 // ValidateAll runs every validation in order against the workspace directory
 // and returns one ValidationResult per entry. Command validations are
@@ -24,6 +36,10 @@ type ValidationResult struct {
 func ValidateAll(ctx context.Context, workDir string, validations []Validation) []ValidationResult {
 	results := make([]ValidationResult, 0, len(validations))
 	for _, v := range validations {
+		if err := ctx.Err(); err != nil {
+			results = append(results, terminalValidationResult(v.Type, err))
+			continue
+		}
 		results = append(results, validateOne(ctx, workDir, v))
 	}
 
@@ -40,6 +56,7 @@ func validateOne(ctx context.Context, workDir string, v Validation) ValidationRe
 		return ValidationResult{
 			Type:    v.Type,
 			Passed:  false,
+			Status:  ValidationStatusFailed,
 			Message: "未知验证类型",
 		}
 	}
@@ -53,13 +70,17 @@ func validateCommand(ctx context.Context, workDir, command string) ValidationRes
 	cmd.Dir = workDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if timeoutErr := timeoutCtx.Err(); timeoutErr != nil {
+			return terminalValidationResult("command", timeoutErr)
+		}
 		return ValidationResult{
 			Type:    "command",
 			Passed:  false,
+			Status:  ValidationStatusFailed,
 			Message: fmt.Sprintf("命令失败: %v\n%s", err, string(out)),
 		}
 	}
-	return ValidationResult{Type: "command", Passed: true}
+	return ValidationResult{Type: "command", Passed: true, Status: ValidationStatusPassed}
 }
 
 func validateFileContains(workDir, path, contains string) ValidationResult {
@@ -68,6 +89,7 @@ func validateFileContains(workDir, path, contains string) ValidationResult {
 		return ValidationResult{
 			Type:    "file_contains",
 			Passed:  false,
+			Status:  ValidationStatusFailed,
 			Message: err.Error(),
 		}
 	}
@@ -76,10 +98,19 @@ func validateFileContains(workDir, path, contains string) ValidationResult {
 		return ValidationResult{
 			Type:    "file_contains",
 			Passed:  false,
+			Status:  ValidationStatusFailed,
 			Message: fmt.Sprintf("%s 不包括目标文本", path),
 		}
 	}
-	return ValidationResult{Type: "file_contains", Passed: true}
+	return ValidationResult{Type: "file_contains", Passed: true, Status: ValidationStatusPassed}
+}
+
+func terminalValidationResult(validationType string, err error) ValidationResult {
+	status := ValidationStatusCancelled
+	if errors.Is(err, context.DeadlineExceeded) {
+		status = ValidationStatusTimedOut
+	}
+	return ValidationResult{Type: validationType, Status: status, Message: err.Error()}
 }
 
 func allPassed(results []ValidationResult) bool {

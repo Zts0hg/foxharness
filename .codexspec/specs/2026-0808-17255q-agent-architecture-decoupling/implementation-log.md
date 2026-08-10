@@ -244,3 +244,12 @@
 - **DV-BEN-005/006**: Invalid and vacuous domains are accepted; command output is unbounded and cancellation targets only the immediate shell without explicit process-tree cleanup.
 - **Supporting gates**: Focused `-race` and architecture tests PASS. Full benchmark packages PASS with a temporary `HOME`; the ordinary sandbox run only failed because an existing session test writes the real user home.
 - **Gate outcome**: Benchmark correction stop is active. No production fix or baseline fixture is authorized until the seven correction semantics are separately confirmed and assigned independent Red-Green-Refactor commits.
+
+## T090 / D-BEN-001: One Bounded Case Lifetime
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/benchmark -run '^TestDVBEN001' -count=1 -timeout=10s`
+- **Compile Red result**: The corrected test could not compile because `Case` had no timeout, Runner had no case-lifetime seam, and validation records had no typed terminal status.
+- **Green implementation**: `timeout_seconds` defaults to 600 and Runner derives one context for fixture copy, harness construction, engine execution, and validation. Validation records now distinguish passed, failed, cancelled, and timed out; cancellation or timeout synthesizes ordered records for every remaining entry without executing it. Command validation's existing two-minute child context naturally uses the earlier parent deadline.
+- **Cross-validation correction**: An expired case context cannot govern terminal cleanup. DEC-044 and T093 now require failed-workspace cleanup under one fresh background-derived 30-second context, matching the bounded terminal cleanup principle found in both references.
+- **Green commands**: focused Red/Green, full benchmark and command packages with hermetic `HOME`, focused `-race`, and package `go vet`.
+- **Green result**: PASS; `DV-BEN-001` is corrected without implementing later exit, fidelity, path, input-domain, process-tree, or provenance corrections early.
