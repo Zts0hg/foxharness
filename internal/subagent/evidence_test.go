@@ -27,7 +27,7 @@ func TestManagerBuildRegistryCombinesParentAndChildEvidence(t *testing.T) {
 	if _, err := session.NewMessageLog(sess).Append("run-1", schema.Message{Role: schema.RoleUser, Content: "inspect docs then change files"}); err != nil {
 		t.Fatal(err)
 	}
-	registry := manager.buildRegistry(true, nil, sess)
+	registry := manager.buildRegistry(false, nil, sess)
 
 	result := registry.Execute(context.Background(), schema.ToolCall{ID: "1", Name: "bash", Arguments: json.RawMessage(`{"command":"true"}`)})
 	if result.IsError {

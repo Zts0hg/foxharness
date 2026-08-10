@@ -108,6 +108,16 @@ func TestComposeToolCapabilityScopeSuppressesUnavailableOptionalGuidance(t *test
 	}
 }
 
+func TestComposeToolCapabilityScopeDoesNotOverstateBashPolicy(t *testing.T) {
+	prompt, err := NewComposer(t.TempDir()).WithToolCapabilities([]string{"bash"}).Compose("inspect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "build, test") || !strings.Contains(prompt, "active capability policy") {
+		t.Fatalf("capability-scoped Bash guidance overstates execution policy:\n%s", prompt)
+	}
+}
+
 func TestParseSkillMarkdownFrontmatter(t *testing.T) {
 	content := `---
 name: go-refactor

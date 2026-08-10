@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 	"github.com/Zts0hg/foxharness/internal/toolresult"
 )
 
@@ -110,7 +111,15 @@ func (b *boundedOutput) Truncated() bool {
 // configured working directory.
 type BashTool struct {
 	// workDir is the directory where commands will be executed.
-	workDir string
+	workDir        string
+	readOnly       bool
+	readOnlyRunner readOnlyBashRunner
+}
+
+// NewReadOnlyBashTool creates a Bash-compatible tool whose commands must pass
+// the conservative read-only shell policy before execution.
+func NewReadOnlyBashTool(workDir string) *BashTool {
+	return newReadOnlyBashToolWithRunner(workDir, newPlatformReadOnlyBashRunner())
 }
 
 // NewBashTool creates a new BashTool that executes commands in the specified directory.
@@ -130,9 +139,13 @@ func (t *BashTool) Name() string {
 // Definition returns the tool schema for the bash tool.
 // It describes the tool's capabilities and expected input format.
 func (t *BashTool) Definition() schema.ToolDefinition {
+	description := "Execute arbitrary bash commands in the current working directory. Supports chained commands (e.g., &&). Returns both stdout and stderr."
+	if t.readOnly {
+		description = "Execute conservatively validated read-only bash commands inside the current workspace. Mutation, background execution, dynamic shell forms, and network access are unavailable."
+	}
 	return schema.ToolDefinition{
 		Name:        t.Name(),
-		Description: "Execute arbitrary bash commands in the current working directory. Supports chained commands (e.g., &&). Returns both stdout and stderr.",
+		Description: description,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -159,16 +172,43 @@ func (t *BashTool) ExecuteResult(ctx context.Context, args json.RawMessage) (Exe
 	if err := json.Unmarshal(args, &input); err != nil {
 		return ExecutionResult{}, fmt.Errorf("参数解析失败: %w", err)
 	}
+	if t.readOnly {
+		readOnly, _, parsed := toolpolicy.AssessShell(input.Command, t.workDir, t.workDir)
+		if !parsed || !readOnly {
+			return ExecutionResult{
+				Output: "Read-only Bash rejected a command that could not be proven non-mutating.",
+				Failed: true,
+			}, nil
+		}
+	}
 
-	result := RunBashCommand(ctx, t.workDir, input.Command, defaultBashTimeout)
+	var result BashCommandResult
+	if t.readOnly {
+		if t.readOnlyRunner == nil {
+			result = BashCommandResult{Err: ErrReadOnlyBashSandboxUnavailable}
+		} else {
+			result = t.readOnlyRunner.Run(ctx, readOnlyBashRequest{
+				WorkDir:       t.workDir,
+				ReadableRoots: []string{t.workDir},
+				Command:       input.Command,
+				Timeout:       defaultBashTimeout,
+			})
+		}
+	} else {
+		result = RunBashCommand(ctx, t.workDir, input.Command, defaultBashTimeout)
+	}
 	outputStr := result.Output
 	if result.Truncated {
 		outputStr = appendBashTruncationNotice(outputStr)
 	}
 
 	if result.TimedOut {
+		warning := "\n[警告: 命令执行超时(30s)，已被系统强制终止。] "
+		if !t.readOnly {
+			warning = "\n[警告: 命令执行超时(30s)，已被系统强制终止。如果是常驻服务，请尝试将其转入后台。] "
+		}
 		return ExecutionResult{
-			Output: outputStr + "\n[警告: 命令执行超时(30s)，已被系统强制终止。如果是常驻服务，请尝试将其转入后台。] ",
+			Output: outputStr + warning,
 			Failed: true,
 		}, nil
 	}

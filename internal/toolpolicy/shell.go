@@ -16,11 +16,17 @@ func AssessShell(command, workspace, cwd string) (readOnly bool, risk Risk, pars
 
 	readOnly = true
 	risk = RiskMedium
+	sawCall := false
 	syntax.Walk(file, func(node syntax.Node) bool {
 		switch n := node.(type) {
+		case *syntax.Stmt:
+			if n.Background || n.Coprocess {
+				readOnly = false
+			}
 		case *syntax.Redirect, *syntax.ProcSubst, *syntax.CmdSubst, *syntax.ArithmExp:
 			readOnly = false
 		case *syntax.CallExpr:
+			sawCall = true
 			if !readOnlyCall(n, workspace, cwd) {
 				readOnly = false
 			}
@@ -43,9 +49,18 @@ func AssessShell(command, workspace, cwd string) (readOnly bool, risk Risk, pars
 					}
 				}
 			}
+		default:
+			if _, command := node.(syntax.Command); command {
+				if _, binary := node.(*syntax.BinaryCmd); !binary {
+					readOnly = false
+				}
+			}
 		}
 		return true
 	})
+	if !sawCall {
+		readOnly = false
+	}
 	if readOnly {
 		risk = RiskLow
 	}

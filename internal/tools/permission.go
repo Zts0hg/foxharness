@@ -63,6 +63,9 @@ func (t *BashTool) AssessPermission(ctx toolpolicy.Context, args json.RawMessage
 	if !parsed {
 		return humanOnlyAssessment("bash "+command, "shell syntax could not be parsed"), nil
 	}
+	if t.readOnly && !readOnly {
+		return humanOnlyAssessment("bash "+command, "command exceeds the read-only Bash capability ceiling"), nil
+	}
 	assessment := toolpolicy.Assessment{
 		Behavior: toolpolicy.BehaviorReviewable,
 		Action:   "bash " + command,

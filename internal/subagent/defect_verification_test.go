@@ -51,7 +51,7 @@ func (p *childCaptureProvider) snapshot() ([]schema.Message, []schema.ToolDefini
 	return append([]schema.Message(nil), p.messages[0]...), append([]schema.ToolDefinition(nil), p.tools[0]...)
 }
 
-func TestDVCHD001ReadOnlyChildBashCanMutateInsideAndOutsideWorkspace(t *testing.T) {
+func TestDVCHD001ReadOnlyChildBashRejectsMutationWithoutPermissionExpansion(t *testing.T) {
 	workDir := t.TempDir()
 	outsideDir := t.TempDir()
 	mgr := NewManager(nil, workDir)
@@ -70,19 +70,33 @@ func TestDVCHD001ReadOnlyChildBashCanMutateInsideAndOutsideWorkspace(t *testing.
 		Name:      "bash",
 		Arguments: mustJSON(t, map[string]string{"command": command}),
 	})
-	if result.IsError {
-		t.Fatalf("read-only bash result = %#v, want executable", result)
+	if !result.IsError {
+		t.Fatalf("mutating read-only bash result = %#v, want rejection", result)
 	}
-	for path, want := range map[string]string{inside: "inside", outside: "outside"} {
-		got, err := os.ReadFile(path)
-		if err != nil || string(got) != want {
-			t.Fatalf("mutated file %q = %q/%v, want %q", path, got, err, want)
+	for _, path := range []string{inside, outside} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read-only bash mutated %q: %v", path, err)
 		}
 	}
 
 	coordinator := permission.NewCoordinator(permission.Config{
 		State: permission.NewState(permission.ModeFullAccess, true),
 	})
+	fullAccessRegistry := NewManager(nil, workDir).WithPermission(coordinator).buildRegistry(true, nil)
+	result = fullAccessRegistry.Execute(context.Background(), schema.ToolCall{
+		ID:        "full-access-mutating-read-only-bash",
+		Name:      "bash",
+		Arguments: mustJSON(t, map[string]string{"command": command}),
+	})
+	if !result.IsError {
+		t.Fatalf("full-access mutating read-only bash result = %#v, want immutable ceiling", result)
+	}
+	for _, path := range []string{inside, outside} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("full access expanded read-only bash and mutated %q: %v", path, err)
+		}
+	}
+
 	assessment, err := NewTool(NewManager(nil, workDir).WithPermission(coordinator), "parent").AssessPermission(
 		toolpolicy.Context{}, json.RawMessage(`{"task":"inspect","read_only":true}`),
 	)
@@ -372,7 +386,7 @@ func TestDVCHD004ChildCancellationKillsShellDescendantsAndPendingApproval(t *tes
 	t.Setenv("HOME", t.TempDir())
 	workDir := t.TempDir()
 	mgr := NewManager(nil, workDir)
-	registry := mgr.buildRegistry(true, nil)
+	registry := mgr.buildRegistry(false, nil)
 	started := filepath.Join(workDir, "started")
 	leaked := filepath.Join(workDir, "leaked")
 	command := fmt.Sprintf("touch %q; (sleep 0.25; touch %q) & wait", started, leaked)
@@ -404,7 +418,7 @@ func TestDVCHD004ChildCancellationKillsShellDescendantsAndPendingApproval(t *tes
 	approver := &cancellingApprover{started: make(chan struct{})}
 	state := permission.NewState(permission.ModeAsk, false)
 	coordinator := permission.NewCoordinator(permission.Config{State: state, Approver: approver})
-	permissionRegistry := NewManager(nil, workDir).WithPermission(coordinator).buildRegistry(true, nil)
+	permissionRegistry := NewManager(nil, workDir).WithPermission(coordinator).buildRegistry(false, nil)
 	approvalCtx, approvalCancel := context.WithCancel(context.Background())
 	approvalDone := make(chan schema.ToolResult, 1)
 	go func() {
@@ -439,7 +453,7 @@ func TestDVCHD004ChildCancellationKillsShellDescendantsAndPendingApproval(t *tes
 	backgroundCommand := fmt.Sprintf("nohup bash -c 'sleep 0.25; touch %q' >/dev/null 2>&1 &", exhaustionLeak)
 	result, err := NewManager(&backgroundBashChildProvider{command: backgroundCommand}, workDir).
 		WithMaxTurns(1).
-		Run(context.Background(), Request{ParentSessionID: "parent", Task: "start background work", ReadOnly: true})
+		Run(context.Background(), Request{ParentSessionID: "parent", Task: "start background work", ReadOnly: false})
 	if err == nil || result != nil {
 		t.Fatalf("turn-exhausted child result/error = %#v/%v, want current nil outcome and error", result, err)
 	}

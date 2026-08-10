@@ -214,7 +214,7 @@ func capabilityScopedSystemPrompt(capabilities map[string]struct{}) string {
 		lines = append(lines, "- Use write_file only when creating a new file or intentionally replacing a whole file.")
 	}
 	if hasCapability(capabilities, "bash") {
-		lines = append(lines, "- Use bash to inspect, build, test, and verify changes.")
+		lines = append(lines, "- Use bash only for commands permitted by its active capability policy.")
 	}
 	if len(capabilities) > 0 {
 		lines = append(lines, "- If a tool fails, inspect the error and recover instead of blindly repeating the same call.")

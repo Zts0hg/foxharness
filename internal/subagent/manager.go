@@ -210,7 +210,11 @@ func (m *Manager) buildComposer(sess *session.Session, snapshots ...*childToolSn
 func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessions ...*session.Session) *childToolSnapshot {
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(m.workDir))
-	registry.Register(tools.NewBashTool(m.workDir))
+	if readOnly {
+		registry.Register(tools.NewReadOnlyBashTool(m.workDir))
+	} else {
+		registry.Register(tools.NewBashTool(m.workDir))
+	}
 
 	if !readOnly {
 		registry.Register(tools.NewWriteFileTool(m.workDir))
