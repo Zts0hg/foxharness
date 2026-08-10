@@ -197,6 +197,7 @@ func (r *Runner) taskRunner() func(context.Context, Task) error {
 }
 
 func (r *Runner) run(ctx context.Context, task Task) error {
+	taskProvider := snapshotTaskProvider(r.provider)
 	sess, err := r.sessions.Create(session.CreateOptions{
 		Source:  session.SOURCEFeishu,
 		WorkDir: r.workDir,
@@ -221,26 +222,28 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 	taskPrompt := BuildPrompt(task)
 
 	autoStore := automemory.NewStore(r.sessions.HomeDir(), r.workDir)
-	hooks := automemory.NewPerRunHooks(r.provider, autoStore, r.workDir)
+	hooks := automemory.NewPerRunHooks(taskProvider.provider, autoStore, r.workDir)
 	tracker := hooks.NewTracker()
 
-	registry := r.buildRegistry(task, sess)
+	registry := r.buildRegistry(task, sess, taskProvider.provider)
 	composer := r.buildComposer(sess, autoStore)
+	engineConfig := engine.Config{
+		MaxTurns:     24,
+		OnToolCalled: hooks.RecordCallback(tracker),
+	}
+	compCfg := compaction.DefaultCompactionConfig()
+	taskProvider.apply(&engineConfig, &compCfg)
 
 	eng := engine.NewAgentEngine(
-		r.provider,
+		taskProvider.provider,
 		registry,
 		r.workDir,
 		composer,
-		engine.Config{
-			MaxTurns:     24,
-			OnToolCalled: hooks.RecordCallback(tracker),
-		},
+		engineConfig,
 	)
-	compCfg := compaction.DefaultCompactionConfig()
 	compCfg.SessionDir = sess.RootDir
 	compCfg.TranscriptPath = sess.TranscriptPath()
-	compactor, err := compaction.NewCompactor(r.provider, compCfg)
+	compactor, err := compaction.NewCompactor(taskProvider.provider, compCfg)
 	if err != nil {
 		return fmt.Errorf("初始化 Compactor 失败: %w", err)
 	}
@@ -307,7 +310,7 @@ func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *sessi
 	hooks.Fire(sess, runID, tracker)
 }
 
-func (r *Runner) buildRegistry(task Task, sess *session.Session) tools.Registry {
+func (r *Runner) buildRegistry(task Task, sess *session.Session, taskProviders ...provider.LLMProvider) tools.Registry {
 	registry := tools.NewRegistry()
 	evidenceProvider := agentOpsPermissionEvidenceProvider(sess, BuildPrompt(task))
 	var approver permission.UserApprover
@@ -331,7 +334,11 @@ func (r *Runner) buildRegistry(task Task, sess *session.Session) tools.Registry 
 	registry.Register(tools.NewReadTodoTool(sess.RootDir))
 	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
 
-	subManager := subagent.NewManager(r.provider, r.workDir).
+	taskProvider := r.provider
+	if len(taskProviders) > 0 && taskProviders[0] != nil {
+		taskProvider = taskProviders[0]
+	}
+	subManager := subagent.NewManager(taskProvider, r.workDir).
 		WithPermission(coordinator).
 		WithParentEvidence(evidenceProvider)
 	registry.Register(subagent.NewTool(subManager, sess.ID))

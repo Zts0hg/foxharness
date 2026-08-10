@@ -15,6 +15,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/compaction"
+	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -267,23 +268,46 @@ func (o *blockingAgentOpsTaskOutcomeObserver) ObserveTaskOutcome(outcome TaskOut
 	}
 }
 
-func TestDVAOP004CompactorDoesNotUseSelectedProviderModel(t *testing.T) {
-	selected := &agentOpsNamedProvider{model: "claude-4-sonnet"}
-	config := compaction.DefaultCompactionConfig()
-	compactor, err := compaction.NewCompactor(selected, config)
+func TestDVAOP004OneProviderSnapshotConfiguresEngineCompactorAndChild(t *testing.T) {
+	selected := &rotatingAgentOpsNamedProvider{}
+	snapshot := snapshotTaskProvider(selected)
+	engineConfig := engine.Config{}
+	compactionConfig := compaction.DefaultCompactionConfig()
+	snapshot.apply(&engineConfig, &compactionConfig)
+	if calls := selected.modelCalls.Load(); calls != 1 {
+		t.Fatalf("ModelName() calls = %d, want one frozen read", calls)
+	}
+	if engineConfig.Model != "claude-4-sonnet" || compactionConfig.Model != engineConfig.Model {
+		t.Fatalf("model snapshot = engine %q, compactor %q", engineConfig.Model, compactionConfig.Model)
+	}
+	if got := snapshot.provider.ModelName(); got != engineConfig.Model {
+		t.Fatalf("child provider model = %q, want inherited snapshot %q", got, engineConfig.Model)
+	}
+	if calls := selected.modelCalls.Load(); calls != 1 {
+		t.Fatalf("ModelName() calls after child read = %d, want still one", calls)
+	}
+
+	compactor, err := compaction.NewCompactor(snapshot.provider, compactionConfig)
 	if err != nil {
 		t.Fatalf("NewCompactor() error = %v", err)
 	}
-	wantWindow := compaction.NewModelRegistry().Lookup(selected.model)
-	if compactor.ContextWindow() != compaction.DefaultContextWindow || compactor.ContextWindow() == wantWindow {
+	wantWindow := compaction.NewModelRegistry().Lookup(engineConfig.Model)
+	if compactor.ContextWindow() != wantWindow || compactor.ContextWindow() == compaction.DefaultContextWindow {
 		t.Fatalf("compactor window = %d, selected model window = %d", compactor.ContextWindow(), wantWindow)
 	}
 	source, err := os.ReadFile("runner.go")
 	if err != nil {
 		t.Fatalf("ReadFile(runner.go) error = %v", err)
 	}
-	if strings.Contains(string(source), "compCfg.Model =") {
-		t.Fatal("AgentOps now propagates compactor model; update DV-AOP-004 classification")
+	for _, required := range []string{
+		"taskProvider := snapshotTaskProvider(r.provider)",
+		"r.buildRegistry(task, sess, taskProvider.provider)",
+		"engine.NewAgentEngine(\n\t\ttaskProvider.provider,",
+		"compaction.NewCompactor(taskProvider.provider, compCfg)",
+	} {
+		if !strings.Contains(string(source), required) {
+			t.Fatalf("Runner does not wire provider snapshot through %q", required)
+		}
 	}
 }
 
@@ -441,6 +465,23 @@ func (*agentOpsNamedProvider) Generate(context.Context, []schema.Message, []sche
 
 func (p *agentOpsNamedProvider) ModelName() string      { return p.model }
 func (*agentOpsNamedProvider) ProviderProtocol() string { return "scripted" }
+
+type rotatingAgentOpsNamedProvider struct {
+	modelCalls atomic.Int32
+}
+
+func (*rotatingAgentOpsNamedProvider) Generate(context.Context, []schema.Message, []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	return nil, errors.New("not called")
+}
+
+func (p *rotatingAgentOpsNamedProvider) ModelName() string {
+	if p.modelCalls.Add(1) == 1 {
+		return "claude-4-sonnet"
+	}
+	return "different-model"
+}
+
+func (*rotatingAgentOpsNamedProvider) ProviderProtocol() string { return "scripted" }
 
 func mustAgentOpsJSON(t *testing.T, value any) json.RawMessage {
 	t.Helper()

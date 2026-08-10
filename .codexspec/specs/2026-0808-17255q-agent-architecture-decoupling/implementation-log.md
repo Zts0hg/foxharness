@@ -209,3 +209,11 @@
 - **Green implementation**: Runner execution now returns one typed outcome for every path; the only completion function observes that outcome and attempts one non-success terminal notification with a fresh ten-second context. Timeout and parent cancellation map to `cancelled` with distinct reasons; ordinary errors and panic map to `failed`; success maps to `completed`. Scheduled workers release their concurrency permit before entering the terminal transition.
 - **Green commands**: focused `DV-AOP-003` tests, `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/agentops ./cmd/agentops -count=1 -timeout=60s`, focused `-race` tests, and package `go vet`.
 - **Green result**: PASS; `DV-AOP-003` is corrected. Exactly one correlated outcome is emitted per accepted task, panic permits a successor before a deliberately blocked observer returns, and all non-success terminal deliveries receive a live deadline-bearing context.
+
+## T087 / D-AOP-004: Immutable Per-Task Provider Snapshot
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/agentops -run '^TestDVAOP004' -count=1`
+- **Compile Red result**: The corrected contract could not compile because AgentOps had no provider snapshot type or constructor; production also left compaction model configuration empty.
+- **Green implementation**: Each production task reads provider protocol and model once into a provider wrapper that delegates generation while returning frozen metadata. The same wrapper configures and drives the main engine, compactor, automemory hooks, and subagent manager, so child execution inherits the parent task identity without another mutable metadata read.
+- **Green commands**: focused `DV-AOP-004` and race tests, architecture tests, plus `env HOME=/tmp/fox-test-home GOMODCACHE=/Users/xiaoming/go/pkg/mod GOCACHE=/tmp/fox-go-build-cache go test ./internal/subagent ./internal/agentops ./internal/engine ./internal/compaction ./cmd/agentops -count=1 -timeout=60s`.
+- **Green result**: PASS; `DV-AOP-004` is corrected. A rotating provider is read once, engine and compactor receive `claude-4-sonnet`, compaction selects its registered non-default window, and child metadata remains frozen. The temporary `HOME` isolates existing subagent session tests from the sandboxed user directory while retaining the existing module cache explicitly.
