@@ -201,3 +201,11 @@
 - **Green implementation**: The composition root now owns one signal context and one shutdown deadline, stops and joins HTTP intake before closing its output, drains a dedicated Feishu-to-AgentOps bridge that exclusively closes the downstream channel, cancels task contexts, and waits for the bridge and Runner. `Runner.Start` consumes until producer closure and joins every worker, so cancellation cannot silently discard an accepted permit waiter.
 - **Green commands**: focused `DV-AOP-002` tests, `env GOCACHE=/tmp/fox-go-build-cache go test ./cmd/agentops ./internal/agentops ./internal/feishu -count=1 -timeout=60s`, focused `-race` tests, and the architecture test.
 - **Green result**: PASS; `DV-AOP-002` is corrected. Ordinary producer closure drains accepted work, signal cancellation preserves producer-safe channel ownership, and active or queued tasks are accounted for under the single process deadline.
+
+## T086 / D-AOP-003: Exactly-One Typed Task Outcome
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/agentops -run '^TestDVAOP003' -count=1 -timeout=10s`
+- **Compile Red result**: The corrected contract could not compile because AgentOps defined no task outcome status, reason, record, or observer.
+- **Green implementation**: Runner execution now returns one typed outcome for every path; the only completion function observes that outcome and attempts one non-success terminal notification with a fresh ten-second context. Timeout and parent cancellation map to `cancelled` with distinct reasons; ordinary errors and panic map to `failed`; success maps to `completed`. Scheduled workers release their concurrency permit before entering the terminal transition.
+- **Green commands**: focused `DV-AOP-003` tests, `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/agentops ./cmd/agentops -count=1 -timeout=60s`, focused `-race` tests, and package `go vet`.
+- **Green result**: PASS; `DV-AOP-003` is corrected. Exactly one correlated outcome is emitted per accepted task, panic permits a successor before a deliberately blocked observer returns, and all non-success terminal deliveries receive a live deadline-bearing context.

@@ -7,6 +7,7 @@ package agentops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -40,20 +41,22 @@ type Messenger interface {
 // session, wires up tools (log search, file I/O, bash, sub-agent) with unified
 // permission approval, and drives the engine loop to completion.
 type Runner struct {
-	provider           provider.LLMProvider
-	workDir            string
-	logDir             string
-	messenger          Messenger
-	sessions           *session.Manager
-	approvalStore      *approval.Store
-	maxConcurrentTasks int
-	taskTimeout        time.Duration
-	runTask            func(context.Context, Task) error
+	provider            provider.LLMProvider
+	workDir             string
+	logDir              string
+	messenger           Messenger
+	sessions            *session.Manager
+	approvalStore       *approval.Store
+	maxConcurrentTasks  int
+	taskTimeout         time.Duration
+	runTask             func(context.Context, Task) error
+	taskOutcomeObserver TaskOutcomeObserver
 }
 
 const (
-	defaultMaxConcurrentTasks = 4
-	defaultTaskTimeout        = 5 * time.Minute
+	defaultMaxConcurrentTasks  = 4
+	defaultTaskTimeout         = 5 * time.Minute
+	defaultTerminalSendTimeout = 10 * time.Second
 )
 
 // NewRunner constructs a Runner with the given LLM provider, working and log
@@ -66,14 +69,15 @@ func NewRunner(
 	approvalStore *approval.Store,
 ) *Runner {
 	return &Runner{
-		provider:           p,
-		workDir:            workDir,
-		logDir:             logDir,
-		messenger:          messenger,
-		sessions:           session.NewManager(workDir),
-		approvalStore:      approvalStore,
-		maxConcurrentTasks: defaultMaxConcurrentTasks,
-		taskTimeout:        defaultTaskTimeout,
+		provider:            p,
+		workDir:             workDir,
+		logDir:              logDir,
+		messenger:           messenger,
+		sessions:            session.NewManager(workDir),
+		approvalStore:       approvalStore,
+		maxConcurrentTasks:  defaultMaxConcurrentTasks,
+		taskTimeout:         defaultTaskTimeout,
+		taskOutcomeObserver: loggingTaskOutcomeObserver{},
 	}
 }
 
@@ -87,31 +91,88 @@ func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 		permits <- struct{}{}
 		workers.Add(1)
 		go func(task Task) {
-			defer func() {
-				<-permits
-				workers.Done()
-				if rec := recover(); rec != nil {
-					log.Printf("[AgentOps] task=%s panic recovered: %v", task.TaskID, rec)
-				}
-			}()
-			r.Run(ctx, task)
+			defer workers.Done()
+			outcome := r.executeTask(ctx, task)
+			<-permits
+			r.completeTask(task, outcome)
 		}(task)
 	}
 	workers.Wait()
 }
 
-// Run executes the task to completion.  On failure it logs the error and
-// attempts to notify the originating chat.
+// Run executes one task and publishes exactly one correlated terminal outcome.
 func (r *Runner) Run(ctx context.Context, task Task) {
+	r.completeTask(task, r.executeTask(ctx, task))
+}
+
+func (r *Runner) executeTask(ctx context.Context, task Task) (outcome TaskOutcome) {
 	runCtx, cancel := context.WithTimeout(ctx, r.taskTimeoutOrDefault())
 	defer cancel()
-
-	if err := r.taskRunner()(runCtx, task); err != nil {
-		log.Printf("[AgentOps] task=%s failed: %v", task.TaskID, err)
-		if r.messenger != nil {
-			_ = r.messenger.SendText(ctx, task.ChatID, fmt.Sprintf("AgentOps 任务失败： %v", err))
-		}
+	outcome = TaskOutcome{
+		TaskID: task.TaskID,
+		ChatID: task.ChatID,
+		Status: TaskOutcomeCompleted,
+		Reason: TaskOutcomeReasonCompleted,
 	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			outcome.Status = TaskOutcomeFailed
+			outcome.Reason = TaskOutcomeReasonPanic
+			outcome.Error = fmt.Sprintf("task panic: %v", rec)
+		}
+	}()
+
+	err := r.taskRunner()(runCtx, task)
+	if err == nil {
+		return outcome
+	}
+	outcome.Error = err.Error()
+	switch {
+	case errors.Is(runCtx.Err(), context.DeadlineExceeded), errors.Is(err, context.DeadlineExceeded):
+		outcome.Status = TaskOutcomeCancelled
+		outcome.Reason = TaskOutcomeReasonTimeout
+	case errors.Is(runCtx.Err(), context.Canceled), errors.Is(err, context.Canceled):
+		outcome.Status = TaskOutcomeCancelled
+		outcome.Reason = TaskOutcomeReasonCancellation
+	default:
+		outcome.Status = TaskOutcomeFailed
+		outcome.Reason = TaskOutcomeReasonFailure
+	}
+	return outcome
+}
+
+func (r *Runner) completeTask(task Task, outcome TaskOutcome) {
+	if outcome.Status != TaskOutcomeCompleted {
+		log.Printf("[AgentOps] task=%s failed: %s", task.TaskID, outcome.Error)
+	}
+	r.observeTaskOutcome(outcome)
+	if outcome.Status == TaskOutcomeCompleted || r.messenger == nil {
+		return
+	}
+	deliveryCtx, cancel := context.WithTimeout(context.Background(), defaultTerminalSendTimeout)
+	defer cancel()
+	r.sendTerminalFailure(deliveryCtx, task, outcome)
+}
+
+func (r *Runner) observeTaskOutcome(outcome TaskOutcome) {
+	if r.taskOutcomeObserver == nil {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[AgentOps] task=%s outcome observer panic recovered: %v", outcome.TaskID, rec)
+		}
+	}()
+	r.taskOutcomeObserver.ObserveTaskOutcome(outcome)
+}
+
+func (r *Runner) sendTerminalFailure(ctx context.Context, task Task, outcome TaskOutcome) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[AgentOps] task=%s terminal delivery panic recovered: %v", task.TaskID, rec)
+		}
+	}()
+	_ = r.messenger.SendText(ctx, task.ChatID, fmt.Sprintf("AgentOps 任务失败： %s", outcome.Error))
 }
 
 func (r *Runner) concurrentTaskLimit() int {

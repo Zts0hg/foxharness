@@ -102,12 +102,119 @@ func TestDVAOP002AcceptedPermitWaiterReachesCancellationHandling(t *testing.T) {
 	}
 }
 
-func TestDVAOP003PanicHasNoCorrelatedTerminalDelivery(t *testing.T) {
-	messenger := &verificationMessenger{}
+func TestDVAOP003EveryExecutionPathEmitsOneTypedOutcome(t *testing.T) {
+	tests := []struct {
+		name         string
+		parent       func() context.Context
+		runTask      func(context.Context, Task) error
+		wantStatus   TaskOutcomeStatus
+		wantReason   TaskOutcomeReason
+		wantDelivery bool
+	}{
+		{
+			name:   "success",
+			parent: context.Background,
+			runTask: func(context.Context, Task) error {
+				return nil
+			},
+			wantStatus: TaskOutcomeCompleted,
+			wantReason: TaskOutcomeReasonCompleted,
+		},
+		{
+			name:   "ordinary failure",
+			parent: context.Background,
+			runTask: func(context.Context, Task) error {
+				return errors.New("ordinary")
+			},
+			wantStatus:   TaskOutcomeFailed,
+			wantReason:   TaskOutcomeReasonFailure,
+			wantDelivery: true,
+		},
+		{
+			name:   "timeout",
+			parent: context.Background,
+			runTask: func(ctx context.Context, _ Task) error {
+				<-ctx.Done()
+				return ctx.Err()
+			},
+			wantStatus:   TaskOutcomeCancelled,
+			wantReason:   TaskOutcomeReasonTimeout,
+			wantDelivery: true,
+		},
+		{
+			name: "cancellation",
+			parent: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			runTask: func(ctx context.Context, _ Task) error {
+				return ctx.Err()
+			},
+			wantStatus:   TaskOutcomeCancelled,
+			wantReason:   TaskOutcomeReasonCancellation,
+			wantDelivery: true,
+		},
+		{
+			name:   "panic",
+			parent: context.Background,
+			runTask: func(context.Context, Task) error {
+				panic("task panic")
+			},
+			wantStatus:   TaskOutcomeFailed,
+			wantReason:   TaskOutcomeReasonPanic,
+			wantDelivery: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			messenger := &verificationMessenger{
+				contextErrors: make(chan error, 1),
+				deadlines:     make(chan bool, 1),
+			}
+			observer := &recordingAgentOpsTaskOutcomeObserver{}
+			runner := &Runner{messenger: messenger, runTask: test.runTask, taskOutcomeObserver: observer}
+			if test.name == "timeout" {
+				runner.taskTimeout = time.Nanosecond
+			}
+			runner.Run(test.parent(), Task{TaskID: test.name, ChatID: "chat"})
+			outcomes := observer.snapshot()
+			if len(outcomes) != 1 {
+				t.Fatalf("outcomes = %#v, want exactly one", outcomes)
+			}
+			outcome := outcomes[0]
+			if outcome.TaskID != test.name || outcome.ChatID != "chat" || outcome.Status != test.wantStatus || outcome.Reason != test.wantReason {
+				t.Fatalf("outcome = %#v, want task/chat/status/reason %s/chat/%s/%s", outcome, test.name, test.wantStatus, test.wantReason)
+			}
+			wantCalls := int32(0)
+			if test.wantDelivery {
+				wantCalls = 1
+			}
+			if calls := messenger.calls.Load(); calls != wantCalls {
+				t.Fatalf("terminal deliveries = %d, want %d", calls, wantCalls)
+			}
+			if !test.wantDelivery {
+				return
+			}
+			if got := <-messenger.contextErrors; got != nil {
+				t.Fatalf("terminal delivery context error = %v, want fresh context", got)
+			}
+			if hasDeadline := <-messenger.deadlines; !hasDeadline {
+				t.Fatal("terminal delivery context has no deadline")
+			}
+		})
+	}
+}
+
+func TestDVAOP003PanicReleasesCapacityBeforeTerminalTransition(t *testing.T) {
+	observer := &blockingAgentOpsTaskOutcomeObserver{
+		panicObserved: make(chan struct{}),
+		releasePanic:  make(chan struct{}),
+	}
 	afterStarted := make(chan struct{})
 	runner := &Runner{
-		messenger:          messenger,
-		maxConcurrentTasks: 1,
+		maxConcurrentTasks:  1,
+		taskOutcomeObserver: observer,
 		runTask: func(_ context.Context, task Task) error {
 			if task.TaskID == "panic" {
 				panic("task panic")
@@ -120,63 +227,43 @@ func TestDVAOP003PanicHasNoCorrelatedTerminalDelivery(t *testing.T) {
 	tasks <- Task{TaskID: "panic", ChatID: "chat"}
 	tasks <- Task{TaskID: "after", ChatID: "chat"}
 	close(tasks)
-	runner.Start(context.Background(), tasks)
-	<-afterStarted
-	if calls := messenger.calls.Load(); calls != 0 {
-		t.Fatalf("panic terminal deliveries = %d, want current zero", calls)
+	done := make(chan struct{})
+	go func() {
+		runner.Start(context.Background(), tasks)
+		close(done)
+	}()
+	<-observer.panicObserved
+	select {
+	case <-afterStarted:
+	case <-time.After(time.Second):
+		t.Fatal("successor did not start while panic terminal observer was blocked")
+	}
+	close(observer.releasePanic)
+	<-done
+	outcomes := observer.snapshot()
+	if len(outcomes) != 2 {
+		t.Fatalf("outcomes = %#v, want one per accepted task", outcomes)
+	}
+	seen := make(map[string]TaskOutcome)
+	for _, outcome := range outcomes {
+		seen[outcome.TaskID] = outcome
+	}
+	if seen["panic"].Reason != TaskOutcomeReasonPanic || seen["after"].Status != TaskOutcomeCompleted {
+		t.Fatalf("outcomes = %#v, want correlated panic and successor completion", outcomes)
 	}
 }
 
-func TestDVAOP003NonPanicFailuresAttemptOneFallbackWithCurrentContext(t *testing.T) {
-	tests := []struct {
-		name       string
-		parent     func() context.Context
-		runTask    func(context.Context, Task) error
-		wantCtxErr error
-	}{
-		{
-			name:   "ordinary failure",
-			parent: context.Background,
-			runTask: func(context.Context, Task) error {
-				return errors.New("ordinary")
-			},
-		},
-		{
-			name:   "timeout",
-			parent: context.Background,
-			runTask: func(ctx context.Context, _ Task) error {
-				<-ctx.Done()
-				return ctx.Err()
-			},
-		},
-		{
-			name: "parent cancellation",
-			parent: func() context.Context {
-				ctx, cancel := context.WithCancel(context.Background())
-				cancel()
-				return ctx
-			},
-			runTask: func(ctx context.Context, _ Task) error {
-				return ctx.Err()
-			},
-			wantCtxErr: context.Canceled,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			messenger := &verificationMessenger{contextErrors: make(chan error, 1)}
-			runner := &Runner{messenger: messenger, runTask: test.runTask}
-			if test.name == "timeout" {
-				runner.taskTimeout = time.Nanosecond
-			}
-			runner.Run(test.parent(), Task{TaskID: test.name, ChatID: "chat"})
-			if calls := messenger.calls.Load(); calls != 1 {
-				t.Fatalf("fallback deliveries = %d, want one", calls)
-			}
-			if got := <-messenger.contextErrors; !errors.Is(got, test.wantCtxErr) {
-				t.Fatalf("fallback context error = %v, want %v", got, test.wantCtxErr)
-			}
-		})
+type blockingAgentOpsTaskOutcomeObserver struct {
+	recordingAgentOpsTaskOutcomeObserver
+	panicObserved chan struct{}
+	releasePanic  chan struct{}
+}
+
+func (o *blockingAgentOpsTaskOutcomeObserver) ObserveTaskOutcome(outcome TaskOutcome) {
+	o.recordingAgentOpsTaskOutcomeObserver.ObserveTaskOutcome(outcome)
+	if outcome.Reason == TaskOutcomeReasonPanic {
+		close(o.panicObserved)
+		<-o.releasePanic
 	}
 }
 
@@ -283,6 +370,7 @@ func TestDVAOP006LogSearchResourceBoundsRemainEffective(t *testing.T) {
 type verificationMessenger struct {
 	calls         atomic.Int32
 	contextErrors chan error
+	deadlines     chan bool
 }
 
 func (m *verificationMessenger) SendText(ctx context.Context, _ string, _ string) error {
@@ -290,7 +378,28 @@ func (m *verificationMessenger) SendText(ctx context.Context, _ string, _ string
 	if m.contextErrors != nil {
 		m.contextErrors <- ctx.Err()
 	}
+	if m.deadlines != nil {
+		_, hasDeadline := ctx.Deadline()
+		m.deadlines <- hasDeadline
+	}
 	return nil
+}
+
+type recordingAgentOpsTaskOutcomeObserver struct {
+	mu       sync.Mutex
+	outcomes []TaskOutcome
+}
+
+func (o *recordingAgentOpsTaskOutcomeObserver) ObserveTaskOutcome(outcome TaskOutcome) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.outcomes = append(o.outcomes, outcome)
+}
+
+func (o *recordingAgentOpsTaskOutcomeObserver) snapshot() []TaskOutcome {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]TaskOutcome(nil), o.outcomes...)
 }
 
 type scriptedAgentOpsMessenger struct {
