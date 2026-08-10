@@ -74,9 +74,10 @@ const (
 // RuntimeFidelity records which product runtime invariants a benchmark shares
 // and which differences are intentional for benchmark execution.
 type RuntimeFidelity struct {
-	SharedInvariants       []string `json:"shared_invariants"`
-	IntentionalDifferences []string `json:"intentional_differences"`
-	Warning                string   `json:"warning,omitempty"`
+	Spec                   BenchmarkRuntimeSpec `json:"spec"`
+	SharedInvariants       []string             `json:"shared_invariants"`
+	IntentionalDifferences []string             `json:"intentional_differences"`
+	Warning                string               `json:"warning,omitempty"`
 }
 
 // RunCase copies the case fixture into a temporary workspace, runs the agent

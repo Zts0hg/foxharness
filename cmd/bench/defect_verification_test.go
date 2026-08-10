@@ -38,14 +38,19 @@ func TestDVBEN002ResultStatusControlsProcessExit(t *testing.T) {
 	}
 }
 
-func TestDVBEN003CompositionUsesManuallyMaintainedFidelityClaims(t *testing.T) {
+func TestDVBEN003CompositionUsesResolvedRuntimeSpec(t *testing.T) {
 	source, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, literal := range []string{"todo tool surface", "context compaction", "no interactive approval surface"} {
-		if !strings.Contains(string(source), literal) {
-			t.Fatalf("manual fidelity literal %q missing; update DV-BEN-003 classification", literal)
+	for _, required := range []string{"benchmark.NewRuntimeSpec", "RuntimeFidelity: runtimeSpec.Fidelity()"} {
+		if !strings.Contains(string(source), required) {
+			t.Fatalf("resolved runtime composition %q missing", required)
+		}
+	}
+	for _, forbidden := range []string{"todo tool surface", "context compaction", "no interactive approval surface"} {
+		if strings.Contains(string(source), forbidden) {
+			t.Fatalf("composition retains manual fidelity claim %q", forbidden)
 		}
 	}
 }

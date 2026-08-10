@@ -261,3 +261,11 @@
 - **Green implementation**: Runner initializes a partial result before setup and classifies completion, runtime/evaluation failure, parent cancellation, case timeout, and infrastructure failure without conflating their evidence. The command appends any partial result before handling its infrastructure error, writes available summary and JSON, and returns 0/1/2 from aggregate semantics rather than `log.Fatal` side effects.
 - **Green commands**: focused Red/Green, full benchmark and command packages with hermetic `HOME`, focused `-race`, and package `go vet`.
 - **Green result**: PASS; `DV-BEN-002` is corrected. Existing `Error` remains populated for current readers while typed status and three evidence fields become authoritative for the corrected pre-baseline schema.
+
+## T092 / D-BEN-003: Resolved Benchmark Runtime Fidelity
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/benchmark ./cmd/bench -run '^TestDVBEN003' -count=1`
+- **Compile Red result**: No typed runtime specification constructor existed and production still contained manually maintained fidelity literals.
+- **Green implementation**: `BenchmarkRuntimeSpec` freezes provider/model, turn budget, ordered tool surface, and prompt, memory, compaction, permission, observation, and interaction policies. Composition uses its values for engine and compactor construction and calls `Fidelity()` for both machine-readable snapshot and derived human claims.
+- **Green commands**: focused Red/Green, full benchmark and command packages with hermetic `HOME`, focused `-race`, and package `go vet`.
+- **Green result**: PASS; `DV-BEN-003` is corrected without introducing the future general runtime profile implementation.

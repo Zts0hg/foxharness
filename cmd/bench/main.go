@@ -125,6 +125,11 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 		return nil, err
 	}
 	registry := buildBenchmarkRegistry(workDir, sess)
+	toolNames := make([]string, 0)
+	for _, definition := range registry.GetAvailableTools() {
+		toolNames = append(toolNames, definition.Name)
+	}
+	runtimeSpec := benchmark.NewRuntimeSpec(llmConfig.Protocol, llmConfig.Model, c.MaxTurns, toolNames)
 
 	eng := engine.NewAgentEngine(
 		llmProvider,
@@ -132,13 +137,13 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 		workDir,
 		composer,
 		engine.Config{
-			MaxTurns:         c.MaxTurns,
-			ProviderProtocol: llmConfig.Protocol,
-			Model:            llmConfig.Model,
+			MaxTurns:         runtimeSpec.MaxTurns,
+			ProviderProtocol: runtimeSpec.ProviderProtocol,
+			Model:            runtimeSpec.Model,
 		},
 	)
 	compCfg := compaction.DefaultCompactionConfig()
-	compCfg.Model = llmConfig.Model
+	compCfg.Model = runtimeSpec.Model
 	compCfg.SessionDir = sess.RootDir
 	compCfg.TranscriptPath = sess.TranscriptPath()
 	compactor, err := compaction.NewCompactor(llmProvider, compCfg)
@@ -148,20 +153,9 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 	eng.WithCompactor(compactor)
 
 	return &benchmark.Harness{
-		Engine:  eng,
-		Session: sess,
-		RuntimeFidelity: benchmark.RuntimeFidelity{
-			SharedInvariants: []string{
-				"todo tool surface",
-				"context compaction",
-				"structured tool failure semantics",
-			},
-			IntentionalDifferences: []string{
-				"no interactive approval surface",
-				"no TUI ask_user_question surface",
-			},
-			Warning: "benchmark runtime intentionally reports product-runtime differences",
-		},
+		Engine:          eng,
+		Session:         sess,
+		RuntimeFidelity: runtimeSpec.Fidelity(),
 	}, nil
 }
 

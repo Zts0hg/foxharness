@@ -93,12 +93,17 @@ func TestDVBEN002AcceptedRepeatAlwaysHasTypedStatusAndSeparateEvidence(t *testin
 	}
 }
 
-func TestDVBEN003RuntimeFidelityHasNoResolvedSpecificationIdentity(t *testing.T) {
-	typeOf := reflect.TypeOf(RuntimeFidelity{})
-	for _, field := range []string{"Profile", "ProviderProtocol", "Model", "TurnBudget", "ToolSurface", "MemoryPolicy", "CompactionPolicy"} {
-		if _, ok := typeOf.FieldByName(field); ok {
-			t.Fatalf("RuntimeFidelity now records resolved field %s; update DV-BEN-003 classification", field)
-		}
+func TestDVBEN003RuntimeFidelityDerivesFromResolvedSpecification(t *testing.T) {
+	spec := NewRuntimeSpec("openai", "model-a", 17, []string{"read_file", "read_todo"})
+	fidelity := spec.Fidelity()
+	if fidelity.Spec.ProviderProtocol != "openai" || fidelity.Spec.Model != "model-a" || fidelity.Spec.MaxTurns != 17 {
+		t.Fatalf("fidelity spec = %#v, want resolved provider/model/turn budget", fidelity.Spec)
+	}
+	if !reflect.DeepEqual(fidelity.Spec.ToolSurface, []string{"read_file", "read_todo"}) {
+		t.Fatalf("tool surface = %#v", fidelity.Spec.ToolSurface)
+	}
+	if len(fidelity.SharedInvariants) == 0 || len(fidelity.IntentionalDifferences) == 0 {
+		t.Fatalf("derived human fidelity = %#v", fidelity)
 	}
 }
 
