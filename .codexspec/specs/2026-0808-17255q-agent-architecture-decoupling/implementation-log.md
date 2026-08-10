@@ -269,3 +269,11 @@
 - **Green implementation**: `BenchmarkRuntimeSpec` freezes provider/model, turn budget, ordered tool surface, and prompt, memory, compaction, permission, observation, and interaction policies. Composition uses its values for engine and compactor construction and calls `Fidelity()` for both machine-readable snapshot and derived human claims.
 - **Green commands**: focused Red/Green, full benchmark and command packages with hermetic `HOME`, focused `-race`, and package `go vet`.
 - **Green result**: PASS; `DV-BEN-003` is corrected without introducing the future general runtime profile implementation.
+
+## T093 / D-BEN-004: Rooted Fixture and Workspace Lifecycle
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/benchmark -run '^TestDVBEN004' -count=1 -timeout=30s`
+- **Compile Red result**: Corrected lifecycle tests could not compile because Runner exposed neither a context-aware workspace-removal seam nor typed cleanup evidence. The existing path test also demonstrated outside-root fixture symlink copying and `file_contains` traversal/symlink acceptance.
+- **Green implementation**: Fixture reads and destination creation now use separate `os.Root` authorities, accept directories and regular files only, and reject symlinks and unsupported entries without mutating the source. `file_contains` validates every rooted component, rejects traversal, symlinks, and non-regular targets, then reads the opened regular handle. Successful workspaces remain retained; all non-success paths remove the workspace under a fresh background-derived context with a 30-second default, and cleanup failure or timeout is returned and recorded as infrastructure evidence.
+- **Green commands**: focused `DV-BEN-004` plus success-retention coverage, full benchmark and command packages with hermetic `HOME`, focused `-race`, architecture tests, and package `go vet`.
+- **Green result**: PASS; `DV-BEN-004` is corrected. Partial-copy, factory, cancellation, cleanup failure, and cleanup timeout paths are explicit, while successful workspace inspection remains unchanged.

@@ -32,11 +32,16 @@ type Harness struct {
 
 // Runner executes benchmark cases using a caller-provided HarnessFactory.
 type Runner struct {
-	factory     HarnessFactory
-	caseTimeout func(*Case) time.Duration
+	factory         HarnessFactory
+	caseTimeout     func(*Case) time.Duration
+	cleanupTimeout  func() time.Duration
+	removeWorkspace func(context.Context, string) error
 }
 
-const defaultCaseTimeout = 10 * time.Minute
+const (
+	defaultCaseTimeout    = 10 * time.Minute
+	defaultCleanupTimeout = 30 * time.Second
+)
 
 // NewRunner creates a Runner that delegates engine creation to the given factory.
 func NewRunner(factory HarnessFactory) *Runner {
@@ -56,6 +61,7 @@ type Result struct {
 	RuntimeError        string             `json:"runtime_error,omitempty"`
 	EvaluationError     string             `json:"evaluation_error,omitempty"`
 	InfrastructureError string             `json:"infrastructure_error,omitempty"`
+	CleanupError        string             `json:"cleanup_error,omitempty"`
 	Validations         []ValidationResult `json:"validations"`
 	RuntimeFidelity     RuntimeFidelity    `json:"runtime_fidelity"`
 }
@@ -84,7 +90,7 @@ type RuntimeFidelity struct {
 // engine via the configured factory, and validates the results. It returns a
 // Result regardless of whether the engine run itself errored; the Success
 // field reflects both engine completion and validation outcomes.
-func (r *Runner) RunCase(ctx context.Context, c *Case) (*Result, error) {
+func (r *Runner) RunCase(ctx context.Context, c *Case) (returnedResult *Result, returnedErr error) {
 	caseCtx, cancelCase := context.WithTimeout(ctx, r.timeoutFor(c))
 	defer cancelCase()
 	result := &Result{CaseID: c.ID}
@@ -94,6 +100,27 @@ func (r *Runner) RunCase(ctx context.Context, c *Case) (*Result, error) {
 		return infrastructureFailure(result, err)
 	}
 	result.Workspace = workspace
+	defer func() {
+		if result.Success {
+			return
+		}
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), r.cleanupTimeoutOrDefault())
+		defer cancelCleanup()
+		if err := r.removeWorkspaceWithContext(cleanupCtx, workspace); err != nil {
+			cleanupErr := fmt.Errorf("清理 benchmark workspace 失败: %w", err)
+			result.Success = false
+			result.Status = ResultStatusInfrastructureFailed
+			result.CleanupError = cleanupErr.Error()
+			if result.InfrastructureError == "" {
+				result.InfrastructureError = cleanupErr.Error()
+			} else {
+				result.InfrastructureError = errors.Join(errors.New(result.InfrastructureError), cleanupErr).Error()
+			}
+			result.Error = result.InfrastructureError
+			returnedResult = result
+			returnedErr = errors.Join(returnedErr, cleanupErr)
+		}
+	}()
 
 	if err := copyDirContext(caseCtx, c.Fixture, workspace); err != nil {
 		if caseCtx.Err() != nil {
@@ -147,6 +174,20 @@ func (r *Runner) RunCase(ctx context.Context, c *Case) (*Result, error) {
 	return result, nil
 }
 
+func (r *Runner) cleanupTimeoutOrDefault() time.Duration {
+	if r.cleanupTimeout != nil {
+		return r.cleanupTimeout()
+	}
+	return defaultCleanupTimeout
+}
+
+func (r *Runner) removeWorkspaceWithContext(ctx context.Context, workspace string) error {
+	if r.removeWorkspace != nil {
+		return r.removeWorkspace(ctx, workspace)
+	}
+	return removeAllContext(ctx, workspace)
+}
+
 func contextFailure(result *Result, err error) *Result {
 	result.Success = false
 	result.Error = err.Error()
@@ -181,6 +222,24 @@ func copyDir(src, dst string) error {
 }
 
 func copyDirContext(ctx context.Context, src, dst string) error {
+	sourceInfo, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.IsDir() {
+		return fmt.Errorf("fixture root must be a directory, not a symlink or other file type")
+	}
+	sourceRoot, err := os.OpenRoot(src)
+	if err != nil {
+		return err
+	}
+	defer sourceRoot.Close()
+	destinationRoot, err := os.OpenRoot(dst)
+	if err != nil {
+		return err
+	}
+	defer destinationRoot.Close()
+
 	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -194,18 +253,42 @@ func copyDirContext(ctx context.Context, src, dst string) error {
 			return err
 		}
 
-		target := filepath.Join(dst, rel)
-
 		if d.IsDir() {
-			return os.MkdirAll(target, 0755)
+			return destinationRoot.MkdirAll(rel, 0o755)
 		}
-
-		in, err := os.Open(path)
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("fixture symlink is not allowed: %s", rel)
+		}
+		info, err := sourceRoot.Lstat(rel)
 		if err != nil {
 			return err
 		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("fixture entry is not a regular file: %s", rel)
+		}
 
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		in, err := sourceRoot.Open(rel)
+		if err != nil {
+			return err
+		}
+		openedInfo, err := in.Stat()
+		if err != nil || !openedInfo.Mode().IsRegular() {
+			_ = in.Close()
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("fixture target is not a regular file: %s", rel)
+		}
+		finalInfo, err := sourceRoot.Lstat(rel)
+		if err != nil || finalInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, finalInfo) {
+			_ = in.Close()
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("fixture entry changed while being opened: %s", rel)
+		}
+
+		out, err := destinationRoot.OpenFile(rel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err != nil {
 			_ = in.Close()
 			return err
@@ -225,4 +308,36 @@ func copyDirContext(ctx context.Context, src, dst string) error {
 
 		return closeOutErr
 	})
+}
+
+func removeAllContext(ctx context.Context, path string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		child := filepath.Join(path, entry.Name())
+		if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
+			if err := removeAllContext(ctx, child); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.Remove(child); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return os.Remove(path)
 }

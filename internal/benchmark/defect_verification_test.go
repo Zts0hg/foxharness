@@ -3,6 +3,7 @@ package benchmark
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -107,7 +108,7 @@ func TestDVBEN003RuntimeFidelityDerivesFromResolvedSpecification(t *testing.T) {
 	}
 }
 
-func TestDVBEN004FixtureAndValidationCanResolveOutsideOwnedRoots(t *testing.T) {
+func TestDVBEN004FixtureAndValidationStayWithinOwnedRoots(t *testing.T) {
 	outsideDir := t.TempDir()
 	outside := filepath.Join(outsideDir, "outside.txt")
 	if err := os.WriteFile(outside, []byte("external"), 0o600); err != nil {
@@ -118,12 +119,12 @@ func TestDVBEN004FixtureAndValidationCanResolveOutsideOwnedRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	destination := t.TempDir()
-	if err := copyDir(fixture, destination); err != nil {
-		t.Fatalf("copyDir() error = %v", err)
+	if err := copyDir(fixture, destination); err == nil {
+		t.Fatal("copyDir() accepted a source symlink")
 	}
-	copied, err := os.ReadFile(filepath.Join(destination, "linked.txt"))
-	if err != nil || string(copied) != "external" {
-		t.Fatalf("copied symlink target = %q, %v; want outside content", copied, err)
+	linkTarget, err := os.Readlink(filepath.Join(fixture, "linked.txt"))
+	if err != nil || linkTarget != outside {
+		t.Fatalf("source fixture changed after rejected copy: target/error = %q/%v", linkTarget, err)
 	}
 
 	workspace := t.TempDir()
@@ -131,17 +132,166 @@ func TestDVBEN004FixtureAndValidationCanResolveOutsideOwnedRoots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result := validateFileContains(workspace, relativeEscape, "external"); !result.Passed {
-		t.Fatalf("traversal validation = %#v, want current outside-root success", result)
+	if result := validateFileContains(workspace, relativeEscape, "external"); result.Passed {
+		t.Fatalf("traversal validation = %#v, want rejection", result)
+	}
+	if result := validateFileContains(workspace, outside, "external"); result.Passed {
+		t.Fatalf("absolute validation = %#v, want rejection", result)
 	}
 	if err := os.Symlink(outside, filepath.Join(workspace, "result.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if result := validateFileContains(workspace, "result.txt", "external"); !result.Passed {
-		t.Fatalf("symlink validation = %#v, want current outside-root success", result)
+	if result := validateFileContains(workspace, "result.txt", "external"); result.Passed {
+		t.Fatalf("symlink validation = %#v, want rejection", result)
 	}
-	if !strings.Contains(readBenchmarkSource(t, "runner.go"), "os.MkdirTemp") || strings.Contains(readBenchmarkSource(t, "runner.go"), "os.RemoveAll(workspace)") {
-		t.Log("RunCase retains temporary workspaces on setup failure")
+	if err := os.Mkdir(filepath.Join(workspace, "directory.txt"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if result := validateFileContains(workspace, "directory.txt", "anything"); result.Passed {
+		t.Fatalf("directory validation = %#v, want regular-file rejection", result)
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "nested", "valid.txt"), []byte("inside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if result := validateFileContains(workspace, filepath.Join("nested", "valid.txt"), "inside"); !result.Passed {
+		t.Fatalf("valid rooted file = %#v", result)
+	}
+
+	directoryFixture := t.TempDir()
+	if err := os.Symlink(t.TempDir(), filepath.Join(directoryFixture, "linked-directory")); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyDir(directoryFixture, t.TempDir()); err == nil {
+		t.Fatal("copyDir() accepted a source directory symlink")
+	}
+
+	rootTarget := t.TempDir()
+	rootLink := filepath.Join(t.TempDir(), "fixture-link")
+	if err := os.Symlink(rootTarget, rootLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyDir(rootLink, t.TempDir()); err == nil {
+		t.Fatal("copyDir() accepted a symlink fixture root")
+	}
+
+	unsupportedFixture := t.TempDir()
+	listener, err := net.Listen("unix", filepath.Join(unsupportedFixture, "socket"))
+	if err != nil {
+		t.Skipf("unix socket fixture unavailable: %v", err)
+	}
+	defer listener.Close()
+	if err := copyDir(unsupportedFixture, t.TempDir()); err == nil {
+		t.Fatal("copyDir() accepted an unsupported source file type")
+	}
+}
+
+func TestDVBEN004PartialFixtureCopyFailureRemovesWorkspace(t *testing.T) {
+	fixture := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fixture, "a-regular.txt"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a-regular.txt", filepath.Join(fixture, "z-symlink.txt")); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewRunner(func(context.Context, string, *Case) (*Harness, error) {
+		t.Fatal("factory called after fixture copy failure")
+		return nil, nil
+	})
+	result, err := runner.RunCase(context.Background(), &Case{ID: "partial-copy", Fixture: fixture, Prompt: "run"})
+	if err == nil || result == nil || result.Status != ResultStatusInfrastructureFailed {
+		t.Fatalf("RunCase() result/error = %#v/%v, want infrastructure failure", result, err)
+	}
+	if _, statErr := os.Stat(result.Workspace); !os.IsNotExist(statErr) {
+		t.Fatalf("partial workspace stat = %v, want removed", statErr)
+	}
+}
+
+func TestDVBEN004FailedWorkspaceCleanupUsesFreshBoundedContext(t *testing.T) {
+	fixture := t.TempDir()
+	runner := NewRunner(func(_ context.Context, _ string, _ *Case) (*Harness, error) {
+		return nil, errors.New("factory failure")
+	})
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	cleanupContext := make(chan struct {
+		err      error
+		deadline bool
+	}, 1)
+	runner.removeWorkspace = func(ctx context.Context, path string) error {
+		_, deadline := ctx.Deadline()
+		cleanupContext <- struct {
+			err      error
+			deadline bool
+		}{err: ctx.Err(), deadline: deadline}
+		return os.RemoveAll(path)
+	}
+	result, err := runner.RunCase(parent, &Case{ID: "cleanup", Fixture: fixture, Prompt: "run"})
+	if err != nil || result == nil || result.Status != ResultStatusCancelled {
+		t.Fatalf("RunCase() result/error = %#v/%v", result, err)
+	}
+	observed := <-cleanupContext
+	if observed.err != nil || !observed.deadline {
+		t.Fatalf("cleanup context = %#v, want fresh bounded context", observed)
+	}
+	if _, err := os.Stat(result.Workspace); !os.IsNotExist(err) {
+		t.Fatalf("failed workspace stat = %v, want removed", err)
+	}
+}
+
+func TestDVBEN004CleanupFailureBecomesInfrastructureEvidence(t *testing.T) {
+	runner := NewRunner(func(context.Context, string, *Case) (*Harness, error) {
+		return nil, errors.New("factory failure")
+	})
+	runner.removeWorkspace = func(context.Context, string) error { return errors.New("cleanup failure") }
+	result, err := runner.RunCase(context.Background(), &Case{ID: "cleanup-failure", Fixture: t.TempDir(), Prompt: "run"})
+	if err == nil || result == nil || result.Status != ResultStatusInfrastructureFailed || !strings.Contains(result.CleanupError, "cleanup failure") {
+		t.Fatalf("cleanup failure result/error = %#v/%v", result, err)
+	}
+}
+
+func TestDVBEN004CleanupTimeoutBecomesInfrastructureEvidence(t *testing.T) {
+	runner := NewRunner(func(context.Context, string, *Case) (*Harness, error) {
+		return nil, errors.New("factory failure")
+	})
+	runner.cleanupTimeout = func() time.Duration { return time.Millisecond }
+	runner.removeWorkspace = func(ctx context.Context, _ string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	result, err := runner.RunCase(context.Background(), &Case{ID: "cleanup-timeout", Fixture: t.TempDir(), Prompt: "run"})
+	if err == nil || result == nil || result.Status != ResultStatusInfrastructureFailed || !strings.Contains(result.CleanupError, context.DeadlineExceeded.Error()) {
+		t.Fatalf("cleanup timeout result/error = %#v/%v", result, err)
+	}
+}
+
+func TestDVBEN004PanicStillCleansWorkspace(t *testing.T) {
+	runner := NewRunner(func(context.Context, string, *Case) (*Harness, error) {
+		panic("factory panic")
+	})
+	var workspace string
+	runner.removeWorkspace = func(ctx context.Context, path string) error {
+		if ctx.Err() != nil {
+			t.Fatalf("cleanup received expired context: %v", ctx.Err())
+		}
+		workspace = path
+		return os.RemoveAll(path)
+	}
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		_, _ = runner.RunCase(context.Background(), &Case{ID: "panic", Fixture: t.TempDir(), Prompt: "run"})
+	}()
+	if recovered == nil {
+		t.Fatal("RunCase() did not propagate factory panic")
+	}
+	if workspace == "" {
+		t.Fatal("panic path did not attempt workspace cleanup")
+	}
+	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
+		t.Fatalf("panic workspace stat = %v, want removed", err)
 	}
 }
 

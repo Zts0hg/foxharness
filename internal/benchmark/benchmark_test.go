@@ -162,4 +162,7 @@ func TestRunCaseIncludesRuntimeFidelityMetadata(t *testing.T) {
 	if len(result.RuntimeFidelity.SharedInvariants) != 1 || result.RuntimeFidelity.SharedInvariants[0] != "canonical tools" {
 		t.Fatalf("SharedInvariants = %+v", result.RuntimeFidelity.SharedInvariants)
 	}
+	if _, err := os.Stat(result.Workspace); err != nil {
+		t.Fatalf("successful workspace was not retained: %v", err)
+	}
 }

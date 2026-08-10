@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,7 +85,7 @@ func validateCommand(ctx context.Context, workDir, command string) ValidationRes
 }
 
 func validateFileContains(workDir, path, contains string) ValidationResult {
-	data, err := os.ReadFile(filepath.Join(workDir, path))
+	data, err := readRootedRegularFile(workDir, path)
 	if err != nil {
 		return ValidationResult{
 			Type:    "file_contains",
@@ -103,6 +104,52 @@ func validateFileContains(workDir, path, contains string) ValidationResult {
 		}
 	}
 	return ValidationResult{Type: "file_contains", Passed: true, Status: ValidationStatusPassed}
+}
+
+func readRootedRegularFile(workDir, path string) ([]byte, error) {
+	if path == "" || filepath.IsAbs(path) || strings.Contains(path, `\`) {
+		return nil, fmt.Errorf("validation path must be a relative workspace path")
+	}
+	clean := filepath.Clean(path)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("validation path escapes workspace")
+	}
+	root, err := os.OpenRoot(workDir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	current := ""
+	for _, component := range strings.Split(filepath.ToSlash(clean), "/") {
+		current = filepath.Join(current, component)
+		info, err := root.Lstat(current)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("validation path contains a symlink")
+		}
+	}
+	file, err := root.Open(clean)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("validation target is not a regular file")
+	}
+	finalInfo, err := root.Lstat(clean)
+	if err != nil {
+		return nil, err
+	}
+	if finalInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(info, finalInfo) {
+		return nil, fmt.Errorf("validation target changed while being opened")
+	}
+	return io.ReadAll(file)
 }
 
 func terminalValidationResult(validationType string, err error) ValidationResult {
