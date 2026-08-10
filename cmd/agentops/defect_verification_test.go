@@ -7,10 +7,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/Zts0hg/foxharness/internal/agentops"
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/feishu"
 )
@@ -75,23 +79,103 @@ func TestDVAOP001GatewayRejectsMissingAndEmptyMessageIDsBeforeAgentOps(t *testin
 	}
 }
 
-func TestDVAOP002ProductionEntryHasNoCoordinatedShutdown(t *testing.T) {
+func TestDVAOP002ProductionEntryCoordinatesShutdownAndTwoChannelDrain(t *testing.T) {
+	recorder := &agentOpsShutdownRecorder{}
+	gateway := &recordingAgentOpsGateway{
+		recorder:  recorder,
+		listening: make(chan struct{}),
+		shutdown:  make(chan struct{}),
+	}
+	runner := &recordingAgentOpsRunner{recorder: recorder}
+	feishuTasks := make(chan feishu.Task, 1)
+	feishuTasks <- feishu.Task{TaskID: "accepted", ChatID: "chat", SenderID: "sender", MessageID: "message", Text: "inspect"}
+	signalCtx, cancelSignal := context.WithCancel(context.Background())
+	serveResult := make(chan error, 1)
+	go func() {
+		serveResult <- serve(signalCtx, gateway, runner, feishuTasks, ":0", time.Second)
+	}()
+	<-gateway.listening
+	cancelSignal()
+	if err := <-serveResult; err != nil {
+		t.Fatalf("serve() error = %v", err)
+	}
+	if got, want := recorder.snapshot(), []string{
+		"http-shutdown",
+		"listener-stopped",
+		"runner-cancelled",
+		"task-accepted",
+		"runner-input-closed",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("shutdown order = %#v, want %#v", got, want)
+	}
+
 	source := readAgentOpsMain(t)
-	for _, current := range []string{
-		"ctx := context.Background()",
-		"go runner.Start(ctx, agentTasks)",
-		"go func()",
-		"gateway.Listen(\":7777\")",
+	for _, required := range []string{
+		"signal.NotifyContext",
+		"serve(signalCtx, gateway, runner, feishuTasks",
+		"gateway.Shutdown(",
+		"close(feishuTasks)",
+		"bridgeDone",
+		"runnerDone",
 	} {
-		if !strings.Contains(source, current) {
-			t.Fatalf("production entry no longer contains %q", current)
+		if !strings.Contains(source, required) {
+			t.Fatalf("production entry does not contain %q", required)
 		}
 	}
-	for _, absent := range []string{"signal.NotifyContext", "gateway.Shutdown(", "close(feishuTasks)", "runnerDone"} {
-		if strings.Contains(source, absent) {
-			t.Fatalf("production entry now contains %q; update DV-AOP-002 classification", absent)
+	if strings.Contains(source, "ctx := context.Background()\n\tagentTasks") {
+		t.Fatal("production entry still owns an uncoordinated background lifecycle")
+	}
+}
+
+type agentOpsShutdownRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *agentOpsShutdownRecorder) add(event string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+}
+
+func (r *agentOpsShutdownRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...)
+}
+
+type recordingAgentOpsGateway struct {
+	recorder  *agentOpsShutdownRecorder
+	listening chan struct{}
+	shutdown  chan struct{}
+}
+
+func (g *recordingAgentOpsGateway) Listen(string) error {
+	close(g.listening)
+	<-g.shutdown
+	g.recorder.add("listener-stopped")
+	return nil
+}
+
+func (g *recordingAgentOpsGateway) Shutdown(context.Context) error {
+	g.recorder.add("http-shutdown")
+	close(g.shutdown)
+	return nil
+}
+
+type recordingAgentOpsRunner struct {
+	recorder *agentOpsShutdownRecorder
+}
+
+func (r *recordingAgentOpsRunner) Start(ctx context.Context, tasks <-chan agentops.Task) {
+	<-ctx.Done()
+	r.recorder.add("runner-cancelled")
+	for task := range tasks {
+		if task.TaskID == "accepted" {
+			r.recorder.add("task-accepted")
 		}
 	}
+	r.recorder.add("runner-input-closed")
 }
 
 func TestDVAOPApprovalReusesAuthenticatedExactlyOnceStore(t *testing.T) {

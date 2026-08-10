@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
@@ -76,34 +77,27 @@ func NewRunner(
 	}
 }
 
-// Start consumes tasks until ctx is cancelled or the channel is closed, running
-// at most the configured number of tasks concurrently.
+// Start consumes every accepted task until the producer closes the channel and
+// waits for all workers. Cancellation is propagated to each task but does not
+// make the consumer abandon tasks already accepted by the upstream lifecycle.
 func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 	permits := make(chan struct{}, r.concurrentTaskLimit())
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case task, ok := <-tasks:
-			if !ok {
-				return
-			}
-			select {
-			case permits <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
-			go func(task Task) {
-				defer func() {
-					<-permits
-					if rec := recover(); rec != nil {
-						log.Printf("[AgentOps] task=%s panic recovered: %v", task.TaskID, rec)
-					}
-				}()
-				r.Run(ctx, task)
-			}(task)
-		}
+	var workers sync.WaitGroup
+	for task := range tasks {
+		permits <- struct{}{}
+		workers.Add(1)
+		go func(task Task) {
+			defer func() {
+				<-permits
+				workers.Done()
+				if rec := recover(); rec != nil {
+					log.Printf("[AgentOps] task=%s panic recovered: %v", task.TaskID, rec)
+				}
+			}()
+			r.Run(ctx, task)
+		}(task)
 	}
+	workers.Wait()
 }
 
 // Run executes the task to completion.  On failure it logs the error and

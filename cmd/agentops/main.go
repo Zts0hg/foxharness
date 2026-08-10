@@ -18,9 +18,14 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/agentops"
 	"github.com/Zts0hg/foxharness/internal/approval"
@@ -29,6 +34,17 @@ import (
 	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/provider"
 )
+
+const defaultShutdownTimeout = 30 * time.Second
+
+type gatewayService interface {
+	Listen(string) error
+	Shutdown(context.Context) error
+}
+
+type runnerService interface {
+	Start(context.Context, <-chan agentops.Task)
+}
 
 func main() {
 	appID := mustEnv("FEISHU_APP_ID")
@@ -55,28 +71,106 @@ func main() {
 	gateway := feishu.NewGateway(verificationToken, encryptKey, feishuTasks, approvalStore).WithDeliveryStore(deliveryStore)
 	runner := agentops.NewRunner(llmProvider, workDir, logDir, messenger, approvalStore)
 
-	ctx := context.Background()
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	if err := serve(signalCtx, gateway, runner, feishuTasks, ":7777", defaultShutdownTimeout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func serve(
+	signalCtx context.Context,
+	gateway gatewayService,
+	runner runnerService,
+	feishuTasks chan feishu.Task,
+	addr string,
+	shutdownTimeout time.Duration,
+) error {
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = defaultShutdownTimeout
+	}
+	runnerCtx, cancelRunner := context.WithCancel(context.Background())
+	defer cancelRunner()
+
 	agentTasks := make(chan agentops.Task, 64)
-	go runner.Start(ctx, agentTasks)
+	runnerDone := make(chan struct{})
 	go func() {
-		defer close(agentTasks)
-		for task := range feishuTasks {
-			agentTask := agentops.Parse(task.Text)
-			agentTask.TaskID = task.TaskID
-			agentTask.ChatID = task.ChatID
-			agentTask.SenderID = task.SenderID
-			agentTask.MessageID = task.MessageID
-			select {
-			case agentTasks <- agentTask:
-			case <-ctx.Done():
-				return
-			}
-		}
+		runner.Start(runnerCtx, agentTasks)
+		close(runnerDone)
 	}()
 
-	log.Println("[AgentOps] listening on :7777")
-	if err := gateway.Listen(":7777"); err != nil {
-		log.Fatal(err)
+	bridgeDone := make(chan struct{})
+	go func() {
+		bridgeAgentOpsTasks(feishuTasks, agentTasks)
+		close(bridgeDone)
+	}()
+
+	listenResult := make(chan error, 1)
+	go func() {
+		log.Printf("[AgentOps] listening on %s", addr)
+		listenResult <- gateway.Listen(addr)
+	}()
+
+	select {
+	case listenErr := <-listenResult:
+		close(feishuTasks)
+		if listenErr != nil {
+			cancelRunner()
+		}
+		waitCtx, cancelWait := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancelWait()
+		return errors.Join(
+			listenErr,
+			waitForCompletion(waitCtx, "AgentOps bridge", bridgeDone),
+			waitForCompletion(waitCtx, "AgentOps runner", runnerDone),
+		)
+	case <-signalCtx.Done():
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancelShutdown()
+		shutdownErr := gateway.Shutdown(shutdownCtx)
+		listenErr, listenerStopped := waitForListenResult(shutdownCtx, listenResult)
+		if !listenerStopped {
+			cancelRunner()
+			return errors.Join(shutdownErr, listenErr)
+		}
+		close(feishuTasks)
+		cancelRunner()
+		return errors.Join(
+			shutdownErr,
+			listenErr,
+			waitForCompletion(shutdownCtx, "AgentOps bridge", bridgeDone),
+			waitForCompletion(shutdownCtx, "AgentOps runner", runnerDone),
+		)
+	}
+}
+
+func bridgeAgentOpsTasks(feishuTasks <-chan feishu.Task, agentTasks chan<- agentops.Task) {
+	defer close(agentTasks)
+	for task := range feishuTasks {
+		agentTask := agentops.Parse(task.Text)
+		agentTask.TaskID = task.TaskID
+		agentTask.ChatID = task.ChatID
+		agentTask.SenderID = task.SenderID
+		agentTask.MessageID = task.MessageID
+		agentTasks <- agentTask
+	}
+}
+
+func waitForListenResult(ctx context.Context, result <-chan error) (error, bool) {
+	select {
+	case err := <-result:
+		return err, true
+	case <-ctx.Done():
+		return fmt.Errorf("wait for AgentOps listener: %w", ctx.Err()), false
+	}
+}
+
+func waitForCompletion(ctx context.Context, name string, done <-chan struct{}) error {
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("wait for %s: %w", name, ctx.Err())
 	}
 }
 

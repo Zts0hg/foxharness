@@ -20,13 +20,16 @@ import (
 	"github.com/Zts0hg/foxharness/internal/session"
 )
 
-func TestDVAOP002RunnerReturnsWithoutDrainingAcceptedWork(t *testing.T) {
+func TestDVAOP002RunnerWaitsForAcceptedWork(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		stop func(context.CancelFunc, chan Task)
 	}{
 		{name: "task channel closed", stop: func(_ context.CancelFunc, tasks chan Task) { close(tasks) }},
-		{name: "context cancelled", stop: func(cancel context.CancelFunc, _ chan Task) { cancel() }},
+		{name: "context cancelled", stop: func(cancel context.CancelFunc, tasks chan Task) {
+			cancel()
+			close(tasks)
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			started := make(chan struct{})
@@ -48,33 +51,32 @@ func TestDVAOP002RunnerReturnsWithoutDrainingAcceptedWork(t *testing.T) {
 			tasks <- Task{TaskID: "accepted"}
 			<-started
 			test.stop(cancel, tasks)
-			<-returned
 			select {
-			case <-finished:
-				t.Fatal("in-flight task finished before Runner.Start returned")
-			default:
+			case <-returned:
+				t.Fatal("Runner.Start returned before accepted work finished")
+			case <-time.After(20 * time.Millisecond):
 			}
 			close(release)
 			<-finished
+			<-returned
 			cancel()
 		})
 	}
 }
 
-func TestDVAOP002AcceptedPermitWaiterIsDroppedOnCancellation(t *testing.T) {
+func TestDVAOP002AcceptedPermitWaiterReachesCancellationHandling(t *testing.T) {
 	firstStarted := make(chan struct{})
-	firstRelease := make(chan struct{})
-	secondStarted := make(chan struct{}, 1)
+	secondContextError := make(chan error, 1)
 	runner := &Runner{
 		maxConcurrentTasks: 1,
-		runTask: func(_ context.Context, task Task) error {
+		runTask: func(ctx context.Context, task Task) error {
 			if task.TaskID == "first" {
 				close(firstStarted)
-				<-firstRelease
-				return nil
+				<-ctx.Done()
+				return ctx.Err()
 			}
-			secondStarted <- struct{}{}
-			return nil
+			secondContextError <- ctx.Err()
+			return ctx.Err()
 		},
 	}
 	tasks := make(chan Task)
@@ -93,13 +95,11 @@ func TestDVAOP002AcceptedPermitWaiterIsDroppedOnCancellation(t *testing.T) {
 	}()
 	<-secondAccepted
 	cancel()
+	close(tasks)
 	<-returned
-	select {
-	case <-secondStarted:
-		t.Fatal("accepted permit waiter unexpectedly started")
-	default:
+	if err := <-secondContextError; !errors.Is(err, context.Canceled) {
+		t.Fatalf("accepted waiter context error = %v, want cancellation handling", err)
 	}
-	close(firstRelease)
 }
 
 func TestDVAOP003PanicHasNoCorrelatedTerminalDelivery(t *testing.T) {
