@@ -34,35 +34,66 @@ import (
 )
 
 func main() {
-	casePath := flag.String("case", "", "benchmark case yaml path")
-	outPath := flag.String("out", "benchmark-result.json", "result json path")
-	repeat := flag.Int("repeat", 1, "number of times to repeat the benchmark")
-	flag.Parse()
+	os.Exit(run(os.Args[1:]))
+}
+
+func run(args []string) int {
+	flags := flag.NewFlagSet("bench", flag.ContinueOnError)
+	casePath := flags.String("case", "", "benchmark case yaml path")
+	outPath := flags.String("out", "benchmark-result.json", "result json path")
+	repeat := flags.Int("repeat", 1, "number of times to repeat the benchmark")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
 
 	if *casePath == "" {
-		log.Fatal("请通过 -case 指定 benchmark case")
+		log.Print("请通过 -case 指定 benchmark case")
+		return 2
 	}
 
 	c, err := benchmark.LoadCase(*casePath)
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return 2
 	}
 
 	runner := benchmark.NewRunner(buildHarness)
 	var results []*benchmark.Result
+	infrastructureFailed := false
 
 	for i := 0; i < *repeat; i++ {
 		result, err := runner.RunCase(context.Background(), c)
-		if err != nil {
-			log.Fatal(err)
+		if result != nil {
+			results = append(results, result)
 		}
-		results = append(results, result)
+		if err != nil {
+			log.Print(err)
+			infrastructureFailed = true
+			break
+		}
 	}
 
 	benchmark.PrintSummary(results)
 	if err := benchmark.WriteJSON(*outPath, results); err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return 2
 	}
+	return resultExitCode(results, infrastructureFailed)
+}
+
+func resultExitCode(results []*benchmark.Result, infrastructureFailed bool) int {
+	if infrastructureFailed {
+		return 2
+	}
+	for _, result := range results {
+		if result == nil || result.Status == benchmark.ResultStatusInfrastructureFailed {
+			return 2
+		}
+		if !result.Success {
+			return 1
+		}
+	}
+	return 0
 }
 
 // buildHarness creates an AgentEngine and Session for a benchmark run.

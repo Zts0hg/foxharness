@@ -7,6 +7,7 @@ package benchmark
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,15 +46,30 @@ func NewRunner(factory HarnessFactory) *Runner {
 // Result captures the outcome of a single benchmark case execution, including
 // timing, validation details, and any error that terminated the run.
 type Result struct {
-	CaseID          string             `json:"case_id"`
-	Success         bool               `json:"success"`
-	Workspace       string             `json:"workspace"`
-	SessionID       string             `json:"session_id"`
-	DurationMS      int64              `json:"duration_ms"`
-	Error           string             `json:"error,omitempty"`
-	Validations     []ValidationResult `json:"validations"`
-	RuntimeFidelity RuntimeFidelity    `json:"runtime_fidelity"`
+	CaseID              string             `json:"case_id"`
+	Success             bool               `json:"success"`
+	Status              ResultStatus       `json:"status"`
+	Workspace           string             `json:"workspace"`
+	SessionID           string             `json:"session_id"`
+	DurationMS          int64              `json:"duration_ms"`
+	Error               string             `json:"error,omitempty"`
+	RuntimeError        string             `json:"runtime_error,omitempty"`
+	EvaluationError     string             `json:"evaluation_error,omitempty"`
+	InfrastructureError string             `json:"infrastructure_error,omitempty"`
+	Validations         []ValidationResult `json:"validations"`
+	RuntimeFidelity     RuntimeFidelity    `json:"runtime_fidelity"`
 }
+
+// ResultStatus identifies the terminal state of one accepted benchmark repeat.
+type ResultStatus string
+
+const (
+	ResultStatusCompleted            ResultStatus = "completed"
+	ResultStatusFailed               ResultStatus = "failed"
+	ResultStatusCancelled            ResultStatus = "cancelled"
+	ResultStatusTimedOut             ResultStatus = "timed_out"
+	ResultStatusInfrastructureFailed ResultStatus = "infrastructure_failed"
+)
 
 // RuntimeFidelity records which product runtime invariants a benchmark shares
 // and which differences are intentional for benchmark execution.
@@ -70,30 +86,34 @@ type RuntimeFidelity struct {
 func (r *Runner) RunCase(ctx context.Context, c *Case) (*Result, error) {
 	caseCtx, cancelCase := context.WithTimeout(ctx, r.timeoutFor(c))
 	defer cancelCase()
+	result := &Result{CaseID: c.ID}
 
 	workspace, err := os.MkdirTemp("", "foxharness-benchmark-*")
 	if err != nil {
-		return nil, err
+		return infrastructureFailure(result, err)
 	}
+	result.Workspace = workspace
 
 	if err := copyDirContext(caseCtx, c.Fixture, workspace); err != nil {
-		return nil, fmt.Errorf("复制 Fixture 失败: %w", err)
+		if caseCtx.Err() != nil {
+			return contextFailure(result, caseCtx.Err()), nil
+		}
+		return infrastructureFailure(result, fmt.Errorf("复制 Fixture 失败: %w", err))
 	}
 
 	harness, err := r.factory(caseCtx, workspace, c)
 	if err != nil {
-		return nil, fmt.Errorf("创建 Harness 失败: %w", err)
+		if caseCtx.Err() != nil {
+			return contextFailure(result, caseCtx.Err()), nil
+		}
+		return infrastructureFailure(result, fmt.Errorf("创建 Harness 失败: %w", err))
 	}
 	if harness == nil || harness.Engine == nil || harness.Session == nil {
-		return nil, fmt.Errorf("创建 Harness 失败: harness missing engine or session")
+		return infrastructureFailure(result, fmt.Errorf("创建 Harness 失败: harness missing engine or session"))
 	}
 
-	result := &Result{
-		CaseID:          c.ID,
-		Workspace:       workspace,
-		SessionID:       harness.Session.ID,
-		RuntimeFidelity: harness.RuntimeFidelity,
-	}
+	result.SessionID = harness.Session.ID
+	result.RuntimeFidelity = harness.RuntimeFidelity
 
 	started := time.Now()
 	runResult, err := harness.Engine.Run(caseCtx, harness.Session, c.Prompt)
@@ -105,13 +125,44 @@ func (r *Runner) RunCase(ctx context.Context, c *Case) (*Result, error) {
 
 	if err != nil {
 		result.Error = err.Error()
+		result.RuntimeError = err.Error()
 	}
 
 	validationResults := ValidateAll(caseCtx, workspace, c.Validations)
 	result.Validations = validationResults
-	result.Success = err == nil && allPassed(validationResults)
+	validationsPassed := allPassed(validationResults)
+	if !validationsPassed {
+		result.EvaluationError = "one or more validations failed"
+	}
+	if caseCtx.Err() != nil {
+		contextFailure(result, caseCtx.Err())
+	} else if err != nil || !validationsPassed {
+		result.Status = ResultStatusFailed
+	} else {
+		result.Status = ResultStatusCompleted
+		result.Success = true
+	}
 
 	return result, nil
+}
+
+func contextFailure(result *Result, err error) *Result {
+	result.Success = false
+	result.Error = err.Error()
+	result.RuntimeError = err.Error()
+	result.Status = ResultStatusCancelled
+	if errors.Is(err, context.DeadlineExceeded) {
+		result.Status = ResultStatusTimedOut
+	}
+	return result
+}
+
+func infrastructureFailure(result *Result, err error) (*Result, error) {
+	result.Success = false
+	result.Status = ResultStatusInfrastructureFailed
+	result.Error = err.Error()
+	result.InfrastructureError = err.Error()
+	return result, err
 }
 
 func (r *Runner) timeoutFor(c *Case) time.Duration {

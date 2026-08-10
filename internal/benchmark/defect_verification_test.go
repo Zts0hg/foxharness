@@ -35,9 +35,9 @@ func TestDVBEN001CaseDeadlineCoversFactoryAndStopsUnstartedValidations(t *testin
 		return nil, ctx.Err()
 	})
 	runner.caseTimeout = func(*Case) time.Duration { return 10 * time.Millisecond }
-	_, err = runner.RunCase(context.Background(), &Case{ID: "timeout", Fixture: fixture, Prompt: "run", TimeoutSeconds: 600})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("RunCase() error = %v, want whole-case timeout", err)
+	timeoutResult, err := runner.RunCase(context.Background(), &Case{ID: "timeout", Fixture: fixture, Prompt: "run", TimeoutSeconds: 600})
+	if err != nil || timeoutResult.Status != ResultStatusTimedOut {
+		t.Fatalf("RunCase() result/error = %#v/%v, want whole-case timeout", timeoutResult, err)
 	}
 	if !<-deadlineObserved {
 		t.Fatal("HarnessFactory did not receive the case deadline")
@@ -66,6 +66,30 @@ func TestDVBEN001CaseDeadlineCoversFactoryAndStopsUnstartedValidations(t *testin
 	timedOut := ValidateAll(timeoutCtx, workDir, []Validation{{Type: "command", Command: "true"}})
 	if len(timedOut) != 1 || timedOut[0].Status != ValidationStatusTimedOut {
 		t.Fatalf("timed-out validation results = %#v, want timed_out", timedOut)
+	}
+}
+
+func TestDVBEN002AcceptedRepeatAlwaysHasTypedStatusAndSeparateEvidence(t *testing.T) {
+	fixture := t.TempDir()
+	infrastructure := NewRunner(func(context.Context, string, *Case) (*Harness, error) {
+		return nil, errors.New("factory unavailable")
+	})
+	result, err := infrastructure.RunCase(context.Background(), &Case{ID: "infra", Fixture: fixture, Prompt: "run"})
+	if err == nil || result == nil || result.Status != ResultStatusInfrastructureFailed || result.InfrastructureError == "" {
+		t.Fatalf("infrastructure result/error = %#v/%v", result, err)
+	}
+	if result.RuntimeError != "" || result.EvaluationError != "" || result.Success {
+		t.Fatalf("infrastructure evidence conflated = %#v", result)
+	}
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cancelled := NewRunner(func(ctx context.Context, _ string, _ *Case) (*Harness, error) {
+		return nil, ctx.Err()
+	})
+	result, err = cancelled.RunCase(cancelledCtx, &Case{ID: "cancel", Fixture: fixture, Prompt: "run"})
+	if err != nil || result == nil || result.Status != ResultStatusCancelled || result.InfrastructureError != "" {
+		t.Fatalf("cancelled result/error = %#v/%v", result, err)
 	}
 }
 

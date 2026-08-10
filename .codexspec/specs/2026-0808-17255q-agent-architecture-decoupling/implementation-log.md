@@ -253,3 +253,11 @@
 - **Cross-validation correction**: An expired case context cannot govern terminal cleanup. DEC-044 and T093 now require failed-workspace cleanup under one fresh background-derived 30-second context, matching the bounded terminal cleanup principle found in both references.
 - **Green commands**: focused Red/Green, full benchmark and command packages with hermetic `HOME`, focused `-race`, and package `go vet`.
 - **Green result**: PASS; `DV-BEN-001` is corrected without implementing later exit, fidelity, path, input-domain, process-tree, or provenance corrections early.
+
+## T091 / D-BEN-002: Typed Repeat Status and Process Exit
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/benchmark ./cmd/bench -run '^TestDVBEN002' -count=1`
+- **Compile Red result**: Result exposed no typed status or separated error evidence and `cmd/bench` exposed no result-derived exit decision.
+- **Green implementation**: Runner initializes a partial result before setup and classifies completion, runtime/evaluation failure, parent cancellation, case timeout, and infrastructure failure without conflating their evidence. The command appends any partial result before handling its infrastructure error, writes available summary and JSON, and returns 0/1/2 from aggregate semantics rather than `log.Fatal` side effects.
+- **Green commands**: focused Red/Green, full benchmark and command packages with hermetic `HOME`, focused `-race`, and package `go vet`.
+- **Green result**: PASS; `DV-BEN-002` is corrected. Existing `Error` remains populated for current readers while typed status and three evidence fields become authoritative for the corrected pre-baseline schema.
