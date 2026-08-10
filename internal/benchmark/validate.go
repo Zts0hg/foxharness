@@ -6,19 +6,21 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // ValidationResult records the outcome of a single validation check, including
 // whether it passed and a human-readable message on failure.
 type ValidationResult struct {
-	Type    string           `json:"type"`
-	Passed  bool             `json:"passed"`
-	Status  ValidationStatus `json:"status"`
-	Message string           `json:"message,omitempty"`
+	Type           string           `json:"type"`
+	Passed         bool             `json:"passed"`
+	Status         ValidationStatus `json:"status"`
+	Message        string           `json:"message,omitempty"`
+	Stdout         string           `json:"stdout,omitempty"`
+	Stderr         string           `json:"stderr,omitempty"`
+	StdoutOverflow bool             `json:"stdout_overflow,omitempty"`
+	StderrOverflow bool             `json:"stderr_overflow,omitempty"`
 }
 
 // ValidationStatus identifies the terminal state of one ordered validation.
@@ -64,24 +66,7 @@ func validateOne(ctx context.Context, workDir string, v Validation) ValidationRe
 }
 
 func validateCommand(ctx context.Context, workDir, command string) ValidationResult {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-
-	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", command)
-	cmd.Dir = workDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		if timeoutErr := timeoutCtx.Err(); timeoutErr != nil {
-			return terminalValidationResult("command", timeoutErr)
-		}
-		return ValidationResult{
-			Type:    "command",
-			Passed:  false,
-			Status:  ValidationStatusFailed,
-			Message: fmt.Sprintf("命令失败: %v\n%s", err, string(out)),
-		}
-	}
-	return ValidationResult{Type: "command", Passed: true, Status: ValidationStatusPassed}
+	return executeCommandValidation(ctx, workDir, command, defaultCommandValidationConfig())
 }
 
 func validateFileContains(workDir, path, contains string) ValidationResult {

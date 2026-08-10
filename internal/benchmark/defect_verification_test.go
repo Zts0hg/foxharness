@@ -365,18 +365,143 @@ func TestDVBEN005RelativeFixtureResolvesFromCaseDirectory(t *testing.T) {
 	}
 }
 
-func TestDVBEN006CommandValidationIsUnboundedAndImmediateProcessOnly(t *testing.T) {
-	source := readBenchmarkSource(t, "validate.go")
-	for _, current := range []string{"cmd.CombinedOutput()", "exec.CommandContext"} {
-		if !strings.Contains(source, current) {
-			t.Fatalf("validation no longer contains %q; update DV-BEN-006 classification", current)
-		}
+func TestDVBEN006CommandOutputIsIndependentlyBounded(t *testing.T) {
+	if maxValidationOutputBytes != 1<<20 {
+		t.Fatalf("maxValidationOutputBytes = %d, want 1 MiB", maxValidationOutputBytes)
 	}
-	for _, missing := range []string{"Setpgid", "StdoutPipe", "StderrPipe", "io.LimitReader"} {
-		if strings.Contains(source, missing) {
-			t.Fatalf("validation now contains %q; update DV-BEN-006 classification", missing)
-		}
+	tests := []struct {
+		name           string
+		command        string
+		wantStdoutOver bool
+		wantStderrOver bool
+	}{
+		{name: "stdout", command: "yes stdout", wantStdoutOver: true},
+		{name: "stderr", command: "yes stderr >&2", wantStderrOver: true},
 	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := defaultCommandValidationConfig()
+			config.timeout = time.Second
+			config.terminateGrace = 20 * time.Millisecond
+			result := executeCommandValidation(context.Background(), t.TempDir(), test.command, config)
+			if result.Status != ValidationStatusFailed || result.Passed {
+				t.Fatalf("overflow result = %#v, want failed", result)
+			}
+			if result.StdoutOverflow != test.wantStdoutOver || result.StderrOverflow != test.wantStderrOver {
+				t.Fatalf("overflow flags = stdout:%t stderr:%t", result.StdoutOverflow, result.StderrOverflow)
+			}
+			if test.wantStdoutOver && len(result.Stdout) != maxValidationOutputBytes {
+				t.Fatalf("retained stdout length = %d, want %d", len(result.Stdout), maxValidationOutputBytes)
+			}
+			if test.wantStderrOver && len(result.Stderr) != maxValidationOutputBytes {
+				t.Fatalf("retained stderr length = %d, want %d", len(result.Stderr), maxValidationOutputBytes)
+			}
+			if len(result.Stdout) > maxValidationOutputBytes || len(result.Stderr) > maxValidationOutputBytes {
+				t.Fatalf("retained output lengths = stdout:%d stderr:%d", len(result.Stdout), len(result.Stderr))
+			}
+			if !strings.Contains(result.Message, test.name) {
+				t.Fatalf("overflow message = %q, want stream evidence", result.Message)
+			}
+		})
+	}
+}
+
+func TestDVBEN006CommandFailurePreservesSeparateOutput(t *testing.T) {
+	result := executeCommandValidation(context.Background(), t.TempDir(), "printf stdout; printf stderr >&2; exit 7", defaultCommandValidationConfig())
+	if result.Status != ValidationStatusFailed || result.Stdout != "stdout" || result.Stderr != "stderr" {
+		t.Fatalf("command failure = %#v", result)
+	}
+	if result.StdoutOverflow || result.StderrOverflow {
+		t.Fatalf("moderate output marked overflow: %#v", result)
+	}
+}
+
+func TestDVBEN006CancellationKillsIgnoringDescendantsAndReaps(t *testing.T) {
+	workDir := t.TempDir()
+	config := defaultCommandValidationConfig()
+	config.timeout = time.Minute
+	config.terminateGrace = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	resultCh := make(chan ValidationResult, 1)
+	go func() {
+		resultCh <- executeCommandValidation(ctx, workDir, "touch started; (trap '' TERM; sleep 0.3; touch leaked) & while :; do sleep 1; done", config)
+	}()
+	waitForBenchmarkPath(t, filepath.Join(workDir, "started"), time.Second)
+	cancel()
+	select {
+	case result := <-resultCh:
+		if result.Status != ValidationStatusCancelled {
+			t.Fatalf("cancelled result = %#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("command process tree was not terminated and reaped")
+	}
+	time.Sleep(350 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(workDir, "leaked")); !os.IsNotExist(err) {
+		t.Fatalf("descendant survived cancellation: %v", err)
+	}
+}
+
+func TestDVBEN006ValidatorTimeoutIsDistinctAndOrdered(t *testing.T) {
+	config := defaultCommandValidationConfig()
+	config.timeout = 20 * time.Millisecond
+	config.terminateGrace = 20 * time.Millisecond
+	result := executeCommandValidation(context.Background(), t.TempDir(), "sleep 1", config)
+	if result.Status != ValidationStatusTimedOut {
+		t.Fatalf("timeout result = %#v", result)
+	}
+	parentCtx, cancelParent := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelParent()
+	config.timeout = time.Minute
+	result = executeCommandValidation(parentCtx, t.TempDir(), "sleep 1", config)
+	if result.Status != ValidationStatusTimedOut {
+		t.Fatalf("parent deadline result = %#v", result)
+	}
+
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "result.txt"), []byte("done"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	results := ValidateAll(context.Background(), workDir, []Validation{
+		{Type: "command", Command: "yes overflow"},
+		{Type: "file_contains", Path: "result.txt", Contains: "done"},
+	})
+	if len(results) != 2 || results[0].Status != ValidationStatusFailed || !results[0].StdoutOverflow || !results[1].Passed {
+		t.Fatalf("ordered overflow results = %#v", results)
+	}
+}
+
+func TestDVBEN006ActiveCancellationSynthesizesRemainingResults(t *testing.T) {
+	workDir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	resultsCh := make(chan []ValidationResult, 1)
+	go func() {
+		resultsCh <- ValidateAll(ctx, workDir, []Validation{
+			{Type: "command", Command: "touch started; sleep 1"},
+			{Type: "command", Command: "touch should-not-run"},
+		})
+	}()
+	waitForBenchmarkPath(t, filepath.Join(workDir, "started"), time.Second)
+	cancel()
+	results := <-resultsCh
+	if len(results) != 2 || results[0].Status != ValidationStatusCancelled || results[1].Status != ValidationStatusCancelled {
+		t.Fatalf("cancelled ordered results = %#v", results)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "should-not-run")); !os.IsNotExist(err) {
+		t.Fatalf("post-cancellation validation executed: %v", err)
+	}
+}
+
+func waitForBenchmarkPath(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("path %q was not created before %s", path, timeout)
 }
 
 func TestDVBEN007ResultOmitsStableExecutionAndDefinitionIdentity(t *testing.T) {
