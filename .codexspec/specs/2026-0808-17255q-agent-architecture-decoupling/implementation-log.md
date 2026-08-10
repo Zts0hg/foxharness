@@ -233,3 +233,14 @@
 - **Green implementation**: Production no longer joins a path and calls unrestricted `os.Open`. It opens the configured directory as `os.Root`, opens only the validated relative `<service>.log` through that root, and checks the opened handle is a regular file. The test-only reader seam remains available without weakening production open behavior.
 - **Green commands**: focused security, cancellation, ordering, and resource-bound tests; focused `-race`; AgentOps/Feishu entry and package tests; architecture tests; package `go vet`; and the complete repository gate `env HOME=/tmp/fox-test-home GOMODCACHE=/Users/xiaoming/go/pkg/mod GOCACHE=/tmp/fox-go-build-cache go test ./... -count=1 -timeout=180s` outside the network-listen sandbox.
 - **Green result**: PASS; `DV-AOP-006` is corrected and the T041 correction stop is cleared. Outside symlinks, traversal, separators, and non-regular targets fail closed while valid matching and all prior resource limits remain stable. The complete repository test suite passes.
+
+## T042: Benchmark Defect Verification Gate
+
+- **Proof command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/benchmark ./cmd/bench -run '^TestDVBEN' -count=1 -timeout=30s`
+- **Proof result**: PASS, proving all seven suspected behaviors against production source and hermetic temporary fixtures.
+- **DV-BEN-001/002**: No whole-case lifetime exists, cancellation does not stop all validation work, and failed evaluation results do not control process status.
+- **DV-BEN-003/007**: Fidelity is manual rather than resolved, while results omit repeat, run, definition, fixture, runtime-status, provider, and model provenance.
+- **DV-BEN-004**: Fixture copy follows outside file symlinks, file validation permits traversal and outside symlinks, and setup failures do not clean the already-created workspace.
+- **DV-BEN-005/006**: Invalid and vacuous domains are accepted; command output is unbounded and cancellation targets only the immediate shell without explicit process-tree cleanup.
+- **Supporting gates**: Focused `-race` and architecture tests PASS. Full benchmark packages PASS with a temporary `HOME`; the ordinary sandbox run only failed because an existing session test writes the real user home.
+- **Gate outcome**: Benchmark correction stop is active. No production fix or baseline fixture is authorized until the seven correction semantics are separately confirmed and assigned independent Red-Green-Refactor commits.
