@@ -94,12 +94,14 @@ func TestDVCHD001ReadOnlyChildBashCanMutateInsideAndOutsideWorkspace(t *testing.
 	}
 }
 
-func TestDVCHD002ChildModelInvocationAndCompactorUseDifferentSnapshots(t *testing.T) {
+func TestDVCHD002ChildModelInvocationAndCompactorShareFrozenSnapshot(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	workDir := t.TempDir()
-	provider := &childCaptureProvider{response: "done", model: "claude-3.5-sonnet"}
+	const selectedModel = "claude-3.5-sonnet"
+	provider := &childCaptureProvider{response: "done", model: selectedModel}
 	mgr := NewManager(provider, workDir)
+	provider.model = "glm-4.7"
 
 	result, err := mgr.Run(context.Background(), Request{
 		ParentSessionID: "parent",
@@ -130,19 +132,19 @@ func TestDVCHD002ChildModelInvocationAndCompactorUseDifferentSnapshots(t *testin
 		t.Fatal(err)
 	}
 	selectedConfig := compaction.DefaultCompactionConfig()
-	selectedConfig.Model = provider.model
+	selectedConfig.Model = selectedModel
 	selectedCompactor, err := compaction.NewCompactor(provider, selectedConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if childCompactor.ContextWindow() != compaction.DefaultContextWindow {
-		t.Fatalf("child compactor window = %d, want fallback %d", childCompactor.ContextWindow(), compaction.DefaultContextWindow)
-	}
 	if selectedCompactor.ContextWindow() != 200000 {
 		t.Fatalf("selected-model compactor window = %d, want 200000", selectedCompactor.ContextWindow())
 	}
-	if childCompactor.Threshold() == selectedCompactor.Threshold() {
-		t.Fatalf("compaction trigger thresholds unexpectedly agree at %d", childCompactor.Threshold())
+	if childCompactor.ContextWindow() != selectedCompactor.ContextWindow() {
+		t.Fatalf("child/selected compactor windows = %d/%d, want one frozen model snapshot", childCompactor.ContextWindow(), selectedCompactor.ContextWindow())
+	}
+	if childCompactor.Threshold() != selectedCompactor.Threshold() {
+		t.Fatalf("child/selected compaction thresholds = %d/%d, want one frozen model snapshot", childCompactor.Threshold(), selectedCompactor.Threshold())
 	}
 	history := make([]schema.Message, 0, 20)
 	for i := 0; i < cap(history); i++ {
@@ -153,8 +155,8 @@ func TestDVCHD002ChildModelInvocationAndCompactorUseDifferentSnapshots(t *testin
 		history = append(history, schema.Message{Role: role, Content: strings.Repeat("x", 18000)})
 	}
 	used := childCompactor.Estimate(history)
-	if used < childCompactor.Threshold() || used >= selectedCompactor.Threshold() {
-		t.Fatalf("fixture tokens = %d, want fallback-trigger/selected-model-no-trigger interval [%d,%d)", used, childCompactor.Threshold(), selectedCompactor.Threshold())
+	if used >= childCompactor.Threshold() {
+		t.Fatalf("fixture tokens = %d, want below frozen selected-model trigger %d", used, childCompactor.Threshold())
 	}
 	selectedProjection, err := selectedCompactor.MaybeCompact(context.Background(), history)
 	if err != nil {
@@ -163,12 +165,51 @@ func TestDVCHD002ChildModelInvocationAndCompactorUseDifferentSnapshots(t *testin
 	if len(selectedProjection) != len(history) {
 		t.Fatalf("selected-model projection compacted %d messages to %d below its trigger", len(history), len(selectedProjection))
 	}
-	fallbackProjection, err := childCompactor.MaybeCompact(context.Background(), history)
+	childProjection, err := childCompactor.MaybeCompact(context.Background(), history)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fallbackProjection) >= len(history) {
-		t.Fatalf("fallback projection retained %d messages, want premature compaction below selected-model trigger", len(fallbackProjection))
+	if len(childProjection) != len(history) {
+		t.Fatalf("child projection compacted %d messages to %d below its frozen selected-model trigger", len(history), len(childProjection))
+	}
+}
+
+func TestDVCHD002UnknownChildModelUsesOneExplicitFallback(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	workDir := t.TempDir()
+	provider := &childCaptureProvider{response: "done", model: "custom-unknown-model"}
+	mgr := NewManager(provider, workDir)
+
+	result, err := mgr.Run(context.Background(), Request{
+		ParentSessionID: "parent",
+		Task:            "inspect",
+		ReadOnly:        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := session.NewManagerWithHome(workDir, homeDir).Open(result.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childCompactor, err := mgr.newCompactor(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if childCompactor.ContextWindow() != compaction.DefaultContextWindow {
+		t.Fatalf("unknown-model context window = %d, want explicit fallback %d", childCompactor.ContextWindow(), compaction.DefaultContextWindow)
+	}
+	tracePaths, err := filepath.Glob(filepath.Join(sess.RunsDir(), "*", "trace.jsonl"))
+	if err != nil || len(tracePaths) != 1 {
+		t.Fatalf("child run trace paths = %v, error = %v", tracePaths, err)
+	}
+	trace, err := os.ReadFile(tracePaths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(trace), `"model":"custom-unknown-model"`) {
+		t.Fatalf("unknown child model is not observable in trace: %s", trace)
 	}
 }
 

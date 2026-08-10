@@ -53,8 +53,9 @@ const DefaultMaxTurns = 200
 // Manager creates and runs isolated subagent sessions using a shared LLM
 // provider and workspace root.
 type Manager struct {
-	provider provider.LLMProvider
-	workDir  string
+	provider          provider.LLMProvider
+	executionSnapshot childExecutionSnapshot
+	workDir           string
 	// homeDir roots the cross-session persistent memory store so subagents read
 	// the same merged index as top-level runs. It defaults to the user home.
 	homeDir string
@@ -67,6 +68,27 @@ type Manager struct {
 	compactorFactory func(*session.Session) (*compaction.Compactor, error)
 }
 
+type childProviderMetadata interface {
+	ProviderProtocol() string
+	ModelName() string
+}
+
+type childExecutionSnapshot struct {
+	providerProtocol string
+	model            string
+	contextWindow    int
+}
+
+func snapshotChildExecution(p provider.LLMProvider) childExecutionSnapshot {
+	snapshot := childExecutionSnapshot{contextWindow: compaction.DefaultContextWindow}
+	if metadata, ok := p.(childProviderMetadata); ok {
+		snapshot.providerProtocol = metadata.ProviderProtocol()
+		snapshot.model = metadata.ModelName()
+	}
+	snapshot.contextWindow = compaction.NewModelRegistry().Lookup(snapshot.model)
+	return snapshot
+}
+
 // NewManager creates a Manager that delegates LLM calls to p and roots
 // subagent sessions under workDir. The persistent memory store uses the user
 // home directory, matching top-level runs.
@@ -75,7 +97,13 @@ func NewManager(p provider.LLMProvider, workDir string) *Manager {
 	if err != nil || homeDir == "" {
 		homeDir = "."
 	}
-	return &Manager{provider: p, workDir: workDir, homeDir: homeDir, maxTurns: DefaultMaxTurns}
+	return &Manager{
+		provider:          p,
+		executionSnapshot: snapshotChildExecution(p),
+		workDir:           workDir,
+		homeDir:           homeDir,
+		maxTurns:          DefaultMaxTurns,
+	}
 }
 
 // WithMaxTurns overrides the subagent turn budget and returns the receiver for
@@ -166,8 +194,10 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 		m.workDir,
 		composer,
 		engine.Config{
-			EnableThinking: false,
-			MaxTurns:       m.maxTurns,
+			EnableThinking:   false,
+			MaxTurns:         m.maxTurns,
+			ProviderProtocol: m.executionSnapshot.providerProtocol,
+			Model:            m.executionSnapshot.model,
 		},
 	)
 	compactor, err := m.newCompactor(sess)
@@ -212,6 +242,8 @@ func (m *Manager) newCompactor(sess *session.Session) (*compaction.Compactor, er
 		return m.compactorFactory(sess)
 	}
 	cfg := compaction.DefaultCompactionConfig()
+	cfg.Model = m.executionSnapshot.model
+	cfg.ContextWindow = m.executionSnapshot.contextWindow
 	cfg.SessionDir = sess.RootDir
 	cfg.TranscriptPath = sess.TranscriptPath()
 	return compaction.NewCompactor(m.provider, cfg)
