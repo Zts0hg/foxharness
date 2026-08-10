@@ -69,7 +69,8 @@ func main() {
 
 	feishuTasks := make(chan feishu.Task, 64)
 	gateway := feishu.NewGateway(verificationToken, encryptKey, feishuTasks, approvalStore).WithDeliveryStore(deliveryStore)
-	runner := agentops.NewRunner(llmProvider, workDir, logDir, messenger, approvalStore)
+	runner := agentops.NewRunner(llmProvider, workDir, logDir, messenger, approvalStore).
+		WithDeliveryFailureObserver(agentops.NewLoggingDeliveryFailureObserver(log.Default()))
 
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()

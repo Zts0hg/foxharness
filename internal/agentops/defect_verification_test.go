@@ -311,12 +311,14 @@ func TestDVAOP004OneProviderSnapshotConfiguresEngineCompactorAndChild(t *testing
 	}
 }
 
-func TestDVAOP005DeliveryFailuresCanEndWithoutDeliveredTerminalOutcome(t *testing.T) {
+func TestDVAOP005DeliveryFailuresAreTypedBoundedAndNonRecursive(t *testing.T) {
 	workDir := t.TempDir()
+	observer := &recordingAgentOpsDeliveryFailureObserver{}
 	messenger := &scriptedAgentOpsMessenger{
-		errors: []error{nil, errors.New("final delivery failed"), errors.New("fallback delivery failed")},
+		errors: []error{errors.New("session delivery failed"), errors.New("final delivery failed"), errors.New("fallback delivery failed")},
 	}
-	runner := NewRunner(&longFinalProvider{}, workDir, t.TempDir(), messenger, approval.NewStore())
+	runner := NewRunner(&longFinalProvider{}, workDir, t.TempDir(), messenger, approval.NewStore()).
+		WithDeliveryFailureObserver(observer)
 	runner.sessions = session.NewManagerWithHome(workDir, t.TempDir())
 	runner.Run(context.Background(), Task{TaskID: "delivery", ChatID: "chat", SenderID: "sender", Text: "incident"})
 
@@ -324,11 +326,55 @@ func TestDVAOP005DeliveryFailuresCanEndWithoutDeliveredTerminalOutcome(t *testin
 	if len(texts) != 3 {
 		t.Fatalf("delivery attempts = %d, want initial, final, fallback", len(texts))
 	}
-	if len([]rune(texts[1])) <= 5000 {
-		t.Fatalf("final delivery runes = %d, want unbounded model content evidence", len([]rune(texts[1])))
+	if runes := len([]rune(texts[1])); runes > maxAgentOpsTextRunes {
+		t.Fatalf("final delivery runes = %d, want <= %d", runes, maxAgentOpsTextRunes)
+	}
+	if !strings.Contains(texts[1], "已截断") {
+		t.Fatalf("bounded final delivery lacks truncation marker: %q", texts[1])
 	}
 	if !strings.Contains(texts[2], "AgentOps 任务失败") {
 		t.Fatalf("fallback text = %q", texts[2])
+	}
+	failures := observer.snapshot()
+	if len(failures) != 3 {
+		t.Fatalf("delivery failures = %#v, want session, final, and non-recursive failure attempts", failures)
+	}
+	if failures[0].TaskID != "delivery" || failures[0].ChatID != "chat" || failures[0].Stage != DeliveryStageSession || !strings.Contains(failures[0].Cause.Error(), "session delivery failed") {
+		t.Fatalf("session failure = %#v, want correlated typed record", failures[0])
+	}
+	if failures[1].Stage != DeliveryStageFinal || !strings.Contains(failures[1].Cause.Error(), "final delivery failed") {
+		t.Fatalf("final failure = %#v, want correlated typed record", failures[1])
+	}
+	if failures[2].Stage != DeliveryStageFailure || !strings.Contains(failures[2].Cause.Error(), "fallback delivery failed") {
+		t.Fatalf("failure delivery = %#v, want one observed attempt", failures[2])
+	}
+}
+
+func TestDVAOP005TerminalReasonsMapToTypedDeliveryStages(t *testing.T) {
+	for _, test := range []struct {
+		reason TaskOutcomeReason
+		stage  DeliveryStage
+	}{
+		{reason: TaskOutcomeReasonFailure, stage: DeliveryStageFailure},
+		{reason: TaskOutcomeReasonPanic, stage: DeliveryStagePanicFailure},
+		{reason: TaskOutcomeReasonTimeout, stage: DeliveryStageCancellation},
+		{reason: TaskOutcomeReasonCancellation, stage: DeliveryStageCancellation},
+	} {
+		t.Run(string(test.reason), func(t *testing.T) {
+			observer := &recordingAgentOpsDeliveryFailureObserver{}
+			messenger := &scriptedAgentOpsMessenger{errors: []error{errors.New("transport")}}
+			runner := (&Runner{messenger: messenger}).WithDeliveryFailureObserver(observer)
+			runner.completeTask(Task{TaskID: "task", ChatID: "chat"}, TaskOutcome{
+				TaskID: "task", ChatID: "chat", Status: TaskOutcomeFailed, Reason: test.reason, Error: "cause",
+			})
+			failures := observer.snapshot()
+			if len(failures) != 1 || failures[0].Stage != test.stage {
+				t.Fatalf("failures = %#v, want one %s stage", failures, test.stage)
+			}
+			if calls := messenger.snapshot(); len(calls) != 1 {
+				t.Fatalf("recursive delivery calls = %d, want one", len(calls))
+			}
+		})
 	}
 }
 
@@ -430,6 +476,23 @@ type scriptedAgentOpsMessenger struct {
 	mu     sync.Mutex
 	texts  []string
 	errors []error
+}
+
+type recordingAgentOpsDeliveryFailureObserver struct {
+	mu       sync.Mutex
+	failures []DeliveryFailure
+}
+
+func (o *recordingAgentOpsDeliveryFailureObserver) ObserveDeliveryFailure(failure DeliveryFailure) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.failures = append(o.failures, failure)
+}
+
+func (o *recordingAgentOpsDeliveryFailureObserver) snapshot() []DeliveryFailure {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]DeliveryFailure(nil), o.failures...)
 }
 
 func (m *scriptedAgentOpsMessenger) SendText(_ context.Context, _ string, text string) error {

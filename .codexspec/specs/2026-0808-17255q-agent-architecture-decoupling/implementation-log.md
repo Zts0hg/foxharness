@@ -217,3 +217,11 @@
 - **Green implementation**: Each production task reads provider protocol and model once into a provider wrapper that delegates generation while returning frozen metadata. The same wrapper configures and drives the main engine, compactor, automemory hooks, and subagent manager, so child execution inherits the parent task identity without another mutable metadata read.
 - **Green commands**: focused `DV-AOP-004` and race tests, architecture tests, plus `env HOME=/tmp/fox-test-home GOMODCACHE=/Users/xiaoming/go/pkg/mod GOCACHE=/tmp/fox-go-build-cache go test ./internal/subagent ./internal/agentops ./internal/engine ./internal/compaction ./cmd/agentops -count=1 -timeout=60s`.
 - **Green result**: PASS; `DV-AOP-004` is corrected. A rotating provider is read once, engine and compactor receive `claude-4-sonnet`, compaction selects its registered non-default window, and child metadata remains frozen. The temporary `HOME` isolates existing subagent session tests from the sandboxed user directory while retaining the existing module cache explicitly.
+
+## T088 / D-AOP-005: Typed Bounded Delivery Boundary
+
+- **Compile Red command**: `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/agentops ./cmd/agentops -run '^TestDVAOP005' -count=1`
+- **Compile Red result**: AgentOps defined no delivery stages, failure record, observer, bound, or observer composition API; the production observer assertion also failed.
+- **Green implementation**: All session, final, ordinary-failure, panic-failure, timeout, and cancellation text now crosses one Runner helper that bounds text to 1,800 runes before transport and observes typed correlated failures. Observer panic is isolated. A failed final send still causes one failure-delivery attempt, but failure of that attempt is only observed and cannot recursively send. Production installs the logging observer explicitly.
+- **Green commands**: focused `DV-AOP-005`, `env GOCACHE=/tmp/fox-go-build-cache go test ./internal/agentops ./cmd/agentops ./internal/feishu -count=1 -timeout=60s`, focused `-race`, source-call audit, and package `go vet`.
+- **Green result**: PASS; `DV-AOP-005` is corrected. Session, final, and terminal failures remain separately observable, every transport receives bounded text, reason-to-stage mapping is typed, and task outcome remains independent from delivery outcome.

@@ -41,16 +41,23 @@ type Messenger interface {
 // session, wires up tools (log search, file I/O, bash, sub-agent) with unified
 // permission approval, and drives the engine loop to completion.
 type Runner struct {
-	provider            provider.LLMProvider
-	workDir             string
-	logDir              string
-	messenger           Messenger
-	sessions            *session.Manager
-	approvalStore       *approval.Store
-	maxConcurrentTasks  int
-	taskTimeout         time.Duration
-	runTask             func(context.Context, Task) error
-	taskOutcomeObserver TaskOutcomeObserver
+	provider                provider.LLMProvider
+	workDir                 string
+	logDir                  string
+	messenger               Messenger
+	sessions                *session.Manager
+	approvalStore           *approval.Store
+	maxConcurrentTasks      int
+	taskTimeout             time.Duration
+	runTask                 func(context.Context, Task) error
+	taskOutcomeObserver     TaskOutcomeObserver
+	deliveryFailureObserver DeliveryFailureObserver
+}
+
+/* WithDeliveryFailureObserver installs the non-blocking delivery failure observer. */
+func (r *Runner) WithDeliveryFailureObserver(observer DeliveryFailureObserver) *Runner {
+	r.deliveryFailureObserver = observer
+	return r
 }
 
 const (
@@ -146,7 +153,7 @@ func (r *Runner) completeTask(task Task, outcome TaskOutcome) {
 		log.Printf("[AgentOps] task=%s failed: %s", task.TaskID, outcome.Error)
 	}
 	r.observeTaskOutcome(outcome)
-	if outcome.Status == TaskOutcomeCompleted || r.messenger == nil {
+	if outcome.Status == TaskOutcomeCompleted {
 		return
 	}
 	deliveryCtx, cancel := context.WithTimeout(context.Background(), defaultTerminalSendTimeout)
@@ -172,7 +179,39 @@ func (r *Runner) sendTerminalFailure(ctx context.Context, task Task, outcome Tas
 			log.Printf("[AgentOps] task=%s terminal delivery panic recovered: %v", task.TaskID, rec)
 		}
 	}()
-	_ = r.messenger.SendText(ctx, task.ChatID, fmt.Sprintf("AgentOps 任务失败： %s", outcome.Error))
+	stage := DeliveryStageFailure
+	switch outcome.Reason {
+	case TaskOutcomeReasonPanic:
+		stage = DeliveryStagePanicFailure
+	case TaskOutcomeReasonTimeout, TaskOutcomeReasonCancellation:
+		stage = DeliveryStageCancellation
+	}
+	_ = r.deliverTaskText(ctx, task, stage, fmt.Sprintf("AgentOps 任务失败： %s", outcome.Error))
+}
+
+func (r *Runner) deliverTaskText(ctx context.Context, task Task, stage DeliveryStage, text string) error {
+	if r.messenger == nil {
+		r.observeDeliveryFailure(DeliveryFailure{TaskID: task.TaskID, ChatID: task.ChatID, Stage: stage, Cause: errMessengerUnavailable})
+		return errMessengerUnavailable
+	}
+	err := r.messenger.SendText(ctx, task.ChatID, truncateAgentOpsText(text))
+	if err != nil {
+		r.observeDeliveryFailure(DeliveryFailure{TaskID: task.TaskID, ChatID: task.ChatID, Stage: stage, Cause: err})
+	}
+	return err
+}
+
+func (r *Runner) observeDeliveryFailure(failure DeliveryFailure) {
+	if r.deliveryFailureObserver == nil {
+		log.Printf("[AgentOps Delivery] task=%s chat=%s stage=%s failed: %v", failure.TaskID, failure.ChatID, failure.Stage, failure.Cause)
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[AgentOps] task=%s delivery observer panic recovered: %v", failure.TaskID, rec)
+		}
+	}()
+	r.deliveryFailureObserver.ObserveDeliveryFailure(failure)
 }
 
 func (r *Runner) concurrentTaskLimit() int {
@@ -208,9 +247,10 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 		return err
 	}
 
-	_ = r.messenger.SendText(
+	_ = r.deliverTaskText(
 		ctx,
-		task.ChatID,
+		task,
+		DeliveryStageSession,
 		fmt.Sprintf("已创建 AgentOps Session: %s\n开始分析。", sess.ID),
 	)
 
@@ -282,7 +322,7 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 		metricsPath,
 	)
 
-	return r.messenger.SendText(ctx, task.ChatID, final)
+	return r.deliverTaskText(ctx, task, DeliveryStageFinal, final)
 
 }
 

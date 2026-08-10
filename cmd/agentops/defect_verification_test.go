@@ -127,6 +127,18 @@ func TestDVAOP002ProductionEntryCoordinatesShutdownAndTwoChannelDrain(t *testing
 	}
 }
 
+func TestDVAOP005ProductionEntryComposesDeliveryFailureObserver(t *testing.T) {
+	source := readAgentOpsMain(t)
+	for _, required := range []string{
+		"WithDeliveryFailureObserver",
+		"NewLoggingDeliveryFailureObserver(log.Default())",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("production entry does not compose %q", required)
+		}
+	}
+}
+
 type agentOpsShutdownRecorder struct {
 	mu     sync.Mutex
 	events []string
