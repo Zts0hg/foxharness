@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -205,6 +206,38 @@ func TestWithMaxTurnsOverridesDefault(t *testing.T) {
 	m := NewManager(&finalReportProvider{}, t.TempDir()).WithMaxTurns(3)
 	if m.maxTurns != 3 {
 		t.Fatalf("maxTurns = %d, want 3", m.maxTurns)
+	}
+}
+
+func TestResolvedAgentCanOnlyNarrowCallerToolCeiling(t *testing.T) {
+	tests := []struct {
+		name   string
+		caller []string
+		agent  []string
+		want   []string
+	}{
+		{name: "both ceilings intersect", caller: []string{"read_file"}, agent: []string{"bash", "read_file"}, want: []string{"read_file"}},
+		{name: "agent ceiling applies alone", agent: []string{"read_file"}, want: []string{"read_file"}},
+		{name: "caller ceiling applies alone", caller: []string{"read_file"}, want: []string{"read_file"}},
+		{name: "no narrowing remains unrestricted"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := childAgent{id: AgentGeneralPurpose, allowedTools: tt.agent}
+			if got := narrowAgentTools(tt.caller, agent); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("narrowAgentTools(%v, %v) = %v, want %v", tt.caller, tt.agent, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDisjointAgentAndCallerToolCeilingsExposeNoTools(t *testing.T) {
+	agent := childAgent{id: AgentGeneralPurpose, allowedTools: []string{"bash"}}
+	effective := narrowAgentTools([]string{"read_file"}, agent)
+	registry := NewManager(nil, t.TempDir()).buildRegistry(false, effective)
+
+	if definitions := registry.GetAvailableTools(); len(definitions) != 0 {
+		t.Fatalf("disjoint tool ceilings exposed %v, want no tools", definitions)
 	}
 }
 

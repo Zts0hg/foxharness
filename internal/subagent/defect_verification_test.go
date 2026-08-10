@@ -213,6 +213,73 @@ func TestDVCHD002UnknownChildModelUsesOneExplicitFallback(t *testing.T) {
 	}
 }
 
+func TestDVCHD005DefaultAgentIdentityPropagatesThroughOutcomeLineageAndTelemetry(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	workDir := t.TempDir()
+	provider := &childCaptureProvider{response: "done", model: "test-model"}
+
+	result, err := NewManager(provider, workDir).Run(context.Background(), Request{
+		ParentSessionID: "parent-session",
+		Task:            "inspect",
+		ReadOnly:        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Agent != AgentGeneralPurpose || result.ParentSessionID != "parent-session" {
+		t.Fatalf("child outcome identity = agent %q parent %q", result.Agent, result.ParentSessionID)
+	}
+
+	sess, err := session.NewManagerWithHome(workDir, homeDir).Open(result.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Agent != string(AgentGeneralPurpose) || sess.ParentSessionID != "parent-session" {
+		t.Fatalf("child lineage = agent %q parent %q", sess.Agent, sess.ParentSessionID)
+	}
+	tracePaths, err := filepath.Glob(filepath.Join(sess.RunsDir(), "*", "trace.jsonl"))
+	if err != nil || len(tracePaths) != 1 {
+		t.Fatalf("child run trace paths = %v, error = %v", tracePaths, err)
+	}
+	trace, err := os.ReadFile(tracePaths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"agent":"general-purpose"`, `"parent_session_id":"parent-session"`} {
+		if !strings.Contains(string(trace), want) {
+			t.Fatalf("child trace missing %s: %s", want, trace)
+		}
+	}
+	messages, _ := provider.snapshot()
+	if !strings.Contains(messageText(messages), "Agent: general-purpose") {
+		t.Fatalf("default agent identity missing from prompt:\n%s", messageText(messages))
+	}
+}
+
+func TestDVCHD005UnknownAgentDoesNotCreateChildSession(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	workDir := t.TempDir()
+	mgr := NewManager(&childCaptureProvider{response: "unexpected", model: "test-model"}, workDir)
+
+	result, err := mgr.Run(context.Background(), Request{
+		ParentSessionID: "parent-session",
+		Task:            "inspect",
+		ReadOnly:        true,
+		Agent:           AgentID("unknown-agent"),
+	})
+	if err == nil || result != nil {
+		t.Fatalf("unknown agent result/error = %#v/%v, want nil explicit rejection", result, err)
+	}
+	if !strings.Contains(err.Error(), `unknown agent "unknown-agent"`) {
+		t.Fatalf("unknown agent error = %q, want explicit identity", err)
+	}
+	if _, err := session.NewManagerWithHome(workDir, homeDir).Latest(session.LookupOptions{}); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("unknown agent session lookup error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestDVCHD003PromptAndEffectiveToolSnapshotsDisagree(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)

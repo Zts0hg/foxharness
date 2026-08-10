@@ -1006,8 +1006,8 @@ func (r *AgentRunner) conditionalActivationHook() func(schema.ToolCall, schema.T
 // session id are read through getters so that /new (new session) and
 // /model (provider swap) are reflected immediately — keeping snapshots
 // here would leave fork-mode skills pinned to the original session and
-// model. The agentType parameter is currently advisory; the underlying
-// manager does not yet differentiate personas.
+// model. The selected agent is resolved by the manager before child-session
+// creation so unsupported fork metadata cannot silently fall back.
 type subagentForkRunner struct {
 	getManager func() *subagent.Manager
 	getSession func() string
@@ -1019,7 +1019,6 @@ func (s *subagentForkRunner) PermissionEnforced() bool {
 }
 
 func (s *subagentForkRunner) Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error) {
-	_ = agentType
 	mgr := s.getManager()
 	if mgr == nil {
 		return "", fmt.Errorf("fork runner: subagent manager unavailable")
@@ -1028,6 +1027,7 @@ func (s *subagentForkRunner) Run(ctx context.Context, task string, agentType str
 		ParentSessionID: s.getSession(),
 		Task:            task,
 		ReadOnly:        false,
+		Agent:           subagent.AgentID(agentType),
 		AllowedTools:    allowedTools,
 	})
 	if err != nil {

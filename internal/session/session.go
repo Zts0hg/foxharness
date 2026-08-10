@@ -72,6 +72,10 @@ type Session struct {
 	UserID string `json:"user_id,omitempty"`
 	// ChatID optionally identifies the conversation (for chat platforms).
 	ChatID string `json:"chat_id,omitempty"`
+	// ParentSessionID identifies the parent for a nested runtime session.
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	// Agent identifies the resolved child agent definition for nested runs.
+	Agent string `json:"agent,omitempty"`
 	// CreatedAt is the timestamp when the session was created.
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -200,6 +204,10 @@ type CreateOptions struct {
 	UserID string
 	// ChatID optionally identifies the conversation (for chat platforms).
 	ChatID string
+	// ParentSessionID identifies the parent for a nested runtime session.
+	ParentSessionID string
+	// Agent identifies the resolved child agent definition for nested runs.
+	Agent string
 }
 
 // LookupOptions filters sessions while searching for the most recent matching
@@ -230,13 +238,15 @@ func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 	}
 
 	s := &Session{
-		ID:        id,
-		Source:    opts.Source,
-		WorkDir:   workDir,
-		RootDir:   root,
-		UserID:    opts.UserID,
-		ChatID:    opts.ChatID,
-		CreatedAt: time.Now(),
+		ID:              id,
+		Source:          opts.Source,
+		WorkDir:         workDir,
+		RootDir:         root,
+		UserID:          opts.UserID,
+		ChatID:          opts.ChatID,
+		ParentSessionID: opts.ParentSessionID,
+		Agent:           opts.Agent,
+		CreatedAt:       time.Now(),
 	}
 	if err := writeJSON(filepath.Join(root, "session.json"), s); err != nil {
 		return nil, err

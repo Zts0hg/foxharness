@@ -30,7 +30,7 @@ func (p *forkChildCaptureProvider) Generate(_ context.Context, messages []schema
 func (*forkChildCaptureProvider) ProviderProtocol() string { return "openai" }
 func (*forkChildCaptureProvider) ModelName() string        { return "fork-model" }
 
-func TestDVCHD005ForkAdapterDropsSelectedAgentBeforeChildInvocation(t *testing.T) {
+func TestDVCHD005ForkAdapterPropagatesGeneralPurposeAgentToChildInvocation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	workDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workDir, "AGENTS.md"), []byte("project-child-instruction"), 0o600); err != nil {
@@ -42,7 +42,7 @@ func TestDVCHD005ForkAdapterDropsSelectedAgentBeforeChildInvocation(t *testing.T
 		getSession: func() string { return "parent-session" },
 	}
 
-	report, err := runner.Run(context.Background(), "processed fork task", "selected-agent-marker", []string{"read_file"})
+	report, err := runner.Run(context.Background(), "processed fork task", "general-purpose", []string{"read_file"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,15 +59,35 @@ func TestDVCHD005ForkAdapterDropsSelectedAgentBeforeChildInvocation(t *testing.T
 		visible.WriteString(message.Content)
 		visible.WriteByte('\n')
 	}
-	for _, want := range []string{"processed fork task", "project-child-instruction", "parent-session"} {
+	for _, want := range []string{"processed fork task", "project-child-instruction", "parent-session", "Agent: general-purpose"} {
 		if !strings.Contains(visible.String(), want) {
 			t.Fatalf("child invocation missing %q:\n%s", want, visible.String())
 		}
 	}
-	if strings.Contains(visible.String(), "selected-agent-marker") {
-		t.Fatalf("selected agent unexpectedly reached child invocation:\n%s", visible.String())
-	}
 	if len(definitions) != 1 || definitions[0].Name != "read_file" {
 		t.Fatalf("fork tool ceiling = %+v, want only read_file", definitions)
+	}
+}
+
+func TestDVCHD005ForkAdapterRejectsUnknownAgentBeforeChildInvocation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	provider := &forkChildCaptureProvider{}
+	runner := &subagentForkRunner{
+		getManager: func() *subagent.Manager { return subagent.NewManager(provider, t.TempDir()) },
+		getSession: func() string { return "parent-session" },
+	}
+
+	report, err := runner.Run(context.Background(), "processed fork task", "selected-agent-marker", []string{"read_file"})
+	if err == nil {
+		t.Fatalf("unknown fork agent returned report %q, want explicit rejection", report)
+	}
+	if !strings.Contains(err.Error(), `unknown agent "selected-agent-marker"`) {
+		t.Fatalf("unknown fork agent error = %q, want explicit identity", err)
+	}
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.messages) != 0 {
+		t.Fatalf("unknown fork agent reached child provider with %d messages", len(provider.messages))
 	}
 }

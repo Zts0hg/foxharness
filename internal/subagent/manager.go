@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/compaction"
@@ -19,6 +20,55 @@ import (
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
+// AgentID is the normalized identity of a child agent definition.
+type AgentID string
+
+const (
+	// AgentGeneralPurpose is the built-in ChildRun agent used by delegation
+	// and by fork skills that omit an explicit agent.
+	AgentGeneralPurpose AgentID = "general-purpose"
+)
+
+type childAgent struct {
+	id           AgentID
+	persona      string
+	allowedTools []string
+}
+
+func resolveAgent(raw AgentID) (childAgent, error) {
+	id := AgentID(strings.TrimSpace(string(raw)))
+	if id == "" {
+		id = AgentGeneralPurpose
+	}
+	if id != AgentGeneralPurpose {
+		return childAgent{}, fmt.Errorf("subagent: unknown agent %q", id)
+	}
+	return childAgent{
+		id:      id,
+		persona: "通用编码执行代理，严格服从当前 ChildRun 的任务和能力边界。",
+	}, nil
+}
+
+func narrowAgentTools(caller []string, agent childAgent) []string {
+	if len(agent.allowedTools) == 0 {
+		return append([]string(nil), caller...)
+	}
+	if len(caller) == 0 {
+		return append([]string(nil), agent.allowedTools...)
+	}
+	agentCeiling := make(map[string]struct{}, len(agent.allowedTools))
+	for _, name := range agent.allowedTools {
+		agentCeiling[name] = struct{}{}
+	}
+	effective := make([]string, 0, len(caller))
+	for _, name := range caller {
+		if _, allowed := agentCeiling[name]; allowed {
+			effective = append(effective, name)
+		}
+	}
+	return effective
+}
+
 // Request describes a subagent task, including the parent session reference,
 // the task description, and whether the subagent should operate in read-only
 // mode.
@@ -26,9 +76,10 @@ type Request struct {
 	ParentSessionID string
 	Task            string
 	ReadOnly        bool
+	Agent           AgentID
 
-	// AllowedTools, when non-empty, restricts the sub-agent's tool
-	// registry to exactly the named tools. The filter is applied on
+	// AllowedTools, when non-nil, restricts the sub-agent's tool registry to
+	// exactly the named tools; an explicit empty slice permits no tools. The filter is applied on
 	// top of the base registry (after ReadOnly trims write/edit), so
 	// callers that pass an allow-list overlapping with read-only get
 	// the intersection. Used by slash fork-mode skills with
@@ -36,11 +87,13 @@ type Request struct {
 	AllowedTools []string
 }
 
-// Result holds the subagent's session identifier and the final report text
-// produced by the subagent's engine run.
+// Result holds the subagent lineage, resolved agent identity, session
+// identifier, and final report text produced by the child engine run.
 type Result struct {
-	SessionID string
-	Report    string
+	SessionID       string
+	ParentSessionID string
+	Agent           AgentID
+	Report          string
 }
 
 // DefaultMaxTurns is the default maximum number of turns a subagent engine may
@@ -163,7 +216,7 @@ func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessi
 		}
 	}
 	decorated := permission.DecorateRegistry(registry, m.permissions, evidenceProvider)
-	if len(allowedTools) > 0 {
+	if allowedTools != nil {
 		return tools.NewFilteredRegistry(decorated, allowedTools)
 	}
 	return decorated
@@ -175,18 +228,25 @@ func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessi
 // The returned Result contains the session ID and the agent's final message
 // as a report.
 func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
+	agent, err := resolveAgent(req.Agent)
+	if err != nil {
+		return nil, err
+	}
+
 	manager := session.NewManager(m.workDir)
 	sess, err := manager.Create(session.CreateOptions{
-		Source:  session.SOURCESubagent,
-		WorkDir: m.workDir,
-		UserID:  "subagent-of-" + req.ParentSessionID,
+		Source:          session.SOURCESubagent,
+		WorkDir:         m.workDir,
+		UserID:          "subagent-of-" + req.ParentSessionID,
+		ParentSessionID: req.ParentSessionID,
+		Agent:           string(agent.id),
 	})
 
 	if err != nil {
 		return nil, err
 	}
 
-	registry := m.buildRegistry(req.ReadOnly, req.AllowedTools, sess)
+	registry := m.buildRegistry(req.ReadOnly, narrowAgentTools(req.AllowedTools, agent), sess)
 	composer := m.buildComposer(sess)
 	eng := engine.NewAgentEngine(
 		m.provider,
@@ -216,10 +276,12 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 - 最终只返回高密度报告，不要输出冗长原始日志。
 
 父 Session: %s
+Agent: %s
+角色: %s
 
 子任务：
 %s
-`, req.ParentSessionID, req.Task)
+`, req.ParentSessionID, agent.id, agent.persona, req.Task)
 
 	result, err := eng.Run(ctx, sess, subPrompt)
 	if err != nil {
@@ -232,8 +294,10 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	return &Result{
-		SessionID: sess.ID,
-		Report:    report,
+		SessionID:       sess.ID,
+		ParentSessionID: req.ParentSessionID,
+		Agent:           agent.id,
+		Report:          report,
 	}, nil
 }
 

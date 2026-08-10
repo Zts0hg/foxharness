@@ -372,12 +372,19 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	tracer := tracing.NewTracer(run.TracePath()).WithErrorHandler(func(err error) {
 		telemetry.Record("trace", "append", err)
 	})
-	runSpan := tracer.StartSpan("", "run", map[string]any{
+	runSpanAttrs := map[string]any{
 		"session_id": sess.ID,
 		"run_id":     run.ID,
 		"source":     sess.Source,
 		"work_dir":   sess.WorkDir,
-	})
+	}
+	if sess.ParentSessionID != "" {
+		runSpanAttrs["parent_session_id"] = sess.ParentSessionID
+	}
+	if sess.Agent != "" {
+		runSpanAttrs["agent"] = sess.Agent
+	}
+	runSpan := tracer.StartSpan("", "run", runSpanAttrs)
 	runStatus := "ok"
 	runAttrs := map[string]any{}
 	defer func() {
