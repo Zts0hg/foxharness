@@ -241,6 +241,37 @@ func TestDisjointAgentAndCallerToolCeilingsExposeNoTools(t *testing.T) {
 	}
 }
 
+func TestChildToolSnapshotDefinitionsCannotBeMutatedByConsumer(t *testing.T) {
+	snapshot := NewManager(nil, t.TempDir()).buildRegistry(true, nil)
+	first := snapshot.GetAvailableTools()
+	if len(first) == 0 {
+		t.Fatal("child snapshot unexpectedly has no definitions")
+	}
+	firstSchema, ok := first[0].InputSchema.(map[string]interface{})
+	if !ok {
+		t.Fatalf("child schema type = %T, want map", first[0].InputSchema)
+	}
+	firstSchema["type"] = "tampered"
+	properties, ok := firstSchema["properties"].(map[string]interface{})
+	if ok {
+		properties["tampered"] = map[string]interface{}{"type": "string"}
+	}
+
+	second := snapshot.GetAvailableTools()
+	secondSchema, ok := second[0].InputSchema.(map[string]interface{})
+	if !ok {
+		t.Fatalf("second child schema type = %T, want map", second[0].InputSchema)
+	}
+	if secondSchema["type"] == "tampered" {
+		t.Fatal("consumer mutated the frozen child tool schema")
+	}
+	if properties, ok := secondSchema["properties"].(map[string]interface{}); ok {
+		if _, exists := properties["tampered"]; exists {
+			t.Fatal("consumer mutated a nested frozen child tool schema")
+		}
+	}
+}
+
 // TestRunHonorsInjectedMaxTurnsAndPreservesExhaustion verifies that an injected
 // turn budget actually governs the engine (REQ-004) and that the exhaustion
 // behavior is preserved when the budget is reached (REQ-005): Run returns an

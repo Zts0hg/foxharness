@@ -92,6 +92,22 @@ func TestComposeInteractiveAskGuidance(t *testing.T) {
 	}
 }
 
+func TestComposeToolCapabilityScopeSuppressesUnavailableOptionalGuidance(t *testing.T) {
+	prompt, err := NewComposer(t.TempDir()).
+		WithToolCapabilities([]string{"read_file"}).
+		WithInteractiveAsk(true).
+		WithSkillList(func() string { return "refactor: unavailable skill" }).
+		Compose("inspect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"ask_user_question", "Available Skills", "`skill` tool"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("capability-scoped prompt claims unavailable %q:\n%s", forbidden, prompt)
+		}
+	}
+}
+
 func TestParseSkillMarkdownFrontmatter(t *testing.T) {
 	content := `---
 name: go-refactor

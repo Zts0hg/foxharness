@@ -167,6 +167,10 @@ func (r *registryImpl) resolve(name string) string {
 	return name
 }
 
+func (r *registryImpl) canonicalToolName(name string) string {
+	return r.resolve(name)
+}
+
 // Register adds a tool to the registry. If a tool with the same name
 // already exists, it logs a warning and overwrites the previous registration.
 // When the tool implements AliasableTool, each alias is recorded so the tool is

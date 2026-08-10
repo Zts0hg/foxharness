@@ -41,6 +41,7 @@ type Composer struct {
 	collaborationMode collaboration.Mode
 	autoMemory        AutoMemoryStore
 	autoMemoryRO      bool
+	toolCapabilities  map[string]struct{}
 }
 
 // WithSkillList registers a function that returns the formatted list of
@@ -107,6 +108,19 @@ func (c *Composer) WithInteractiveAsk(enabled bool) *Composer {
 	return &clone
 }
 
+// WithToolCapabilities returns a copy whose built-in tool guidance is rendered
+// only for the supplied model-visible tool names. An explicit empty slice
+// renders no tool guidance; composers that do not call this method retain the
+// existing full prompt behavior.
+func (c *Composer) WithToolCapabilities(names []string) *Composer {
+	clone := *c
+	clone.toolCapabilities = make(map[string]struct{}, len(names))
+	for _, name := range names {
+		clone.toolCapabilities[name] = struct{}{}
+	}
+	return &clone
+}
+
 // WithCollaborationMode returns a copy configured with mode-specific system
 // guidance. Unknown values normalize to Default.
 func (c *Composer) WithCollaborationMode(mode collaboration.Mode) *Composer {
@@ -119,22 +133,28 @@ func (c *Composer) WithCollaborationMode(mode collaboration.Mode) *Composer {
 // resolving $name skill references found in the user prompt, and appending
 // session working memory when available.
 func (c *Composer) Compose(userPrompt string) (string, error) {
-	parts := []string{
-		baseSystemPrompt(),
+	basePrompt := baseSystemPrompt()
+	if c.toolCapabilities != nil {
+		basePrompt = capabilityScopedSystemPrompt(c.toolCapabilities)
 	}
+	parts := []string{basePrompt}
 	if c.collaborationMode == collaboration.ModeFormalPlan {
 		parts = append(parts, section("Formal Plan Collaboration Mode", formalPlanGuidance()))
 	}
-	if c.interactiveAsk {
+	if c.interactiveAsk && (c.toolCapabilities == nil || hasCapability(c.toolCapabilities, "ask_user_question")) {
 		parts = append(parts, section("Asking the User", askGuidance()))
 	}
 	memoryGuidance := memoryInstructions()
 	if c.collaborationMode == collaboration.ModeFormalPlan {
 		memoryGuidance = formalPlanMemoryInstructions()
+	} else if c.toolCapabilities != nil {
+		memoryGuidance = capabilityScopedTodoInstructions(c.toolCapabilities)
 	}
-	parts = append(parts, section("Session Plan and Todo Files", memoryGuidance))
+	if memoryGuidance != "" {
+		parts = append(parts, section("Session Plan and Todo Files", memoryGuidance))
+	}
 
-	if c.autoMemory != nil {
+	if c.autoMemory != nil && (c.toolCapabilities == nil || hasCapability(c.toolCapabilities, "read_file")) {
 		parts = append(parts, section("Persistent Memory", c.persistentMemoryBody()))
 	}
 
@@ -167,7 +187,7 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 		)))
 	}
 
-	if c.skillListFn != nil {
+	if c.skillListFn != nil && (c.toolCapabilities == nil || hasCapability(c.toolCapabilities, "skill")) {
 		if list := strings.TrimSpace(c.skillListFn()); list != "" {
 			parts = append(parts, section("Available Skills (invoke via the `skill` tool)", list))
 		}
@@ -175,6 +195,53 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 
 	return strings.Join(parts, "\n\n"), nil
 
+}
+
+func capabilityScopedSystemPrompt(capabilities map[string]struct{}) string {
+	lines := []string{
+		"You are fox-harness, an expert coding assistant running inside an Agent Harness.",
+		"",
+		"Core rules:",
+		"- You operate inside the current workspace.",
+	}
+	if hasCapability(capabilities, "read_file") {
+		lines = append(lines, "- Use read_file to inspect files before making claims or edits.")
+	}
+	if hasCapability(capabilities, "edit_file") {
+		lines = append(lines, "- Use edit_file for focused modifications.")
+	}
+	if hasCapability(capabilities, "write_file") {
+		lines = append(lines, "- Use write_file only when creating a new file or intentionally replacing a whole file.")
+	}
+	if hasCapability(capabilities, "bash") {
+		lines = append(lines, "- Use bash to inspect, build, test, and verify changes.")
+	}
+	if len(capabilities) > 0 {
+		lines = append(lines, "- If a tool fails, inspect the error and recover instead of blindly repeating the same call.")
+	}
+	lines = append(lines, "- Keep changes small, explicit, and aligned with the assigned task.")
+	return strings.Join(lines, "\n")
+}
+
+func capabilityScopedTodoInstructions(capabilities map[string]struct{}) string {
+	read := hasCapability(capabilities, "read_todo")
+	update := hasCapability(capabilities, "update_todo")
+	if !read && !update {
+		return ""
+	}
+	lines := []string{"Session TODO.md stores concrete checklist items for the current session."}
+	if read {
+		lines = append(lines, "- Use read_todo to inspect Session TODO.md.")
+	}
+	if update {
+		lines = append(lines, "- Use update_todo to maintain Session TODO.md.")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func hasCapability(capabilities map[string]struct{}, name string) bool {
+	_, ok := capabilities[name]
+	return ok
 }
 
 type loadedSkill struct {

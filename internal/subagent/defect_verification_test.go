@@ -280,50 +280,88 @@ func TestDVCHD005UnknownAgentDoesNotCreateChildSession(t *testing.T) {
 	}
 }
 
-func TestDVCHD003PromptAndEffectiveToolSnapshotsDisagree(t *testing.T) {
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	workDir := t.TempDir()
-	provider := &childCaptureProvider{response: "done", model: "test-model"}
-	mgr := NewManager(provider, workDir)
+func TestDVCHD003PromptAndEffectiveToolSnapshotsAgree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	tests := []struct {
+		name          string
+		readOnly      bool
+		allowedTools  []string
+		wantTools     []string
+		promptPresent []string
+		promptAbsent  []string
+	}{
+		{
+			name:          "read only",
+			readOnly:      true,
+			wantTools:     []string{"bash", "read_file"},
+			promptPresent: []string{"Use bash", "read_file"},
+			promptAbsent:  []string{"Use edit_file", "Use write_file", "read_todo", "update_todo", "ask_user_question", "delegate_task", "`skill` tool"},
+		},
+		{
+			name:          "writable",
+			wantTools:     []string{"bash", "edit_file", "read_file", "write_file"},
+			promptPresent: []string{"Use bash", "Use edit_file", "Use write_file", "read_file"},
+			promptAbsent:  []string{"read_todo", "update_todo", "ask_user_question", "delegate_task", "`skill` tool"},
+		},
+		{
+			name:          "caller read file ceiling",
+			allowedTools:  []string{"read_file"},
+			wantTools:     []string{"read_file"},
+			promptPresent: []string{"read_file"},
+			promptAbsent:  []string{"Use bash", "Use edit_file", "Use write_file", "read_todo", "update_todo", "ask_user_question", "delegate_task", "`skill` tool"},
+		},
+		{
+			name:         "explicit empty ceiling",
+			allowedTools: []string{},
+			wantTools:    []string{},
+			promptAbsent: []string{"Use bash", "Use edit_file", "Use write_file", "read_file", "read_todo", "update_todo", "ask_user_question", "delegate_task", "`skill` tool"},
+		},
+	}
 
-	_, err := mgr.Run(context.Background(), Request{
-		ParentSessionID: "parent",
-		Task:            "inspect only",
-		ReadOnly:        true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	messages, definitions := provider.snapshot()
-	if got := definitionNames(definitions); !reflect.DeepEqual(got, []string{"bash", "read_file"}) {
-		t.Fatalf("model-visible read-only tools = %v", got)
-	}
-	prompt := messageText(messages)
-	for _, unsupported := range []string{"Use edit_file", "Use write_file", "read_todo", "update_todo"} {
-		if !strings.Contains(prompt, unsupported) {
-			t.Fatalf("current read-only prompt no longer demonstrates unsupported %q guidance:\n%s", unsupported, prompt)
-		}
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			provider := &childCaptureProvider{response: "done", model: "test-model"}
+			mgr := NewManager(provider, workDir)
+			_, err := mgr.Run(context.Background(), Request{
+				ParentSessionID: "parent",
+				Task:            "inspect only",
+				ReadOnly:        tt.readOnly,
+				AllowedTools:    tt.allowedTools,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages, definitions := provider.snapshot()
+			if got := definitionNames(definitions); !reflect.DeepEqual(got, tt.wantTools) {
+				t.Fatalf("model-visible tools = %v, want %v", got, tt.wantTools)
+			}
+			prompt := messageText(messages)
+			for _, want := range tt.promptPresent {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("prompt missing available capability %q:\n%s", want, prompt)
+				}
+			}
+			for _, unavailable := range tt.promptAbsent {
+				if strings.Contains(prompt, unavailable) {
+					t.Fatalf("prompt claims unavailable capability %q:\n%s", unavailable, prompt)
+				}
+			}
 
-	for _, readOnly := range []bool{true, false} {
-		registry := mgr.buildRegistry(readOnly, nil)
-		want := []string{"bash", "read_file"}
-		if !readOnly {
-			want = []string{"bash", "edit_file", "read_file", "write_file"}
-		}
-		if got := definitionNames(registry.GetAvailableTools()); !reflect.DeepEqual(got, want) {
-			t.Fatalf("readOnly=%t definitions = %v, want %v", readOnly, got, want)
-		}
-		for _, unavailable := range []string{"delegate_task", "read_todo", "update_todo", "skill"} {
-			call := schema.ToolCall{ID: unavailable, Name: unavailable, Arguments: json.RawMessage(`{}`)}
-			if result := registry.Execute(context.Background(), call); !result.IsError {
-				t.Fatalf("readOnly=%t unavailable call %q executed: %#v", readOnly, unavailable, result)
+			registry := mgr.buildRegistry(tt.readOnly, tt.allowedTools)
+			if got := definitionNames(registry.GetAvailableTools()); !reflect.DeepEqual(got, tt.wantTools) {
+				t.Fatalf("executable tools = %v, want %v", got, tt.wantTools)
 			}
-			if registry.IsParallelSafe(unavailable) {
-				t.Fatalf("readOnly=%t unavailable call %q is parallel-safe", readOnly, unavailable)
+			for _, unavailable := range []string{"delegate_task", "read_todo", "update_todo", "skill", "ask_user_question"} {
+				call := schema.ToolCall{ID: unavailable, Name: unavailable, Arguments: json.RawMessage(`{}`)}
+				if result := registry.Execute(context.Background(), call); !result.IsError {
+					t.Fatalf("unavailable call %q executed: %#v", unavailable, result)
+				}
+				if registry.IsParallelSafe(unavailable) {
+					t.Fatalf("unavailable call %q is parallel-safe", unavailable)
+				}
 			}
-		}
+		})
 	}
 }
 

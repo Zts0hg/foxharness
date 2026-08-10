@@ -51,10 +51,13 @@ func resolveAgent(raw AgentID) (childAgent, error) {
 
 func narrowAgentTools(caller []string, agent childAgent) []string {
 	if len(agent.allowedTools) == 0 {
-		return append([]string(nil), caller...)
+		return cloneToolNames(caller)
 	}
 	if len(caller) == 0 {
-		return append([]string(nil), agent.allowedTools...)
+		if caller != nil {
+			return []string{}
+		}
+		return cloneToolNames(agent.allowedTools)
 	}
 	agentCeiling := make(map[string]struct{}, len(agent.allowedTools))
 	for _, name := range agent.allowedTools {
@@ -67,6 +70,13 @@ func narrowAgentTools(caller []string, agent childAgent) []string {
 		}
 	}
 	return effective
+}
+
+func cloneToolNames(names []string) []string {
+	if names == nil {
+		return nil
+	}
+	return append(make([]string, 0, len(names)), names...)
 }
 
 // Request describes a subagent task, including the parent session reference,
@@ -188,12 +198,16 @@ func (m *Manager) PermissionEnforced() bool {
 // cross-session persistent memory index (read-only) so delegated tasks share the
 // project/user memory that top-level runs see. Subagents do not write or
 // extract memory; that remains the main agent's responsibility.
-func (m *Manager) buildComposer(sess *session.Session) *prompt.Composer {
+func (m *Manager) buildComposer(sess *session.Session, snapshots ...*childToolSnapshot) *prompt.Composer {
 	store := automemory.NewStore(m.homeDir, m.workDir)
-	return prompt.NewComposer(m.workDir).WithReadOnlyMemory(sess.MemoryPath()).WithReadOnlyAutoMemory(store)
+	composer := prompt.NewComposer(m.workDir).WithReadOnlyMemory(sess.MemoryPath()).WithReadOnlyAutoMemory(store)
+	if len(snapshots) > 0 && snapshots[0] != nil {
+		composer = composer.WithToolCapabilities(snapshots[0].capabilityNames())
+	}
+	return composer
 }
 
-func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessions ...*session.Session) tools.Registry {
+func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessions ...*session.Session) *childToolSnapshot {
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(m.workDir))
 	registry.Register(tools.NewBashTool(m.workDir))
@@ -215,11 +229,11 @@ func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessi
 			return permission.BuildChildEvidence(parent, messages, request)
 		}
 	}
-	decorated := permission.DecorateRegistry(registry, m.permissions, evidenceProvider)
 	if allowedTools != nil {
-		return tools.NewFilteredRegistry(decorated, allowedTools)
+		registry = tools.NewFilteredRegistry(registry, allowedTools)
 	}
-	return decorated
+	decorated := permission.DecorateRegistry(registry, m.permissions, evidenceProvider)
+	return newChildToolSnapshot(decorated)
 }
 
 // Run executes the subagent task described by req. It creates a new session,
@@ -247,7 +261,7 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	registry := m.buildRegistry(req.ReadOnly, narrowAgentTools(req.AllowedTools, agent), sess)
-	composer := m.buildComposer(sess)
+	composer := m.buildComposer(sess, registry)
 	eng := engine.NewAgentEngine(
 		m.provider,
 		registry,
