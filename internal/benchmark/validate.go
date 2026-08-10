@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ValidationResult records the outcome of a single validation check, including
@@ -16,6 +17,7 @@ type ValidationResult struct {
 	Type           string           `json:"type"`
 	Passed         bool             `json:"passed"`
 	Status         ValidationStatus `json:"status"`
+	Deadline       *time.Time       `json:"deadline,omitempty"`
 	Message        string           `json:"message,omitempty"`
 	Stdout         string           `json:"stdout,omitempty"`
 	Stderr         string           `json:"stderr,omitempty"`
@@ -40,7 +42,7 @@ func ValidateAll(ctx context.Context, workDir string, validations []Validation) 
 	results := make([]ValidationResult, 0, len(validations))
 	for _, v := range validations {
 		if err := ctx.Err(); err != nil {
-			results = append(results, terminalValidationResult(v.Type, err))
+			results = append(results, terminalValidationResult(v.Type, err, contextDeadline(ctx)))
 			continue
 		}
 		results = append(results, validateOne(ctx, workDir, v))
@@ -137,12 +139,22 @@ func readRootedRegularFile(workDir, path string) ([]byte, error) {
 	return io.ReadAll(file)
 }
 
-func terminalValidationResult(validationType string, err error) ValidationResult {
+func terminalValidationResult(validationType string, err error, deadlines ...time.Time) ValidationResult {
 	status := ValidationStatusCancelled
 	if errors.Is(err, context.DeadlineExceeded) {
 		status = ValidationStatusTimedOut
 	}
-	return ValidationResult{Type: validationType, Status: status, Message: err.Error()}
+	result := ValidationResult{Type: validationType, Status: status, Message: err.Error()}
+	if len(deadlines) > 0 && !deadlines[0].IsZero() {
+		deadline := deadlines[0]
+		result.Deadline = &deadline
+	}
+	return result
+}
+
+func contextDeadline(ctx context.Context) time.Time {
+	deadline, _ := ctx.Deadline()
+	return deadline
 }
 
 func allPassed(results []ValidationResult) bool {

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -72,5 +75,25 @@ func TestDVBEN005RepeatMustBeStrictlyPositiveAndOverflowSafe(t *testing.T) {
 				t.Fatalf("invalid repeat report stat = %v, want no report", err)
 			}
 		})
+	}
+}
+
+func TestDVBEN007RepeatOrchestrationUsesOneBasedIdentity(t *testing.T) {
+	var indices []int
+	runRepeat := func(_ context.Context, _ *benchmark.Case, index int) (*benchmark.Result, error) {
+		indices = append(indices, index)
+		return &benchmark.Result{Success: true, Status: benchmark.ResultStatusCompleted, RepeatIndex: index}, nil
+	}
+	results, infrastructureFailed := executeRepeats(context.Background(), &benchmark.Case{ID: "repeat"}, 3, runRepeat)
+	if infrastructureFailed || len(results) != 3 || !reflect.DeepEqual(indices, []int{1, 2, 3}) {
+		t.Fatalf("repeat orchestration = indices:%v results:%d infrastructure:%t", indices, len(results), infrastructureFailed)
+	}
+
+	runRepeat = func(context.Context, *benchmark.Case, int) (*benchmark.Result, error) {
+		return &benchmark.Result{RepeatIndex: 1, Status: benchmark.ResultStatusInfrastructureFailed}, errors.New("setup")
+	}
+	results, infrastructureFailed = executeRepeats(context.Background(), &benchmark.Case{ID: "stop"}, 3, runRepeat)
+	if !infrastructureFailed || len(results) != 1 {
+		t.Fatalf("infrastructure stop = results:%d infrastructure:%t", len(results), infrastructureFailed)
 	}
 }

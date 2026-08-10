@@ -95,10 +95,11 @@ func TestValidateAllCoversSuccessAndFailurePaths(t *testing.T) {
 func TestWriteJSONWritesIndentedResultsWithTrailingNewline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "report.json")
 	results := []*Result{{
-		CaseID:    "case-1",
-		Success:   true,
-		Workspace: "/tmp/work",
-		SessionID: "sess",
+		SchemaVersion: ResultSchemaVersion,
+		CaseID:        "case-1",
+		Success:       true,
+		Workspace:     "/tmp/work",
+		SessionID:     "sess",
 		RuntimeFidelity: RuntimeFidelity{
 			SharedInvariants:       []string{"tool surface"},
 			IntentionalDifferences: []string{"no interactive approval"},
@@ -125,6 +126,18 @@ func TestWriteJSONWritesIndentedResultsWithTrailingNewline(t *testing.T) {
 	}
 	if decoded[0].RuntimeFidelity.Warning == "" || len(decoded[0].RuntimeFidelity.IntentionalDifferences) != 1 {
 		t.Fatalf("runtime fidelity metadata missing from decoded result: %+v", decoded[0].RuntimeFidelity)
+	}
+}
+
+func TestWriteJSONRejectsMissingOrUnsupportedSchemaVersion(t *testing.T) {
+	for _, results := range [][]*Result{
+		{nil},
+		{{CaseID: "missing-version"}},
+		{{SchemaVersion: ResultSchemaVersion + 1, CaseID: "future-version"}},
+	} {
+		if err := WriteJSON(filepath.Join(t.TempDir(), "report.json"), results); err == nil {
+			t.Fatalf("WriteJSON(%#v) error = nil", results)
+		}
 	}
 }
 

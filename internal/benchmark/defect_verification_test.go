@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"net"
 	"os"
@@ -11,6 +12,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 func TestDVBEN001CaseDeadlineCoversFactoryAndStopsUnstartedValidations(t *testing.T) {
@@ -211,11 +216,11 @@ func TestDVBEN004PartialFixtureCopyFailureRemovesWorkspace(t *testing.T) {
 
 func TestDVBEN004FailedWorkspaceCleanupUsesFreshBoundedContext(t *testing.T) {
 	fixture := t.TempDir()
-	runner := NewRunner(func(_ context.Context, _ string, _ *Case) (*Harness, error) {
-		return nil, errors.New("factory failure")
-	})
 	parent, cancel := context.WithCancel(context.Background())
-	cancel()
+	runner := NewRunner(func(ctx context.Context, _ string, _ *Case) (*Harness, error) {
+		cancel()
+		return nil, ctx.Err()
+	})
 	cleanupContext := make(chan struct {
 		err      error
 		deadline bool
@@ -504,12 +509,297 @@ func waitForBenchmarkPath(t *testing.T, path string, timeout time.Duration) {
 	t.Fatalf("path %q was not created before %s", path, timeout)
 }
 
-func TestDVBEN007ResultOmitsStableExecutionAndDefinitionIdentity(t *testing.T) {
-	typeOf := reflect.TypeOf(Result{})
-	for _, field := range []string{"RepeatIndex", "RunID", "CaseDefinitionID", "FixtureID", "RuntimeStatus", "ProviderProtocol", "Model"} {
-		if _, ok := typeOf.FieldByName(field); ok {
-			t.Fatalf("Result now records %s; update DV-BEN-007 classification", field)
+func TestDVBEN007ResultCarriesStableProvenanceAndRuntimeState(t *testing.T) {
+	fixture := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fixture, "input.txt"), []byte("stable\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := NewRuntimeSpec("test-protocol", "test-model", 1, []string{"read_file"})
+	runner := NewRunner(benchmarkHarnessFactory(t, spec, benchmarkComposer{}))
+	result, err := runner.RunRepeat(context.Background(), &Case{
+		ID:             "identity",
+		Name:           "Identity",
+		Fixture:        fixture,
+		Prompt:         "finish",
+		MaxTurns:       1,
+		TimeoutSeconds: 60,
+		Validations:    []Validation{{Type: "command", Command: "true"}},
+	}, 2)
+	if err != nil {
+		t.Fatalf("RunRepeat() error = %v", err)
+	}
+	defer os.RemoveAll(result.Workspace)
+	if result.SchemaVersion != ResultSchemaVersion || result.RepeatIndex != 2 {
+		t.Fatalf("schema/repeat = %d/%d", result.SchemaVersion, result.RepeatIndex)
+	}
+	for name, value := range map[string]string{
+		"run_id":             result.RunID,
+		"case_definition_id": result.CaseDefinitionID,
+		"fixture_id":         result.FixtureID,
+	} {
+		if name == "run_id" {
+			if value == "" {
+				t.Fatalf("%s is empty", name)
+			}
+			continue
 		}
+		decoded, decodeErr := hex.DecodeString(value)
+		if decodeErr != nil || len(decoded) != 32 {
+			t.Fatalf("%s = %q, want SHA-256 hex", name, value)
+		}
+	}
+	if result.RuntimeStatus != RuntimeStatusCompleted || result.RuntimeCause != "" || result.TerminalCause != "" {
+		t.Fatalf("runtime terminal fields = %#v", result)
+	}
+	if result.ProviderProtocol != spec.ProviderProtocol || result.Model != spec.Model || result.RuntimeFidelity.Spec.Model != spec.Model {
+		t.Fatalf("runtime provenance = %#v", result)
+	}
+	if result.CaseDeadline.IsZero() || len(result.Validations) != 1 || result.Validations[0].Deadline == nil || result.Validations[0].Deadline.IsZero() {
+		t.Fatalf("effective deadlines missing: %#v", result)
+	}
+}
+
+func TestDVBEN007DefinitionAndFixtureIdentitiesAreRootIndependentAndSensitive(t *testing.T) {
+	firstFixture := t.TempDir()
+	secondFixture := t.TempDir()
+	for _, fixture := range []string{firstFixture, secondFixture} {
+		if err := os.Mkdir(filepath.Join(fixture, "nested"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fixture, "nested", "input.txt"), []byte("same"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(filepath.Join(secondFixture, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(secondFixture, "nested", "input.txt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first := &Case{ID: "stable", Name: "Stable", Fixture: firstFixture, Prompt: "run", MaxTurns: 1, TimeoutSeconds: 60, Validations: []Validation{{Type: "command", Command: "true"}}}
+	second := &Case{ID: "stable", Name: "Stable", Fixture: secondFixture, Prompt: "run", MaxTurns: 1, TimeoutSeconds: 60, Validations: []Validation{{Type: "command", Command: "true"}}}
+	firstFixtureID, err := fixtureTreeID(context.Background(), firstFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondFixtureID, err := fixtureTreeID(context.Background(), secondFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstFixtureID != secondFixtureID {
+		t.Fatalf("root-dependent fixture IDs = %q/%q", firstFixtureID, secondFixtureID)
+	}
+	firstDefinitionID, err := caseDefinitionID(first, firstFixtureID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDefinitionID, err := caseDefinitionID(second, secondFixtureID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDefinitionID != secondDefinitionID {
+		t.Fatalf("root-dependent case IDs = %q/%q", firstDefinitionID, secondDefinitionID)
+	}
+	if err := os.WriteFile(filepath.Join(secondFixture, "nested", "input.txt"), []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changedFixtureID, err := fixtureTreeID(context.Background(), secondFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedDefinitionID, err := caseDefinitionID(second, changedFixtureID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedFixtureID == firstFixtureID || changedDefinitionID == firstDefinitionID {
+		t.Fatalf("content change did not alter identities: fixture=%q case=%q", changedFixtureID, changedDefinitionID)
+	}
+	changedCase := *first
+	changedCase.Prompt = "different prompt"
+	changedInputID, err := caseDefinitionID(&changedCase, firstFixtureID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedInputID == firstDefinitionID {
+		t.Fatal("case input change did not alter case-definition identity")
+	}
+}
+
+func TestDVBEN007RuntimeFailureRetainsAgentRunAndCause(t *testing.T) {
+	fixture := t.TempDir()
+	spec := NewRuntimeSpec("test-protocol", "failing-model", 1, nil)
+	runner := NewRunner(benchmarkHarnessFactory(t, spec, benchmarkFailingComposer{}))
+	result, err := runner.RunRepeat(context.Background(), &Case{
+		ID: "runtime-failure", Fixture: fixture, Prompt: "fail", MaxTurns: 1, TimeoutSeconds: 60,
+		Validations: []Validation{{Type: "command", Command: "true"}},
+	}, 1)
+	if err != nil {
+		t.Fatalf("RunRepeat() infrastructure error = %v", err)
+	}
+	if result.RunID == "" || result.RuntimeStatus != RuntimeStatusFailed || !strings.Contains(result.RuntimeCause, "compose failure") {
+		t.Fatalf("runtime failure provenance = %#v", result)
+	}
+	if result.Status != ResultStatusFailed || !strings.Contains(result.TerminalCause, "compose failure") {
+		t.Fatalf("aggregate terminal correlation = %#v", result)
+	}
+}
+
+func TestDVBEN007RuntimeContextCausesMapTypedStatus(t *testing.T) {
+	tests := []struct {
+		name          string
+		cause         error
+		runtimeStatus RuntimeStatus
+		resultStatus  ResultStatus
+	}{
+		{name: "cancelled", cause: context.Canceled, runtimeStatus: RuntimeStatusCancelled, resultStatus: ResultStatusCancelled},
+		{name: "timed out", cause: context.DeadlineExceeded, runtimeStatus: RuntimeStatusTimedOut, resultStatus: ResultStatusTimedOut},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spec := NewRuntimeSpec("test-protocol", "terminal-model", 1, nil)
+			runner := NewRunner(benchmarkHarnessFactory(t, spec, benchmarkCauseComposer{cause: test.cause}))
+			result, err := runner.RunRepeat(context.Background(), &Case{
+				ID: test.name, Fixture: t.TempDir(), Prompt: "stop", MaxTurns: 1, TimeoutSeconds: 60,
+				Validations: []Validation{{Type: "command", Command: "true"}},
+			}, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.RuntimeStatus != test.runtimeStatus || result.Status != test.resultStatus || result.RunID == "" {
+				t.Fatalf("terminal context mapping = %#v", result)
+			}
+		})
+	}
+}
+
+func TestDVBEN007SetupAndEvaluationTerminalStatesRemainSeparate(t *testing.T) {
+	fixture := t.TempDir()
+	setup := NewRunner(func(context.Context, string, *Case) (*Harness, error) {
+		return nil, errors.New("setup failure")
+	})
+	setupResult, err := setup.RunRepeat(context.Background(), &Case{
+		ID: "setup", Fixture: fixture, Prompt: "run", TimeoutSeconds: 60,
+		Validations: []Validation{{Type: "command", Command: "true"}},
+	}, 1)
+	if err == nil || setupResult.RuntimeStatus != RuntimeStatusNotStarted || setupResult.RunID != "" || !strings.Contains(setupResult.TerminalCause, "setup failure") {
+		t.Fatalf("setup terminal result/error = %#v/%v", setupResult, err)
+	}
+	if setupResult.CaseDefinitionID == "" || setupResult.FixtureID == "" {
+		t.Fatalf("setup result lost pre-runtime identities: %#v", setupResult)
+	}
+
+	spec := NewRuntimeSpec("test-protocol", "test-model", 1, nil)
+	evaluation := NewRunner(benchmarkHarnessFactory(t, spec, benchmarkComposer{}))
+	evaluationResult, err := evaluation.RunRepeat(context.Background(), &Case{
+		ID: "evaluation", Fixture: fixture, Prompt: "run", MaxTurns: 1, TimeoutSeconds: 60,
+		Validations: []Validation{{Type: "command", Command: "exit 9"}},
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evaluationResult.RuntimeStatus != RuntimeStatusCompleted || evaluationResult.RuntimeCause != "" || evaluationResult.Status != ResultStatusFailed {
+		t.Fatalf("evaluation terminal result = %#v", evaluationResult)
+	}
+	if evaluationResult.TerminalCause != evaluationResult.EvaluationError || evaluationResult.TerminalCause == "" {
+		t.Fatalf("evaluation cause correlation = %#v", evaluationResult)
+	}
+}
+
+func TestDVBEN007CorrectedSchemaMatchesNormalizedGolden(t *testing.T) {
+	fixture := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fixture, "input.txt"), []byte("stable\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := NewRuntimeSpec("test-protocol", "test-model", 1, []string{"read_file"})
+	runner := NewRunner(benchmarkHarnessFactory(t, spec, benchmarkComposer{}))
+	result, err := runner.RunRepeat(context.Background(), &Case{
+		ID:             "schema-golden",
+		Name:           "Schema Golden",
+		Fixture:        fixture,
+		Prompt:         "finish",
+		MaxTurns:       1,
+		TimeoutSeconds: 60,
+		Validations:    []Validation{{Type: "command", Command: "true"}},
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(result.Workspace)
+	failureRunner := NewRunner(benchmarkHarnessFactory(t, spec, benchmarkFailingComposer{}))
+	failure, err := failureRunner.RunRepeat(context.Background(), &Case{
+		ID:             "schema-golden-failure",
+		Name:           "Schema Golden Failure",
+		Fixture:        fixture,
+		Prompt:         "fail",
+		MaxTurns:       1,
+		TimeoutSeconds: 60,
+		Validations:    []Validation{{Type: "command", Command: "true"}},
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := filepath.Join(t.TempDir(), "result.json")
+	if err := WriteJSON(report, []*Result{normalizeBenchmarkResult(result), normalizeBenchmarkResult(failure)}); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := os.ReadFile(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.ReadFile(filepath.Join("testdata", "benchmark-result-v1.golden.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(actual) != string(expected) {
+		t.Fatalf("normalized schema mismatch\nactual:\n%s\nexpected:\n%s", actual, expected)
+	}
+}
+
+func normalizeBenchmarkResult(result *Result) *Result {
+	copy := *result
+	copy.Workspace = "WORKSPACE"
+	copy.SessionID = "SESSION_ID"
+	copy.RunID = "RUN_ID"
+	copy.DurationMS = 0
+	copy.CaseDeadline = time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)
+	copy.Validations = append([]ValidationResult(nil), result.Validations...)
+	for index := range copy.Validations {
+		if copy.Validations[index].Deadline != nil {
+			deadline := time.Date(2000, 1, 2, 3, 6, 5, 0, time.UTC)
+			copy.Validations[index].Deadline = &deadline
+		}
+	}
+	return &copy
+}
+
+type benchmarkFailingComposer struct{}
+
+func (benchmarkFailingComposer) Compose(string) (string, error) {
+	return "", errors.New("compose failure")
+}
+
+type benchmarkCauseComposer struct {
+	cause error
+}
+
+func (composer benchmarkCauseComposer) Compose(string) (string, error) {
+	return "", composer.cause
+}
+
+func benchmarkHarnessFactory(t *testing.T, spec BenchmarkRuntimeSpec, composer engine.PromptComposer) HarnessFactory {
+	t.Helper()
+	return func(_ context.Context, workDir string, _ *Case) (*Harness, error) {
+		manager := session.NewManagerWithHome(workDir, t.TempDir())
+		sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+		if err != nil {
+			return nil, err
+		}
+		eng := engine.NewAgentEngine(benchmarkFinalProvider{}, tools.NewRegistry(), workDir, composer, engine.Config{
+			MaxTurns:         spec.MaxTurns,
+			ProviderProtocol: spec.ProviderProtocol,
+			Model:            spec.Model,
+		})
+		return &Harness{Engine: eng, Session: sess, RuntimeFidelity: spec.Fidelity()}, nil
 	}
 }
 

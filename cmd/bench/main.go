@@ -62,20 +62,7 @@ func run(args []string) int {
 	}
 
 	runner := benchmark.NewRunner(buildHarness)
-	var results []*benchmark.Result
-	infrastructureFailed := false
-
-	for i := 0; i < *repeat; i++ {
-		result, err := runner.RunCase(context.Background(), c)
-		if result != nil {
-			results = append(results, result)
-		}
-		if err != nil {
-			log.Print(err)
-			infrastructureFailed = true
-			break
-		}
-	}
+	results, infrastructureFailed := executeRepeats(context.Background(), c, *repeat, runner.RunRepeat)
 
 	benchmark.PrintSummary(results)
 	if err := benchmark.WriteJSON(*outPath, results); err != nil {
@@ -83,6 +70,23 @@ func run(args []string) int {
 		return 2
 	}
 	return resultExitCode(results, infrastructureFailed)
+}
+
+type repeatExecutor func(context.Context, *benchmark.Case, int) (*benchmark.Result, error)
+
+func executeRepeats(ctx context.Context, c *benchmark.Case, repeat int, execute repeatExecutor) ([]*benchmark.Result, bool) {
+	var results []*benchmark.Result
+	for index := 1; index <= repeat; index++ {
+		result, err := execute(ctx, c, index)
+		if result != nil {
+			results = append(results, result)
+		}
+		if err != nil {
+			log.Print(err)
+			return results, true
+		}
+	}
+	return results, false
 }
 
 func resultExitCode(results []*benchmark.Result, infrastructureFailed bool) int {

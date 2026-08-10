@@ -31,6 +31,7 @@ func defaultCommandValidationConfig() commandValidationConfig {
 func executeCommandValidation(ctx context.Context, workDir, command string, config commandValidationConfig) ValidationResult {
 	runCtx, cancel := context.WithTimeout(ctx, config.timeout)
 	defer cancel()
+	deadline, _ := runCtx.Deadline()
 
 	overflow := make(chan string, 1)
 	stdout := newValidationOutput("stdout", config.outputLimit, overflow)
@@ -41,7 +42,7 @@ func executeCommandValidation(ctx context.Context, workDir, command string, conf
 	cmd.Stderr = stderr
 	configureValidationCommand(cmd)
 
-	result := ValidationResult{Type: "command", Status: ValidationStatusFailed}
+	result := ValidationResult{Type: "command", Status: ValidationStatusFailed, Deadline: &deadline}
 	if err := cmd.Start(); err != nil {
 		result.Message = fmt.Sprintf("命令启动失败: %v", err)
 		return result
