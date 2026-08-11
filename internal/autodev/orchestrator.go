@@ -107,7 +107,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 	led.Seed(items)
 	if err := led.Save(); err != nil {
-		return err
+		return &LedgerCommitError{Operation: "seed", Err: err}
 	}
 
 	total := len(led.InProgress()) + len(led.Pending())
@@ -150,16 +150,18 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 	}
 	o.deps.Reporter.OnWorktree(ctx, wt)
 
-	record := func(mut func(*LedgerItem)) {
-		led.Mark(item.Slug, mut)
-		if err := led.Save(); err != nil {
-			o.deps.Reporter.OnInfo(ctx, "WARNING: failed to save ledger: "+err.Error())
+	record := func(operation string, mut func(*LedgerItem)) error {
+		if err := led.Commit(item.Slug, mut); err != nil {
+			return &LedgerCommitError{Operation: operation, Err: err}
 		}
+		return nil
 	}
-	record(func(it *LedgerItem) {
+	if err := record("item-in-progress", func(it *LedgerItem) {
 		it.Status = StatusInProgress
 		it.Branch = wt.Branch
-	})
+	}); err != nil {
+		return err
+	}
 
 	core, err := o.deps.CoreFactory.New(ctx, wt.Path, o.deps.Config.Model)
 	if err != nil {
@@ -179,16 +181,22 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 	core.SetUserAsker(NewEngineerAsker(o.deps.Engineer, o.deps.Reporter, sc))
 
 	for _, st := range o.pipeline[o.resumeIndex(item):] {
-		record(func(it *LedgerItem) { it.Stage = st.Name })
+		if err := record("stage-"+st.Name+"-intent", func(it *LedgerItem) { it.Stage = st.Name }); err != nil {
+			return err
+		}
 		if err := o.machine.RunStep(ctx, core, sc, st); err != nil {
 			return err
 		}
 		if sc.FeatureDir != "" {
-			record(func(it *LedgerItem) { it.FeatureDir = sc.FeatureDir })
+			if err := record("stage-"+st.Name+"-feature-dir", func(it *LedgerItem) { it.FeatureDir = sc.FeatureDir }); err != nil {
+				return err
+			}
 		}
 	}
 
-	record(func(it *LedgerItem) { it.Stage = "publish" })
+	if err := record("publish-intent", func(it *LedgerItem) { it.Stage = "publish" }); err != nil {
+		return err
+	}
 	current, _ := led.Get(item.Slug)
 	current.Description = item.Description
 	result, err := o.publisher.Publish(ctx, core, wt, current, record)
@@ -196,12 +204,14 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 		return err
 	}
 
-	record(func(it *LedgerItem) {
+	if err := record("item-done", func(it *LedgerItem) {
 		it.Status = StatusDone
 		it.Stage = "done"
 		it.Issue = result.Issue
 		it.PR = result.PR
-	})
+	}); err != nil {
+		return err
+	}
 	done, _ := led.Get(item.Slug)
 	o.deps.Reporter.OnItemDone(ctx, done)
 

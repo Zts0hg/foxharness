@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"time"
 )
@@ -42,6 +43,22 @@ type Ledger struct {
 type ledgerFile struct {
 	Items []*LedgerItem `json:"items"`
 }
+
+// LedgerCommitError reports an authoritative ledger transition that could
+// not be durably committed. Callers must stop dependent work and retain any
+// recovery evidence such as the item worktree.
+type LedgerCommitError struct {
+	Operation string
+	Err       error
+}
+
+// Error implements error.
+func (e *LedgerCommitError) Error() string {
+	return fmt.Sprintf("commit ledger operation %s: %v", e.Operation, e.Err)
+}
+
+// Unwrap returns the underlying persistence error.
+func (e *LedgerCommitError) Unwrap() error { return e.Err }
 
 // LoadLedger reads the ledger at path, returning an empty ledger when the
 // file does not exist yet. clock stamps subsequent mutations.
@@ -152,6 +169,34 @@ func (l *Ledger) Mark(slug string, mut func(*LedgerItem)) {
 	}
 }
 
+// Commit applies one item mutation to a candidate snapshot and makes it
+// authoritative only after that snapshot has been durably persisted.
+func (l *Ledger) Commit(slug string, mut func(*LedgerItem)) error {
+	candidate := cloneLedgerItems(l.items)
+	for _, it := range candidate {
+		if it.Slug != slug {
+			continue
+		}
+		mut(it)
+		it.UpdatedAt = l.clock.Now()
+		committed, err := l.persistItems(candidate)
+		if committed {
+			l.items = candidate
+		}
+		return err
+	}
+	return fmt.Errorf("ledger item %q not found", slug)
+}
+
+func cloneLedgerItems(items []*LedgerItem) []*LedgerItem {
+	cloned := make([]*LedgerItem, len(items))
+	for i, item := range items {
+		copy := *item
+		cloned[i] = &copy
+	}
+	return cloned
+}
+
 // Get returns a copy of the item identified by slug.
 func (l *Ledger) Get(slug string) (LedgerItem, bool) {
 	for _, it := range l.items {
@@ -173,30 +218,51 @@ func (l *Ledger) IsDone(slug string) bool {
 // authoritative resume source (REQ-021), so a crash mid-write must never
 // leave a torn file behind.
 func (l *Ledger) Save() error {
+	_, err := l.persistItems(l.items)
+	return err
+}
+
+func (l *Ledger) persistItems(items []*LedgerItem) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
-		return fmt.Errorf("create ledger dir: %w", err)
+		return false, fmt.Errorf("create ledger dir: %w", err)
 	}
-	data, err := json.MarshalIndent(ledgerFile{Items: l.items}, "", "  ")
+	data, err := json.MarshalIndent(ledgerFile{Items: items}, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode ledger: %w", err)
+		return false, fmt.Errorf("encode ledger: %w", err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(l.path), filepath.Base(l.path)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("create ledger temp file: %w", err)
+		return false, fmt.Errorf("create ledger temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
 	if _, err := tmp.Write(append(data, '\n')); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
-		return fmt.Errorf("write ledger: %w", err)
+		return false, fmt.Errorf("write ledger: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return false, fmt.Errorf("flush ledger: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("close ledger temp file: %w", err)
+		return false, fmt.Errorf("close ledger temp file: %w", err)
 	}
 	if err := os.Rename(tmpPath, l.path); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("commit ledger: %w", err)
+		return false, fmt.Errorf("commit ledger: %w", err)
 	}
-	return nil
+	if runtime.GOOS == "windows" {
+		return true, nil
+	}
+	dir, err := os.Open(filepath.Dir(l.path))
+	if err != nil {
+		return true, fmt.Errorf("open ledger dir for flush: %w", err)
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return true, fmt.Errorf("flush ledger dir: %w", err)
+	}
+	return true, nil
 }

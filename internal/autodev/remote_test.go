@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -149,6 +150,16 @@ func happyItem() LedgerItem {
 	return LedgerItem{Slug: "x", Title: "Engine memory writes", Status: StatusInProgress, Branch: "auto/x"}
 }
 
+func recordRemoteItem(item *LedgerItem, snapshots *[]LedgerItem) func(string, func(*LedgerItem)) error {
+	return func(_ string, mut func(*LedgerItem)) error {
+		mut(item)
+		if snapshots != nil {
+			*snapshots = append(*snapshots, *item)
+		}
+		return nil
+	}
+}
+
 func TestPublishDrivesOrderedSequence(t *testing.T) {
 	state := &repoState{dirty: true, localTip: "aaa111", issues: map[int]string{}}
 	pub, _, _, _ := newPublisher(t, state)
@@ -161,10 +172,13 @@ func TestPublishDrivesOrderedSequence(t *testing.T) {
 	}}
 
 	var recorded []LedgerItem
+	var operations []string
 	item := happyItem()
-	record := func(mut func(*LedgerItem)) {
+	record := func(operation string, mut func(*LedgerItem)) error {
+		operations = append(operations, operation)
 		mut(&item)
 		recorded = append(recorded, item)
+		return nil
 	}
 
 	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, record)
@@ -200,6 +214,18 @@ func TestPublishDrivesOrderedSequence(t *testing.T) {
 	if !foundIssueBeforePR {
 		t.Error("issue number was not recorded before the PR step completed")
 	}
+	wantOperations := []string{
+		"publish-stage-changes-intent",
+		"publish-commit-staged-intent",
+		"publish-push-intent",
+		"publish-issue-intent",
+		"issue-binding",
+		"publish-pr-intent",
+		"pr-binding",
+	}
+	if !reflect.DeepEqual(operations, wantOperations) {
+		t.Errorf("record operations = %v, want %v", operations, wantOperations)
+	}
 }
 
 func TestPublishNothingToCommitEngineerSteers(t *testing.T) {
@@ -217,7 +243,7 @@ func TestPublishNothingToCommitEngineerSteers(t *testing.T) {
 	}}
 
 	item := happyItem()
-	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, func(mut func(*LedgerItem)) { mut(&item) }); err != nil {
+	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil)); err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
 
@@ -256,7 +282,7 @@ func TestPublishPRMustLinkIssue(t *testing.T) {
 	}}
 
 	item := happyItem()
-	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, func(mut func(*LedgerItem)) { mut(&item) })
+	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil))
 	if err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
@@ -280,7 +306,7 @@ func TestPublishNeverMerges(t *testing.T) {
 	}}
 
 	item := happyItem()
-	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, func(mut func(*LedgerItem)) { mut(&item) }); err != nil {
+	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil)); err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
 
@@ -307,7 +333,7 @@ func TestPublishIdempotentOnResume(t *testing.T) {
 
 	item := happyItem()
 	item.Issue = 31
-	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, func(mut func(*LedgerItem)) { mut(&item) })
+	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil))
 	if err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
@@ -336,7 +362,7 @@ func TestPublishEngineerApprovalCannotSkipPush(t *testing.T) {
 	}}
 
 	item := happyItem()
-	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, func(mut func(*LedgerItem)) { mut(&item) }); err != nil {
+	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil)); err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
 	if len(core.prompts) != 4 {

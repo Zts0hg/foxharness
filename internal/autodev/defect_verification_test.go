@@ -35,6 +35,14 @@ func (r *defectReporter) OnInfo(_ context.Context, message string) {
 	r.add("info:" + message)
 }
 
+func (r *defectReporter) OnIssue(_ context.Context, number int) {
+	r.add(fmt.Sprintf("issue:%d", number))
+}
+
+func (r *defectReporter) OnPR(_ context.Context, number int) {
+	r.add(fmt.Sprintf("pr:%d", number))
+}
+
 func (c *sabotagingClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -47,15 +55,36 @@ func (c *sabotagingClock) Now() time.Time {
 	return c.now
 }
 
-func TestDVAUT001LedgerSaveFailureDoesNotStopIrreversibleWorkflow(t *testing.T) {
-	transitions := []string{
-		"in-progress", "materialize", "generate-spec", "spec-to-plan", "plan-to-tasks",
-		"implement-tasks", "publish", "issue", "pr", "done",
+func TestDVAUT001LedgerSaveFailureStopsBeforeDependentWorkflow(t *testing.T) {
+	tests := []struct {
+		name            string
+		failAtCall      int
+		maxCoreRuns     int
+		maxIssueQueries int
+		maxPRQueries    int
+		maxIssueReports int
+		maxPRReports    int
+	}{
+		{name: "in-progress", failAtCall: 2},
+		{name: "materialize-intent", failAtCall: 3},
+		{name: "generate-spec-intent", failAtCall: 4, maxCoreRuns: 1},
+		{name: "spec-to-plan-intent", failAtCall: 5, maxCoreRuns: 2},
+		{name: "plan-to-tasks-intent", failAtCall: 6, maxCoreRuns: 3},
+		{name: "implement-tasks-intent", failAtCall: 7, maxCoreRuns: 4},
+		{name: "publish-intent", failAtCall: 8, maxCoreRuns: 5},
+		{name: "stage-changes-intent", failAtCall: 9, maxCoreRuns: 5},
+		{name: "commit-staged-intent", failAtCall: 10, maxCoreRuns: 5},
+		{name: "push-intent", failAtCall: 11, maxCoreRuns: 5},
+		{name: "issue-intent", failAtCall: 12, maxCoreRuns: 5},
+		{name: "issue-binding", failAtCall: 13, maxCoreRuns: 6, maxIssueQueries: 1},
+		{name: "pr-intent", failAtCall: 14, maxCoreRuns: 6, maxIssueQueries: 1, maxIssueReports: 1},
+		{name: "pr-binding", failAtCall: 15, maxCoreRuns: 7, maxIssueQueries: 1, maxPRQueries: 1, maxIssueReports: 1},
+		{name: "done", failAtCall: 16, maxCoreRuns: 7, maxIssueQueries: 1, maxPRQueries: 1, maxIssueReports: 1, maxPRReports: 1},
 	}
-	for i, transition := range transitions {
-		t.Run(transition, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			repoRoot := t.TempDir()
-			deps, recorder, _, git, gh := testDeps(t, repoRoot, `## [feature] Durable item
+			deps, recorder, factory, git, gh := testDeps(t, repoRoot, `## [feature] Durable item
 
 **Priority**: high
 **Description**: preserve every transition
@@ -64,32 +93,61 @@ func TestDVAUT001LedgerSaveFailureDoesNotStopIrreversibleWorkflow(t *testing.T) 
 			ledgerPath := filepath.Join(repoRoot, ".foxharness", "autodev-state.json")
 			deps.Clock = &sabotagingClock{
 				now:        time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC),
-				failAtCall: i + 2, // Seed is call 1; every later call precedes a record Save.
+				failAtCall: tt.failAtCall,
 				ledgerPath: ledgerPath,
 			}
 
-			if err := New(deps).Run(context.Background()); err != nil {
-				t.Fatalf("Run returned %v after %s ledger failure; current behavior continues", err, transition)
+			err := New(deps).Run(context.Background())
+			var commitErr *LedgerCommitError
+			if !errors.As(err, &commitErr) {
+				t.Fatalf("Run error = %v, want *LedgerCommitError at %s", err, tt.name)
 			}
 			if info, err := os.Stat(ledgerPath); err != nil || !info.IsDir() {
 				t.Fatalf("ledger sabotage not active: info=%v err=%v", info, err)
 			}
-			if len(gh.issues) != 1 {
-				t.Errorf("issues = %v, want publication to continue after ledger failure", gh.issues)
+
+			coreRuns := 0
+			for _, core := range factory.created {
+				coreRuns += core.runs
+			}
+			if coreRuns > tt.maxCoreRuns {
+				t.Errorf("core runs = %d, want at most %d after %s failure", coreRuns, tt.maxCoreRuns, tt.name)
+			}
+			issueQueries, prQueries := 0, 0
+			for _, call := range gh.calls {
+				if strings.HasPrefix(call, "gh issue") {
+					issueQueries++
+				}
+				if strings.HasPrefix(call, "gh pr") {
+					prQueries++
+				}
+			}
+			if issueQueries > tt.maxIssueQueries || prQueries > tt.maxPRQueries {
+				t.Errorf("remote queries issue/pr = %d/%d, want at most %d/%d after %s failure",
+					issueQueries, prQueries, tt.maxIssueQueries, tt.maxPRQueries, tt.name)
 			}
 			removed := false
 			for _, call := range git.calls {
 				removed = removed || strings.HasPrefix(call, "worktree remove")
 			}
-			if !removed {
-				t.Error("worktree was not removed after the unrecorded publication")
+			if removed {
+				t.Error("worktree was removed after an authoritative ledger failure")
 			}
-			warned := false
+			issueReports, prReports := 0, 0
 			for _, event := range recorder.list() {
-				warned = warned || strings.Contains(event, "WARNING: failed to save ledger")
+				if strings.HasPrefix(event, "done:") {
+					t.Errorf("done event emitted after %s ledger failure", tt.name)
+				}
+				if strings.HasPrefix(event, "issue:") {
+					issueReports++
+				}
+				if strings.HasPrefix(event, "pr:") {
+					prReports++
+				}
 			}
-			if !warned {
-				t.Error("ledger failure was not reported as a warning")
+			if issueReports > tt.maxIssueReports || prReports > tt.maxPRReports {
+				t.Errorf("reports issue/pr = %d/%d, want at most %d/%d after %s failure",
+					issueReports, prReports, tt.maxIssueReports, tt.maxPRReports, tt.name)
 			}
 		})
 	}
@@ -489,21 +547,13 @@ func TestDVAUT007IssueVerificationUsesFirstMatchingTitleWithinTwentyResults(t *t
 			exec := &fixedExec{out: tc.output}
 			publisher := NewRemotePublisher(newTestMachine(&reviewingEngineer{}), &orchestraGit{insideWT: true}, exec, reporter, defaultConfig(t.TempDir()))
 			sc := &StageContext{Item: Item{Title: "Same"}, WorkDir: t.TempDir()}
-			records := 0
-			ok, _ := publisher.verifyIssue(func(mut func(*LedgerItem)) {
-				records++
-				item := &LedgerItem{}
-				mut(item)
-			})(context.Background(), sc)
+			ok, _ := publisher.verifyIssue()(context.Background(), sc)
 			if ok != tc.wantOK || sc.Issue != tc.wantIssue {
 				t.Fatalf("ok/issue = %v/%d, want %v/%d", ok, sc.Issue, tc.wantOK, tc.wantIssue)
 			}
 			joined := strings.Join(exec.calls[0], " ")
 			if !strings.Contains(joined, "--state all") || !strings.Contains(joined, "--limit 20") {
 				t.Errorf("issue query = %q, want closed-inclusive fixed first page", joined)
-			}
-			if records != boolInt(tc.wantOK) {
-				t.Errorf("record calls = %d, want %d", records, boolInt(tc.wantOK))
 			}
 		})
 	}
@@ -513,7 +563,7 @@ func TestDVAUT007RecordedIssueSkipsVerificationWithoutStableCorrelation(t *testi
 	exec := &fixedExec{out: `[]`}
 	cfg := defaultConfig(t.TempDir())
 	publisher := NewRemotePublisher(newTestMachine(&reviewingEngineer{}), &orchestraGit{insideWT: true}, exec, NewTerminalReporter(io.Discard), cfg)
-	steps := publisher.steps(nil)
+	steps := publisher.steps()
 	var issue Stage
 	for _, step := range steps {
 		if step.Name == "issue" {
@@ -527,13 +577,6 @@ func TestDVAUT007RecordedIssueSkipsVerificationWithoutStableCorrelation(t *testi
 	if len(exec.calls) != 0 {
 		t.Errorf("recorded issue triggered re-verification calls: %v", exec.calls)
 	}
-}
-
-func boolInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
 }
 
 type lifecycleCore struct {

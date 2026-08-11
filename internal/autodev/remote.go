@@ -30,12 +30,11 @@ func NewRemotePublisher(machine *StageMachine, git GitRunner, exec ExecRunner, r
 }
 
 // Publish runs the remote sequence for item inside wt, driving the core
-// Agent step by step. record persists ledger mutations as ground truth is
-// verified (issue before PR, so an interrupted run reuses the recorded
-// issue); it may be nil.
-func (p *RemotePublisher) Publish(ctx context.Context, core CoreRunner, wt Worktree, item LedgerItem, record func(mut func(*LedgerItem))) (PublishResult, error) {
+// Agent step by step. record durably persists each intent and verified
+// binding before dependent work; it may be nil.
+func (p *RemotePublisher) Publish(ctx context.Context, core CoreRunner, wt Worktree, item LedgerItem, record func(operation string, mut func(*LedgerItem)) error) (PublishResult, error) {
 	if record == nil {
-		record = func(func(*LedgerItem)) {}
+		record = func(string, func(*LedgerItem)) error { return nil }
 	}
 	sc := &StageContext{
 		Item:       Item{Title: item.Title, Description: item.Description},
@@ -48,16 +47,32 @@ func (p *RemotePublisher) Publish(ctx context.Context, core CoreRunner, wt Workt
 		PR:         item.PR,
 	}
 
-	for _, st := range p.steps(record) {
+	for _, st := range p.steps() {
+		if err := record("publish-"+st.Name+"-intent", func(it *LedgerItem) { it.Stage = st.Name }); err != nil {
+			return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
+		}
+		previousIssue, previousPR := sc.Issue, sc.PR
 		if err := p.machine.RunStep(ctx, core, sc, st); err != nil {
 			return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
+		}
+		if sc.Issue != 0 && sc.Issue != previousIssue {
+			if err := record("issue-binding", func(it *LedgerItem) { it.Issue = sc.Issue }); err != nil {
+				return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
+			}
+			p.reporter.OnIssue(ctx, sc.Issue)
+		}
+		if sc.PR != 0 && sc.PR != previousPR {
+			if err := record("pr-binding", func(it *LedgerItem) { it.PR = sc.PR }); err != nil {
+				return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
+			}
+			p.reporter.OnPR(ctx, sc.PR)
 		}
 	}
 	return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, nil
 }
 
 // steps assembles the remote pipeline honoring the remote_flow toggles.
-func (p *RemotePublisher) steps(record func(mut func(*LedgerItem))) []Stage {
+func (p *RemotePublisher) steps() []Stage {
 	steps := []Stage{
 		{
 			Name: "stage-changes",
@@ -108,7 +123,7 @@ func (p *RemotePublisher) steps(record func(mut func(*LedgerItem))) []Stage {
 				}
 				return false
 			},
-			Verify: p.verifyIssue(record),
+			Verify: p.verifyIssue(),
 		})
 	}
 	if p.cfg.RemoteFlow.OpenPR {
@@ -130,7 +145,7 @@ func (p *RemotePublisher) steps(record func(mut func(*LedgerItem))) []Stage {
 				}
 				return false
 			},
-			Verify: p.verifyPR(record),
+			Verify: p.verifyPR(),
 		})
 	}
 	return steps
@@ -194,9 +209,9 @@ func (p *RemotePublisher) verifyPushed(ctx context.Context, sc *StageContext) (b
 	return false, fmt.Sprintf("the remote branch %s/%s does not match local HEAD — the push has not completed", sc.Remote, sc.Branch)
 }
 
-// verifyIssue queries gh for an issue whose title matches the item exactly
-// and records the verified number before the PR step runs.
-func (p *RemotePublisher) verifyIssue(record func(mut func(*LedgerItem))) func(ctx context.Context, sc *StageContext) (bool, string) {
+// verifyIssue queries gh for an issue whose title matches the item exactly.
+// Publish persists and reports the verified number before the PR step runs.
+func (p *RemotePublisher) verifyIssue() func(ctx context.Context, sc *StageContext) (bool, string) {
 	return func(ctx context.Context, sc *StageContext) (bool, string) {
 		out, err := p.exec.Run(ctx, sc.WorkDir, "gh", "issue", "list",
 			"--state", "all", "--search", sc.Item.Title, "--json", "number,title", "--limit", "20")
@@ -213,8 +228,6 @@ func (p *RemotePublisher) verifyIssue(record func(mut func(*LedgerItem))) func(c
 		for _, issue := range issues {
 			if issue.Title == sc.Item.Title {
 				sc.Issue = issue.Number
-				record(func(it *LedgerItem) { it.Issue = issue.Number })
-				p.reporter.OnIssue(ctx, issue.Number)
 				return true, ""
 			}
 		}
@@ -222,9 +235,9 @@ func (p *RemotePublisher) verifyIssue(record func(mut func(*LedgerItem))) func(c
 	}
 }
 
-// verifyPR queries gh for the branch's PR, enforces the Closes #N link when
-// configured (TC-012), and records the verified number.
-func (p *RemotePublisher) verifyPR(record func(mut func(*LedgerItem))) func(ctx context.Context, sc *StageContext) (bool, string) {
+// verifyPR queries gh for the branch's PR and enforces the Closes #N link
+// when configured (TC-012). Publish persists and reports the verified number.
+func (p *RemotePublisher) verifyPR() func(ctx context.Context, sc *StageContext) (bool, string) {
 	return func(ctx context.Context, sc *StageContext) (bool, string) {
 		out, err := p.exec.Run(ctx, sc.WorkDir, "gh", "pr", "view", sc.Branch, "--json", "number,body")
 		if err != nil {
@@ -244,8 +257,6 @@ func (p *RemotePublisher) verifyPR(record func(mut func(*LedgerItem))) func(ctx 
 			}
 		}
 		sc.PR = pr.Number
-		record(func(it *LedgerItem) { it.PR = pr.Number })
-		p.reporter.OnPR(ctx, pr.Number)
 		return true, ""
 	}
 }

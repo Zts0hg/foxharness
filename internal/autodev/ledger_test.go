@@ -183,6 +183,39 @@ func TestMarkStampsUpdatedAtFromClock(t *testing.T) {
 	}
 }
 
+func TestLedgerCommitFailureDoesNotMutateAuthoritativeMemory(t *testing.T) {
+	path := ledgerPath(t)
+	led, err := LoadLedger(path, newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	led.Seed([]Item{{Title: "Atomic transition", Priority: PriorityHigh}})
+	if err := led.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err = led.Commit("atomic-transition", func(it *LedgerItem) {
+		it.Status = StatusDone
+		it.Stage = "done"
+	})
+	if err == nil {
+		t.Fatal("Commit returned nil, want persistence failure")
+	}
+	item, ok := led.Get("atomic-transition")
+	if !ok {
+		t.Fatal("item disappeared after failed Commit")
+	}
+	if item.Status != StatusPending || item.Stage != "" {
+		t.Fatalf("item after failed Commit = %+v, want original pending state", item)
+	}
+}
+
 func TestSaveAndReloadRoundTrip(t *testing.T) {
 	path := ledgerPath(t)
 	clk := newTestClock()
