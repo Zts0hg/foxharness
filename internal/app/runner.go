@@ -897,6 +897,15 @@ func (r *AgentRunner) TruncateMessageHistory(seq int64) error {
 	if sess == nil {
 		return nil
 	}
+	state, err := session.LoadCompactState(sess)
+	if err != nil {
+		return err
+	}
+	if state.Summary != "" && seq <= state.CoveredUntilSeq {
+		if err := session.SaveCompactState(sess, &session.CompactState{CoveredUntilSeq: -1}); err != nil {
+			return err
+		}
+	}
 	return session.NewMessageLog(sess).TruncateBeforeSeq(seq)
 }
 

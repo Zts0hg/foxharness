@@ -479,3 +479,10 @@
 - **Deterministic concurrency**: Channel barriers prove overlap for parallel-safe calls, exclusive separation across two parallel batches, model-order result commits, cancellation of every confirmed call, and completion of all tool goroutines. No test infers overlap from elapsed time or sleeps.
 - **Capability and output boundaries**: One alias contract covers advertisement, invocation, permission assessment, and parallel-safety lookup. A 60KB result distinguishes the exact full artifact and detailed observation from the 800-rune reporter preview and path-bearing 2KB model/session preview.
 - **Green gates**: affected engine, tools, runtime-contract, and hermetic packages plus their combined race gate PASS. Fixed-HOME `go test ./... -count=1 -timeout=300s` outside the established loopback-listener sandbox and `go vet ./...` also PASS.
+
+## T113 / D-CX-007: Rewind-Safe Compact State
+
+- **Behavior Red**: Three independent copies of the frozen context-lifecycle session rewound before, within, and after compact coverage. Before and within coverage, `messages.jsonl` truncated correctly but `compact_state.json` retained a summary through seq 4, so the next model-visible projection reintroduced deleted future facts.
+- **Correction semantics**: A rewind at or before `CoveredUntilSeq` cannot retain any opaque summary that may describe the removed suffix. The runner invalidates compact state before truncating raw history; a rewind after coverage preserves the still-valid summary and projects only retained post-coverage records.
+- **Failure ordering**: Compact-state invalidation precedes destructive truncation. If truncation later fails, the conservative state is expanded raw history rather than a future-bearing summary over already deleted records.
+- **Green gates**: frozen fixture matrix, app/session/TUI packages, affected race tests, fixed-HOME full repository tests outside the established loopback-listener sandbox, and `go vet ./...` PASS. CX-007 trace evidence remains grouped with the complete T013 context catalog.
