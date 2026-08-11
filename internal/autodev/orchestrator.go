@@ -86,6 +86,9 @@ func New(deps Deps) *Orchestrator {
 // Cases), seeds the ledger, then processes items one at a time until no
 // in-progress or pending item remains.
 func (o *Orchestrator) Run(ctx context.Context) error {
+	if err := validateConcurrency(o.deps.Config.Concurrency); err != nil {
+		return err
+	}
 	led, err := LoadLedger(filepath.Join(o.deps.RepoRoot, ".foxharness", "autodev-state.json"), o.deps.Clock)
 	if err != nil {
 		return err

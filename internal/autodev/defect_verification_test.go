@@ -1623,27 +1623,57 @@ func TestDVAUT008NextRunAndItemObserveCompletedPostRunState(t *testing.T) {
 	}
 }
 
-func TestDVAUT009ConcurrencyConfigurationAcceptsUnsupportedValuesButAlwaysRunsSerially(t *testing.T) {
-	for _, value := range []string{"parallel", "8", "future-mode", " serial "} {
-		t.Run(strings.ReplaceAll(value, " ", "_"), func(t *testing.T) {
+func TestDVAUT009ConcurrencyAcceptsOnlyOmissionOrExactSerial(t *testing.T) {
+	invalid := map[string]string{
+		"parallel":        "concurrency: parallel\n",
+		"numeric":         "concurrency: 8\n",
+		"future":          "concurrency: future-mode\n",
+		"whitespace":      "concurrency: \" serial \"\n",
+		"case":            "concurrency: Serial\n",
+		"empty":           "concurrency: \"\"\n",
+		"null":            "concurrency: null\n",
+		"non-scalar-list": "concurrency: [serial]\n",
+	}
+	for name, content := range invalid {
+		t.Run(name, func(t *testing.T) {
 			repoRoot := t.TempDir()
-			writeConfig(t, repoRoot, "concurrency: \""+value+"\"\n")
+			writeConfig(t, repoRoot, content)
+			_, err := Load(repoRoot)
+			var concurrencyErr *InvalidConcurrencyError
+			if !errors.As(err, &concurrencyErr) {
+				t.Fatalf("Load error = %T %v, want *InvalidConcurrencyError", err, err)
+			}
+		})
+	}
+	for name, content := range map[string]string{
+		"omitted": "model: test\n",
+		"plain":   "concurrency: serial\n",
+		"quoted":  "concurrency: \"serial\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			writeConfig(t, repoRoot, content)
 			cfg, err := Load(repoRoot)
-			if err != nil {
-				t.Fatalf("Load rejected unsupported value %q: %v", value, err)
-			}
-			if cfg.Concurrency != value {
-				t.Errorf("Concurrency = %q, want accepted raw value %q", cfg.Concurrency, value)
-			}
-			if len(cfg.Warnings) != 0 {
-				t.Errorf("Warnings = %v, want no unsupported-concurrency warning", cfg.Warnings)
+			if err != nil || cfg.Concurrency != "serial" {
+				t.Fatalf("Load = concurrency %q, error %v; want exact serial", cfg.Concurrency, err)
 			}
 		})
 	}
 
 	repoRoot := t.TempDir()
-	deps, recorder, _, _, _ := testDeps(t, repoRoot, twoItemBacklog)
+	deps, _, _, git, gh := testDeps(t, repoRoot, twoItemBacklog)
 	deps.Config.Concurrency = "parallel"
+	err := New(deps).Run(context.Background())
+	var concurrencyErr *InvalidConcurrencyError
+	if !errors.As(err, &concurrencyErr) {
+		t.Fatalf("Run error = %T %v, want *InvalidConcurrencyError", err, err)
+	}
+	if len(git.calls) != 0 || len(gh.calls) != 0 {
+		t.Fatalf("invalid concurrency reached preconditions: git=%v gh=%v", git.calls, gh.calls)
+	}
+
+	repoRoot = t.TempDir()
+	deps, recorder, _, _, _ := testDeps(t, repoRoot, twoItemBacklog)
 	if err := New(deps).Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1655,7 +1685,7 @@ func TestDVAUT009ConcurrencyConfigurationAcceptsUnsupportedValuesButAlwaysRunsSe
 	}
 	want := []string{"start:first-item", "done:first-item", "start:second-item", "done:second-item"}
 	if !reflect.DeepEqual(itemEvents, want) {
-		t.Fatalf("parallel-config events = %v, want unchanged serial order %v", itemEvents, want)
+		t.Fatalf("serial events = %v, want strict serial order %v", itemEvents, want)
 	}
 }
 
