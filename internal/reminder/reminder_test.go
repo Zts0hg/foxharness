@@ -58,3 +58,29 @@ func TestManagerBuildsReAnchorReminder(t *testing.T) {
 		t.Fatalf("MaybeBuild() = %q, %v; want re-anchor reminder", msg, ok)
 	}
 }
+
+func TestPolicyReminderPriorityCooldownReanchorAndVerificationSuppression(t *testing.T) {
+	priority := NewManager()
+	repeated := schema.ToolCall{Name: "bash", Arguments: []byte(`{"command":"ls"}`)}
+	for turn := 1; turn <= 3; turn++ {
+		priority.Record(turn, repeated, schema.ToolResult{})
+	}
+	message, ok := priority.MaybeBuild(12)
+	if !ok || !strings.Contains(message, "Possible Loop Detected") || strings.Contains(message, "Re-anchor") {
+		t.Fatalf("priority reminder = %q, %v; want loop before re-anchor", message, ok)
+	}
+	if message, ok := priority.MaybeBuild(13); ok {
+		t.Fatalf("cooldown reminder = %q, true; want suppression", message)
+	}
+
+	verified := NewManager()
+	verified.Record(1, schema.ToolCall{Name: "edit_file", Arguments: []byte(`{"path":"a.go"}`)}, schema.ToolResult{})
+	verified.Record(2, schema.ToolCall{Name: "bash", Arguments: []byte(`{"command":"go test ./..."}`)}, schema.ToolResult{})
+	verified.Record(3, schema.ToolCall{Name: "read_file", Arguments: []byte(`{"path":"a.go"}`)}, schema.ToolResult{})
+	verified.Record(4, schema.ToolCall{Name: "read_file", Arguments: []byte(`{"path":"b.go"}`)}, schema.ToolResult{})
+	verified.Record(5, schema.ToolCall{Name: "bash", Arguments: []byte(`{"command":"git status --short"}`)}, schema.ToolResult{})
+	message, ok = verified.MaybeBuild(12)
+	if !ok || !strings.Contains(message, "Re-anchor") || strings.Contains(message, "Verification Needed") {
+		t.Fatalf("verified reminder = %q, %v; want verification suppression then re-anchor", message, ok)
+	}
+}

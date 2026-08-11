@@ -494,3 +494,11 @@
 - **Failure and manual paths**: Existing production compactor tests jointly freeze original-slice fallback, the three-no-op circuit breaker, suppression, and reset-after-success. A copied resumed fixture manually compacts, continues, reopens through a new runner, and replaces the old summary on repeated compaction without losing active messages.
 - **Rewind and blocking**: The D-CX-007 corrected fixture matrix proves no future-bearing summary survives an at/before-coverage rewind. A definition-only overhead case blocks before provider invocation, proving compaction and hard-block calculations include the same request surface.
 - **Green gates**: complete engine/app/compaction/session/fixture packages and their affected race gate PASS. Fixed-HOME `go test ./... -count=1 -timeout=300s` outside the established loopback-listener sandbox and `go vet ./...` also PASS.
+
+## T014: Shared Policy Characterization
+
+- **Recovery policy**: Three identical structured tool failures expose the current tool-and-arguments identity, counts one through three, injection on each following request, and the stronger third-failure stop directive. Existing tracker tests retain success/reset behavior.
+- **Reminder policy**: One combined scenario freezes repeated-action priority over the turn-12 re-anchor, next-turn cooldown, verification-needed behavior after edits, and successful-verification suppression before re-anchor eligibility.
+- **Completion policy**: Existing engine tests freeze withholding the first unsatisfied final, success after the condition clears, changed-reminder retry, and terminal behavior after the same unmet reminder repeats.
+- **TODO authority and ordering**: A successful `update_todo` must change the authoritative checklist before completion. A correlated failed update leaves it incomplete and injects recovery context. The exact model-visible order is tool result, recovery notice, ordinary reminder, then queued next-turn reminder.
+- **Green gates**: focused policy tests, complete engine/recovery/reminder packages, their combined race gate, fixed-HOME `go test ./... -count=1 -timeout=300s` outside the established loopback-listener sandbox, and `go vet ./...` PASS. No production defect was established.
