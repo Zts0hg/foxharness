@@ -300,7 +300,7 @@ func TestLoadLedgerMigratesKnownLegacyStageAndWritesCurrentVersion(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"version": 1`) || !strings.Contains(string(data), `"stage_state": "running"`) {
+	if !strings.Contains(string(data), `"version": 2`) || !strings.Contains(string(data), `"stage_state": "running"`) {
 		t.Fatalf("migrated ledger = %s, want versioned running state", data)
 	}
 }
@@ -343,8 +343,8 @@ func TestSeedDisambiguatesSlugCollisions(t *testing.T) {
 		t.Fatalf("LoadLedger returned error: %v", err)
 	}
 	led.Seed([]Item{
-		{Title: "Same title", Priority: PriorityHigh},
-		{Title: "Same title", Priority: PriorityLow},
+		{SourceID: "same-title-high", Title: "Same title", Priority: PriorityHigh},
+		{SourceID: "same-title-low", Title: "Same title", Priority: PriorityLow},
 	})
 
 	pending := led.Pending()

@@ -36,10 +36,27 @@ const (
 	StatusDone       Status = "done"
 )
 
+// ItemID is the immutable control-plane identity assigned to one normalized
+// backlog item and retained for its entire ledger history.
+type ItemID string
+
+// SourceState records whether a ledger item is present in the current
+// backlog or retained as non-runnable recovery/history state.
+type SourceState string
+
+const (
+	SourceStateCurrent    SourceState = "current"
+	SourceStateOrphaned   SourceState = "orphaned"
+	SourceStateBlocked    SourceState = "blocked"
+	SourceStateHistorical SourceState = "historical"
+)
+
 // Item is one backlog requirement parsed from the backlog markdown file.
 // The backlog supplies the item set, the ordering input (Priority), and the
 // Description; the ledger supplies the authoritative processing status.
 type Item struct {
+	// SourceID is the optional explicit **ID** value from the backlog.
+	SourceID string
 	// Type is the bracketed category from the heading, e.g. "feature".
 	Type string
 	// Title is the heading text after the type bracket.

@@ -104,9 +104,12 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	led.Seed(items)
+	reconcileErr := led.Seed(items)
 	if err := led.Save(); err != nil {
 		return &LedgerCommitError{Operation: "seed", Err: err}
+	}
+	if reconcileErr != nil {
+		return reconcileErr
 	}
 
 	total := len(led.InProgress()) + len(led.Pending())

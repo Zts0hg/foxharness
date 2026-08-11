@@ -1,33 +1,40 @@
 package autodev
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 )
 
-// LedgerItem is one item's authoritative progress record (REQ-021). The
-// Description is supplied by the backlog at seed time and is intentionally
-// not persisted: the backlog owns the requirement text, the ledger owns the
-// processing state (REQ-028).
+// LedgerItem is one item's authoritative identity, frozen requirement
+// revision, source-reconciliation state, and workflow progress record.
 type LedgerItem struct {
-	Slug       string        `json:"slug"`
-	Title      string        `json:"title"`
-	Priority   Priority      `json:"priority"`
-	Status     Status        `json:"status"`
-	Branch     string        `json:"branch,omitempty"`
-	Stage      PipelineStage `json:"stage,omitempty"`
-	StageState StageState    `json:"stage_state"`
-	Issue      int           `json:"issue,omitempty"`
-	PR         int           `json:"pr,omitempty"`
-	FeatureDir string        `json:"feature_dir,omitempty"`
-	UpdatedAt  time.Time     `json:"updated_at,omitempty"`
-
-	Description string `json:"-"`
+	ItemID               ItemID        `json:"item_id"`
+	SourceID             string        `json:"source_id,omitempty"`
+	Slug                 string        `json:"slug"`
+	Title                string        `json:"title"`
+	Description          string        `json:"description"`
+	RequirementBytes     int           `json:"requirement_bytes"`
+	RequirementHash      string        `json:"requirement_hash"`
+	RevisionFrozen       bool          `json:"revision_frozen"`
+	LegacyBindingPending bool          `json:"legacy_binding_pending,omitempty"`
+	SourceState          SourceState   `json:"source_state"`
+	SourceOrder          int           `json:"source_order"`
+	Priority             Priority      `json:"priority"`
+	Status               Status        `json:"status"`
+	Branch               string        `json:"branch,omitempty"`
+	Stage                PipelineStage `json:"stage,omitempty"`
+	StageState           StageState    `json:"stage_state"`
+	Issue                int           `json:"issue,omitempty"`
+	PR                   int           `json:"pr,omitempty"`
+	FeatureDir           string        `json:"feature_dir,omitempty"`
+	UpdatedAt            time.Time     `json:"updated_at,omitempty"`
 }
 
 // PipelineStage is the closed vocabulary of durable workflow positions.
@@ -77,7 +84,7 @@ type ledgerFile struct {
 	Items   []*LedgerItem `json:"items"`
 }
 
-const ledgerSchemaVersion = 1
+const ledgerSchemaVersion = 2
 
 // LedgerCommitError reports an authoritative ledger transition that could
 // not be durably committed. Callers must stop dependent work and retain any
@@ -113,6 +120,18 @@ func (e *InvalidLedgerStateError) Error() string {
 	return fmt.Sprintf("invalid %s state (schema version %d): %s", location, e.Version, e.Reason)
 }
 
+// ReconciliationError reports an identity or active-revision conflict that
+// cannot be resolved without guessing. Blocked item state may accompany the
+// error and must be persisted before orchestration stops.
+type ReconciliationError struct {
+	Reason string
+}
+
+// Error implements error.
+func (e *ReconciliationError) Error() string {
+	return "autodev backlog reconciliation failed: " + e.Reason
+}
+
 // LoadLedger reads the ledger at path, returning an empty ledger when the
 // file does not exist yet. clock stamps subsequent mutations.
 func LoadLedger(path string, clock Clock) (*Ledger, error) {
@@ -137,6 +156,18 @@ func LoadLedger(path string, clock Clock) (*Ledger, error) {
 		if err := migrateLegacyLedger(file.Items); err != nil {
 			return nil, err
 		}
+		initializeLegacyIdentities(file.Items)
+		if err := validateLedgerItems(file.Items, ledgerSchemaVersion); err != nil {
+			return nil, err
+		}
+	case 1:
+		if err := validateLedgerItems(file.Items, file.Version); err != nil {
+			return nil, err
+		}
+		initializeLegacyIdentities(file.Items)
+		if err := validateLedgerItems(file.Items, ledgerSchemaVersion); err != nil {
+			return nil, err
+		}
 	case ledgerSchemaVersion:
 		if err := validateLedgerItems(file.Items, file.Version); err != nil {
 			return nil, err
@@ -149,6 +180,23 @@ func LoadLedger(path string, clock Clock) (*Ledger, error) {
 	}
 	led.items = file.Items
 	return led, nil
+}
+
+func initializeLegacyIdentities(items []*LedgerItem) {
+	for _, item := range items {
+		item.ItemID = itemIDFromSeed("legacy", item.Slug+"\x00"+item.Title)
+		item.RequirementBytes, item.RequirementHash = requirementIdentity(item.Description)
+		item.RevisionFrozen = item.Status != StatusPending
+		item.LegacyBindingPending = true
+		switch item.Status {
+		case StatusPending:
+			item.SourceState = SourceStateOrphaned
+		case StatusInProgress:
+			item.SourceState = SourceStateBlocked
+		case StatusDone:
+			item.SourceState = SourceStateHistorical
+		}
+	}
 }
 
 func migrateLegacyLedger(items []*LedgerItem) error {
@@ -190,37 +238,93 @@ func migrateLegacyLedger(items []*LedgerItem) error {
 }
 
 func validateLedgerItems(items []*LedgerItem, version int) error {
+	itemIDs := make(map[ItemID]bool, len(items))
+	sourceIDs := make(map[string]bool, len(items))
 	for _, item := range items {
 		if item == nil {
 			return invalidLedgerItem(version, nil, "item is null")
+		}
+		if version >= 2 {
+			if item.ItemID == "" {
+				return invalidLedgerItem(version, item, "item_id is required")
+			}
+			if itemIDs[item.ItemID] {
+				return invalidLedgerItem(version, item, fmt.Sprintf("duplicate item_id %q", item.ItemID))
+			}
+			itemIDs[item.ItemID] = true
+			if item.SourceID != "" {
+				if strings.TrimSpace(item.SourceID) != item.SourceID {
+					return invalidLedgerItem(version, item, "source_id is not normalized")
+				}
+				if sourceIDs[item.SourceID] {
+					return invalidLedgerItem(version, item, fmt.Sprintf("duplicate source_id %q", item.SourceID))
+				}
+				sourceIDs[item.SourceID] = true
+			}
+			if item.LegacyBindingPending && item.SourceID != "" {
+				return invalidLedgerItem(version, item, "legacy binding cannot already have a source_id")
+			}
+			if item.LegacyBindingPending {
+				expected := SourceStateHistorical
+				if item.Status == StatusPending {
+					expected = SourceStateOrphaned
+				} else if item.Status == StatusInProgress {
+					expected = SourceStateBlocked
+				}
+				if item.SourceState != expected {
+					return invalidLedgerItem(version, item, fmt.Sprintf("pending legacy binding requires source state %q", expected))
+				}
+			}
+			bytes, hash := requirementIdentity(item.Description)
+			if item.RequirementBytes != bytes || item.RequirementHash != hash {
+				return invalidLedgerItem(version, item, "requirement byte length or hash does not match the persisted description")
+			}
 		}
 		switch item.Status {
 		case StatusPending:
 			if item.Stage != StageNone || item.StageState != StageStatePending {
 				return invalidLedgerItem(version, item, "pending requires an empty stage and pending stage state")
 			}
+			if version >= 2 && item.RevisionFrozen {
+				return invalidLedgerItem(version, item, "pending requirement revision cannot be frozen")
+			}
+			if version >= 2 && item.SourceState != SourceStateCurrent && item.SourceState != SourceStateOrphaned {
+				return invalidLedgerItem(version, item, "pending source state requires current or orphaned")
+			}
 		case StatusInProgress:
 			if item.Stage == StageNone {
 				if item.StageState != StageStatePending {
 					return invalidLedgerItem(version, item, "in-progress without a stage requires pending stage state")
 				}
-				continue
+			} else {
+				if !isExecutableStage(item.Stage) {
+					return invalidLedgerItem(version, item, fmt.Sprintf("unknown in-progress stage %q", item.Stage))
+				}
+				if item.StageState != StageStateRunning && item.StageState != StageStateVerified {
+					return invalidLedgerItem(version, item, "in-progress stage requires running or verified stage state")
+				}
+				if item.Stage == StageIssue && item.StageState == StageStateVerified && item.Issue <= 0 {
+					return invalidLedgerItem(version, item, "verified issue stage requires a positive issue binding")
+				}
+				if item.Stage == StagePR && item.StageState == StageStateVerified && item.PR <= 0 {
+					return invalidLedgerItem(version, item, "verified PR stage requires a positive PR binding")
+				}
 			}
-			if !isExecutableStage(item.Stage) {
-				return invalidLedgerItem(version, item, fmt.Sprintf("unknown in-progress stage %q", item.Stage))
+			if version >= 2 && !item.RevisionFrozen {
+				return invalidLedgerItem(version, item, "in-progress requirement revision must be frozen")
 			}
-			if item.StageState != StageStateRunning && item.StageState != StageStateVerified {
-				return invalidLedgerItem(version, item, "in-progress stage requires running or verified stage state")
-			}
-			if item.Stage == StageIssue && item.StageState == StageStateVerified && item.Issue <= 0 {
-				return invalidLedgerItem(version, item, "verified issue stage requires a positive issue binding")
-			}
-			if item.Stage == StagePR && item.StageState == StageStateVerified && item.PR <= 0 {
-				return invalidLedgerItem(version, item, "verified PR stage requires a positive PR binding")
+			if version >= 2 && item.SourceState != SourceStateCurrent && item.SourceState != SourceStateBlocked {
+				return invalidLedgerItem(version, item, "in-progress source state requires current or blocked")
 			}
 		case StatusDone:
 			if item.Stage != StageDone || item.StageState != StageStateVerified {
 				return invalidLedgerItem(version, item, "done requires the done stage in verified state")
+			}
+			if version >= 2 && !item.RevisionFrozen {
+				return invalidLedgerItem(version, item, "done requirement revision must be frozen")
+			}
+			if version >= 2 && item.SourceState != SourceStateCurrent && item.SourceState != SourceStateHistorical {
+				return invalidLedgerItem(version, item, "done source state requires current or historical")
 			}
 		default:
 			return invalidLedgerItem(version, item, fmt.Sprintf("unknown status %q", item.Status))
@@ -253,42 +357,197 @@ func pipelineStage(name string) (PipelineStage, bool) {
 	return stage, isExecutableStage(stage)
 }
 
-// Seed reconciles the ledger with the backlog item set (REQ-028). Items
-// absent from the ledger are appended with status pending regardless of the
-// advisory backlog Status. Items already present have their Title, Priority,
-// and Description refreshed from the backlog — the backlog owns those — but
-// their Status and progress fields are never touched.
-func (l *Ledger) Seed(items []Item) {
-	// Duplicate titles are legal in the backlog (the slug disambiguates
-	// them), so matching consumes ledger entries per title in order rather
-	// than mapping every duplicate onto the first entry.
-	byTitle := make(map[string][]*LedgerItem, len(l.items))
-	taken := make(map[string]bool, len(l.items))
-	for _, it := range l.items {
-		taken[it.Slug] = true
-		byTitle[it.Title] = append(byTitle[it.Title], it)
+func itemIDFromSeed(namespace, value string) ItemID {
+	sum := sha256.Sum256([]byte("fox-autodev-item\x00" + namespace + "\x00" + value))
+	return ItemID(fmt.Sprintf("item-%x", sum[:16]))
+}
+
+func requirementIdentity(description string) (int, string) {
+	sum := sha256.Sum256([]byte(description))
+	return len([]byte(description)), fmt.Sprintf("sha256:%x", sum)
+}
+
+// Seed reconciles normalized backlog items against immutable ledger
+// identities. It never guesses through duplicate or rename ambiguity.
+// Blocked/orphaned state is retained in memory so callers can durably save it
+// before returning a ReconciliationError.
+func (l *Ledger) Seed(items []Item) error {
+	normalized := append([]Item(nil), items...)
+	if err := validateSourceItems(normalized); err != nil {
+		return err
 	}
 
-	for _, src := range items {
-		if queue := byTitle[src.Title]; len(queue) > 0 {
-			existing := queue[0]
-			byTitle[src.Title] = queue[1:]
-			existing.Priority = src.Priority
-			existing.Description = src.Description
+	candidate := cloneLedgerItems(l.items)
+	bySource := make(map[string][]*LedgerItem, len(candidate))
+	byTitleWithoutSource := make(map[string][]*LedgerItem, len(candidate))
+	takenSlugs := make(map[string]bool, len(candidate))
+	for _, item := range candidate {
+		takenSlugs[item.Slug] = true
+		if item.SourceID != "" {
+			bySource[item.SourceID] = append(bySource[item.SourceID], item)
+		} else {
+			byTitleWithoutSource[item.Title] = append(byTitleWithoutSource[item.Title], item)
+		}
+	}
+
+	type sourceMatch struct {
+		source Item
+		order  int
+		item   *LedgerItem
+	}
+	matches := make([]sourceMatch, len(normalized))
+	matchedItems := make(map[*LedgerItem]bool, len(candidate))
+	for i, source := range normalized {
+		matches[i] = sourceMatch{source: source, order: i}
+		var choices []*LedgerItem
+		if source.SourceID != "" {
+			choices = unmatchedLedgerItems(bySource[source.SourceID], matchedItems)
+		}
+		if len(choices) == 0 {
+			choices = unmatchedLedgerItems(byTitleWithoutSource[source.Title], matchedItems)
+		}
+		if len(choices) > 1 {
+			return &ReconciliationError{Reason: fmt.Sprintf("source item %q matches multiple ledger records; add unique **ID** values", source.Title)}
+		}
+		if len(choices) == 1 {
+			matches[i].item = choices[0]
+			matchedItems[choices[0]] = true
+		}
+	}
+
+	for _, match := range matches {
+		if match.item != nil {
 			continue
 		}
-		slug := Slug(src.Title, taken)
-		taken[slug] = true
-		l.items = append(l.items, &LedgerItem{
-			Slug:        slug,
-			Title:       src.Title,
-			Priority:    src.Priority,
-			Status:      StatusPending,
-			StageState:  StageStatePending,
-			Description: src.Description,
-			UpdatedAt:   l.clock.Now(),
+		for _, existing := range candidate {
+			if matchedItems[existing] {
+				continue
+			}
+			if existing.SourceID == "" || existing.Title == match.source.Title {
+				return &ReconciliationError{Reason: fmt.Sprintf(
+					"cannot distinguish new item %q from rename or replacement of ledger item %q; add or restore a stable **ID**",
+					match.source.Title, existing.Title)}
+			}
+		}
+	}
+
+	var blockedErr error
+	for _, match := range matches {
+		if match.item == nil {
+			continue
+		}
+		if err := reconcileMatchedItem(match.item, match.source, match.order, l.clock.Now()); err != nil && blockedErr == nil {
+			blockedErr = err
+		}
+	}
+	for _, existing := range candidate {
+		if matchedItems[existing] {
+			continue
+		}
+		existing.UpdatedAt = l.clock.Now()
+		switch existing.Status {
+		case StatusPending:
+			existing.SourceState = SourceStateOrphaned
+		case StatusInProgress:
+			existing.SourceState = SourceStateBlocked
+			if blockedErr == nil {
+				blockedErr = &ReconciliationError{Reason: fmt.Sprintf("in-progress item %q is missing from the current backlog", existing.Title)}
+			}
+		case StatusDone:
+			existing.SourceState = SourceStateHistorical
+		}
+	}
+	for _, match := range matches {
+		if match.item != nil {
+			continue
+		}
+		itemID := itemIDFromSeed("title", match.source.Title)
+		if match.source.SourceID != "" {
+			itemID = itemIDFromSeed("source", match.source.SourceID)
+		}
+		slug := Slug(match.source.Title, takenSlugs)
+		takenSlugs[slug] = true
+		bytes, hash := requirementIdentity(match.source.Description)
+		candidate = append(candidate, &LedgerItem{
+			ItemID:           itemID,
+			SourceID:         match.source.SourceID,
+			Slug:             slug,
+			Title:            match.source.Title,
+			Description:      match.source.Description,
+			RequirementBytes: bytes,
+			RequirementHash:  hash,
+			SourceState:      SourceStateCurrent,
+			SourceOrder:      match.order,
+			Priority:         match.source.Priority,
+			Status:           StatusPending,
+			StageState:       StageStatePending,
+			UpdatedAt:        l.clock.Now(),
 		})
 	}
+	l.items = candidate
+	return blockedErr
+}
+
+func validateSourceItems(items []Item) error {
+	sourceIDs := make(map[string]bool, len(items))
+	titlesWithoutSource := make(map[string]bool, len(items))
+	for i := range items {
+		items[i].SourceID = strings.TrimSpace(items[i].SourceID)
+		if items[i].SourceID != "" {
+			if sourceIDs[items[i].SourceID] {
+				return &ReconciliationError{Reason: fmt.Sprintf("duplicate backlog ID %q", items[i].SourceID)}
+			}
+			sourceIDs[items[i].SourceID] = true
+			continue
+		}
+		if titlesWithoutSource[items[i].Title] {
+			return &ReconciliationError{Reason: fmt.Sprintf("duplicate backlog title %q requires explicit unique **ID** values", items[i].Title)}
+		}
+		titlesWithoutSource[items[i].Title] = true
+	}
+	return nil
+}
+
+func unmatchedLedgerItems(items []*LedgerItem, matched map[*LedgerItem]bool) []*LedgerItem {
+	var out []*LedgerItem
+	for _, item := range items {
+		if !matched[item] {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func reconcileMatchedItem(item *LedgerItem, source Item, order int, now time.Time) error {
+	item.SourceOrder = order
+	item.UpdatedAt = now
+	if item.LegacyBindingPending {
+		item.SourceID = source.SourceID
+		item.Title = source.Title
+		item.Description = source.Description
+		item.RequirementBytes, item.RequirementHash = requirementIdentity(source.Description)
+		item.Priority = source.Priority
+		item.RevisionFrozen = item.Status != StatusPending
+		item.LegacyBindingPending = false
+		item.SourceState = SourceStateCurrent
+		return nil
+	}
+	if item.Status == StatusInProgress && (item.Title != source.Title || item.Description != source.Description) {
+		item.SourceState = SourceStateBlocked
+		return &ReconciliationError{Reason: fmt.Sprintf("in-progress item %q changed in the backlog; resolve the frozen revision explicitly", item.Title)}
+	}
+	if item.SourceID == "" {
+		item.SourceID = source.SourceID
+	}
+	item.SourceState = SourceStateCurrent
+	if item.Status != StatusPending {
+		return nil
+	}
+	item.Title = source.Title
+	item.Description = source.Description
+	item.RequirementBytes, item.RequirementHash = requirementIdentity(source.Description)
+	item.Priority = source.Priority
+	return nil
 }
 
 // Pending returns items whose authoritative status is pending, ordered by
@@ -310,7 +569,7 @@ func (l *Ledger) selectByStatus(status Status) []LedgerItem {
 	}
 	var picked []indexed
 	for i, it := range l.items {
-		if it.Status == status {
+		if it.Status == status && it.SourceState == SourceStateCurrent {
 			picked = append(picked, indexed{item: *it, order: i})
 		}
 	}
@@ -318,6 +577,9 @@ func (l *Ledger) selectByStatus(status Status) []LedgerItem {
 		ra, rb := picked[a].item.Priority.Rank(), picked[b].item.Priority.Rank()
 		if ra != rb {
 			return ra < rb
+		}
+		if picked[a].item.SourceOrder != picked[b].item.SourceOrder {
+			return picked[a].item.SourceOrder < picked[b].item.SourceOrder
 		}
 		return picked[a].order < picked[b].order
 	})
@@ -328,16 +590,25 @@ func (l *Ledger) selectByStatus(status Status) []LedgerItem {
 	return out
 }
 
-// Mark applies mut to the item identified by slug and stamps UpdatedAt from
-// the ledger clock. Unknown slugs are a no-op.
-func (l *Ledger) Mark(slug string, mut func(*LedgerItem)) {
+// Mark applies an in-memory workflow mutation and stamps UpdatedAt. Source
+// identity and requirement fields remain owned by reconciliation. Unknown
+// slugs are a no-op.
+func (l *Ledger) Mark(slug string, mut func(*LedgerItem)) error {
 	for _, it := range l.items {
 		if it.Slug == slug {
+			before := *it
+			beforeStatus := it.Status
 			mut(it)
+			freezeRequirementTransition(it, beforeStatus)
+			if err := validateWorkflowMutation(before, *it); err != nil {
+				*it = before
+				return err
+			}
 			it.UpdatedAt = l.clock.Now()
-			return
+			return nil
 		}
 	}
+	return nil
 }
 
 // Commit applies one item mutation to a candidate snapshot and makes it
@@ -348,7 +619,13 @@ func (l *Ledger) Commit(slug string, mut func(*LedgerItem)) error {
 		if it.Slug != slug {
 			continue
 		}
+		before := *it
+		beforeStatus := before.Status
 		mut(it)
+		freezeRequirementTransition(it, beforeStatus)
+		if err := validateWorkflowMutation(before, *it); err != nil {
+			return err
+		}
 		it.UpdatedAt = l.clock.Now()
 		committed, err := l.persistItems(candidate)
 		if committed {
@@ -357,6 +634,29 @@ func (l *Ledger) Commit(slug string, mut func(*LedgerItem)) error {
 		return err
 	}
 	return fmt.Errorf("ledger item %q not found", slug)
+}
+
+func validateWorkflowMutation(before, after LedgerItem) error {
+	if before.ItemID != after.ItemID || before.SourceID != after.SourceID || before.Slug != after.Slug {
+		return invalidLedgerItem(ledgerSchemaVersion, &after, "workflow mutation cannot change item or source identity")
+	}
+	if before.Title != after.Title || before.Description != after.Description ||
+		before.RequirementBytes != after.RequirementBytes || before.RequirementHash != after.RequirementHash ||
+		before.Priority != after.Priority || before.SourceState != after.SourceState ||
+		before.SourceOrder != after.SourceOrder || before.LegacyBindingPending != after.LegacyBindingPending {
+		return invalidLedgerItem(ledgerSchemaVersion, &after, "workflow mutation cannot change source-owned requirement fields")
+	}
+	expectedFrozen := before.RevisionFrozen || (before.Status == StatusPending && after.Status != StatusPending)
+	if after.RevisionFrozen != expectedFrozen {
+		return invalidLedgerItem(ledgerSchemaVersion, &after, "workflow mutation cannot alter requirement freeze state")
+	}
+	return nil
+}
+
+func freezeRequirementTransition(item *LedgerItem, before Status) {
+	if before == StatusPending && item.Status != StatusPending {
+		item.RevisionFrozen = true
+	}
 }
 
 func cloneLedgerItems(items []*LedgerItem) []*LedgerItem {

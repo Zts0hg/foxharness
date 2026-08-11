@@ -16,7 +16,7 @@ var itemHeading = regexp.MustCompile(`^##\s+(?:\[([^\]]+)\]\s*)?(.+?)\s*$`)
 var fieldLine = regexp.MustCompile(`^\*\*([A-Za-z]+)\*\*\s*:\s*(.*)$`)
 
 // Parse reads the backlog markdown at path into ordered items (REQ-001).
-// Each "## [type] Title" heading starts an item; "**Priority**",
+// Each "## [type] Title" heading starts an item; "**ID**", "**Priority**",
 // "**Status**", and "**Description**" lines fill its fields, with later
 // plain lines appended to the description. A missing Status defaults to
 // pending and a missing Priority defaults to the lowest bucket.
@@ -63,6 +63,9 @@ func Parse(path string) ([]Item, error) {
 		if m := fieldLine.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
 			value := strings.TrimSpace(m[2])
 			switch strings.ToLower(m[1]) {
+			case "id":
+				current.SourceID = value
+				inDescription = false
 			case "priority":
 				current.Priority = parsePriority(value)
 				inDescription = false

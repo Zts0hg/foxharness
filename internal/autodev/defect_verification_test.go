@@ -188,7 +188,7 @@ func TestDVAUT002InvalidRecordedStateFailsBeforeExternalWork(t *testing.T) {
 		json string
 	}{
 		{name: "unknown-stage", json: `{"version":1,"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"in-progress","stage":"unknown","stage_state":"running"}]}`},
-		{name: "future-version", json: `{"version":2,"items":[]}`},
+		{name: "future-version", json: `{"version":3,"items":[]}`},
 		{name: "done-running", json: `{"version":1,"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"done","stage":"done","stage_state":"running"}]}`},
 		{name: "verified-issue-without-binding", json: `{"version":1,"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"in-progress","stage":"issue","stage_state":"verified"}]}`},
 		{name: "verified-pr-without-binding", json: `{"version":1,"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"in-progress","stage":"pr","stage_state":"verified"}]}`},
@@ -268,19 +268,21 @@ func TestDVAUT002RemoteRunningIssueVerifiesBeforeCoreExecution(t *testing.T) {
 	}
 }
 
-func TestDVAUT003BacklogReconciliationUsesMutableTitlesAndRetainsStaleItems(t *testing.T) {
+func TestDVAUT003ExplicitIdentitySurvivesRenameAndUsesCurrentOrder(t *testing.T) {
 	path := ledgerPath(t)
 	clock := newTestClock()
 	led, err := LoadLedger(path, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	led.Seed([]Item{
-		{Title: "Alpha", Priority: PriorityLow, Description: "old alpha"},
-		{Title: "Beta", Priority: PriorityLow, Description: "old beta"},
-		{Title: "Duplicate", Priority: PriorityLow, Description: "first"},
-		{Title: "Duplicate", Priority: PriorityLow, Description: "second"},
-	})
+	if err := led.Seed([]Item{
+		{SourceID: "REQ-alpha", Title: "Alpha", Priority: PriorityLow, Description: "old alpha"},
+		{SourceID: "REQ-beta", Title: "Beta", Priority: PriorityLow, Description: "old beta"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	alphaBefore, _ := led.Get("alpha")
+	betaBefore, _ := led.Get("beta")
 	if err := led.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -289,71 +291,331 @@ func TestDVAUT003BacklogReconciliationUsesMutableTitlesAndRetainsStaleItems(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	reloaded.Seed([]Item{
-		{Title: "Beta", Priority: PriorityLow, Description: "edited beta"},
-		{Title: "Alpha renamed", Priority: PriorityHigh, Description: "renamed"},
-		{Title: "Duplicate", Priority: PriorityLow, Description: "only survivor"},
-	})
+	if err := reloaded.Seed([]Item{
+		{SourceID: "REQ-beta", Title: "Beta renamed", Priority: PriorityLow, Status: StatusDone, Description: "edited beta"},
+		{SourceID: "REQ-alpha", Title: "Alpha renamed", Priority: PriorityLow, Status: StatusInProgress, Description: "edited alpha"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	pending := reloaded.Pending()
-	titles := make([]string, 0, len(pending))
-	for _, item := range pending {
-		titles = append(titles, item.Title)
+	if len(pending) != 2 || pending[0].SourceID != "REQ-beta" || pending[1].SourceID != "REQ-alpha" {
+		t.Fatalf("pending order = %+v, want current backlog order beta then alpha", pending)
 	}
-	for _, stale := range []string{"Alpha", "Duplicate"} {
-		count := 0
-		for _, title := range titles {
-			if title == stale {
-				count++
+	betaAfter, _ := reloaded.Get("beta")
+	alphaAfter, _ := reloaded.Get("alpha")
+	if alphaAfter.ItemID != alphaBefore.ItemID || betaAfter.ItemID != betaBefore.ItemID {
+		t.Fatalf("item IDs changed across rename: alpha %q/%q beta %q/%q", alphaBefore.ItemID, alphaAfter.ItemID, betaBefore.ItemID, betaAfter.ItemID)
+	}
+	if alphaAfter.Title != "Alpha renamed" || alphaAfter.Description != "edited alpha" || betaAfter.Title != "Beta renamed" || betaAfter.Description != "edited beta" {
+		t.Fatalf("pending source fields were not refreshed: alpha=%+v beta=%+v", alphaAfter, betaAfter)
+	}
+	if alphaAfter.Status != StatusPending || betaAfter.Status != StatusPending {
+		t.Fatalf("advisory source status overwrote ledger status: alpha=%q beta=%q", alphaAfter.Status, betaAfter.Status)
+	}
+}
+
+func TestDVAUT003AmbiguousAndDuplicateIdentityFailsClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		first  []Item
+		second []Item
+	}{
+		{
+			name: "duplicate-source-id",
+			first: []Item{
+				{SourceID: "REQ-1", Title: "One"},
+				{SourceID: "REQ-1", Title: "Two"},
+			},
+		},
+		{
+			name: "duplicate-title-without-source-id",
+			first: []Item{
+				{Title: "Duplicate"},
+				{Title: "Duplicate"},
+			},
+		},
+		{
+			name:   "rename-without-source-id",
+			first:  []Item{{Title: "Original"}},
+			second: []Item{{Title: "Renamed"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			led, err := LoadLedger(ledgerPath(t), newTestClock())
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		if count == 0 {
-			t.Errorf("stale title %q was dropped; current ledger retains absent entries", stale)
-		}
-	}
-	if !containsString(titles, "Alpha renamed") {
-		t.Errorf("renamed backlog item was not duplicated as new identity: %v", titles)
-	}
-	if pending[0].Title != "Alpha renamed" {
-		t.Errorf("priority refresh/order = %v, want renamed high-priority duplicate first", titles)
-	}
-	alphaIndex, betaIndex := -1, -1
-	for i, title := range titles {
-		switch title {
-		case "Alpha":
-			alphaIndex = i
-		case "Beta":
-			betaIndex = i
-		}
-	}
-	if alphaIndex < 0 || betaIndex < 0 || alphaIndex > betaIndex {
-		t.Errorf("ledger order followed current backlog reorder: %v; want stale Alpha before moved Beta", titles)
-	}
-	beta, ok := findLedgerItemByTitle(pending, "Beta")
-	if !ok || beta.Description != "edited beta" {
-		t.Errorf("matching-title description = %q, want current backlog edit", beta.Description)
-	}
-	alpha, _ := findLedgerItemByTitle(pending, "Alpha")
-	if alpha.Description != "" {
-		t.Errorf("removed persisted item description = %q, want current empty-loss behavior", alpha.Description)
+			seedErr := led.Seed(tt.first)
+			if len(tt.second) != 0 && seedErr == nil {
+				seedErr = led.Seed(tt.second)
+			}
+			var conflict *ReconciliationError
+			if !errors.As(seedErr, &conflict) {
+				t.Fatalf("Seed error = %v, want *ReconciliationError", seedErr)
+			}
+		})
 	}
 }
 
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
+func TestDVAUT003UniqueLegacyTitleBindsOnceAndAmbiguousLegacyConflicts(t *testing.T) {
+	path := ledgerPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	return false
+	legacy := `{"version":1,"items":[{"slug":"legacy","title":"Legacy","priority":"high","status":"pending","stage_state":"pending"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	led, err := LoadLedger(path, newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Seed([]Item{{SourceID: "REQ-legacy", Title: "Legacy", Description: "complete requirement"}}); err != nil {
+		t.Fatal(err)
+	}
+	item, _ := led.Get("legacy")
+	if item.ItemID == "" || item.SourceID != "REQ-legacy" || item.Description != "complete requirement" {
+		t.Fatalf("bound legacy item = %+v, want durable item/source identity and requirement", item)
+	}
+	if err := led.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	activePath := ledgerPath(t)
+	if err := os.MkdirAll(filepath.Dir(activePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	activeLegacy := `{"version":1,"items":[{"slug":"active","title":"Active","priority":"high","status":"in-progress","stage":"spec-to-plan","stage_state":"running"}]}`
+	if err := os.WriteFile(activePath, []byte(activeLegacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	activeLedger, err := LoadLedger(activePath, newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := activeLedger.Seed([]Item{{SourceID: "REQ-active", Title: "Active", Description: "recovered active requirement"}}); err != nil {
+		t.Fatalf("unique active legacy binding failed: %v", err)
+	}
+	active, _ := activeLedger.Get("active")
+	if active.Description != "recovered active requirement" || !active.RevisionFrozen {
+		t.Fatalf("active legacy binding = %+v, want recovered frozen revision", active)
+	}
+
+	deferredPath := ledgerPath(t)
+	if err := os.MkdirAll(filepath.Dir(deferredPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(deferredPath, []byte(activeLegacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deferred, err := LoadLedger(deferredPath, newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var missing *ReconciliationError
+	if err := deferred.Seed(nil); !errors.As(err, &missing) {
+		t.Fatalf("missing legacy active error = %v, want *ReconciliationError", err)
+	}
+	if err := deferred.Save(); err != nil {
+		t.Fatal(err)
+	}
+	deferred, err = LoadLedger(deferredPath, newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deferred.Seed([]Item{{SourceID: "REQ-active", Title: "Active", Description: "recovered after restart"}}); err != nil {
+		t.Fatalf("deferred legacy binding failed after v2 reload: %v", err)
+	}
+	deferredActive, _ := deferred.Get("active")
+	if deferredActive.LegacyBindingPending || deferredActive.Description != "recovered after restart" {
+		t.Fatalf("deferred active binding = %+v, want completed one-time binding", deferredActive)
+	}
+
+	ambiguousPath := ledgerPath(t)
+	if err := os.MkdirAll(filepath.Dir(ambiguousPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := `{"version":1,"items":[{"slug":"dup-1","title":"Duplicate","priority":"high","status":"pending","stage_state":"pending"},{"slug":"dup-2","title":"Duplicate","priority":"low","status":"pending","stage_state":"pending"}]}`
+	if err := os.WriteFile(ambiguousPath, []byte(ambiguous), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ambiguousLedger, err := LoadLedger(ambiguousPath, newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conflict *ReconciliationError
+	if err := ambiguousLedger.Seed([]Item{{Title: "Duplicate"}}); !errors.As(err, &conflict) {
+		t.Fatalf("ambiguous legacy Seed error = %v, want *ReconciliationError", err)
+	}
 }
 
-func findLedgerItemByTitle(items []LedgerItem, title string) (LedgerItem, bool) {
-	for _, item := range items {
-		if item.Title == title {
-			return item, true
+func TestDVAUT003MissingItemsBecomeOrphanedBlockedOrHistorical(t *testing.T) {
+	led, err := LoadLedger(ledgerPath(t), newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Seed([]Item{
+		{SourceID: "REQ-pending", Title: "Pending"},
+		{SourceID: "REQ-running", Title: "Running"},
+		{SourceID: "REQ-done", Title: "Done"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Commit("running", func(item *LedgerItem) { item.Status = StatusInProgress }); err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Commit("done", func(item *LedgerItem) { item.Status = StatusInProgress }); err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Commit("done", func(item *LedgerItem) {
+		item.Status = StatusDone
+		item.Stage = StageDone
+		item.StageState = StageStateVerified
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var blocked *ReconciliationError
+	if err := led.Seed(nil); !errors.As(err, &blocked) {
+		t.Fatalf("missing active Seed error = %v, want *ReconciliationError", err)
+	}
+	pending, _ := led.Get("pending")
+	running, _ := led.Get("running")
+	done, _ := led.Get("done")
+	if pending.SourceState != SourceStateOrphaned || running.SourceState != SourceStateBlocked || done.SourceState != SourceStateHistorical {
+		t.Fatalf("missing states pending/running/done = %q/%q/%q", pending.SourceState, running.SourceState, done.SourceState)
+	}
+	if len(led.Pending()) != 0 || len(led.InProgress()) != 0 {
+		t.Fatalf("orphaned or blocked items remained runnable: pending=%v in-progress=%v", led.Pending(), led.InProgress())
+	}
+	if err := led.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := LoadLedger(led.path, newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloadedPending, _ := reloaded.Get("pending")
+	reloadedRunning, _ := reloaded.Get("running")
+	if reloadedPending.SourceState != SourceStateOrphaned || reloadedRunning.SourceState != SourceStateBlocked {
+		t.Fatalf("reloaded missing states = %q/%q", reloadedPending.SourceState, reloadedRunning.SourceState)
+	}
+}
+
+func TestDVAUT003InProgressRequirementRevisionIsFrozen(t *testing.T) {
+	led, err := LoadLedger(ledgerPath(t), newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Seed([]Item{{SourceID: "REQ-frozen", Title: "Frozen", Description: "original requirement"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Commit("frozen", func(item *LedgerItem) { item.Status = StatusInProgress }); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := led.Get("frozen")
+	if !before.RevisionFrozen || before.RequirementBytes != len("original requirement") || before.RequirementHash == "" {
+		t.Fatalf("in-progress revision not frozen: %+v", before)
+	}
+
+	var conflict *ReconciliationError
+	err = led.Seed([]Item{{SourceID: "REQ-frozen", Title: "Frozen renamed", Description: "edited requirement"}})
+	if !errors.As(err, &conflict) {
+		t.Fatalf("edited active Seed error = %v, want *ReconciliationError", err)
+	}
+	after, _ := led.Get("frozen")
+	if after.Title != before.Title || after.Description != before.Description || after.RequirementHash != before.RequirementHash {
+		t.Fatalf("active requirement changed despite conflict: before=%+v after=%+v", before, after)
+	}
+	if after.SourceState != SourceStateBlocked {
+		t.Fatalf("edited active source state = %q, want blocked", after.SourceState)
+	}
+}
+
+func TestDVAUT003ReconciliationConflictStopsBeforeWorktreeAndCore(t *testing.T) {
+	repoRoot := t.TempDir()
+	deps, _, factory, git, gh := testDeps(t, repoRoot, `## Renamed
+
+**Description**: ambiguous rename
+`)
+	led, err := LoadLedger(filepath.Join(repoRoot, ".foxharness", "autodev-state.json"), newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Seed([]Item{{Title: "Original", Description: "original requirement"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	err = New(deps).Run(context.Background())
+	var conflict *ReconciliationError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("Run error = %v, want *ReconciliationError", err)
+	}
+	for _, call := range git.calls {
+		if strings.HasPrefix(call, "worktree add") {
+			t.Fatalf("reconciliation conflict created worktree: %q", call)
 		}
 	}
-	return LedgerItem{}, false
+	for _, call := range gh.calls {
+		if strings.HasPrefix(call, "gh issue") || strings.HasPrefix(call, "gh pr") {
+			t.Fatalf("reconciliation conflict reached remote publication: %q", call)
+		}
+	}
+	if len(factory.created) != 0 {
+		t.Fatalf("reconciliation conflict created %d core runners", len(factory.created))
+	}
+}
+
+func TestDVAUT003WorkflowCommitCannotRewriteIdentityOrFrozenRevision(t *testing.T) {
+	led, err := LoadLedger(ledgerPath(t), newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Seed([]Item{{SourceID: "REQ-immutable", Title: "Immutable", Description: "frozen text"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Commit("immutable", func(item *LedgerItem) { item.ItemID = "item-rewritten" }); err == nil {
+		t.Fatal("identity rewrite Commit returned nil")
+	}
+	if err := led.Commit("immutable", func(item *LedgerItem) { item.Status = StatusInProgress }); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := led.Get("immutable")
+	err = led.Commit("immutable", func(item *LedgerItem) {
+		item.Title = "Rewritten"
+		item.Description = "rewritten text"
+		item.RequirementBytes, item.RequirementHash = requirementIdentity(item.Description)
+	})
+	if err == nil {
+		t.Fatal("frozen revision rewrite Commit returned nil")
+	}
+	after, _ := led.Get("immutable")
+	if after.ItemID != before.ItemID || after.Title != before.Title || after.Description != before.Description || after.RequirementHash != before.RequirementHash {
+		t.Fatalf("failed workflow mutation changed authoritative state: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestDVAUT003UnfrozenActiveLedgerFailsClosed(t *testing.T) {
+	path := ledgerPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	invalid := `{"version":2,"items":[{"item_id":"item-invalid","slug":"invalid","title":"Invalid","description":"","requirement_bytes":0,"requirement_hash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","revision_frozen":false,"source_state":"current","source_order":0,"priority":"high","status":"in-progress","stage_state":"pending"}]}`
+	if err := os.WriteFile(path, []byte(invalid), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadLedger(path, newTestClock())
+	var stateErr *InvalidLedgerStateError
+	if !errors.As(err, &stateErr) {
+		t.Fatalf("LoadLedger error = %v, want *InvalidLedgerStateError", err)
+	}
 }
 
 func TestDVAUT004RequirementMaterializationLosesAuthoritativeFormattingAndLength(t *testing.T) {
