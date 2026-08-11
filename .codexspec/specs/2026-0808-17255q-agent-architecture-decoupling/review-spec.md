@@ -6,7 +6,7 @@
 - **Compatibility Score**: 100/100
 - **Authority Mode**: Requirements-first
 - **Readiness**: Ready for Planning
-- **Review Round**: 1
+- **Review Round**: 2
 
 ## Traceability
 
@@ -67,6 +67,11 @@
 | `DEC-039` | REQ-012, REQ-014, NFR-005, NFR-007 | Full |
 | `DEC-040` | REQ-014, NFR-005, NFR-007 | Full |
 | `DEC-041` | NFR-005, NFR-008, NFR-011, NFR-013, Migration and Commit Contract | Full |
+| `DEC-042` | REQ-014, NFR-005, NFR-010 | Full |
+| `DEC-043` | REQ-014, NFR-005, NFR-010 | Full |
+| `DEC-044` | REQ-013, REQ-014, NFR-005, NFR-010 | Full |
+| `DEC-045` | REQ-012, REQ-014, NFR-005, NFR-010 | Full |
+| `DEC-046` | REQ-011, REQ-014, NFR-005, NFR-010 | Full |
 | `OUT-001` | NFR-004, Out of Scope | Full |
 | `OUT-002` | NFR-001, Out of Scope | Full |
 

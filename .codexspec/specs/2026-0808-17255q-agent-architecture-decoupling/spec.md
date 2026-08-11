@@ -3,7 +3,7 @@
 **Feature Branch**: `2026-0808-17255q-agent-architecture-decoupling`
 **Created**: 2026-08-09
 **Status**: Draft
-**Input**: Confirmed requirements in `requirements.md` through `DEC-041`
+**Input**: Confirmed requirements in `requirements.md` through `DEC-046`
 
 ## Context and Goals
 
@@ -148,25 +148,25 @@ The TUI presentation workflow MUST have one public `tui.Run` entry in `internal/
 
 Benchmark, child delegation, and Autodev MUST use `RuntimeHarness` directly as runtime control clients and MUST NOT pass through the user-facing application layer or independently assemble an engine. Benchmark evaluation, model-facing child invocation protocols, and Autodev deterministic orchestration MUST remain in their focused packages outside runtime.
 
-- **Sources**: DEC-005, DEC-006, DEC-014, DEC-025
+- **Sources**: DEC-005, DEC-006, DEC-014, DEC-025, DEC-046
 
 ### REQ-012: Single-level child execution
 
 Every child creation path MUST use runtime `ChildRunner`. A root run may create one depth-one child. A child MUST neither expose delegation capabilities nor create a descendant through any tool, skill, adapter, or internal caller. Runtime depth validation and child capability filtering MUST both enforce this ceiling. Child cancellation, permission evidence, capability ceilings, budgets, and result correlation MUST follow the confirmed `ChildRun` contract.
 
-- **Sources**: DEC-006, DEC-007, DEC-016, DEC-039
+- **Sources**: DEC-006, DEC-007, DEC-016, DEC-039, DEC-045
 
 ### REQ-013: Benchmark runtime fidelity
 
 Benchmark MUST remain a privileged evaluation and feedback client of the core runtime. It MAY inject benchmark-specific dependencies and controls through harness contracts, but MUST share runtime security and capability invariants. Runtime-fidelity metadata MUST derive from the resolved runtime specification and declared differences rather than independently maintained claims.
 
-- **Sources**: DEC-005, DEC-014, DEC-038
+- **Sources**: DEC-005, DEC-014, DEC-038, DEC-044
 
 ### REQ-014: Profile behavior bundles
 
 Each Runtime Profile MUST preserve the exact lifecycle, persisted source, workspace and model scope, budget, scheduling, capability surface, interaction and permission semantics, recoverable state, memory, compaction, observation, completion, and cleanup behavior defined by the Confirmed Runtime Profile Matrix and the profile's confirmed characterization catalogs in `requirements.md`.
 
-- **Sources**: NEED-005, CON-001, CON-006, DEC-018, DEC-034, DEC-035, DEC-036, DEC-037, DEC-038, DEC-039, DEC-040
+- **Sources**: NEED-005, CON-001, CON-006, DEC-018, DEC-034, DEC-035, DEC-036, DEC-037, DEC-038, DEC-039, DEC-040, DEC-042, DEC-043, DEC-044, DEC-045, DEC-046
 
 ### REQ-015: Composition and concrete dependency injection
 
@@ -204,7 +204,7 @@ The implementation MUST remain in one Git repository and one Go module, be devel
 
 Before any production package, dependency direction, runtime, application boundary, or entry point moves, Phase 0 MUST implement and trace every applicable confirmed scenario, complete every `DV-*` result, incorporate separately approved defect fixes, pass the full suite against the corrected current implementation, and freeze the source commit as `B00`. Coverage percentage, skipped scenarios, document-only claims, or narrow unit approximations cannot satisfy this gate.
 
-- **Sources**: NEED-004, NEED-007, CON-005, DEC-030, DEC-033, DEC-034, DEC-035, DEC-036, DEC-037, DEC-038, DEC-039, DEC-040, DEC-041
+- **Sources**: NEED-004, NEED-007, CON-005, DEC-030, DEC-033, DEC-034, DEC-035, DEC-036, DEC-037, DEC-038, DEC-039, DEC-040, DEC-041, DEC-042, DEC-043, DEC-044, DEC-045, DEC-046
 
 ### NFR-006: Hermetic mandatory tests
 
@@ -234,7 +234,7 @@ Persisted-data and output compatibility MUST use versioned immutable fixtures ge
 
 Every `DV-FEI-001..010`, `DV-AOP-001..006`, `DV-BEN-001..007`, `DV-CHD-001..006`, and `DV-AUT-001..010` item MUST receive comprehensive hermetic verification before its profile baseline freezes. A proven defect blocks `B00` until correction semantics are separately confirmed, a behavior-sensitive regression test demonstrates Red, an independent defect commit reaches Green, and all affected scenarios pass. An unproven risk records current behavior and authorizes no change. Repairs already merged through PRs `#61` and `#63` MUST NOT be duplicated.
 
-- **Sources**: CON-005, DEC-030
+- **Sources**: CON-005, DEC-030, DEC-042, DEC-043, DEC-044, DEC-045, DEC-046
 
 ### NFR-011: Strict TDD and commit verification
 
@@ -467,6 +467,11 @@ None. This specification requires no unconfirmed assumption to compile the confi
 | `DEC-039` | REQ-012, REQ-014, NFR-005, NFR-007 | Full |
 | `DEC-040` | REQ-014, NFR-005, NFR-007 | Full |
 | `DEC-041` | NFR-005, NFR-008, NFR-011, NFR-013, Migration and Commit Contract | Full |
+| `DEC-042` | REQ-014, NFR-005, NFR-010 | Full |
+| `DEC-043` | REQ-014, NFR-005, NFR-010 | Full |
+| `DEC-044` | REQ-013, REQ-014, NFR-005, NFR-010 | Full |
+| `DEC-045` | REQ-012, REQ-014, NFR-005, NFR-010 | Full |
+| `DEC-046` | REQ-011, REQ-014, NFR-005, NFR-010 | Full |
 | `OUT-001` | NFR-004, Out of Scope | Full |
 | `OUT-002` | NFR-001, Out of Scope | Full |
 

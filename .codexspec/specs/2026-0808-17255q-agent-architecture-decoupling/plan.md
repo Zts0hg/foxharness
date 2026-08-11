@@ -264,6 +264,8 @@ Runtime facts map once into application notifications. Permission, question, and
 5. Implement every `DV-*` proof. A proven defect stops that profile baseline for separate semantics, Red evidence, and a defect-focused correction commit; an unproven risk records behavior without production change.
 6. Run `go test ./...`, fixture hashes, trace completeness, and architecture baseline checks. Record the corrected source commit and declare `B00` only with no missing, skipped, or unresolved item.
 
+Confirmed defect corrections are governed by `DEC-042` through `DEC-046`. In particular, the ten `DEC-046` Autodev corrections execute as independent `D-AUT-001` through `D-AUT-010` Red-Green-Refactor commits after T044 and before fixture generation. They establish the corrected current control-plane baseline and MUST NOT introduce the target runtime, move package ownership, or begin `M01` through `M27` architecture work.
+
 No production architecture move is permitted in this phase.
 
 **Covers**: NFR-005, NFR-006, NFR-007, NFR-008, NFR-009, NFR-010, NFR-011, NFR-012
