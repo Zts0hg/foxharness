@@ -65,6 +65,7 @@ type ModelStep struct {
 	Response    ModelResponse
 	Deltas      []string
 	Error       string
+	ErrorKind   string
 	NilResponse bool
 	NilMessage  bool
 }
@@ -72,6 +73,7 @@ type ModelStep struct {
 /* ModelRequest captures request properties whose propagation is observable. */
 type ModelRequest struct {
 	Phase           string
+	Transport       string
 	Messages        []Message
 	ToolDefinitions []ToolDefinition
 	Model           string

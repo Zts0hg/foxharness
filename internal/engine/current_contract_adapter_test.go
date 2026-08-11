@@ -122,14 +122,20 @@ func (a *currentProductionContractAdapter) Run(
 		registry.Register(tool)
 		parallelSafe[tool.Name()] = behavior.Definition.ParallelSafe
 	}
+	streaming := currentContractScriptStreams(script)
 	scripted := &currentContractProvider{
 		steps:        script.ModelSteps,
 		thinking:     input.Thinking,
 		model:        input.Model,
 		protocol:     input.Provider,
 		parallelSafe: parallelSafe,
+		streaming:    streaming,
 	}
 	reporter := &currentContractReporter{}
+	var runReporter Reporter = reporter
+	if streaming {
+		runReporter = &currentContractStreamingReporter{currentContractReporter: reporter}
+	}
 	config := DefaultConfig()
 	config.DisplayPrompt = input.DisplayPrompt
 	config.EnableThinking = input.Thinking
@@ -138,7 +144,7 @@ func (a *currentProductionContractAdapter) Run(
 	config.ProviderProtocol = input.Provider
 	config.EffortOverride = input.Effort
 	current := NewAgentEngine(scripted, registry, workDir, currentContractPromptComposer{}, config)
-	result, runErr := current.RunWithReporter(ctx, sess, input.Prompt, reporter)
+	result, runErr := current.RunWithReporter(ctx, sess, input.Prompt, runReporter)
 
 	observed := runtimecontract.Observed{Requests: scripted.requests, Facts: reporter.facts}
 	if result != nil {
@@ -206,6 +212,8 @@ type currentContractProvider struct {
 	model        string
 	protocol     string
 	parallelSafe map[string]bool
+	streaming    bool
+	fallback     bool
 }
 
 func (p *currentContractProvider) Generate(
@@ -213,7 +221,7 @@ func (p *currentContractProvider) Generate(
 	messages []schema.Message,
 	definitions []schema.ToolDefinition,
 ) (*provider.GenerateResponse, error) {
-	return p.generate(ctx, messages, definitions, "")
+	return p.generate(ctx, messages, definitions, "", "non_stream", nil)
 }
 
 func (p *currentContractProvider) GenerateWithOptions(
@@ -222,7 +230,17 @@ func (p *currentContractProvider) GenerateWithOptions(
 	definitions []schema.ToolDefinition,
 	options provider.GenerateOptions,
 ) (*provider.GenerateResponse, error) {
-	return p.generate(ctx, messages, definitions, options.Effort)
+	return p.generate(ctx, messages, definitions, options.Effort, "non_stream", nil)
+}
+
+func (p *currentContractProvider) GenerateStream(
+	ctx context.Context,
+	messages []schema.Message,
+	definitions []schema.ToolDefinition,
+	options provider.GenerateOptions,
+	callbacks provider.StreamCallbacks,
+) (*provider.GenerateResponse, error) {
+	return p.generate(ctx, messages, definitions, options.Effort, "stream", callbacks.OnTextDelta)
 }
 
 func (p *currentContractProvider) generate(
@@ -230,6 +248,8 @@ func (p *currentContractProvider) generate(
 	messages []schema.Message,
 	definitions []schema.ToolDefinition,
 	effort string,
+	transport string,
+	onDelta func(string),
 ) (*provider.GenerateResponse, error) {
 	if p.callCount >= len(p.steps) {
 		return nil, fmt.Errorf("model script exhausted after %d calls", p.callCount)
@@ -238,11 +258,19 @@ func (p *currentContractProvider) generate(
 	phase := "action"
 	if p.thinking && p.callCount%2 == 0 {
 		phase = "thinking"
-	} else {
+	} else if transport == "stream" || !p.fallback {
 		p.actionCalls++
+	}
+	if transport == "non_stream" && p.fallback {
+		p.fallback = false
+	}
+	observedTransport := ""
+	if p.streaming {
+		observedTransport = transport
 	}
 	p.requests = append(p.requests, runtimecontract.ModelRequest{
 		Phase:           phase,
+		Transport:       observedTransport,
 		Messages:        currentContractMessages(messages),
 		ToolDefinitions: currentContractDefinitions(definitions, p.parallelSafe),
 		Model:           p.model,
@@ -250,8 +278,25 @@ func (p *currentContractProvider) generate(
 		Effort:          effort,
 	})
 	p.callCount++
+	for _, delta := range step.Deltas {
+		if onDelta != nil {
+			onDelta(delta)
+		}
+	}
 	if step.Error != "" {
-		return nil, errors.New(step.Error)
+		if transport == "stream" && len(step.Deltas) == 0 && (step.ErrorKind == "empty" || step.ErrorKind == "unsupported" || step.ErrorKind == "retryable") {
+			p.fallback = true
+		}
+		switch step.ErrorKind {
+		case "empty":
+			return nil, provider.ErrEmptyStream
+		case "unsupported":
+			return nil, errors.New("streaming is not supported: " + step.Error)
+		case "retryable":
+			return nil, statusCodeError{StatusCode: 429, message: step.Error}
+		default:
+			return nil, errors.New(step.Error)
+		}
 	}
 	if step.NilResponse {
 		return nil, nil
@@ -323,6 +368,14 @@ func (t *currentContractTool) ParallelSafe() bool { return t.behavior.Definition
 
 type currentContractReporter struct {
 	facts []runtimecontract.Fact
+}
+
+type currentContractStreamingReporter struct {
+	*currentContractReporter
+}
+
+func (r *currentContractStreamingReporter) OnMessageDelta(_ context.Context, content string) {
+	r.append(runtimecontract.Fact{Kind: "message_delta", Content: content})
 }
 
 func (r *currentContractReporter) append(fact runtimecontract.Fact) {
@@ -503,4 +556,13 @@ func currentContractMetrics(path string) ([]runtimecontract.Metric, error) {
 		return nil, fmt.Errorf("scan current production metrics: %w", err)
 	}
 	return result, nil
+}
+
+func currentContractScriptStreams(script runtimecontract.Script) bool {
+	for _, step := range script.ModelSteps {
+		if len(step.Deltas) > 0 || step.ErrorKind != "" {
+			return true
+		}
+	}
+	return false
 }
