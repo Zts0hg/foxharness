@@ -64,9 +64,9 @@ type stubCore struct {
 	runs    int
 }
 
-func (c *stubCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*engine.RunResult, error) {
+func (c *stubCore) Run(ctx context.Context, attempt CoreAttempt, r engine.Reporter) CoreOutcome {
 	c.runs++
-	return &engine.RunResult{FinalMessage: "ok"}, nil
+	return successfulCoreOutcome(attempt, "ok")
 }
 
 func (c *stubCore) Drain(context.Context) error    { return nil }

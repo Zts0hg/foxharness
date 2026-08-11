@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -108,18 +107,30 @@ const reviewApproval = "APPROVE"
 // outcome together with the Go-computed verification gap and returns ""
 // on approval or a corrective instruction to feed back to the core Agent
 // (REQ-014).
-func (a *ProviderEngineerAgent) Review(ctx context.Context, res *engine.RunResult, gap string, c StageContext) (string, error) {
+func (a *ProviderEngineerAgent) Review(ctx context.Context, evidence CoreReviewEvidence, gap string, c StageContext) (string, error) {
 	var b strings.Builder
 	b.WriteString(contextPreamble(c))
 	b.WriteString("You are reviewing the result of the coding agent's last run, like a user supervising it.\n\n")
-	final := ""
-	if res != nil {
-		final = strings.TrimSpace(res.FinalMessage)
+	message := strings.TrimSpace(evidence.Message)
+	if message == "" {
+		message = "(the agent produced no committed assistant text)"
 	}
-	if final == "" {
-		final = "(the agent produced no final message)"
+	label := "Agent final message"
+	if evidence.Partial {
+		label = "Partial evidence only (the core attempt did not succeed)"
 	}
-	b.WriteString("Agent's final message:\n" + final + "\n\n")
+	b.WriteString(label + ":\n" + message + "\n")
+	b.WriteString("Outcome status: " + string(evidence.Status) + "\n")
+	if evidence.SessionID != "" {
+		b.WriteString("Session: " + evidence.SessionID + "\n")
+	}
+	if evidence.RunID != "" {
+		b.WriteString("Run: " + evidence.RunID + "\n")
+	}
+	if evidence.Cause != nil {
+		b.WriteString("Terminal cause: " + evidence.Cause.Error() + "\n")
+	}
+	b.WriteString("\n")
 	if strings.TrimSpace(gap) != "" {
 		b.WriteString("Deterministic ground-truth verification FAILED with this gap:\n" + gap + "\n\n")
 		b.WriteString("The step is NOT complete regardless of what the agent claims. ")

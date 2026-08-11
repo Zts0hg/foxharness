@@ -1,6 +1,7 @@
 package autodev
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -431,8 +432,56 @@ func TestLoadLedgerMigratesKnownLegacyStageAndWritesCurrentVersion(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"version": 2`) || !strings.Contains(string(data), `"stage_state": "running"`) {
+	if !strings.Contains(string(data), `"version": 3`) || !strings.Contains(string(data), `"stage_state": "running"`) {
 		t.Fatalf("migrated ledger = %s, want versioned running state", data)
+	}
+}
+
+func TestDVAUT010LoadSchemaV2PreservesBehaviorAndUpgradesOnSave(t *testing.T) {
+	path := ledgerPath(t)
+	seeded, err := LoadLedger(path, newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seeded.Seed([]Item{{Title: "Schema compatibility", Description: "preserve v2 state"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := seeded.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prior ledgerFile
+	if err := json.Unmarshal(data, &prior); err != nil {
+		t.Fatal(err)
+	}
+	prior.Version = 2
+	data, err = json.Marshal(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := LoadLedger(path, newTestClock())
+	if err != nil {
+		t.Fatalf("LoadLedger(schema v2) = %v", err)
+	}
+	loaded, ok := ledger.Get("schema-compatibility")
+	if !ok || loaded.ItemID == "" || len(loaded.CoreAttempts) != 0 {
+		t.Fatalf("schema v2 item = %#v", loaded)
+	}
+	if err := ledger.Save(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(upgraded), `"version": 3`) {
+		t.Fatalf("upgraded ledger = %s", upgraded)
 	}
 }
 

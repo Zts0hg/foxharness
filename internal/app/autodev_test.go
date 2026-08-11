@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,11 +31,87 @@ type fakeRunnerAPI struct {
 	executor  *slash.Executor
 	drains    int
 	closes    int
+	run       func(context.Context, string, engine.Reporter) (*engine.RunResult, error)
 }
 
 func (f *fakeRunnerAPI) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
 	f.runPrompt = prompt
-	return &engine.RunResult{FinalMessage: "ran"}, nil
+	if f.run != nil {
+		return f.run(ctx, prompt, reporter)
+	}
+	if reporter != nil {
+		reporter.OnRunStart(ctx, "sess-1", "run-1")
+		reporter.OnMessage(ctx, "ran")
+	}
+	return &engine.RunResult{FinalMessage: "ran", SessionID: "sess-1", RunID: "run-1"}, nil
+}
+
+func TestDVAUT010CoreRunnerAdapterKeepsOnlyCommittedPartialAndClassifiesOutcome(t *testing.T) {
+	cause := &engine.TurnLimitError{MaxTurns: 4}
+	api := &fakeRunnerAPI{run: func(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
+		reporter.OnRunStart(ctx, "session-1", "run-1")
+		reporter.OnMessage(ctx, "committed assistant message")
+		return &engine.RunResult{
+			SessionID: "session-1", RunID: "run-1",
+			FinalMessage: "uncommitted result field must not replace reporter evidence",
+		}, cause
+	}}
+	attempt := autodev.CoreAttempt{AttemptID: "attempt-1", CorrelationID: "attempt-1", Ordinal: 1, Prompt: "work"}
+	outcome := (&coreRunnerAdapter{runner: api}).Run(context.Background(), attempt, nil)
+	if outcome.Status != autodev.CoreOutcomeTurnExhausted || outcome.RetryClass != autodev.CoreRetrySameRunner {
+		t.Fatalf("outcome status/retry = %s/%s", outcome.Status, outcome.RetryClass)
+	}
+	if outcome.SessionID != "session-1" || outcome.RunID != "run-1" || outcome.PartialMessage != "committed assistant message" {
+		t.Fatalf("outcome correlation = %#v", outcome)
+	}
+	if !outcome.Lifecycle.RunStarted || !outcome.Lifecycle.PostRunEstablished {
+		t.Fatalf("outcome lifecycle = %#v", outcome.Lifecycle)
+	}
+	if !errors.Is((&autodev.CoreOutcomeError{Outcome: outcome}), cause) {
+		t.Fatal("typed outcome did not retain the original turn-limit cause")
+	}
+}
+
+func TestDVAUT010CoreRunnerAdapterClassifiesFailureBeforeRunStart(t *testing.T) {
+	cause := errors.New("session store is corrupt")
+	api := &fakeRunnerAPI{run: func(context.Context, string, engine.Reporter) (*engine.RunResult, error) {
+		return nil, cause
+	}}
+	attempt := autodev.CoreAttempt{AttemptID: "attempt-1", CorrelationID: "attempt-1", Ordinal: 1, Prompt: "work"}
+	outcome := (&coreRunnerAdapter{runner: api}).Run(context.Background(), attempt, nil)
+	if outcome.Status != autodev.CoreOutcomeStartFailed || outcome.RetryClass != autodev.CoreRetryFreshRunner {
+		t.Fatalf("outcome status/retry = %s/%s, want start_failed/fresh_runner", outcome.Status, outcome.RetryClass)
+	}
+	if outcome.SessionID != "" || outcome.RunID != "" || outcome.PartialMessage != "" || outcome.Lifecycle.RunStarted {
+		t.Fatalf("start-failed outcome leaked started-run evidence: %#v", outcome)
+	}
+	if err := outcome.Validate(); err != nil {
+		t.Fatalf("start-failed outcome invalid: %v", err)
+	}
+}
+
+func TestDVAUT010CoreRunnerAdapterKeepsPreStartCancellationDistinct(t *testing.T) {
+	api := &fakeRunnerAPI{run: func(context.Context, string, engine.Reporter) (*engine.RunResult, error) {
+		return nil, context.Canceled
+	}}
+	attempt := autodev.CoreAttempt{AttemptID: "attempt-1", CorrelationID: "attempt-1", Ordinal: 1, Prompt: "work"}
+	outcome := (&coreRunnerAdapter{runner: api}).Run(context.Background(), attempt, nil)
+	if outcome.Status != autodev.CoreOutcomeCancelled || outcome.RetryClass != autodev.CoreRetryNever || outcome.Lifecycle.RunStarted {
+		t.Fatalf("pre-start cancellation outcome = %#v", outcome)
+	}
+	if err := outcome.Validate(); err != nil {
+		t.Fatalf("pre-start cancellation outcome invalid: %v", err)
+	}
+}
+
+func TestDVAUT010OutcomeReporterDoesNotAdvertiseUnsupportedOptionalCapabilities(t *testing.T) {
+	_, reporter := newCoreOutcomeReporter(nil)
+	if _, ok := reporter.(engine.DetailedReporter); ok {
+		t.Fatal("nil downstream reporter unexpectedly advertised detailed events")
+	}
+	if _, ok := reporter.(engine.MessageDeltaReporter); ok {
+		t.Fatal("nil downstream reporter unexpectedly advertised streaming deltas")
+	}
 }
 func (f *fakeRunnerAPI) DrainExtraction(context.Context) error { f.drains++; return nil }
 func (f *fakeRunnerAPI) CloseExtraction(context.Context) error { f.closes++; return nil }
@@ -56,9 +133,10 @@ func TestCoreRunnerAdapterDelegates(t *testing.T) {
 	adapter := &coreRunnerAdapter{runner: api}
 	var _ autodev.CoreRunner = adapter
 
-	res, err := adapter.Run(context.Background(), "do it", nil)
-	if err != nil || res.FinalMessage != "ran" {
-		t.Fatalf("Run = (%v, %v), want delegation to the real runner", res, err)
+	attempt := autodev.CoreAttempt{AttemptID: "attempt-1", CorrelationID: "attempt-1", Ordinal: 1, Prompt: "do it"}
+	outcome := adapter.Run(context.Background(), attempt, nil)
+	if outcome.Status != autodev.CoreOutcomeSucceeded || outcome.PartialMessage != "ran" {
+		t.Fatalf("Run = %#v, want successful delegation to the real runner", outcome)
 	}
 	if api.runPrompt != "do it" {
 		t.Errorf("runner prompt = %q, want %q", api.runPrompt, "do it")

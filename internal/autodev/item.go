@@ -178,4 +178,9 @@ type StageContext struct {
 	Issue int
 	// PR is the pull-request number once verified.
 	PR int
+	// CoreAttemptOrdinal is the last durable attempt ordinal for this stage.
+	CoreAttemptOrdinal int
+	// RecordCoreAttempt persists running and terminal attempt evidence. The
+	// orchestrator installs it before production core execution.
+	RecordCoreAttempt func(CoreAttemptRecord) error
 }

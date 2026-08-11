@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 type sabotagingClock struct {
@@ -190,7 +189,7 @@ func TestDVAUT002InvalidRecordedStateFailsBeforeExternalWork(t *testing.T) {
 		json string
 	}{
 		{name: "unknown-stage", json: `{"version":1,"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"in-progress","stage":"unknown","stage_state":"running"}]}`},
-		{name: "future-version", json: `{"version":3,"items":[]}`},
+		{name: "future-version", json: `{"version":4,"items":[]}`},
 		{name: "done-running", json: `{"version":1,"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"done","stage":"done","stage_state":"running"}]}`},
 		{name: "verified-issue-without-binding", json: `{"version":1,"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"in-progress","stage":"issue","stage_state":"verified"}]}`},
 		{name: "verified-pr-without-binding", json: `{"version":1,"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"in-progress","stage":"pr","stage_state":"verified"}]}`},
@@ -1137,13 +1136,13 @@ type deadlineCore struct {
 	has       bool
 }
 
-func (c *deadlineCore) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
+func (c *deadlineCore) Run(ctx context.Context, attempt CoreAttempt, reporter engine.Reporter) CoreOutcome {
 	deadline, ok := ctx.Deadline()
 	c.has = ok
 	if ok {
 		c.remaining = time.Until(deadline)
 	}
-	return &engine.RunResult{FinalMessage: "done"}, nil
+	return successfulCoreOutcome(attempt, "done")
 }
 
 func TestDVAUT006CoreAttemptReceivesDefaultDeadline(t *testing.T) {
@@ -1328,11 +1327,12 @@ type lifecycleCore struct {
 	closeCalls   int
 }
 
-func (c *lifecycleCore) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
+func (c *lifecycleCore) Run(ctx context.Context, attempt CoreAttempt, reporter engine.Reporter) CoreOutcome {
 	c.mu.Lock()
 	if c.drainedRuns != c.runCount {
 		c.mu.Unlock()
-		return nil, errors.New("next core run started before prior post-run work drained")
+		err := errors.New("next core run started before prior post-run work drained")
+		return CoreOutcome{Attempt: attempt, Status: CoreOutcomeFailed, SessionID: "test-session", RunID: "test-run", Cause: err, RetryClass: CoreRetryNever, Lifecycle: CoreLifecycleEvidence{RunStarted: true}}
 	}
 	c.runCount++
 	c.mu.Unlock()
@@ -1342,7 +1342,7 @@ func (c *lifecycleCore) Run(ctx context.Context, prompt string, reporter engine.
 			close(c.done)
 		}()
 	})
-	return c.stubCore.Run(ctx, prompt, reporter)
+	return c.stubCore.Run(ctx, attempt, reporter)
 }
 
 func (c *lifecycleCore) Drain(ctx context.Context) error {
@@ -1505,9 +1505,9 @@ type cancelingLifecycleCore struct {
 	closeFresh bool
 }
 
-func (c *cancelingLifecycleCore) Run(context.Context, string, engine.Reporter) (*engine.RunResult, error) {
+func (c *cancelingLifecycleCore) Run(_ context.Context, attempt CoreAttempt, _ engine.Reporter) CoreOutcome {
 	c.cancel()
-	return &engine.RunResult{FinalMessage: "partial"}, context.Canceled
+	return CoreOutcome{Attempt: attempt, Status: CoreOutcomeCancelled, SessionID: "test-session", RunID: "test-run", PartialMessage: "partial", Cause: context.Canceled, RetryClass: CoreRetryNever, Lifecycle: CoreLifecycleEvidence{RunStarted: true}}
 }
 
 func (c *cancelingLifecycleCore) Drain(ctx context.Context) error {
@@ -1577,12 +1577,13 @@ func (f *visibilityLifecycleFactory) New(ctx context.Context, workDir, model str
 	return &visibilityLifecycleCore{stubCore: stubCore{workDir: workDir}, factory: f, index: index}, nil
 }
 
-func (c *visibilityLifecycleCore) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
+func (c *visibilityLifecycleCore) Run(ctx context.Context, attempt CoreAttempt, reporter engine.Reporter) CoreOutcome {
 	if c.pending {
-		return nil, errors.New("next run started before prior extraction became visible")
+		err := errors.New("next run started before prior extraction became visible")
+		return CoreOutcome{Attempt: attempt, Status: CoreOutcomeFailed, SessionID: "test-session", RunID: "test-run", Cause: err, RetryClass: CoreRetryNever, Lifecycle: CoreLifecycleEvidence{RunStarted: true}}
 	}
 	c.pending = true
-	return c.stubCore.Run(ctx, prompt, reporter)
+	return c.stubCore.Run(ctx, attempt, reporter)
 }
 
 func (c *visibilityLifecycleCore) Drain(context.Context) error {
@@ -1686,64 +1687,5 @@ func TestDVAUT009ConcurrencyAcceptsOnlyOmissionOrExactSerial(t *testing.T) {
 	want := []string{"start:first-item", "done:first-item", "start:second-item", "done:second-item"}
 	if !reflect.DeepEqual(itemEvents, want) {
 		t.Fatalf("serial events = %v, want strict serial order %v", itemEvents, want)
-	}
-}
-
-type partialErrorCore struct {
-	result *engine.RunResult
-	err    error
-}
-
-func (c *partialErrorCore) Run(context.Context, string, engine.Reporter) (*engine.RunResult, error) {
-	return c.result, c.err
-}
-func (*partialErrorCore) Drain(context.Context) error  { return nil }
-func (*partialErrorCore) Close(context.Context) error  { return nil }
-func (*partialErrorCore) SetUserAsker(tools.UserAsker) {}
-func (*partialErrorCore) SetModel(string) error        { return nil }
-func (*partialErrorCore) WorkDir() string              { return "" }
-func (*partialErrorCore) StagePrompt(context.Context, string, string) (string, error) {
-	return "seed", nil
-}
-
-func TestDVAUT010StageMachineDiscardsEveryPartialCoreOutcomeBeforeVerification(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-	}{
-		{name: "provider", err: errors.New("provider failed")},
-		{name: "tool", err: errors.New("tool failed")},
-		{name: "persistence", err: errors.New("persistence failed")},
-		{name: "compaction", err: errors.New("compaction failed")},
-		{name: "turn-limit", err: &engine.TurnLimitError{MaxTurns: 3}},
-		{name: "cancel", err: context.Canceled},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			core := &partialErrorCore{
-				result: &engine.RunResult{SessionID: "session-1", RunID: "run-1", FinalMessage: "durable partial evidence"},
-				err:    tc.err,
-			}
-			engineer := &reviewingEngineer{}
-			verified := 0
-			stage := Stage{
-				Name:   "implement",
-				Prompt: func(*StageContext) string { return "run" },
-				Verify: func(context.Context, *StageContext) (bool, string) {
-					verified++
-					return true, ""
-				},
-			}
-			err := newTestMachine(engineer).RunStep(context.Background(), core, &StageContext{}, stage)
-			if err == nil || !errors.Is(err, tc.err) {
-				t.Fatalf("RunStep error = %v, want wrapped %v", err, tc.err)
-			}
-			if strings.Contains(err.Error(), "durable partial evidence") || strings.Contains(err.Error(), "session-1") || strings.Contains(err.Error(), "run-1") {
-				t.Errorf("error unexpectedly retained partial outcome correlation: %v", err)
-			}
-			if verified != 0 || engineer.reviewCalls != 0 {
-				t.Errorf("verify/review calls = %d/%d, want 0/0 after partial result+error", verified, engineer.reviewCalls)
-			}
-		})
 	}
 }

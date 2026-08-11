@@ -3,6 +3,7 @@ package autodev
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -51,6 +52,7 @@ func (p *RemotePublisher) Publish(ctx context.Context, core CoreRunner, wt Workt
 		Issue:      item.Issue,
 		PR:         item.PR,
 	}
+	bindCoreAttemptRecorder(sc, &item, record)
 
 	steps := p.steps()
 	start := remoteResumeIndex(item, steps)
@@ -80,7 +82,12 @@ func (p *RemotePublisher) Publish(ctx context.Context, core CoreRunner, wt Workt
 		} else {
 			runErr = p.machine.RunStep(ctx, core, sc, st)
 		}
+		verifiedTerminal := false
 		if runErr != nil {
+			var outcomeErr *CoreOutcomeError
+			verifiedTerminal = errors.As(runErr, &outcomeErr) && outcomeErr.Verified
+		}
+		if runErr != nil && !verifiedTerminal {
 			return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, runErr
 		}
 		issueChanged := sc.Issue != 0 && sc.Issue != previousIssue
@@ -109,6 +116,9 @@ func (p *RemotePublisher) Publish(ctx context.Context, core CoreRunner, wt Workt
 			}
 		}); err != nil {
 			return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
+		}
+		if verifiedTerminal {
+			return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, runErr
 		}
 		if issueChanged {
 			item.Issue = sc.Issue

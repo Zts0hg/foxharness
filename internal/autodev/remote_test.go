@@ -149,8 +149,8 @@ type remoteCore struct {
 	effects []func()
 }
 
-func (c *remoteCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*engine.RunResult, error) {
-	c.prompts = append(c.prompts, prompt)
+func (c *remoteCore) Run(ctx context.Context, attempt CoreAttempt, r engine.Reporter) CoreOutcome {
+	c.prompts = append(c.prompts, attempt.Prompt)
 	if len(c.effects) > 0 {
 		effect := c.effects[0]
 		c.effects = c.effects[1:]
@@ -158,7 +158,7 @@ func (c *remoteCore) Run(ctx context.Context, prompt string, r engine.Reporter) 
 			effect()
 		}
 	}
-	return &engine.RunResult{FinalMessage: "step attempted"}, nil
+	return successfulCoreOutcome(attempt, "step attempted")
 }
 
 func (c *remoteCore) Drain(context.Context) error { return nil }
@@ -283,15 +283,25 @@ func TestPublishDrivesOrderedSequence(t *testing.T) {
 	}
 	wantOperations := []string{
 		"publish-stage-changes-intent",
+		"core-attempt-core:item-test:stage-changes:1-running",
+		"core-attempt-core:item-test:stage-changes:1-terminal",
 		"publish-stage-changes-verified",
 		"publish-commit-staged-intent",
+		"core-attempt-core:item-test:commit-staged:2-running",
+		"core-attempt-core:item-test:commit-staged:2-terminal",
 		"publish-commit-staged-verified",
 		"publish-push-intent",
+		"core-attempt-core:item-test:push:3-running",
+		"core-attempt-core:item-test:push:3-terminal",
 		"publish-push-verified",
 		"publish-issue-intent",
+		"core-attempt-core:item-test:issue:4-running",
+		"core-attempt-core:item-test:issue:4-terminal",
 		"issue-binding",
 		"issue-event-delivered",
 		"publish-pr-intent",
+		"core-attempt-core:item-test:pr:5-running",
+		"core-attempt-core:item-test:pr:5-terminal",
 		"pr-binding",
 	}
 	if !reflect.DeepEqual(operations, wantOperations) {

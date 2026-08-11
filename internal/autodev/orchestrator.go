@@ -188,13 +188,15 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 		Remote:           o.deps.Config.Remote,
 		FeatureDir:       item.FeatureDir,
 	}
+	bindCoreAttemptRecorder(sc, &item, record)
 	if err := preflightFeatureWorkspace(sc); err != nil {
 		return fmt.Errorf("validate feature workspace for %s: %w", item.Slug, err)
 	}
-	var core CoreRunner
+	core := newItemCoreRunner(ctx, o.deps.CoreFactory, wt.Path, o.deps.Config.Model)
+	core.SetUserAsker(NewEngineerAsker(o.deps.Engineer, o.deps.Reporter, sc))
 	coreCloseAttempted := false
 	closeCore := func() error {
-		if core == nil || coreCloseAttempted {
+		if coreCloseAttempted {
 			return nil
 		}
 		coreCloseAttempted = true
@@ -210,19 +212,6 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 			retErr = errors.Join(retErr, err)
 		}
 	}()
-	ensureCore := func() error {
-		if core != nil {
-			return nil
-		}
-		created, err := o.deps.CoreFactory.New(ctx, wt.Path, o.deps.Config.Model)
-		if err != nil {
-			return fmt.Errorf("create core runner for %s: %w", item.Slug, err)
-		}
-		created.SetUserAsker(NewEngineerAsker(o.deps.Engineer, o.deps.Reporter, sc))
-		core = created
-		return nil
-	}
-
 	start := o.resumeIndex(item)
 	for i := start; i < len(o.pipeline); i++ {
 		if err := ctx.Err(); err != nil {
@@ -242,18 +231,18 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 				return err
 			}
 		}
-		if st.Control == nil {
-			if err := ensureCore(); err != nil {
-				return err
-			}
-		}
 		var runErr error
 		if resuming {
 			runErr = o.machine.ResumeStep(ctx, core, sc, st)
 		} else {
 			runErr = o.machine.RunStep(ctx, core, sc, st)
 		}
+		verifiedTerminal := false
 		if runErr != nil {
+			var outcomeErr *CoreOutcomeError
+			verifiedTerminal = errors.As(runErr, &outcomeErr) && outcomeErr.Verified
+		}
+		if runErr != nil && !verifiedTerminal {
 			return runErr
 		}
 		if err := record("stage-"+st.Name+"-verified", func(it *LedgerItem) {
@@ -265,12 +254,15 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 		}); err != nil {
 			return err
 		}
+		if verifiedTerminal {
+			return runErr
+		}
 	}
 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := ensureCore(); err != nil {
+	if err := core.ensure(); err != nil {
 		return err
 	}
 	current, _ := led.Get(item.Slug)

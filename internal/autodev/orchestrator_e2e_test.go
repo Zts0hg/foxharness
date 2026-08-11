@@ -186,13 +186,15 @@ type e2eCore struct {
 // the unbounded RunStep loop.
 const maxE2ERuns = 60
 
-func (c *e2eCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*engine.RunResult, error) {
+func (c *e2eCore) Run(ctx context.Context, attempt CoreAttempt, r engine.Reporter) CoreOutcome {
+	prompt := attempt.Prompt
 	w := c.world
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	c.runs++
 	if c.runs > maxE2ERuns {
-		return nil, fmt.Errorf("e2e core exceeded %d runs; last prompt: %.120s", maxE2ERuns, prompt)
+		err := fmt.Errorf("e2e core exceeded %d runs; last prompt: %.120s", maxE2ERuns, prompt)
+		return CoreOutcome{Attempt: attempt, Status: CoreOutcomeFailed, SessionID: "test-session", RunID: "test-run", Cause: err, RetryClass: CoreRetryNever, Lifecycle: CoreLifecycleEvidence{RunStarted: true}}
 	}
 	st := w.state(c.workDir)
 	lower := strings.ToLower(prompt)
@@ -235,7 +237,7 @@ func (c *e2eCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*e
 		w.markers[issueMarkerFromPrompt(prompt)] = w.issueSeq
 		*c.issueN = w.issueSeq
 	}
-	return &engine.RunResult{FinalMessage: "done"}, nil
+	return successfulCoreOutcome(attempt, "done")
 }
 
 func (c *e2eCore) Drain(context.Context) error { return nil }

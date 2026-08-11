@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -31,7 +30,7 @@ func (f *fakeEngineerAgent) Reply(ctx context.Context, prompt string, c StageCon
 	return "", nil
 }
 
-func (f *fakeEngineerAgent) Review(ctx context.Context, res *engine.RunResult, gap string, c StageContext) (string, error) {
+func (f *fakeEngineerAgent) Review(ctx context.Context, evidence CoreReviewEvidence, gap string, c StageContext) (string, error) {
 	return "", nil
 }
 
@@ -202,8 +201,8 @@ func TestProviderEngineerAgentReviewReturnsCorrection(t *testing.T) {
 	}}
 	agent := NewEngineerAgent(p, "glm-4.7", "")
 
-	res := &engine.RunResult{FinalMessage: "Nothing to commit; I think we're done."}
-	correction, err := agent.Review(context.Background(), res, "HEAD did not advance (no commit was created)", StageContext{Stage: "commit"})
+	evidence := CoreReviewEvidence{Status: CoreOutcomeSucceeded, Message: "Nothing to commit; I think we're done."}
+	correction, err := agent.Review(context.Background(), evidence, "HEAD did not advance (no commit was created)", StageContext{Stage: "commit"})
 	if err != nil {
 		t.Fatalf("Review returned error: %v", err)
 	}
@@ -230,7 +229,7 @@ func TestProviderEngineerAgentReviewApproves(t *testing.T) {
 	p := &scriptedProvider{responses: []string{"APPROVE"}}
 	agent := NewEngineerAgent(p, "glm-4.7", "")
 
-	correction, err := agent.Review(context.Background(), &engine.RunResult{FinalMessage: "done"}, "", StageContext{})
+	correction, err := agent.Review(context.Background(), CoreReviewEvidence{Status: CoreOutcomeSucceeded, Message: "done"}, "", StageContext{})
 	if err != nil {
 		t.Fatalf("Review returned error: %v", err)
 	}
@@ -239,11 +238,27 @@ func TestProviderEngineerAgentReviewApproves(t *testing.T) {
 	}
 }
 
+func TestDVAUT010ProviderEngineerLabelsFailedOutcomeAsPartialEvidence(t *testing.T) {
+	p := &scriptedProvider{responses: []string{"retry with the requested correction"}}
+	agent := NewEngineerAgent(p, "glm-4.7", "")
+	evidence := CoreReviewEvidence{
+		Status: CoreOutcomeFailed, Message: "committed assistant partial", Partial: true,
+		SessionID: "session-1", RunID: "run-1", Cause: errors.New("provider failed"),
+	}
+	if _, err := agent.Review(context.Background(), evidence, "artifact absent", StageContext{}); err != nil {
+		t.Fatal(err)
+	}
+	prompt := p.requests[len(p.requests)-1][1].Content
+	if !strings.Contains(prompt, "Partial evidence only") || strings.Contains(prompt, "Agent final message") {
+		t.Fatalf("review prompt mislabeled failed partial evidence:\n%s", prompt)
+	}
+}
+
 func TestProviderEngineerAgentUsesPersona(t *testing.T) {
 	p := &scriptedProvider{responses: []string{"APPROVE"}}
 	agent := NewEngineerAgent(p, "glm-4.7", "You are Margaret, principal engineer.")
 
-	if _, err := agent.Review(context.Background(), &engine.RunResult{}, "", StageContext{}); err != nil {
+	if _, err := agent.Review(context.Background(), CoreReviewEvidence{Status: CoreOutcomeSucceeded}, "", StageContext{}); err != nil {
 		t.Fatalf("Review returned error: %v", err)
 	}
 	first := p.requests[0][0]
@@ -259,7 +274,7 @@ func TestProviderEngineerAgentDefaultPersona(t *testing.T) {
 	p := &scriptedProvider{responses: []string{"APPROVE"}}
 	agent := NewEngineerAgent(p, "glm-4.7", "")
 
-	if _, err := agent.Review(context.Background(), &engine.RunResult{}, "", StageContext{}); err != nil {
+	if _, err := agent.Review(context.Background(), CoreReviewEvidence{Status: CoreOutcomeSucceeded}, "", StageContext{}); err != nil {
 		t.Fatalf("Review returned error: %v", err)
 	}
 	persona := strings.ToLower(p.requests[0][0].Content)

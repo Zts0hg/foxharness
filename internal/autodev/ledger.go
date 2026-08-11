@@ -3,6 +3,7 @@ package autodev
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,8 +35,32 @@ type LedgerItem struct {
 	Issue                int                 `json:"issue,omitempty"`
 	PR                   int                 `json:"pr,omitempty"`
 	Outbox               []RemoteEventRecord `json:"outbox,omitempty"`
+	CoreAttempts         []CoreAttemptRecord `json:"core_attempts,omitempty"`
 	FeatureDir           string              `json:"feature_dir,omitempty"`
 	UpdatedAt            time.Time           `json:"updated_at,omitempty"`
+}
+
+// CoreAttemptState distinguishes durable pre-side-effect intent from the one
+// terminal outcome later observed for that attempt.
+type CoreAttemptState string
+
+const (
+	CoreAttemptRunning  CoreAttemptState = "running"
+	CoreAttemptTerminal CoreAttemptState = "terminal"
+)
+
+// CoreAttemptRecord is the durable retry and side-effect correlation history.
+type CoreAttemptRecord struct {
+	AttemptID     string            `json:"attempt_id"`
+	CorrelationID string            `json:"correlation_id"`
+	Stage         PipelineStage     `json:"stage"`
+	Ordinal       int               `json:"ordinal"`
+	State         CoreAttemptState  `json:"state"`
+	OutcomeStatus CoreOutcomeStatus `json:"outcome_status,omitempty"`
+	SessionID     string            `json:"session_id,omitempty"`
+	RunID         string            `json:"run_id,omitempty"`
+	RetryClass    CoreRetryClass    `json:"retry_class,omitempty"`
+	Cause         string            `json:"cause,omitempty"`
 }
 
 // PipelineStage is the closed vocabulary of durable workflow positions.
@@ -85,7 +110,7 @@ type ledgerFile struct {
 	Items   []*LedgerItem `json:"items"`
 }
 
-const ledgerSchemaVersion = 2
+const ledgerSchemaVersion = 3
 
 // LedgerCommitError reports an authoritative ledger transition that could
 // not be durably committed. Callers must stop dependent work and retain any
@@ -166,6 +191,13 @@ func LoadLedger(path string, clock Clock) (*Ledger, error) {
 			return nil, err
 		}
 		initializeLegacyIdentities(file.Items)
+		if err := validateLedgerItems(file.Items, ledgerSchemaVersion); err != nil {
+			return nil, err
+		}
+	case 2:
+		if err := validateLedgerItems(file.Items, file.Version); err != nil {
+			return nil, err
+		}
 		if err := validateLedgerItems(file.Items, ledgerSchemaVersion); err != nil {
 			return nil, err
 		}
@@ -293,6 +325,9 @@ func validateLedgerItems(items []*LedgerItem, version int) error {
 					return invalidLedgerItem(version, item, fmt.Sprintf("duplicate outbox event_id %q", event.EventID))
 				}
 				seenEvents[event.EventID] = true
+			}
+			if err := validateCoreAttemptHistory(item); err != nil {
+				return invalidLedgerItem(version, item, err.Error())
 			}
 			bytes, hash := requirementRevisionIdentity(item.Title, item.Description)
 			if item.RequirementBytes != bytes || item.RequirementHash != hash {
@@ -698,6 +733,9 @@ func validateWorkflowMutation(before, after LedgerItem) error {
 			return invalidLedgerItem(ledgerSchemaVersion, &after, "exactly one outbox issue event may be appended with its issue binding")
 		}
 	}
+	if err := validateCoreAttemptMutation(before, after); err != nil {
+		return invalidLedgerItem(ledgerSchemaVersion, &after, err.Error())
+	}
 	if before.Issue == 0 && after.Issue > 0 && after.Stage == StageIssue && after.StageState == StageStateVerified {
 		want := issueEventID(after.ItemID, after.Issue)
 		found := false
@@ -710,6 +748,129 @@ func validateWorkflowMutation(before, after LedgerItem) error {
 		}
 	}
 	return nil
+}
+
+func validateCoreAttemptHistory(item *LedgerItem) error {
+	seen := make(map[string]bool, len(item.CoreAttempts))
+	lastOrdinal := 0
+	for _, attempt := range item.CoreAttempts {
+		if attempt.AttemptID == "" || attempt.CorrelationID == "" || attempt.Ordinal <= lastOrdinal {
+			return errors.New("core attempt history has invalid identity or non-increasing ordinal")
+		}
+		if seen[attempt.AttemptID] || attempt.CorrelationID != attempt.AttemptID {
+			return errors.New("core attempt history has duplicate or inconsistent correlation identity")
+		}
+		if !isExecutableStage(attempt.Stage) {
+			return fmt.Errorf("core attempt has unknown stage %q", attempt.Stage)
+		}
+		wantID := fmt.Sprintf("core:%s:%s:%d", item.ItemID, attempt.Stage, attempt.Ordinal)
+		if attempt.AttemptID != wantID {
+			return errors.New("core attempt identity does not match item, stage, and ordinal")
+		}
+		switch attempt.State {
+		case CoreAttemptRunning:
+			if attempt.OutcomeStatus != "" || attempt.SessionID != "" || attempt.RunID != "" || attempt.RetryClass != "" || attempt.Cause != "" {
+				return errors.New("running core attempt carries terminal evidence")
+			}
+		case CoreAttemptTerminal:
+			if err := validateTerminalCoreAttemptRecord(attempt); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("core attempt has unknown state %q", attempt.State)
+		}
+		seen[attempt.AttemptID] = true
+		lastOrdinal = attempt.Ordinal
+	}
+	return nil
+}
+
+func validateTerminalCoreAttemptRecord(attempt CoreAttemptRecord) error {
+	switch attempt.OutcomeStatus {
+	case CoreOutcomeSucceeded:
+		if attempt.Cause != "" || attempt.RetryClass != CoreRetryNever {
+			return errors.New("succeeded core attempt carries failure evidence")
+		}
+	case CoreOutcomeCancelled:
+		if attempt.Cause == "" || attempt.RetryClass != CoreRetryNever {
+			return errors.New("cancelled core attempt has invalid cause or retry class")
+		}
+	case CoreOutcomeStartFailed:
+		if attempt.Cause == "" || attempt.SessionID != "" || attempt.RunID != "" {
+			return errors.New("start-failed core attempt carries invalid run evidence")
+		}
+		if attempt.RetryClass != CoreRetryNever && attempt.RetryClass != CoreRetrySameRunner && attempt.RetryClass != CoreRetryFreshRunner {
+			return errors.New("start-failed core attempt has unknown retry class")
+		}
+	case CoreOutcomeFailed, CoreOutcomeTurnExhausted:
+		if attempt.Cause == "" {
+			return errors.New("failed core attempt is missing its cause")
+		}
+		if attempt.RetryClass != CoreRetryNever && attempt.RetryClass != CoreRetrySameRunner && attempt.RetryClass != CoreRetryFreshRunner {
+			return errors.New("failed core attempt has unknown retry class")
+		}
+	default:
+		return fmt.Errorf("terminal core attempt has unknown outcome status %q", attempt.OutcomeStatus)
+	}
+	return nil
+}
+
+func validateCoreAttemptMutation(before, after LedgerItem) error {
+	if len(after.CoreAttempts) < len(before.CoreAttempts) || len(after.CoreAttempts) > len(before.CoreAttempts)+1 {
+		return errors.New("workflow mutation cannot remove or bulk-append core attempt history")
+	}
+	changed := 0
+	for i := range before.CoreAttempts {
+		if before.CoreAttempts[i] == after.CoreAttempts[i] {
+			continue
+		}
+		changed++
+		if before.CoreAttempts[i].State != CoreAttemptRunning || after.CoreAttempts[i].State != CoreAttemptTerminal ||
+			before.CoreAttempts[i].AttemptID != after.CoreAttempts[i].AttemptID ||
+			before.CoreAttempts[i].CorrelationID != after.CoreAttempts[i].CorrelationID ||
+			before.CoreAttempts[i].Stage != after.CoreAttempts[i].Stage ||
+			before.CoreAttempts[i].Ordinal != after.CoreAttempts[i].Ordinal {
+			return errors.New("workflow mutation cannot rewrite core attempt identity or terminal history")
+		}
+	}
+	if len(after.CoreAttempts) == len(before.CoreAttempts)+1 {
+		if changed != 0 || after.CoreAttempts[len(before.CoreAttempts)].State != CoreAttemptRunning {
+			return errors.New("workflow mutation may only append one running core attempt")
+		}
+	} else if changed > 1 {
+		return errors.New("workflow mutation may terminate only one core attempt")
+	}
+	return nil
+}
+
+func updateCoreAttemptRecord(item *LedgerItem, record CoreAttemptRecord) error {
+	for i := range item.CoreAttempts {
+		existing := item.CoreAttempts[i]
+		if existing.AttemptID != record.AttemptID {
+			continue
+		}
+		if existing == record {
+			return nil
+		}
+		if existing.State != CoreAttemptRunning || record.State != CoreAttemptTerminal ||
+			existing.CorrelationID != record.CorrelationID || existing.Stage != record.Stage || existing.Ordinal != record.Ordinal {
+			return errors.New("core attempt terminal outcome conflicts with durable history")
+		}
+		item.CoreAttempts[i] = record
+		return nil
+	}
+	if record.State != CoreAttemptRunning {
+		return errors.New("core attempt terminal outcome has no durable running intent")
+	}
+	item.CoreAttempts = append(item.CoreAttempts, record)
+	return nil
+}
+
+func lastCoreAttemptOrdinal(item LedgerItem) int {
+	if len(item.CoreAttempts) == 0 {
+		return 0
+	}
+	return item.CoreAttempts[len(item.CoreAttempts)-1].Ordinal
 }
 
 func freezeRequirementTransition(item *LedgerItem, before Status) {
@@ -729,6 +890,7 @@ func cloneLedgerItems(items []*LedgerItem) []*LedgerItem {
 
 func cloneLedgerItem(item LedgerItem) LedgerItem {
 	item.Outbox = append([]RemoteEventRecord(nil), item.Outbox...)
+	item.CoreAttempts = append([]CoreAttemptRecord(nil), item.CoreAttempts...)
 	return item
 }
 

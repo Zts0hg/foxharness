@@ -71,6 +71,10 @@ type StageMachine struct {
 	reporter Reporter
 }
 
+type coreRunnerReplacer interface {
+	Replace(context.Context) error
+}
+
 // NewStageMachine creates a StageMachine supervised by engineer and
 // observed through reporter.
 func NewStageMachine(engineer EngineerAgent, reporter Reporter) *StageMachine {
@@ -184,34 +188,80 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 			return err
 		}
 
+		attempt := newCoreAttempt(sc, msg)
+		if err := recordCoreAttempt(sc, runningCoreAttemptRecord(sc, attempt)); err != nil {
+			return err
+		}
 		attemptCtx, cancel := withDefaultTimeout(ctx, stageAttemptTimeout)
-		res, err := core.Run(attemptCtx, msg, m.reporter)
+		outcome := core.Run(attemptCtx, attempt, m.reporter)
 		attemptErr := attemptCtx.Err()
 		cancel()
-		drainErr := drainCore(ctx, core)
-		if drainErr != nil {
-			return &CoreLifecycleError{Operation: "drain", Err: errors.Join(err, drainErr)}
+		var contractErr error
+		if outcome.Attempt != attempt {
+			contractErr = fmt.Errorf("core run for step %s returned mismatched attempt correlation", st.Name)
+			outcome.Attempt = attempt
+			outcome.Status = CoreOutcomeFailed
+			outcome.Cause = errors.Join(outcome.Cause, contractErr)
+			outcome.RetryClass = CoreRetryNever
 		}
-		if err != nil {
-			return fmt.Errorf("core run for step %s: %w", st.Name, err)
+		if err := outcome.Validate(); err != nil {
+			return &CoreOutcomeError{Outcome: outcome, Err: fmt.Errorf("core run for step %s returned invalid outcome: %w", st.Name, err)}
 		}
-		if attemptErr != nil {
-			return attemptErr
+		if outcome.Lifecycle.RunStarted {
+			if drainErr := drainCore(ctx, core); drainErr != nil {
+				lifecycleErr := &CoreLifecycleError{Operation: "drain", Err: errors.Join(outcome.Cause, drainErr)}
+				outcome.Status = CoreOutcomeFailed
+				outcome.Cause = lifecycleErr
+				outcome.RetryClass = CoreRetryNever
+				if err := recordCoreAttempt(sc, terminalCoreAttemptRecord(sc, outcome)); err != nil {
+					return &CoreOutcomeError{Outcome: outcome, Err: errors.Join(outcome.Cause, err)}
+				}
+				return &CoreOutcomeError{Outcome: outcome, Err: lifecycleErr}
+			}
+			outcome.Lifecycle.DrainCompleted = true
 		}
 
-		ok, gap, err := verifyStage(ctx, sc, st)
-		if err != nil {
-			return fmt.Errorf("verify step %s: %w", st.Name, err)
+		ok := false
+		gap := ""
+		var verifyErr error
+		if outcome.Lifecycle.RunStarted {
+			verifyCtx, verifyCancel := coreVerificationContext(ctx, outcome)
+			ok, gap, verifyErr = verifyStage(verifyCtx, sc, st)
+			if m.reporter != nil {
+				m.reporter.OnVerify(verifyCtx, st.Name, ok, gap)
+			}
+			verifyCancel()
+		} else {
+			gap = "the core attempt did not start"
+			if outcome.Cause != nil {
+				gap += ": " + outcome.Cause.Error()
+			}
 		}
-		if m.reporter != nil {
-			m.reporter.OnVerify(ctx, st.Name, ok, gap)
+		if err := recordCoreAttempt(sc, terminalCoreAttemptRecord(sc, outcome)); err != nil {
+			return &CoreOutcomeError{Outcome: outcome, Err: errors.Join(outcome.Cause, err)}
+		}
+		if verifyErr != nil {
+			return &CoreOutcomeError{Outcome: outcome, Err: errors.Join(outcome.Cause, fmt.Errorf("verify step %s: %w", st.Name, verifyErr))}
+		}
+		if contractErr != nil {
+			return &CoreOutcomeError{Outcome: outcome, Err: outcome.Cause}
 		}
 		if ok {
+			if outcome.Status == CoreOutcomeCancelled {
+				return &CoreOutcomeError{Outcome: outcome, Verified: true}
+			}
 			return nil
+		}
+		if outcome.Status == CoreOutcomeCancelled ||
+			(outcome.Status != CoreOutcomeSucceeded && outcome.RetryClass == CoreRetryNever) {
+			return &CoreOutcomeError{Outcome: outcome}
+		}
+		if attemptErr != nil && outcome.Status != CoreOutcomeCancelled {
+			return &CoreOutcomeError{Outcome: outcome, Err: errors.Join(outcome.Cause, attemptErr)}
 		}
 
 		attemptCtx, cancel = withDefaultTimeout(ctx, stageAttemptTimeout)
-		correction, err := m.engineer.Review(attemptCtx, res, gap, *sc)
+		correction, err := m.engineer.Review(attemptCtx, outcome.reviewEvidence(), gap, *sc)
 		attemptErr = attemptCtx.Err()
 		cancel()
 		if err != nil {
@@ -231,8 +281,41 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 		if m.reporter != nil {
 			m.reporter.OnEngineerReview(ctx, st.Name, correction)
 		}
+		if outcome.RetryClass == CoreRetryFreshRunner {
+			replacer, ok := core.(coreRunnerReplacer)
+			if !ok {
+				return &CoreOutcomeError{Outcome: outcome, Err: errors.Join(outcome.Cause, errors.New("fresh core runner required but replacement is unavailable"))}
+			}
+			replaceCtx, replaceCancel := context.WithTimeout(context.WithoutCancel(ctx), coreLifecycleTimeout)
+			err := replacer.Replace(replaceCtx)
+			replaceCancel()
+			if err != nil {
+				return &CoreOutcomeError{Outcome: outcome, Err: errors.Join(outcome.Cause, fmt.Errorf("replace core runner: %w", err))}
+			}
+		}
 		msg = correction
 	}
+}
+
+func coreVerificationContext(ctx context.Context, outcome CoreOutcome) (context.Context, context.CancelFunc) {
+	if outcome.Status == CoreOutcomeCancelled || ctx.Err() != nil {
+		return context.WithTimeout(context.WithoutCancel(ctx), stageAttemptTimeout)
+	}
+	return context.WithCancel(ctx)
+}
+
+func recordCoreAttempt(sc *StageContext, record CoreAttemptRecord) error {
+	if sc.RecordCoreAttempt == nil {
+		return nil
+	}
+	if err := sc.RecordCoreAttempt(record); err != nil {
+		var commitErr *LedgerCommitError
+		if errors.As(err, &commitErr) {
+			return err
+		}
+		return &LedgerCommitError{Operation: "core-attempt-" + record.AttemptID + "-" + string(record.State), Err: err}
+	}
+	return nil
 }
 
 func drainCore(ctx context.Context, core CoreRunner) error {

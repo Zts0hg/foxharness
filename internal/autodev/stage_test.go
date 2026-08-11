@@ -24,8 +24,15 @@ type fakeCore struct {
 	asker   tools.UserAsker
 }
 
-func (f *fakeCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*engine.RunResult, error) {
-	f.prompts = append(f.prompts, prompt)
+func successfulCoreOutcome(attempt CoreAttempt, message string) CoreOutcome {
+	return CoreOutcome{
+		Attempt: attempt, Status: CoreOutcomeSucceeded, SessionID: "test-session", RunID: "test-run", PartialMessage: message,
+		RetryClass: CoreRetryNever, Lifecycle: CoreLifecycleEvidence{RunStarted: true},
+	}
+}
+
+func (f *fakeCore) Run(ctx context.Context, attempt CoreAttempt, r engine.Reporter) CoreOutcome {
+	f.prompts = append(f.prompts, attempt.Prompt)
 	if len(f.effects) > 0 {
 		effect := f.effects[0]
 		f.effects = f.effects[1:]
@@ -33,7 +40,7 @@ func (f *fakeCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*
 			effect()
 		}
 	}
-	return &engine.RunResult{FinalMessage: "done, I believe"}, nil
+	return successfulCoreOutcome(attempt, "done, I believe")
 }
 
 func (f *fakeCore) Drain(context.Context) error { return nil }
@@ -55,7 +62,7 @@ type reviewingEngineer struct {
 	gaps        []string
 }
 
-func (r *reviewingEngineer) Review(ctx context.Context, res *engine.RunResult, gap string, c StageContext) (string, error) {
+func (r *reviewingEngineer) Review(ctx context.Context, evidence CoreReviewEvidence, gap string, c StageContext) (string, error) {
 	r.reviewCalls++
 	r.gaps = append(r.gaps, gap)
 	if len(r.reviews) == 0 {

@@ -15,8 +15,9 @@ import (
 // adapts *app.AgentRunner to this interface; tests inject deterministic
 // fakes. One CoreRunner is created per item, scoped to its worktree.
 type CoreRunner interface {
-	// Run executes one prompt to completion and returns the run result.
-	Run(ctx context.Context, prompt string, r engine.Reporter) (*engine.RunResult, error)
+	// Run executes one durably identified attempt and returns exactly one typed
+	// terminal outcome, including failures after a run has started.
+	Run(ctx context.Context, attempt CoreAttempt, r engine.Reporter) CoreOutcome
 	// Drain waits for post-run work from every completed Run. Callers invoke
 	// it before another Run so memory visibility is scheduler-independent.
 	Drain(ctx context.Context) error
@@ -72,7 +73,7 @@ type EngineerAgent interface {
 	// given the run result and the Go-computed verification gap, it returns
 	// "" to approve or a corrective instruction to feed back to the core
 	// Agent as the next user message (REQ-014).
-	Review(ctx context.Context, res *engine.RunResult, gap string, c StageContext) (string, error)
+	Review(ctx context.Context, evidence CoreReviewEvidence, gap string, c StageContext) (string, error)
 }
 
 // GitRunner executes git with independently bounded stdout and stderr. The

@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/slash"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
@@ -44,9 +46,148 @@ type coreRunnerAdapter struct {
 
 var _ autodev.CoreRunner = (*coreRunnerAdapter)(nil)
 
-// Run implements autodev.CoreRunner.
-func (a *coreRunnerAdapter) Run(ctx context.Context, prompt string, r engine.Reporter) (*engine.RunResult, error) {
-	return a.runner.Run(ctx, prompt, r)
+// Run implements autodev.CoreRunner with one correlated terminal outcome.
+func (a *coreRunnerAdapter) Run(ctx context.Context, attempt autodev.CoreAttempt, r engine.Reporter) autodev.CoreOutcome {
+	recorder, reporter := newCoreOutcomeReporter(r)
+	result, runErr := a.runner.Run(ctx, attempt.Prompt, reporter)
+	sessionID, runID, partial := recorder.snapshot()
+	started := runID != ""
+	if result != nil {
+		if sessionID == "" {
+			sessionID = result.SessionID
+		}
+		if runID == "" {
+			runID = result.RunID
+			started = runID != ""
+		}
+		if runErr == nil {
+			partial = result.FinalMessage
+		}
+	}
+	status, retryClass := autodev.ClassifyCoreError(ctx, runErr, started)
+	if status == autodev.CoreOutcomeStartFailed {
+		sessionID, runID, partial = "", "", ""
+	}
+	return autodev.CoreOutcome{
+		Attempt: attempt, Status: status, SessionID: sessionID, RunID: runID,
+		PartialMessage: partial, Cause: runErr, RetryClass: retryClass,
+		Lifecycle: autodev.CoreLifecycleEvidence{
+			RunStarted:         started,
+			PostRunEstablished: result != nil && started,
+		},
+	}
+}
+
+// coreOutcomeReporter captures only assistant messages already committed by
+// the engine while forwarding the complete reporter contract unchanged.
+type coreOutcomeReporter struct {
+	mu        sync.Mutex
+	next      engine.Reporter
+	sessionID string
+	runID     string
+	partial   string
+}
+
+type detailedCoreOutcomeReporter struct{ *coreOutcomeReporter }
+type deltaCoreOutcomeReporter struct{ *coreOutcomeReporter }
+type detailedDeltaCoreOutcomeReporter struct{ *coreOutcomeReporter }
+
+func newCoreOutcomeReporter(next engine.Reporter) (*coreOutcomeReporter, engine.Reporter) {
+	recorder := &coreOutcomeReporter{next: next}
+	_, detailed := next.(engine.DetailedReporter)
+	_, delta := next.(engine.MessageDeltaReporter)
+	switch {
+	case detailed && delta:
+		return recorder, &detailedDeltaCoreOutcomeReporter{recorder}
+	case detailed:
+		return recorder, &detailedCoreOutcomeReporter{recorder}
+	case delta:
+		return recorder, &deltaCoreOutcomeReporter{recorder}
+	default:
+		return recorder, recorder
+	}
+}
+
+func (r *coreOutcomeReporter) OnRunStart(ctx context.Context, sessionID, runID string) {
+	r.mu.Lock()
+	r.sessionID, r.runID = sessionID, runID
+	r.mu.Unlock()
+	if r.next != nil {
+		r.next.OnRunStart(ctx, sessionID, runID)
+	}
+}
+func (r *coreOutcomeReporter) OnThinking(ctx context.Context, turn int) {
+	if r.next != nil {
+		r.next.OnThinking(ctx, turn)
+	}
+}
+func (r *coreOutcomeReporter) OnCompaction(ctx context.Context, scope string) {
+	if r.next != nil {
+		r.next.OnCompaction(ctx, scope)
+	}
+}
+func (r *coreOutcomeReporter) OnToolCall(ctx context.Context, name, args string) {
+	if r.next != nil {
+		r.next.OnToolCall(ctx, name, args)
+	}
+}
+func (r *coreOutcomeReporter) OnToolResult(ctx context.Context, name, result string, isError bool) {
+	if r.next != nil {
+		r.next.OnToolResult(ctx, name, result, isError)
+	}
+}
+func (r *coreOutcomeReporter) OnMessage(ctx context.Context, content string) {
+	r.mu.Lock()
+	r.partial = content
+	r.mu.Unlock()
+	if r.next != nil {
+		r.next.OnMessage(ctx, content)
+	}
+}
+func (r *coreOutcomeReporter) OnRunComplete(ctx context.Context, result engine.RunResult) {
+	if r.next != nil {
+		r.next.OnRunComplete(ctx, result)
+	}
+}
+func (r *coreOutcomeReporter) OnRunError(ctx context.Context, sessionID, runID string, err error) {
+	if r.next != nil {
+		r.next.OnRunError(ctx, sessionID, runID, err)
+	}
+}
+func (r *detailedCoreOutcomeReporter) OnToolCallDetail(ctx context.Context, call schema.ToolCall) {
+	if next, ok := r.next.(engine.DetailedReporter); ok {
+		next.OnToolCallDetail(ctx, call)
+	}
+}
+func (r *detailedCoreOutcomeReporter) OnToolResultDetail(ctx context.Context, call schema.ToolCall, result schema.ToolResult) {
+	if next, ok := r.next.(engine.DetailedReporter); ok {
+		next.OnToolResultDetail(ctx, call, result)
+	}
+}
+func (r *deltaCoreOutcomeReporter) OnMessageDelta(ctx context.Context, content string) {
+	if next, ok := r.next.(engine.MessageDeltaReporter); ok {
+		next.OnMessageDelta(ctx, content)
+	}
+}
+func (r *detailedDeltaCoreOutcomeReporter) OnToolCallDetail(ctx context.Context, call schema.ToolCall) {
+	if next, ok := r.next.(engine.DetailedReporter); ok {
+		next.OnToolCallDetail(ctx, call)
+	}
+}
+func (r *detailedDeltaCoreOutcomeReporter) OnToolResultDetail(ctx context.Context, call schema.ToolCall, result schema.ToolResult) {
+	if next, ok := r.next.(engine.DetailedReporter); ok {
+		next.OnToolResultDetail(ctx, call, result)
+	}
+}
+func (r *detailedDeltaCoreOutcomeReporter) OnMessageDelta(ctx context.Context, content string) {
+	if next, ok := r.next.(engine.MessageDeltaReporter); ok {
+		next.OnMessageDelta(ctx, content)
+	}
+}
+func (r *coreOutcomeReporter) snapshot() (string, string, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sessionID, r.runID, r.partial
 }
 
 // Drain implements autodev.CoreRunner.
