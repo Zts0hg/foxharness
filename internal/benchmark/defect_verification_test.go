@@ -746,7 +746,7 @@ func TestDVBEN007CorrectedSchemaMatchesNormalizedGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected, err := os.ReadFile(filepath.Join("testdata", "benchmark-result-v1.golden.json"))
+	expected, err := os.ReadFile(filepath.Join("..", "..", "testdata", "characterization", "v1", "outputs", "benchmark-result-v1.golden.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

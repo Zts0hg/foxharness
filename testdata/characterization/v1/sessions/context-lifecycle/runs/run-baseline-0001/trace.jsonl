@@ -1,0 +1,2 @@
+{"type":"span_start","trace_id":"trace-baseline-0001","span_id":"span-baseline-0001","name":"agent.run","time":"2026-08-10T08:01:00Z","status":"started","attrs":{"model":"baseline-model","run_id":"run-baseline-0001"}}
+{"type":"span_end","trace_id":"trace-baseline-0001","span_id":"span-baseline-0001","name":"agent.run","time":"2026-08-10T08:05:00Z","status":"ok","duration_ms":240000}

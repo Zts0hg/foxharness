@@ -1,0 +1,7 @@
+{"seq":0,"run_id":"run-baseline-0001","time":"2026-08-10T08:01:00Z","kind":"normal","message":{"role":"user","content":"Inspect the runtime boundary."}}
+{"seq":1,"run_id":"run-baseline-0001","time":"2026-08-10T08:02:00Z","kind":"normal","message":{"role":"assistant","content":"I will inspect the current behavior.","usage":{"input_tokens":12,"output_tokens":8}}}
+{"seq":2,"run_id":"run-baseline-0001","time":"2026-08-10T08:03:00Z","kind":"normal","message":{"role":"assistant","content":"","tool_calls":[{"id":"call-baseline-0001","name":"read_file","arguments":{"path":"README.md"}}]}}
+{"seq":3,"run_id":"run-baseline-0001","time":"2026-08-10T08:04:00Z","kind":"normal","message":{"role":"user","content":"README contents","tool_call_id":"call-baseline-0001"}}
+{"seq":4,"run_id":"run-baseline-0001","time":"2026-08-10T08:05:00Z","kind":"normal","message":{"role":"assistant","content":"The runtime boundary is documented.","usage":{"input_tokens":24,"output_tokens":9}}}
+{"seq":5,"run_id":"run-baseline-0002","time":"2026-08-10T08:06:00Z","kind":"normal","message":{"role":"user","content":"Continue with the migration plan."}}
+{"seq":6,"run_id":"run-baseline-0002","time":"2026-08-10T08:07:00Z","kind":"normal","message":{"role":"assistant","content":"The next step is characterization coverage.","usage":{"input_tokens":32,"output_tokens":11}}}

@@ -1,0 +1,2 @@
+{"time":"2026-08-10T08:07:00Z","type":"model_call","session_id":"session-baseline-0001","turn":1,"phase":"Acting","model":"baseline-model","input_tokens":32,"output_tokens":11,"duration_ms":100,"error":""}
+{"time":"2026-08-10T08:07:00Z","type":"run_summary","session_id":"session-baseline-0001","total_model_calls":1,"total_tool_calls":0,"total_input_tokens":32,"total_output_tokens":11,"total_duration_ms":60000,"error_count":0}

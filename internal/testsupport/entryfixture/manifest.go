@@ -62,7 +62,9 @@ func (m *Manifest) Verify(root string) error {
 	if err := m.validate(); err != nil {
 		return err
 	}
+	listed := make(map[string]struct{}, len(m.Fixtures))
 	for _, fixture := range m.Fixtures {
+		listed[filepath.ToSlash(filepath.Clean(filepath.FromSlash(fixture.Path)))] = struct{}{}
 		path, err := secureExistingFile(root, fixture.Path)
 		if err != nil {
 			return fmt.Errorf("fixture %q: %w", fixture.Path, err)
@@ -77,7 +79,29 @@ func (m *Manifest) Verify(root string) error {
 			return fmt.Errorf("fixture %q sha256 mismatch: got %s want %s", fixture.Path, actual, fixture.SHA256)
 		}
 	}
-	return nil
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("walk fixture authority: %w", walkErr)
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return fmt.Errorf("resolve fixture authority entry: %w", err)
+		}
+		relative = filepath.ToSlash(relative)
+		if relative == ManifestFilename {
+			return nil
+		}
+		if _, ok := listed[relative]; !ok {
+			return fmt.Errorf("unlisted fixture %q", relative)
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+			return fmt.Errorf("fixture authority entry is not a regular file: %q", relative)
+		}
+		return nil
+	})
 }
 
 /* CopyFixture copies one fixture file into a test-owned destination root. */
@@ -170,7 +194,11 @@ func (m *Manifest) validate() error {
 	if m.BaselineStatus == BaselineStatusFrozen && m.BaselineCommit == "" {
 		return fmt.Errorf("baseline_commit is required when baseline_status is frozen")
 	}
+	if m.BaselineStatus == BaselineStatusFrozen && len(m.Fixtures) == 0 {
+		return fmt.Errorf("frozen fixture authority requires at least one fixture")
+	}
 	seen := make(map[string]struct{}, len(m.Fixtures))
+	previousPath := ""
 	for i, fixture := range m.Fixtures {
 		clean, err := cleanRelativePath(fixture.Path)
 		if err != nil {
@@ -181,6 +209,10 @@ func (m *Manifest) validate() error {
 			return fmt.Errorf("duplicate fixture path %q", fixture.Path)
 		}
 		seen[key] = struct{}{}
+		if previousPath != "" && key < previousPath {
+			return fmt.Errorf("fixture paths must be sorted: %q appears after %q", key, previousPath)
+		}
+		previousPath = key
 		if len(fixture.SHA256) != sha256.Size*2 {
 			return fmt.Errorf("fixture %q sha256 must contain %d hexadecimal characters", fixture.Path, sha256.Size*2)
 		}
@@ -189,6 +221,9 @@ func (m *Manifest) validate() error {
 		}
 		if fixture.SourceCommit == "" || fixture.Source == "" || fixture.Semantics == "" {
 			return fmt.Errorf("fixture %q requires source_commit, source, and semantics", fixture.Path)
+		}
+		if m.BaselineStatus == BaselineStatusFrozen && fixture.SourceCommit != m.BaselineCommit {
+			return fmt.Errorf("fixture %q source_commit must equal baseline_commit", fixture.Path)
 		}
 	}
 	return nil

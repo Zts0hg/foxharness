@@ -1,0 +1,2 @@
+{"message_seq":0,"plan":{"exists":false},"todo":{"exists":false},"created_at":"2026-08-10T08:00:30Z"}
+{"message_seq":5,"plan":{"exists":true,"content":"# PLAN\n\n## Goal\n\nInspect the runtime boundary.\n"},"todo":{"exists":true,"content":"# TODO\n\n- [x] Inspect runtime boundary\n"},"created_at":"2026-08-10T08:05:45Z"}
