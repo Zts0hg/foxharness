@@ -84,6 +84,40 @@ func TestTUIReporterForwardsEngineEvents(t *testing.T) {
 	}
 }
 
+func TestTUIReporterConsumesRemoteEventIDIdempotently(t *testing.T) {
+	events := make(chan tea.Msg, 2)
+	rep := NewTUIReporter(events)
+	event := autodev.RemoteEvent{
+		EventID: "issue:item-tui:31",
+		ItemID:  "item-tui",
+		Kind:    autodev.RemoteEventIssue,
+		Number:  31,
+	}
+	if err := rep.OnRemoteEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if err := rep.OnRemoteEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(events); got != 1 {
+		t.Fatalf("remote event messages = %d, want one for duplicate EventID", got)
+	}
+	if body := collectEvent(t, events).body; !strings.Contains(body, "#31") {
+		t.Errorf("remote event body = %q, want issue number", body)
+	}
+}
+
+func TestTUIReporterRemoteEventReturnsCancellationBeforeConsumption(t *testing.T) {
+	events := make(chan tea.Msg)
+	rep := NewTUIReporter(events)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	event := autodev.RemoteEvent{EventID: "issue:item-tui:31", ItemID: "item-tui", Kind: autodev.RemoteEventIssue, Number: 31}
+	if err := rep.OnRemoteEvent(ctx, event); err == nil {
+		t.Fatal("OnRemoteEvent returned nil for canceled delivery")
+	}
+}
+
 func TestTUIReporterDoesNotBlockOnCancelledContext(t *testing.T) {
 	events := make(chan tea.Msg) // unbuffered and never drained
 	rep := NewTUIReporter(events)

@@ -1,6 +1,7 @@
 package autodev
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,24 @@ import (
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
+
+type recordingRemoteEventReporter struct {
+	Reporter
+	terminal *TerminalReporter
+	events   []RemoteEvent
+	timeline *[]string
+}
+
+func (r *recordingRemoteEventReporter) OnRemoteEvent(ctx context.Context, event RemoteEvent) error {
+	r.events = append(r.events, event)
+	if r.timeline != nil {
+		*r.timeline = append(*r.timeline, "event:"+event.EventID)
+	}
+	if r.terminal != nil {
+		return r.terminal.OnRemoteEvent(ctx, event)
+	}
+	return nil
+}
 
 // repoState models the ground truth the fake core mutates and the fake
 // git/gh runners observe — the same separation the real system has.
@@ -91,6 +110,27 @@ func (g *remoteGH) Run(ctx context.Context, dir string, name string, args ...str
 			first = false
 		}
 		return stdoutResult(out + "]"), nil
+	case len(args) >= 3 && args[0] == "issue" && args[1] == "view":
+		number, err := strconv.Atoi(args[2])
+		if err != nil {
+			return CommandResult{}, err
+		}
+		title, ok := g.state.issues[number]
+		if !ok {
+			return stdoutResult("issue not found"), errors.New("exit status 1")
+		}
+		return stdoutResult(fmt.Sprintf(`{"number":%d,"title":%q,"body":%q,"state":"CLOSED"}`,
+			number, title, issueMarker("item-test"))), nil
+	case len(args) >= 2 && args[0] == "api" && args[1] == "--paginate":
+		marker := markerFromSearchArgs(args)
+		items := ""
+		for n := range g.state.issues {
+			if items != "" {
+				items += ","
+			}
+			items += fmt.Sprintf(`{"number":%d,"body":%q,"state":"OPEN"}`, n, marker)
+		}
+		return stdoutResult(`[{"items":[` + items + `]}]`), nil
 	case len(args) >= 2 && args[0] == "pr" && args[1] == "view":
 		if g.state.prNumber == 0 {
 			return stdoutResult("no pull requests found"), errors.New("exit status 1")
@@ -147,7 +187,7 @@ func newPublisher(t *testing.T, state *repoState) (*RemotePublisher, *remoteGit,
 }
 
 func happyItem() LedgerItem {
-	return LedgerItem{Slug: "x", Title: "Engine memory writes", Status: StatusInProgress, Branch: "auto/x"}
+	return LedgerItem{ItemID: "item-test", Slug: "x", Title: "Engine memory writes", Status: StatusInProgress, Branch: "auto/x"}
 }
 
 func recordRemoteItem(item *LedgerItem, snapshots *[]LedgerItem) func(string, func(*LedgerItem)) error {
@@ -162,7 +202,13 @@ func recordRemoteItem(item *LedgerItem, snapshots *[]LedgerItem) func(string, fu
 
 func TestPublishDrivesOrderedSequence(t *testing.T) {
 	state := &repoState{dirty: true, localTip: "aaa111", issues: map[int]string{}}
-	pub, _, _, _ := newPublisher(t, state)
+	git := &remoteGit{t: t, state: state}
+	gh := &remoteGH{t: t, state: state}
+	baseReporter := NewTerminalReporter(io.Discard)
+	var timeline []string
+	reporter := &recordingRemoteEventReporter{Reporter: baseReporter, timeline: &timeline}
+	machine := NewStageMachine(&reviewingEngineer{}, reporter)
+	pub := NewRemotePublisher(machine, git, gh, reporter, remoteConfig())
 	core := &remoteCore{effects: []func(){
 		func() { state.staged = true },
 		func() { state.staged = false; state.dirty = false; state.commitCount = 1; state.localTip = "bbb222" },
@@ -173,10 +219,15 @@ func TestPublishDrivesOrderedSequence(t *testing.T) {
 
 	var recorded []LedgerItem
 	var operations []string
+	bindingWasPending := false
 	item := happyItem()
 	record := func(operation string, mut func(*LedgerItem)) error {
-		operations = append(operations, operation)
 		mut(&item)
+		if operation == "issue-binding" {
+			bindingWasPending = len(item.Outbox) == 1 && !item.Outbox[0].Delivered
+		}
+		operations = append(operations, operation)
+		timeline = append(timeline, "record:"+operation)
 		recorded = append(recorded, item)
 		return nil
 	}
@@ -202,6 +253,19 @@ func TestPublishDrivesOrderedSequence(t *testing.T) {
 	if item.Issue != 31 || item.PR != 32 {
 		t.Errorf("recorded item = %+v, want issue/pr recorded via callback", item)
 	}
+	if !bindingWasPending {
+		t.Fatal("issue binding did not persist the issue and pending event atomically")
+	}
+	if len(item.Outbox) != 1 || !item.Outbox[0].Delivered {
+		t.Fatalf("outbox = %+v, want one delivered issue event", item.Outbox)
+	}
+	event := item.Outbox[0]
+	if event.EventID != "issue:item-test:31" || event.ItemID != item.ItemID || event.Kind != RemoteEventIssue || event.Number != 31 {
+		t.Errorf("outbox event = %+v, want stable issue identity", event)
+	}
+	if len(reporter.events) != 1 || reporter.events[0].EventID != event.EventID {
+		t.Errorf("reported events = %+v, want one event matching the durable outbox", reporter.events)
+	}
 
 	// The issue number must be durably recorded before the PR step runs so
 	// an interrupted run reuses it (Edge Cases).
@@ -223,11 +287,94 @@ func TestPublishDrivesOrderedSequence(t *testing.T) {
 		"publish-push-verified",
 		"publish-issue-intent",
 		"issue-binding",
+		"issue-event-delivered",
 		"publish-pr-intent",
 		"pr-binding",
 	}
 	if !reflect.DeepEqual(operations, wantOperations) {
 		t.Errorf("record operations = %v, want %v", operations, wantOperations)
+	}
+	wantIssueSequence := []string{
+		"record:issue-binding",
+		"event:issue:item-test:31",
+		"record:issue-event-delivered",
+		"record:publish-pr-intent",
+	}
+	var issueSequence []string
+	for _, entry := range timeline {
+		if entry == "record:issue-binding" || entry == "event:issue:item-test:31" ||
+			entry == "record:issue-event-delivered" || entry == "record:publish-pr-intent" {
+			issueSequence = append(issueSequence, entry)
+		}
+	}
+	if !reflect.DeepEqual(issueSequence, wantIssueSequence) {
+		t.Errorf("issue publication sequence = %v, want %v", issueSequence, wantIssueSequence)
+	}
+}
+
+func TestPublishReplaysPendingIssueEventBeforePRWithStableIdentity(t *testing.T) {
+	state := &repoState{
+		dirty:       false,
+		commitCount: 1,
+		localTip:    "bbb222",
+		remoteTip:   "bbb222",
+		issues:      map[int]string{31: "renamed and closed"},
+	}
+	git := &remoteGit{t: t, state: state}
+	gh := &remoteGH{t: t, state: state}
+	var output bytes.Buffer
+	terminal := NewTerminalReporter(&output)
+	reporter := &recordingRemoteEventReporter{Reporter: terminal, terminal: terminal}
+	pub := NewRemotePublisher(NewStageMachine(&reviewingEngineer{}, reporter), git, gh, reporter, remoteConfig())
+	item := happyItem()
+	item.Stage = StageIssue
+	item.StageState = StageStateVerified
+	item.Issue = 31
+	item.Outbox = []RemoteEventRecord{{
+		EventID: "issue:item-test:31",
+		ItemID:  item.ItemID,
+		Kind:    RemoteEventIssue,
+		Number:  31,
+	}}
+
+	core := &remoteCore{effects: []func(){func() {
+		state.prNumber = 32
+		state.prBody = "Closes #31"
+	}}}
+	ackAttempts := 0
+	record := func(operation string, mut func(*LedgerItem)) error {
+		if operation == "issue-event-delivered" {
+			ackAttempts++
+			if ackAttempts == 1 {
+				return errors.New("simulated delivery ack failure")
+			}
+		}
+		mut(&item)
+		return nil
+	}
+
+	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, record); err == nil {
+		t.Fatal("first Publish returned nil, want delivery ack failure")
+	}
+	if len(core.prompts) != 0 {
+		t.Fatalf("core runs after failed delivery ack = %d, want 0 before PR work", len(core.prompts))
+	}
+	if item.Outbox[0].Delivered {
+		t.Fatal("failed delivery ack marked the event delivered")
+	}
+
+	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, record)
+	if err != nil {
+		t.Fatalf("second Publish returned error: %v", err)
+	}
+	if result.PR != 32 || !item.Outbox[0].Delivered {
+		t.Errorf("resumed result/item = %+v / %+v, want PR 32 and delivered event", result, item.Outbox)
+	}
+	if len(reporter.events) != 2 || reporter.events[0].EventID != reporter.events[1].EventID {
+		t.Errorf("delivery attempts = %+v, want two attempts with one stable EventID", reporter.events)
+	}
+	if got := strings.Count(output.String(), "[remote] issue #31"); got != 1 {
+		t.Errorf("terminal issue observations = %d, want one idempotent logical output; output=%q", got, output.String())
 	}
 }
 

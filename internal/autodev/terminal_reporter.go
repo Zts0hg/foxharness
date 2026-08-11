@@ -15,13 +15,14 @@ import (
 // messages, core LLM output, tool calls, and every control-plane action —
 // as a readable line-oriented log, normally to stdout (REQ-024).
 type TerminalReporter struct {
-	mu  sync.Mutex
-	out io.Writer
+	mu        sync.Mutex
+	out       io.Writer
+	delivered map[string]struct{}
 }
 
 // NewTerminalReporter creates a TerminalReporter writing to out.
 func NewTerminalReporter(out io.Writer) *TerminalReporter {
-	return &TerminalReporter{out: out}
+	return &TerminalReporter{out: out, delivered: make(map[string]struct{})}
 }
 
 var _ Reporter = (*TerminalReporter)(nil)
@@ -138,6 +139,30 @@ func (r *TerminalReporter) OnGate(ctx context.Context, result GateResult) {
 // OnIssue implements Reporter.
 func (r *TerminalReporter) OnIssue(ctx context.Context, number int) {
 	r.printf("[remote] issue #%d", number)
+}
+
+// OnRemoteEvent consumes one logical event idempotently within this process.
+func (r *TerminalReporter) OnRemoteEvent(ctx context.Context, event RemoteEvent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.delivered == nil {
+		r.delivered = make(map[string]struct{})
+	}
+	if _, ok := r.delivered[event.EventID]; ok {
+		return nil
+	}
+	var err error
+	switch event.Kind {
+	case RemoteEventIssue:
+		_, err = fmt.Fprintf(r.out, "[remote] issue #%d\n", event.Number)
+	default:
+		return fmt.Errorf("unsupported remote event kind %q", event.Kind)
+	}
+	if err != nil {
+		return err
+	}
+	r.delivered[event.EventID] = struct{}{}
+	return nil
 }
 
 // OnPR implements Reporter.

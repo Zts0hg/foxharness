@@ -3,12 +3,19 @@ package autodev
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
+
+type failingReporterWriter struct{}
+
+func (failingReporterWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write failed")
+}
 
 func TestTerminalReporterRendersOrchestrationEvents(t *testing.T) {
 	var buf bytes.Buffer
@@ -76,4 +83,15 @@ func TestTerminalReporterRendersEngineEvents(t *testing.T) {
 
 func TestTerminalReporterImplementsReporter(t *testing.T) {
 	var _ Reporter = NewTerminalReporter(&bytes.Buffer{})
+}
+
+func TestTerminalReporterRemoteEventWriteFailureIsRetryable(t *testing.T) {
+	rep := NewTerminalReporter(failingReporterWriter{})
+	event := RemoteEvent{EventID: "issue:item-terminal:31", ItemID: "item-terminal", Kind: RemoteEventIssue, Number: 31}
+	if err := rep.OnRemoteEvent(context.Background(), event); err == nil {
+		t.Fatal("OnRemoteEvent returned nil for failed terminal write")
+	}
+	if _, delivered := rep.delivered[event.EventID]; delivered {
+		t.Fatal("failed terminal write was marked delivered")
+	}
 }

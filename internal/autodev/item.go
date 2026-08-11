@@ -117,6 +117,31 @@ type PublishResult struct {
 	PR int
 }
 
+type RemoteEventKind string
+
+const RemoteEventIssue RemoteEventKind = "issue"
+
+// RemoteEvent is one stable logical observation delivered at least once.
+type RemoteEvent struct {
+	EventID string          `json:"event_id"`
+	ItemID  ItemID          `json:"item_id"`
+	Kind    RemoteEventKind `json:"kind"`
+	Number  int             `json:"number"`
+}
+
+// RemoteEventRecord is the durable outbox state for one logical event.
+type RemoteEventRecord struct {
+	EventID   string          `json:"event_id"`
+	ItemID    ItemID          `json:"item_id"`
+	Kind      RemoteEventKind `json:"kind"`
+	Number    int             `json:"number"`
+	Delivered bool            `json:"delivered"`
+}
+
+func (e RemoteEventRecord) event() RemoteEvent {
+	return RemoteEvent{EventID: e.EventID, ItemID: e.ItemID, Kind: e.Kind, Number: e.Number}
+}
+
 // StageContext carries the per-item state threaded through stage prompts,
 // engineer decisions, deterministic controls, and Verify predicates.
 type StageContext struct {

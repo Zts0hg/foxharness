@@ -86,9 +86,10 @@ func TestDVAUT001LedgerSaveFailureStopsBeforeDependentWorkflow(t *testing.T) {
 		{name: "push-verified", failAtCall: 19, maxCoreRuns: 5},
 		{name: "issue-intent", failAtCall: 20, maxCoreRuns: 5},
 		{name: "issue-binding", failAtCall: 21, maxCoreRuns: 6, maxIssueQueries: 1},
-		{name: "pr-intent", failAtCall: 22, maxCoreRuns: 6, maxIssueQueries: 1, maxIssueReports: 1},
-		{name: "pr-binding", failAtCall: 23, maxCoreRuns: 7, maxIssueQueries: 1, maxPRQueries: 1, maxIssueReports: 1},
-		{name: "done", failAtCall: 24, maxCoreRuns: 7, maxIssueQueries: 1, maxPRQueries: 1, maxIssueReports: 1, maxPRReports: 1},
+		{name: "issue-delivery-ack", failAtCall: 22, maxCoreRuns: 6, maxIssueQueries: 1, maxIssueReports: 1},
+		{name: "pr-intent", failAtCall: 23, maxCoreRuns: 6, maxIssueQueries: 1, maxIssueReports: 1},
+		{name: "pr-binding", failAtCall: 24, maxCoreRuns: 7, maxIssueQueries: 1, maxPRQueries: 1, maxIssueReports: 1},
+		{name: "done", failAtCall: 25, maxCoreRuns: 7, maxIssueQueries: 1, maxPRQueries: 1, maxIssueReports: 1, maxPRReports: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1105,7 +1106,7 @@ func TestDVAUT006StrictJSONQueryRejectsOverflow(t *testing.T) {
 		StdoutOverflow: true,
 	}}
 	publisher := NewRemotePublisher(newTestMachine(&reviewingEngineer{}), &orchestraGit{insideWT: true}, exec, NewTerminalReporter(io.Discard), defaultConfig(t.TempDir()))
-	ok, gap := publisher.verifyIssue()(context.Background(), &StageContext{Item: Item{Title: "Same"}, WorkDir: t.TempDir()})
+	ok, gap := publisher.verifyIssue()(context.Background(), &StageContext{ItemID: "item-overflow", Item: Item{Title: "Same"}, WorkDir: t.TempDir()})
 	if ok || !strings.Contains(gap, "capture limit") {
 		t.Fatalf("verifyIssue = %v, gap %q, want strict overflow failure", ok, gap)
 	}
@@ -1218,52 +1219,96 @@ func TestDVAUT006CancelledContextSuppressesStageAndRemoteOperations(t *testing.T
 	}
 }
 
-func TestDVAUT007IssueVerificationUsesFirstMatchingTitleWithinTwentyResults(t *testing.T) {
-	reporter := NewTerminalReporter(io.Discard)
+type issueQueryExec struct {
+	view   CommandResult
+	search CommandResult
+	calls  []string
+}
+
+func (e *issueQueryExec) Run(ctx context.Context, dir, name string, args ...string) (CommandResult, error) {
+	call := name + " " + strings.Join(args, " ")
+	e.calls = append(e.calls, call)
+	if len(args) >= 2 && args[0] == "issue" && args[1] == "view" {
+		return e.view, nil
+	}
+	if len(args) >= 2 && args[0] == "api" && args[1] == "--paginate" {
+		return e.search, nil
+	}
+	return CommandResult{}, fmt.Errorf("unexpected issue query: %s", call)
+}
+
+func TestDVAUT007IssueMarkerResolutionAndPagination(t *testing.T) {
+	itemID := ItemID("item-stable")
+	marker := "<!-- fox-autodev-item-id:item-stable -->"
 	cases := []struct {
 		name      string
-		output    string
+		recorded  int
+		view      string
+		search    string
 		wantOK    bool
 		wantIssue int
+		conflict  bool
 	}{
-		{name: "duplicate-title", output: `[{"number":7,"title":"Same"},{"number":9,"title":"Same"}]`, wantOK: true, wantIssue: 7},
-		{name: "closed-title", output: `[{"number":11,"title":"Same"}]`, wantOK: true, wantIssue: 11},
-		{name: "outside-first-page", output: `[{"number":1,"title":"Different"}]`, wantOK: false},
+		{name: "recorded-renamed-closed", recorded: 404, view: `{"number":404,"title":"Renamed","body":"` + marker + `","state":"CLOSED"}`, wantOK: true, wantIssue: 404},
+		{name: "recorded-wrong-marker", recorded: 404, view: `{"number":404,"body":"other","state":"OPEN"}`, wantIssue: 404, conflict: true},
+		{name: "zero-match", search: `[{"items":[{"number":1,"body":"other"}]},{"items":[]}]`},
+		{name: "one-match-later-page", search: `[{"items":[{"number":1,"body":"other"}]},{"items":[{"number":7,"title":"Renamed","body":"` + marker + `","state":"CLOSED"}]}]`, wantOK: true, wantIssue: 7},
+		{name: "multiple-match-conflict", search: `[{"items":[{"number":7,"body":"` + marker + `"}]},{"items":[{"number":9,"body":"` + marker + `"}]}]`, conflict: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			exec := &fixedExec{out: tc.output}
-			publisher := NewRemotePublisher(newTestMachine(&reviewingEngineer{}), &orchestraGit{insideWT: true}, exec, reporter, defaultConfig(t.TempDir()))
-			sc := &StageContext{Item: Item{Title: "Same"}, WorkDir: t.TempDir()}
-			ok, _ := publisher.verifyIssue()(context.Background(), sc)
+			exec := &issueQueryExec{view: stdoutResult(tc.view), search: stdoutResult(tc.search)}
+			publisher := NewRemotePublisher(newTestMachine(&reviewingEngineer{}), &orchestraGit{insideWT: true}, exec, NewTerminalReporter(io.Discard), defaultConfig(t.TempDir()))
+			sc := &StageContext{ItemID: itemID, Item: Item{Title: "Mutable title"}, WorkDir: t.TempDir(), Issue: tc.recorded}
+			ok, _, err := publisher.resolveIssue(context.Background(), sc)
+			var conflict *IssueIdentityConflictError
+			if tc.conflict != errors.As(err, &conflict) {
+				t.Fatalf("conflict error = %T %v, want conflict=%v", err, err, tc.conflict)
+			}
+			if !tc.conflict && err != nil {
+				t.Fatal(err)
+			}
 			if ok != tc.wantOK || sc.Issue != tc.wantIssue {
 				t.Fatalf("ok/issue = %v/%d, want %v/%d", ok, sc.Issue, tc.wantOK, tc.wantIssue)
 			}
-			joined := strings.Join(exec.calls[0], " ")
-			if !strings.Contains(joined, "--state all") || !strings.Contains(joined, "--limit 20") {
-				t.Errorf("issue query = %q, want closed-inclusive fixed first page", joined)
+			joined := strings.Join(exec.calls, "\n")
+			if tc.recorded != 0 && !strings.Contains(joined, "issue view 404") {
+				t.Fatalf("recorded issue query = %q, want issue view", joined)
+			}
+			if tc.recorded == 0 && (!strings.Contains(joined, "api --paginate --slurp") || !strings.Contains(joined, "fox-autodev-item-id%3Aitem-stable")) {
+				t.Fatalf("unbound issue query = %q, want complete marker pagination", joined)
 			}
 		})
 	}
 }
 
-func TestDVAUT007RecordedIssueSkipsVerificationWithoutStableCorrelation(t *testing.T) {
-	exec := &fixedExec{out: `[]`}
-	cfg := defaultConfig(t.TempDir())
-	publisher := NewRemotePublisher(newTestMachine(&reviewingEngineer{}), &orchestraGit{insideWT: true}, exec, NewTerminalReporter(io.Discard), cfg)
-	steps := publisher.steps()
-	var issue Stage
-	for _, step := range steps {
-		if step.Name == "issue" {
-			issue = step
+func TestDVAUT007IssueCreationPromptCarriesExactItemMarker(t *testing.T) {
+	publisher := NewRemotePublisher(newTestMachine(&reviewingEngineer{}), &orchestraGit{insideWT: true}, &fixedExec{}, NewTerminalReporter(io.Discard), defaultConfig(t.TempDir()))
+	for _, stage := range publisher.steps() {
+		if stage.Name != "issue" {
+			continue
 		}
+		prompt := stage.Prompt(&StageContext{ItemID: "item-stable", Item: Item{Title: "Mutable title"}})
+		if !strings.Contains(prompt, "<!-- fox-autodev-item-id:item-stable -->") {
+			t.Fatalf("issue prompt missing exact durable marker: %q", prompt)
+		}
+		return
 	}
-	sc := &StageContext{Issue: 404, Item: Item{Title: "Renamed title"}}
-	if issue.Skip == nil || !issue.Skip(context.Background(), sc) {
-		t.Fatal("recorded issue was not trusted unconditionally")
+	t.Fatal("issue stage not configured")
+}
+
+func TestDVAUT007TerminalReporterConsumesEventIDIdempotently(t *testing.T) {
+	var out strings.Builder
+	reporter := NewTerminalReporter(&out)
+	event := RemoteEvent{EventID: "issue:item-stable:7", ItemID: "item-stable", Kind: RemoteEventIssue, Number: 7}
+	if err := reporter.OnRemoteEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
 	}
-	if len(exec.calls) != 0 {
-		t.Errorf("recorded issue triggered re-verification calls: %v", exec.calls)
+	if err := reporter.OnRemoteEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(out.String(), "issue #7"); got != 1 {
+		t.Fatalf("issue report count = %d, want one logical event for duplicate EventID\n%s", got, out.String())
 	}
 }
 

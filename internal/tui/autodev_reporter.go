@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -21,11 +22,16 @@ import (
 // cancellation.
 type TUIReporter struct {
 	channelReporter
+	remoteMu        sync.Mutex
+	deliveredRemote map[string]struct{}
 }
 
 // NewTUIReporter creates a TUIReporter sending into events.
 func NewTUIReporter(events chan<- tea.Msg) *TUIReporter {
-	return &TUIReporter{channelReporter{events: events}}
+	return &TUIReporter{
+		channelReporter: channelReporter{events: events},
+		deliveredRemote: make(map[string]struct{}),
+	}
 }
 
 var _ autodev.Reporter = (*TUIReporter)(nil)
@@ -96,6 +102,29 @@ func (r *TUIReporter) OnGate(ctx context.Context, result autodev.GateResult) {
 // OnIssue implements autodev.Reporter.
 func (r *TUIReporter) OnIssue(ctx context.Context, number int) {
 	r.sendSystem(ctx, "autodev remote", fmt.Sprintf("issue #%d", number), "")
+}
+
+// OnRemoteEvent implements autodev.Reporter with EventID deduplication.
+func (r *TUIReporter) OnRemoteEvent(ctx context.Context, event autodev.RemoteEvent) error {
+	r.remoteMu.Lock()
+	defer r.remoteMu.Unlock()
+	if _, ok := r.deliveredRemote[event.EventID]; ok {
+		return nil
+	}
+	var body string
+	switch event.Kind {
+	case autodev.RemoteEventIssue:
+		body = fmt.Sprintf("issue #%d", event.Number)
+	default:
+		return fmt.Errorf("unsupported remote event kind %q", event.Kind)
+	}
+	select {
+	case r.events <- runEventMsg{role: "system", title: "autodev remote", body: body}:
+		r.deliveredRemote[event.EventID] = struct{}{}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // OnPR implements autodev.Reporter.

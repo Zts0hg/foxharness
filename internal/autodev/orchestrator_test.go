@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -49,6 +50,11 @@ func (r *eventRecorder) OnStageStart(ctx context.Context, slug, stage string) {
 
 func (r *eventRecorder) OnItemDone(ctx context.Context, item LedgerItem) {
 	r.add("done:" + item.Slug)
+}
+
+func (r *eventRecorder) OnRemoteEvent(ctx context.Context, event RemoteEvent) error {
+	r.add(fmt.Sprintf("issue:%d", event.Number))
+	return r.TerminalReporter.OnRemoteEvent(ctx, event)
 }
 
 // stubCore is a no-op CoreRunner for orchestrator flow tests.
@@ -127,6 +133,7 @@ type orchestraGH struct {
 	authOK   bool
 	issueSeq int
 	issues   map[string]int
+	markers  map[string]int
 }
 
 func (g *orchestraGH) Run(ctx context.Context, dir string, name string, args ...string) (CommandResult, error) {
@@ -143,6 +150,19 @@ func (g *orchestraGH) Run(ctx context.Context, dir string, name string, args ...
 		}
 		return stdoutResult("you are not logged in"), errors.New("exit status 1")
 	case "issue":
+		if len(args) >= 3 && args[1] == "view" {
+			number, err := strconv.Atoi(args[2])
+			if err != nil {
+				return CommandResult{}, err
+			}
+			for marker, bound := range g.markers {
+				if bound == number {
+					return stdoutResult(fmt.Sprintf(`{"number":%d,"title":"renamed","body":%q,"state":"CLOSED"}`,
+						number, marker)), nil
+				}
+			}
+			return stdoutResult("issue not found"), errors.New("exit status 1")
+		}
 		title := ""
 		for i, a := range args {
 			if a == "--search" && i+1 < len(args) {
@@ -157,6 +177,21 @@ func (g *orchestraGH) Run(ctx context.Context, dir string, name string, args ...
 			g.issues[title] = g.issueSeq
 		}
 		return stdoutResult(fmt.Sprintf(`[{"number":%d,"title":%q}]`, g.issues[title], title)), nil
+	case "api":
+		marker := markerFromSearchArgs(args)
+		if g.markers == nil {
+			g.markers = map[string]int{}
+		}
+		if number, ok := g.markers[marker]; ok {
+			return stdoutResult(fmt.Sprintf(`[{"items":[{"number":%d,"body":%q,"state":"OPEN"}]}]`, number, marker)), nil
+		}
+		g.issueSeq++
+		g.markers[marker] = g.issueSeq
+		if g.issues == nil {
+			g.issues = map[string]int{}
+		}
+		g.issues[marker] = g.issueSeq
+		return stdoutResult(`[{"items":[]}]`), nil
 	case "pr":
 		links := make([]string, 0, len(g.issues))
 		for _, n := range g.issues {

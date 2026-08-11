@@ -33,6 +33,7 @@ type e2eWorld struct {
 	repoRoot  string
 	byWorkDir map[string]*e2eItemState
 	issues    map[string]int
+	markers   map[string]int
 	prs       map[string]int
 	prBodies  map[string]string
 	issueSeq  int
@@ -129,6 +130,19 @@ func (e *e2eExec) Run(ctx context.Context, dir string, name string, args ...stri
 	case "auth":
 		return stdoutResult("Logged in"), nil
 	case "issue":
+		if len(args) >= 3 && args[1] == "view" {
+			number, err := strconv.Atoi(args[2])
+			if err != nil {
+				return CommandResult{}, err
+			}
+			for marker, bound := range w.markers {
+				if bound == number {
+					return stdoutResult(fmt.Sprintf(`{"number":%d,"title":"renamed","body":%q,"state":"CLOSED"}`,
+						number, marker)), nil
+				}
+			}
+			return stdoutResult("issue not found"), errors.New("exit status 1")
+		}
 		title := ""
 		for i, a := range args {
 			if a == "--search" && i+1 < len(args) {
@@ -139,6 +153,12 @@ func (e *e2eExec) Run(ctx context.Context, dir string, name string, args ...stri
 			return stdoutResult(fmt.Sprintf(`[{"number":%d,"title":%q}]`, n, title)), nil
 		}
 		return stdoutResult("[]"), nil
+	case "api":
+		marker := markerFromSearchArgs(args)
+		if number, ok := w.markers[marker]; ok {
+			return stdoutResult(fmt.Sprintf(`[{"items":[{"number":%d,"body":%q,"state":"OPEN"}]}]`, number, marker)), nil
+		}
+		return stdoutResult(`[{"items":[]}]`), nil
 	case "pr":
 		branch := args[2]
 		if n, ok := w.prs[branch]; ok {
@@ -212,9 +232,23 @@ func (c *e2eCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*e
 	case strings.Contains(lower, "gh issue create"):
 		w.issueSeq++
 		w.issues[c.title] = w.issueSeq
+		w.markers[issueMarkerFromPrompt(prompt)] = w.issueSeq
 		*c.issueN = w.issueSeq
 	}
 	return &engine.RunResult{FinalMessage: "done"}, nil
+}
+
+func issueMarkerFromPrompt(prompt string) string {
+	const prefix = "<!-- fox-autodev-item-id:"
+	start := strings.Index(prompt, prefix)
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(prompt[start:], "-->")
+	if end < 0 {
+		return ""
+	}
+	return prompt[start : start+end+3]
 }
 
 func (c *e2eCore) SetUserAsker(a tools.UserAsker) { c.asker = a }
@@ -313,6 +347,7 @@ func TestOrchestratorEndToEndDrainsBacklog(t *testing.T) {
 		repoRoot:  repoRoot,
 		byWorkDir: map[string]*e2eItemState{},
 		issues:    map[string]int{},
+		markers:   map[string]int{},
 		prs:       map[string]int{},
 		prBodies:  map[string]string{},
 	}

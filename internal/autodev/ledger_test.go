@@ -34,6 +34,137 @@ func TestLoadLedgerMissingFileYieldsEmptyLedger(t *testing.T) {
 	}
 }
 
+func TestLedgerValidatesRemoteEventOutboxIdentity(t *testing.T) {
+	title, description := "Durable event", "persist issue observation"
+	bytes, hash := requirementRevisionIdentity(title, description)
+	valid := LedgerItem{
+		ItemID:           "item-durable-event",
+		Slug:             "durable-event",
+		Title:            title,
+		Description:      description,
+		RequirementBytes: bytes,
+		RequirementHash:  hash,
+		RevisionFrozen:   true,
+		SourceState:      SourceStateCurrent,
+		Priority:         PriorityHigh,
+		Status:           StatusInProgress,
+		Stage:            StageIssue,
+		StageState:       StageStateVerified,
+		Issue:            31,
+		Outbox: []RemoteEventRecord{{
+			EventID: "issue:item-durable-event:31",
+			ItemID:  "item-durable-event",
+			Kind:    RemoteEventIssue,
+			Number:  31,
+		}},
+	}
+
+	tests := []struct {
+		name string
+		mut  func(*LedgerItem)
+	}{
+		{name: "empty-event-id", mut: func(item *LedgerItem) { item.Outbox[0].EventID = "" }},
+		{name: "wrong-item-id", mut: func(item *LedgerItem) { item.Outbox[0].ItemID = "another-item" }},
+		{name: "wrong-kind", mut: func(item *LedgerItem) { item.Outbox[0].Kind = "pr" }},
+		{name: "wrong-number", mut: func(item *LedgerItem) { item.Outbox[0].Number = 0 }},
+		{name: "unstable-event-id", mut: func(item *LedgerItem) { item.Outbox[0].EventID = "random-id" }},
+		{name: "duplicate-event-id", mut: func(item *LedgerItem) { item.Outbox = append(item.Outbox, item.Outbox[0]) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := valid
+			item.Outbox = append([]RemoteEventRecord(nil), valid.Outbox...)
+			tt.mut(&item)
+			if err := validateLedgerItems([]*LedgerItem{&item}, ledgerSchemaVersion); err == nil {
+				t.Fatal("validateLedgerItems returned nil for invalid outbox")
+			}
+		})
+	}
+	if err := validateLedgerItems([]*LedgerItem{&valid}, ledgerSchemaVersion); err != nil {
+		t.Fatalf("valid outbox rejected: %v", err)
+	}
+}
+
+func TestWorkflowIssueBindingRequiresPendingOutboxInSameMutation(t *testing.T) {
+	before := happyItem()
+	after := before
+	after.Status = StatusInProgress
+	after.Stage = StageIssue
+	after.StageState = StageStateVerified
+	after.Issue = 31
+	if err := validateWorkflowMutation(before, after); err == nil {
+		t.Fatal("issue binding without its pending outbox event was accepted")
+	}
+
+	after.Outbox = []RemoteEventRecord{{
+		EventID: "issue:item-test:31",
+		ItemID:  before.ItemID,
+		Kind:    RemoteEventIssue,
+		Number:  31,
+	}}
+	if err := validateWorkflowMutation(before, after); err != nil {
+		t.Fatalf("atomic issue binding and outbox event rejected: %v", err)
+	}
+}
+
+func TestWorkflowCannotRewriteDurableIssueOrOutboxDelivery(t *testing.T) {
+	before := happyItem()
+	before.Issue = 31
+	before.Outbox = []RemoteEventRecord{{
+		EventID:   "issue:item-test:31",
+		ItemID:    before.ItemID,
+		Kind:      RemoteEventIssue,
+		Number:    31,
+		Delivered: true,
+	}}
+
+	changedIssue := cloneLedgerItem(before)
+	changedIssue.Issue = 32
+	if err := validateWorkflowMutation(before, changedIssue); err == nil {
+		t.Fatal("recorded issue binding rewrite was accepted")
+	}
+
+	reopened := cloneLedgerItem(before)
+	reopened.Outbox[0].Delivered = false
+	if err := validateWorkflowMutation(before, reopened); err == nil {
+		t.Fatal("delivered outbox event was allowed to become pending")
+	}
+}
+
+func TestLedgerGetReturnsIndependentOutboxCopy(t *testing.T) {
+	led, err := LoadLedger(ledgerPath(t), newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	led.Seed([]Item{{Title: "Outbox copy", Description: "protect authority"}})
+	item, _ := led.Get("outbox-copy")
+	if err := led.Mark(item.Slug, func(it *LedgerItem) {
+		it.Status = StatusInProgress
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Mark(item.Slug, func(it *LedgerItem) {
+		it.Stage = StageIssue
+		it.StageState = StageStateVerified
+		it.Issue = 31
+		it.Outbox = append(it.Outbox, RemoteEventRecord{
+			EventID: issueEventID(it.ItemID, 31),
+			ItemID:  it.ItemID,
+			Kind:    RemoteEventIssue,
+			Number:  31,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	copy, _ := led.Get(item.Slug)
+	copy.Outbox[0].Delivered = true
+	again, _ := led.Get(item.Slug)
+	if again.Outbox[0].Delivered {
+		t.Fatal("mutating the value returned by Get changed authoritative outbox state")
+	}
+}
+
 func TestSeedAddsUnknownItemsAsPending(t *testing.T) {
 	led, err := LoadLedger(ledgerPath(t), newTestClock())
 	if err != nil {

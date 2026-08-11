@@ -15,26 +15,27 @@ import (
 // LedgerItem is one item's authoritative identity, frozen requirement
 // revision, source-reconciliation state, and workflow progress record.
 type LedgerItem struct {
-	ItemID               ItemID        `json:"item_id"`
-	SourceID             string        `json:"source_id,omitempty"`
-	Slug                 string        `json:"slug"`
-	Title                string        `json:"title"`
-	Description          string        `json:"description"`
-	RequirementBytes     int           `json:"requirement_bytes"`
-	RequirementHash      string        `json:"requirement_hash"`
-	RevisionFrozen       bool          `json:"revision_frozen"`
-	LegacyBindingPending bool          `json:"legacy_binding_pending,omitempty"`
-	SourceState          SourceState   `json:"source_state"`
-	SourceOrder          int           `json:"source_order"`
-	Priority             Priority      `json:"priority"`
-	Status               Status        `json:"status"`
-	Branch               string        `json:"branch,omitempty"`
-	Stage                PipelineStage `json:"stage,omitempty"`
-	StageState           StageState    `json:"stage_state"`
-	Issue                int           `json:"issue,omitempty"`
-	PR                   int           `json:"pr,omitempty"`
-	FeatureDir           string        `json:"feature_dir,omitempty"`
-	UpdatedAt            time.Time     `json:"updated_at,omitempty"`
+	ItemID               ItemID              `json:"item_id"`
+	SourceID             string              `json:"source_id,omitempty"`
+	Slug                 string              `json:"slug"`
+	Title                string              `json:"title"`
+	Description          string              `json:"description"`
+	RequirementBytes     int                 `json:"requirement_bytes"`
+	RequirementHash      string              `json:"requirement_hash"`
+	RevisionFrozen       bool                `json:"revision_frozen"`
+	LegacyBindingPending bool                `json:"legacy_binding_pending,omitempty"`
+	SourceState          SourceState         `json:"source_state"`
+	SourceOrder          int                 `json:"source_order"`
+	Priority             Priority            `json:"priority"`
+	Status               Status              `json:"status"`
+	Branch               string              `json:"branch,omitempty"`
+	Stage                PipelineStage       `json:"stage,omitempty"`
+	StageState           StageState          `json:"stage_state"`
+	Issue                int                 `json:"issue,omitempty"`
+	PR                   int                 `json:"pr,omitempty"`
+	Outbox               []RemoteEventRecord `json:"outbox,omitempty"`
+	FeatureDir           string              `json:"feature_dir,omitempty"`
+	UpdatedAt            time.Time           `json:"updated_at,omitempty"`
 }
 
 // PipelineStage is the closed vocabulary of durable workflow positions.
@@ -279,6 +280,19 @@ func validateLedgerItems(items []*LedgerItem, version int) error {
 				if item.SourceState != expected {
 					return invalidLedgerItem(version, item, fmt.Sprintf("pending legacy binding requires source state %q", expected))
 				}
+			}
+			seenEvents := make(map[string]bool, len(item.Outbox))
+			for _, event := range item.Outbox {
+				if event.EventID == "" || event.ItemID != item.ItemID || event.Kind != RemoteEventIssue || event.Number <= 0 {
+					return invalidLedgerItem(version, item, "outbox event has invalid issue identity")
+				}
+				if event.EventID != issueEventID(event.ItemID, event.Number) {
+					return invalidLedgerItem(version, item, "outbox event_id is not stable for its issue identity")
+				}
+				if seenEvents[event.EventID] {
+					return invalidLedgerItem(version, item, fmt.Sprintf("duplicate outbox event_id %q", event.EventID))
+				}
+				seenEvents[event.EventID] = true
 			}
 			bytes, hash := requirementRevisionIdentity(item.Title, item.Description)
 			if item.RequirementBytes != bytes || item.RequirementHash != hash {
@@ -586,7 +600,7 @@ func (l *Ledger) selectByStatus(status Status) []LedgerItem {
 	var picked []indexed
 	for i, it := range l.items {
 		if it.Status == status && it.SourceState == SourceStateCurrent {
-			picked = append(picked, indexed{item: *it, order: i})
+			picked = append(picked, indexed{item: cloneLedgerItem(*it), order: i})
 		}
 	}
 	sort.SliceStable(picked, func(a, b int) bool {
@@ -612,7 +626,7 @@ func (l *Ledger) selectByStatus(status Status) []LedgerItem {
 func (l *Ledger) Mark(slug string, mut func(*LedgerItem)) error {
 	for _, it := range l.items {
 		if it.Slug == slug {
-			before := *it
+			before := cloneLedgerItem(*it)
 			beforeStatus := it.Status
 			mut(it)
 			freezeRequirementTransition(it, beforeStatus)
@@ -635,7 +649,7 @@ func (l *Ledger) Commit(slug string, mut func(*LedgerItem)) error {
 		if it.Slug != slug {
 			continue
 		}
-		before := *it
+		before := cloneLedgerItem(*it)
 		beforeStatus := before.Status
 		mut(it)
 		freezeRequirementTransition(it, beforeStatus)
@@ -666,6 +680,35 @@ func validateWorkflowMutation(before, after LedgerItem) error {
 	if after.RevisionFrozen != expectedFrozen {
 		return invalidLedgerItem(ledgerSchemaVersion, &after, "workflow mutation cannot alter requirement freeze state")
 	}
+	if before.Issue > 0 && after.Issue != before.Issue {
+		return invalidLedgerItem(ledgerSchemaVersion, &after, "workflow mutation cannot change a recorded issue binding")
+	}
+	if len(after.Outbox) < len(before.Outbox) {
+		return invalidLedgerItem(ledgerSchemaVersion, &after, "workflow mutation cannot remove outbox events")
+	}
+	for i, event := range before.Outbox {
+		changedIdentity := event.EventID != after.Outbox[i].EventID || event.ItemID != after.Outbox[i].ItemID ||
+			event.Kind != after.Outbox[i].Kind || event.Number != after.Outbox[i].Number
+		if changedIdentity || (event.Delivered && !after.Outbox[i].Delivered) {
+			return invalidLedgerItem(ledgerSchemaVersion, &after, "workflow mutation cannot rewrite outbox event history")
+		}
+	}
+	if len(after.Outbox) > len(before.Outbox) {
+		if len(after.Outbox) != len(before.Outbox)+1 || !(before.Issue == 0 && after.Issue > 0) {
+			return invalidLedgerItem(ledgerSchemaVersion, &after, "exactly one outbox issue event may be appended with its issue binding")
+		}
+	}
+	if before.Issue == 0 && after.Issue > 0 && after.Stage == StageIssue && after.StageState == StageStateVerified {
+		want := issueEventID(after.ItemID, after.Issue)
+		found := false
+		for _, event := range after.Outbox {
+			found = found || (event.EventID == want && event.ItemID == after.ItemID &&
+				event.Kind == RemoteEventIssue && event.Number == after.Issue && !event.Delivered)
+		}
+		if !found {
+			return invalidLedgerItem(ledgerSchemaVersion, &after, "issue binding requires its pending outbox event in the same mutation")
+		}
+	}
 	return nil
 }
 
@@ -678,17 +721,22 @@ func freezeRequirementTransition(item *LedgerItem, before Status) {
 func cloneLedgerItems(items []*LedgerItem) []*LedgerItem {
 	cloned := make([]*LedgerItem, len(items))
 	for i, item := range items {
-		copy := *item
+		copy := cloneLedgerItem(*item)
 		cloned[i] = &copy
 	}
 	return cloned
+}
+
+func cloneLedgerItem(item LedgerItem) LedgerItem {
+	item.Outbox = append([]RemoteEventRecord(nil), item.Outbox...)
+	return item
 }
 
 // Get returns a copy of the item identified by slug.
 func (l *Ledger) Get(slug string) (LedgerItem, bool) {
 	for _, it := range l.items {
 		if it.Slug == slug {
-			return *it, true
+			return cloneLedgerItem(*it), true
 		}
 	}
 	return LedgerItem{}, false

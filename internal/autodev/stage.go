@@ -49,9 +49,15 @@ type Stage struct {
 	// Skip reports that the step's outcome already exists so the step can
 	// be skipped entirely (resume idempotency). May be nil.
 	Skip func(ctx context.Context, sc *StageContext) bool
+	// Preflight performs an error-capable idempotency check before Skip.
+	// It is used when ambiguous ground truth must fail rather than retry.
+	Preflight func(ctx context.Context, sc *StageContext) (skip bool, err error)
 	// Verify is the read-only ground-truth predicate deciding advancement,
 	// returning ok or a gap describing precisely what is still missing.
 	Verify func(ctx context.Context, sc *StageContext) (ok bool, gap string)
+	// VerifyWithError is the error-capable form used by identity-sensitive
+	// verification. When present it is authoritative over Verify.
+	VerifyWithError func(ctx context.Context, sc *StageContext) (ok bool, gap string, err error)
 }
 
 // StageMachine drives one step at a time through the supervised loop:
@@ -91,6 +97,15 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 	if m.reporter != nil {
 		m.reporter.OnStageStart(ctx, sc.Slug, st.Name)
 	}
+	if st.Preflight != nil {
+		skip, err := st.Preflight(ctx, sc)
+		if err != nil {
+			return fmt.Errorf("preflight step %s: %w", st.Name, err)
+		}
+		if skip {
+			return nil
+		}
+	}
 
 	if st.Skip != nil && st.Skip(ctx, sc) {
 		if m.reporter != nil {
@@ -98,8 +113,11 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 		}
 		return nil
 	}
-	if verifyFirst && st.Verify != nil {
-		ok, gap := st.Verify(ctx, sc)
+	if verifyFirst && (st.Verify != nil || st.VerifyWithError != nil) {
+		ok, gap, err := verifyStage(ctx, sc, st)
+		if err != nil {
+			return fmt.Errorf("verify step %s: %w", st.Name, err)
+		}
 		if m.reporter != nil {
 			m.reporter.OnVerify(ctx, st.Name, ok, gap)
 		}
@@ -133,8 +151,11 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 		if attemptErr != nil {
 			return attemptErr
 		}
-		if st.Verify != nil {
-			ok, gap := st.Verify(ctx, sc)
+		if st.Verify != nil || st.VerifyWithError != nil {
+			ok, gap, err := verifyStage(ctx, sc, st)
+			if err != nil {
+				return fmt.Errorf("verify control step %s: %w", st.Name, err)
+			}
 			if m.reporter != nil {
 				m.reporter.OnVerify(ctx, st.Name, ok, gap)
 			}
@@ -172,7 +193,10 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 			return attemptErr
 		}
 
-		ok, gap := st.Verify(ctx, sc)
+		ok, gap, err := verifyStage(ctx, sc, st)
+		if err != nil {
+			return fmt.Errorf("verify step %s: %w", st.Name, err)
+		}
 		if m.reporter != nil {
 			m.reporter.OnVerify(ctx, st.Name, ok, gap)
 		}
@@ -203,6 +227,14 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 		}
 		msg = correction
 	}
+}
+
+func verifyStage(ctx context.Context, sc *StageContext, st Stage) (bool, string, error) {
+	if st.VerifyWithError != nil {
+		return st.VerifyWithError(ctx, sc)
+	}
+	ok, gap := st.Verify(ctx, sc)
+	return ok, gap, nil
 }
 
 func (m *StageMachine) seedPrompt(ctx context.Context, core CoreRunner, sc *StageContext, st Stage) (string, error) {

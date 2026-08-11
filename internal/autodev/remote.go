@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -36,8 +37,12 @@ func (p *RemotePublisher) Publish(ctx context.Context, core CoreRunner, wt Workt
 	if record == nil {
 		record = func(string, func(*LedgerItem)) error { return nil }
 	}
+	if err := p.deliverPendingEvents(ctx, &item, record); err != nil {
+		return PublishResult{Branch: wt.Branch, Issue: item.Issue, PR: item.PR}, err
+	}
 	sc := &StageContext{
 		Item:       Item{Title: item.Title, Description: item.Description},
+		ItemID:     item.ItemID,
 		Slug:       item.Slug,
 		WorkDir:    wt.Path,
 		Branch:     wt.Branch,
@@ -92,6 +97,12 @@ func (p *RemotePublisher) Publish(ctx context.Context, core CoreRunner, wt Workt
 			it.StageState = StageStateVerified
 			if issueChanged {
 				it.Issue = sc.Issue
+				it.Outbox = append(it.Outbox, RemoteEventRecord{
+					EventID: issueEventID(it.ItemID, sc.Issue),
+					ItemID:  it.ItemID,
+					Kind:    RemoteEventIssue,
+					Number:  sc.Issue,
+				})
 			}
 			if prChanged {
 				it.PR = sc.PR
@@ -100,13 +111,55 @@ func (p *RemotePublisher) Publish(ctx context.Context, core CoreRunner, wt Workt
 			return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
 		}
 		if issueChanged {
-			p.reporter.OnIssue(ctx, sc.Issue)
+			item.Issue = sc.Issue
+			item.Outbox = append(item.Outbox, RemoteEventRecord{
+				EventID: issueEventID(item.ItemID, sc.Issue),
+				ItemID:  item.ItemID,
+				Kind:    RemoteEventIssue,
+				Number:  sc.Issue,
+			})
+			if err := p.deliverPendingEvents(ctx, &item, record); err != nil {
+				return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
+			}
 		}
 		if prChanged {
 			p.reporter.OnPR(ctx, sc.PR)
 		}
 	}
 	return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, nil
+}
+
+func issueEventID(itemID ItemID, number int) string {
+	return fmt.Sprintf("issue:%s:%d", itemID, number)
+}
+
+func (p *RemotePublisher) deliverPendingEvents(ctx context.Context, item *LedgerItem, record func(string, func(*LedgerItem)) error) error {
+	for i := range item.Outbox {
+		if item.Outbox[i].Delivered {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		event := item.Outbox[i].event()
+		if p.reporter == nil {
+			return fmt.Errorf("deliver remote event %s: reporter is unavailable", event.EventID)
+		}
+		if err := p.reporter.OnRemoteEvent(ctx, event); err != nil {
+			return fmt.Errorf("deliver remote event %s: %w", event.EventID, err)
+		}
+		if err := record("issue-event-delivered", func(it *LedgerItem) {
+			for j := range it.Outbox {
+				if it.Outbox[j].EventID == event.EventID {
+					it.Outbox[j].Delivered = true
+				}
+			}
+		}); err != nil {
+			return err
+		}
+		item.Outbox[i].Delivered = true
+	}
+	return nil
 }
 
 func remoteResumeIndex(item LedgerItem, steps []Stage) int {
@@ -183,21 +236,19 @@ func (p *RemotePublisher) steps() []Stage {
 	}
 
 	if p.cfg.RemoteFlow.CreateIssue {
+		resolve := p.resolveIssue
 		steps = append(steps, Stage{
 			Name: "issue",
 			Prompt: func(sc *StageContext) string {
 				return fmt.Sprintf("Create a GitHub issue documenting this requirement before the PR is opened: "+
-					"run `gh issue create --title %q --body <a concise summary of the requirement and what was implemented>`.",
-					sc.Item.Title)
+					"run `gh issue create --title %q --body <a concise summary followed by the exact marker %q>`. "+
+					"The marker must appear verbatim in the issue body.", sc.Item.Title, issueMarker(sc.ItemID))
 			},
-			Skip: func(ctx context.Context, sc *StageContext) bool {
-				if sc.Issue != 0 {
-					p.reporter.OnIssue(ctx, sc.Issue)
-					return true
-				}
-				return false
+			Preflight: func(ctx context.Context, sc *StageContext) (bool, error) {
+				ok, _, err := resolve(ctx, sc)
+				return ok, err
 			},
-			Verify: p.verifyIssue(),
+			VerifyWithError: resolve,
 		})
 	}
 	if p.cfg.RemoteFlow.OpenPR {
@@ -292,26 +343,78 @@ func (p *RemotePublisher) verifyPushed(ctx context.Context, sc *StageContext) (b
 // Publish persists and reports the verified number before the PR step runs.
 func (p *RemotePublisher) verifyIssue() func(ctx context.Context, sc *StageContext) (bool, string) {
 	return func(ctx context.Context, sc *StageContext) (bool, string) {
-		result, runErr := p.exec.Run(ctx, sc.WorkDir, "gh", "issue", "list",
-			"--state", "all", "--search", sc.Item.Title, "--json", "number,title", "--limit", "20")
+		ok, gap, err := p.resolveIssue(ctx, sc)
+		if err != nil {
+			return false, err.Error()
+		}
+		return ok, gap
+	}
+}
+
+// IssueIdentityConflictError reports durable marker ambiguity or a recorded
+// number that no longer identifies its item.
+type IssueIdentityConflictError struct{ Reason string }
+
+func (e *IssueIdentityConflictError) Error() string {
+	return "GitHub issue identity conflict: " + e.Reason
+}
+
+func issueMarker(itemID ItemID) string {
+	return fmt.Sprintf("<!-- fox-autodev-item-id:%s -->", itemID)
+}
+
+func (p *RemotePublisher) resolveIssue(ctx context.Context, sc *StageContext) (bool, string, error) {
+	if sc.ItemID == "" {
+		return false, "", &IssueIdentityConflictError{Reason: "item ID is empty"}
+	}
+	marker := issueMarker(sc.ItemID)
+	type issueRecord struct {
+		Number      int             `json:"number"`
+		Title       string          `json:"title"`
+		Body        string          `json:"body"`
+		State       string          `json:"state"`
+		PullRequest json.RawMessage `json:"pull_request"`
+	}
+	if sc.Issue != 0 {
+		result, runErr := p.exec.Run(ctx, sc.WorkDir, "gh", "issue", "view", fmt.Sprint(sc.Issue), "--json", "number,title,body,state")
 		out, err := strictCommandStdout(result, runErr)
 		if err != nil {
-			return false, fmt.Sprintf("cannot query issues via gh: %v", err)
+			return false, "", &IssueIdentityConflictError{Reason: fmt.Sprintf("cannot verify recorded issue #%d: %v", sc.Issue, err)}
 		}
-		var issues []struct {
-			Number int    `json:"number"`
-			Title  string `json:"title"`
+		var issue issueRecord
+		if err := json.Unmarshal([]byte(extractJSON(out)), &issue); err != nil || issue.Number != sc.Issue || !strings.Contains(issue.Body, marker) {
+			return false, "", &IssueIdentityConflictError{Reason: fmt.Sprintf("recorded issue #%d does not carry marker %s", sc.Issue, marker)}
 		}
-		if err := json.Unmarshal([]byte(extractJSONArray(out)), &issues); err != nil {
-			return false, fmt.Sprintf("cannot parse gh issue list output: %v", err)
-		}
-		for _, issue := range issues {
-			if issue.Title == sc.Item.Title {
-				sc.Issue = issue.Number
-				return true, ""
+		return true, "", nil
+	}
+	query := url.QueryEscape(marker+" in:body type:issue") + "+repo%3A{owner}%2F{repo}"
+	result, runErr := p.exec.Run(ctx, sc.WorkDir, "gh", "api", "--paginate", "--slurp", "search/issues?q="+query+"&per_page=100")
+	out, err := strictCommandStdout(result, runErr)
+	if err != nil {
+		return false, "", fmt.Errorf("query all GitHub issues: %w", err)
+	}
+	var pages []struct {
+		Items []issueRecord `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(out), &pages); err != nil {
+		return false, "", fmt.Errorf("parse paginated GitHub issues: %w", err)
+	}
+	var matches []issueRecord
+	for _, page := range pages {
+		for _, issue := range page.Items {
+			if len(issue.PullRequest) == 0 && strings.Contains(issue.Body, marker) {
+				matches = append(matches, issue)
 			}
 		}
-		return false, fmt.Sprintf("no GitHub issue titled %q exists yet", sc.Item.Title)
+	}
+	switch len(matches) {
+	case 0:
+		return false, fmt.Sprintf("no GitHub issue carrying marker %s exists yet", marker), nil
+	case 1:
+		sc.Issue = matches[0].Number
+		return true, "", nil
+	default:
+		return false, "", &IssueIdentityConflictError{Reason: fmt.Sprintf("marker %s matches %d issues", marker, len(matches))}
 	}
 }
 

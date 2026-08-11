@@ -34,6 +34,9 @@ type Reporter interface {
 	OnGate(ctx context.Context, result GateResult)
 	// OnIssue reports the verified GitHub issue number.
 	OnIssue(ctx context.Context, number int)
+	// OnRemoteEvent consumes one durable logical event idempotently. A
+	// delivery error leaves the event pending for a later retry.
+	OnRemoteEvent(ctx context.Context, event RemoteEvent) error
 	// OnPR reports the verified pull-request number.
 	OnPR(ctx context.Context, number int)
 	// OnItemDone announces that the item completed and was recorded done.
