@@ -350,18 +350,32 @@ func (t *currentContractTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{Name: t.name, Description: t.behavior.Definition.Description, InputSchema: t.schema}
 }
 
-func (t *currentContractTool) Execute(context.Context, json.RawMessage) (string, error) {
+func (t *currentContractTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	if err := t.validateArguments(args); err != nil {
+		return "", err
+	}
 	if t.behavior.Result.ErrorKind != "" && !t.behavior.Result.IsError {
 		return "", errors.New(t.behavior.Result.ErrorKind)
 	}
 	return t.behavior.Result.Output, nil
 }
 
-func (t *currentContractTool) ExecuteResult(context.Context, json.RawMessage) (tools.ExecutionResult, error) {
+func (t *currentContractTool) ExecuteResult(_ context.Context, args json.RawMessage) (tools.ExecutionResult, error) {
+	if err := t.validateArguments(args); err != nil {
+		return tools.ExecutionResult{}, err
+	}
 	if t.behavior.Result.ErrorKind != "" && !t.behavior.Result.IsError {
 		return tools.ExecutionResult{}, errors.New(t.behavior.Result.ErrorKind)
 	}
 	return tools.ExecutionResult{Output: t.behavior.Result.Output, Failed: t.behavior.Result.IsError}, nil
+}
+
+func (t *currentContractTool) validateArguments(args json.RawMessage) error {
+	want := t.behavior.Call.Arguments
+	if want == "" || string(args) == want {
+		return nil
+	}
+	return fmt.Errorf("invalid arguments: got %s, want %s", args, want)
 }
 
 func (t *currentContractTool) ParallelSafe() bool { return t.behavior.Definition.ParallelSafe }

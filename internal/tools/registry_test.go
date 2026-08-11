@@ -168,6 +168,36 @@ func TestRegistryAssessesPermissionViaAlias(t *testing.T) {
 	}
 }
 
+func TestRegistryAliasContractCoversAdvertisementInvocationPermissionAndParallelSafety(t *testing.T) {
+	tool := &fullAliasContractTool{permissionAliasStub: permissionAliasStub{aliasStubTool: aliasStubTool{
+		name: "observe", aliases: []string{"Observe"}, out: "observed",
+	}}}
+	registry := NewRegistry()
+	registry.Register(tool)
+
+	names := availableToolNames(t, registry)
+	if !names["observe"] || !names["Observe"] {
+		t.Fatalf("advertised names = %#v, want canonical and alias", names)
+	}
+	result := registry.Execute(context.Background(), schema.ToolCall{
+		ID: "call-alias", Name: "Observe", Arguments: json.RawMessage(`{"target":"status"}`),
+	})
+	if result.ToolCallID != "call-alias" || result.IsError || result.Output != "observed" {
+		t.Fatalf("alias invocation result = %#v", result)
+	}
+	if !registry.IsParallelSafe("observe") || !registry.IsParallelSafe("Observe") {
+		t.Fatal("canonical and alias names must share parallel-safety declaration")
+	}
+	permissionRegistry := registry.(PermissionRegistry)
+	assessment, found, err := permissionRegistry.AssessPermission("Observe", toolpolicy.Context{}, json.RawMessage(`{"target":"status"}`))
+	if err != nil || !found {
+		t.Fatalf("AssessPermission() = %#v, %v, %v", assessment, found, err)
+	}
+	if assessment.Behavior != toolpolicy.BehaviorFastAllow || assessment.Action != "observe status" || !assessment.ReadOnly {
+		t.Fatalf("alias permission assessment = %#v", assessment)
+	}
+}
+
 func TestRegistryReportsMissingPermissionAssessor(t *testing.T) {
 	r := NewRegistry()
 	r.Register(&aliasStubTool{name: "unclassified"})
@@ -193,6 +223,10 @@ type permissionAliasStub struct {
 	aliasStubTool
 }
 
+type fullAliasContractTool struct {
+	permissionAliasStub
+}
+
 func (t *permissionAliasStub) AssessPermission(_ toolpolicy.Context, args json.RawMessage) (toolpolicy.Assessment, error) {
 	var data struct {
 		Target string `json:"target"`
@@ -209,6 +243,8 @@ func (t *permissionAliasStub) AssessPermission(_ toolpolicy.Context, args json.R
 		RiskHint: toolpolicy.RiskLow,
 	}, nil
 }
+
+func (*fullAliasContractTool) ParallelSafe() bool { return true }
 
 func (t *parallelAliasStub) Name() string { return t.name }
 func (t *parallelAliasStub) Aliases() []string {
