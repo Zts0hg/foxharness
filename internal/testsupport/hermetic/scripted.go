@@ -77,6 +77,9 @@ func modelRequestMatches(want, got runtimecontract.ModelRequest) bool {
 
 func cloneModelRequest(request runtimecontract.ModelRequest) runtimecontract.ModelRequest {
 	request.Messages = append([]runtimecontract.Message(nil), request.Messages...)
+	for index := range request.Messages {
+		request.Messages[index].ToolCalls = append([]runtimecontract.ToolCall(nil), request.Messages[index].ToolCalls...)
+	}
 	request.ToolDefinitions = append([]runtimecontract.ToolDefinition(nil), request.ToolDefinitions...)
 	return request
 }

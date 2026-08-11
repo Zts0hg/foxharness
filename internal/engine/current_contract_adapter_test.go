@@ -1,11 +1,17 @@
 package engine
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/metrics"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -35,6 +41,14 @@ func TestCurrentProductionContractAdapterRunsToolFreeScenario(t *testing.T) {
 		},
 		Expected: runtimecontract.Expected{
 			Observed: runtimecontract.Observed{
+				Requests: []runtimecontract.ModelRequest{{
+					Phase: "action",
+					Messages: []runtimecontract.Message{
+						{Role: "system", Content: "contract system prompt"},
+						{Role: "user", Content: "Return the scripted answer."},
+					},
+					Model: "scripted-model", Provider: "scripted",
+				}},
 				Facts: []runtimecontract.Fact{
 					{Kind: "run_started", Sequence: 1},
 					{Kind: "message", Sequence: 2, Content: "scripted answer"},
@@ -48,6 +62,10 @@ func TestCurrentProductionContractAdapterRunsToolFreeScenario(t *testing.T) {
 				Persisted: []runtimecontract.PersistedRecord{
 					{Kind: "message", Path: "messages.jsonl", Content: "user:Return the scripted answer.", Order: 1},
 					{Kind: "message", Path: "messages.jsonl", Content: "assistant:scripted answer", Order: 2},
+				},
+				Metrics: []runtimecontract.Metric{
+					{Kind: "model_call", Turn: 1, Phase: "action"},
+					{Kind: "run_summary", ModelCalls: 1},
 				},
 			},
 		},
@@ -77,8 +95,8 @@ func (a *currentProductionContractAdapter) Run(
 	if input.SessionChoice != "new" {
 		return runtimecontract.Observed{}, fmt.Errorf("current contract adapter session choice %q is unsupported", input.SessionChoice)
 	}
-	if len(script.Tools) != 0 || len(script.Interactions) != 0 {
-		return runtimecontract.Observed{}, errors.New("tool-free current contract adapter received tool or interaction script")
+	if len(script.Interactions) != 0 {
+		return runtimecontract.Observed{}, errors.New("current contract adapter does not support interaction scripts")
 	}
 	if len(script.ModelSteps) == 0 {
 		return runtimecontract.Observed{}, errors.New("current contract adapter requires at least one model step")
@@ -97,7 +115,20 @@ func (a *currentProductionContractAdapter) Run(
 		return runtimecontract.Observed{}, fmt.Errorf("create current production session: %w", err)
 	}
 
-	scripted := &currentContractProvider{steps: script.ModelSteps}
+	registry := tools.NewRegistry()
+	parallelSafe := make(map[string]bool, len(script.Tools))
+	for _, behavior := range script.Tools {
+		tool := newCurrentContractTool(behavior)
+		registry.Register(tool)
+		parallelSafe[tool.Name()] = behavior.Definition.ParallelSafe
+	}
+	scripted := &currentContractProvider{
+		steps:        script.ModelSteps,
+		thinking:     input.Thinking,
+		model:        input.Model,
+		protocol:     input.Provider,
+		parallelSafe: parallelSafe,
+	}
 	reporter := &currentContractReporter{}
 	config := DefaultConfig()
 	config.DisplayPrompt = input.DisplayPrompt
@@ -106,10 +137,10 @@ func (a *currentProductionContractAdapter) Run(
 	config.Model = input.Model
 	config.ProviderProtocol = input.Provider
 	config.EffortOverride = input.Effort
-	current := NewAgentEngine(scripted, tools.NewRegistry(), workDir, currentContractPromptComposer{}, config)
+	current := NewAgentEngine(scripted, registry, workDir, currentContractPromptComposer{}, config)
 	result, runErr := current.RunWithReporter(ctx, sess, input.Prompt, reporter)
 
-	observed := runtimecontract.Observed{Facts: reporter.facts}
+	observed := runtimecontract.Observed{Requests: scripted.requests, Facts: reporter.facts}
 	if result != nil {
 		observed.Outcome.FinalMessage = result.FinalMessage
 		if len(result.TelemetryWarnings) > 0 {
@@ -121,11 +152,18 @@ func (a *currentProductionContractAdapter) Run(
 			}
 		}
 	}
-	observed.Outcome.TurnCount = scripted.callCount
+	observed.Outcome.TurnCount = scripted.actionCalls
 	observed.Outcome.Usage = scripted.usage
 	observed.Outcome.FinishReason = scripted.finishReason
 	if runErr != nil {
 		observed.Outcome.Error = runErr.Error()
+		observed.Outcome.Partial = result != nil
+		var turnLimit *TurnLimitError
+		if errors.As(runErr, &turnLimit) {
+			observed.Outcome.ErrorKind = "turn_limit"
+		} else {
+			observed.Outcome.ErrorKind = "provider"
+		}
 	}
 
 	records, loadErr := session.NewMessageLog(sess).LoadRecords()
@@ -136,9 +174,17 @@ func (a *currentProductionContractAdapter) Run(
 		observed.Persisted = append(observed.Persisted, runtimecontract.PersistedRecord{
 			Kind:    "message",
 			Path:    "messages.jsonl",
-			Content: string(record.Message.Role) + ":" + record.Message.Content,
+			Content: currentContractPersistedMessage(record.Message),
 			Order:   i + 1,
 		})
+	}
+	runRoot, rootErr := currentContractRunRoot(sess)
+	if rootErr != nil {
+		return observed, rootErr
+	}
+	observed.Metrics, err = currentContractMetrics(filepath.Join(runRoot, "metrics.jsonl"))
+	if err != nil {
+		return observed, err
 	}
 	return observed, runErr
 }
@@ -152,22 +198,66 @@ func (currentContractPromptComposer) Compose(string) (string, error) {
 type currentContractProvider struct {
 	steps        []runtimecontract.ModelStep
 	callCount    int
+	actionCalls  int
 	finishReason string
 	usage        runtimecontract.Usage
+	requests     []runtimecontract.ModelRequest
+	thinking     bool
+	model        string
+	protocol     string
+	parallelSafe map[string]bool
 }
 
 func (p *currentContractProvider) Generate(
+	ctx context.Context,
+	messages []schema.Message,
+	definitions []schema.ToolDefinition,
+) (*provider.GenerateResponse, error) {
+	return p.generate(ctx, messages, definitions, "")
+}
+
+func (p *currentContractProvider) GenerateWithOptions(
+	ctx context.Context,
+	messages []schema.Message,
+	definitions []schema.ToolDefinition,
+	options provider.GenerateOptions,
+) (*provider.GenerateResponse, error) {
+	return p.generate(ctx, messages, definitions, options.Effort)
+}
+
+func (p *currentContractProvider) generate(
 	_ context.Context,
-	_ []schema.Message,
-	_ []schema.ToolDefinition,
+	messages []schema.Message,
+	definitions []schema.ToolDefinition,
+	effort string,
 ) (*provider.GenerateResponse, error) {
 	if p.callCount >= len(p.steps) {
 		return nil, fmt.Errorf("model script exhausted after %d calls", p.callCount)
 	}
 	step := p.steps[p.callCount]
+	phase := "action"
+	if p.thinking && p.callCount%2 == 0 {
+		phase = "thinking"
+	} else {
+		p.actionCalls++
+	}
+	p.requests = append(p.requests, runtimecontract.ModelRequest{
+		Phase:           phase,
+		Messages:        currentContractMessages(messages),
+		ToolDefinitions: currentContractDefinitions(definitions, p.parallelSafe),
+		Model:           p.model,
+		Provider:        p.protocol,
+		Effort:          effort,
+	})
 	p.callCount++
 	if step.Error != "" {
 		return nil, errors.New(step.Error)
+	}
+	if step.NilResponse {
+		return nil, nil
+	}
+	if step.NilMessage {
+		return &provider.GenerateResponse{}, nil
 	}
 	p.finishReason = step.Response.FinishReason
 	p.usage.InputTokens += step.Response.Usage.InputTokens
@@ -177,15 +267,59 @@ func (p *currentContractProvider) Generate(
 		InputTokens:  int64(step.Response.Usage.InputTokens),
 		OutputTokens: int64(step.Response.Usage.OutputTokens),
 	}
+	message := &schema.Message{
+		Role:      schema.RoleAssistant,
+		Content:   step.Response.Content,
+		Usage:     &usage,
+		ToolCalls: currentContractSchemaToolCalls(step.Response.ToolCalls),
+	}
 	return &provider.GenerateResponse{
-		Message: &schema.Message{
-			Role:    schema.RoleAssistant,
-			Content: step.Response.Content,
-			Usage:   &usage,
-		},
-		Usage: usage,
+		Message: message,
+		Usage:   usage,
 	}, nil
 }
+
+type currentContractTool struct {
+	behavior runtimecontract.ToolBehavior
+	name     string
+	schema   any
+}
+
+func newCurrentContractTool(behavior runtimecontract.ToolBehavior) *currentContractTool {
+	name := behavior.Definition.Name
+	if name == "" {
+		name = behavior.Call.Name
+	}
+	inputSchema := any(map[string]any{})
+	if raw := strings.TrimSpace(behavior.Definition.InputSchema); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &inputSchema); err != nil {
+			inputSchema = raw
+		}
+	}
+	return &currentContractTool{behavior: behavior, name: name, schema: inputSchema}
+}
+
+func (t *currentContractTool) Name() string { return t.name }
+
+func (t *currentContractTool) Definition() schema.ToolDefinition {
+	return schema.ToolDefinition{Name: t.name, Description: t.behavior.Definition.Description, InputSchema: t.schema}
+}
+
+func (t *currentContractTool) Execute(context.Context, json.RawMessage) (string, error) {
+	if t.behavior.Result.ErrorKind != "" && !t.behavior.Result.IsError {
+		return "", errors.New(t.behavior.Result.ErrorKind)
+	}
+	return t.behavior.Result.Output, nil
+}
+
+func (t *currentContractTool) ExecuteResult(context.Context, json.RawMessage) (tools.ExecutionResult, error) {
+	if t.behavior.Result.ErrorKind != "" && !t.behavior.Result.IsError {
+		return tools.ExecutionResult{}, errors.New(t.behavior.Result.ErrorKind)
+	}
+	return tools.ExecutionResult{Output: t.behavior.Result.Output, Failed: t.behavior.Result.IsError}, nil
+}
+
+func (t *currentContractTool) ParallelSafe() bool { return t.behavior.Definition.ParallelSafe }
 
 type currentContractReporter struct {
 	facts []runtimecontract.Fact
@@ -226,4 +360,147 @@ func (r *currentContractReporter) OnRunComplete(_ context.Context, result RunRes
 
 func (r *currentContractReporter) OnRunError(_ context.Context, _ string, _ string, err error) {
 	r.append(runtimecontract.Fact{Kind: "run_error", Content: err.Error(), IsError: true})
+}
+
+func (r *currentContractReporter) OnToolCallDetail(_ context.Context, call schema.ToolCall) {
+	if len(r.facts) == 0 {
+		return
+	}
+	fact := &r.facts[len(r.facts)-1]
+	if fact.Kind == "tool_call" && fact.Name == call.Name {
+		fact.CallID = call.ID
+		fact.Content = string(call.Arguments)
+	}
+}
+
+func (r *currentContractReporter) OnToolResultDetail(_ context.Context, call schema.ToolCall, _ schema.ToolResult) {
+	if len(r.facts) == 0 {
+		return
+	}
+	fact := &r.facts[len(r.facts)-1]
+	if fact.Kind == "tool_result" && fact.Name == call.Name {
+		fact.CallID = call.ID
+	}
+}
+
+func currentContractMessages(messages []schema.Message) []runtimecontract.Message {
+	result := make([]runtimecontract.Message, 0, len(messages))
+	for _, message := range messages {
+		result = append(result, runtimecontract.Message{
+			Role:       string(message.Role),
+			Content:    message.Content,
+			ToolCallID: message.ToolCallID,
+			ToolCalls:  currentContractToolCalls(message.ToolCalls),
+		})
+	}
+	return result
+}
+
+func currentContractToolCalls(calls []schema.ToolCall) []runtimecontract.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	result := make([]runtimecontract.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		result = append(result, runtimecontract.ToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments)})
+	}
+	return result
+}
+
+func currentContractSchemaToolCalls(calls []runtimecontract.ToolCall) []schema.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	result := make([]schema.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		result = append(result, schema.ToolCall{ID: call.ID, Name: call.Name, Arguments: json.RawMessage(call.Arguments)})
+	}
+	return result
+}
+
+func currentContractDefinitions(definitions []schema.ToolDefinition, parallelSafe map[string]bool) []runtimecontract.ToolDefinition {
+	if len(definitions) == 0 {
+		return nil
+	}
+	result := make([]runtimecontract.ToolDefinition, 0, len(definitions))
+	for _, definition := range definitions {
+		encoded, _ := json.Marshal(definition.InputSchema)
+		result = append(result, runtimecontract.ToolDefinition{
+			Name: definition.Name, Description: definition.Description, InputSchema: string(encoded), ParallelSafe: parallelSafe[definition.Name],
+		})
+	}
+	return result
+}
+
+func currentContractPersistedMessage(message schema.Message) string {
+	if message.ToolCallID != "" {
+		return "tool_result:" + message.ToolCallID + ":" + message.Content
+	}
+	content := string(message.Role) + ":" + message.Content
+	for _, call := range message.ToolCalls {
+		content += "|tool_call:" + call.ID + ":" + call.Name + ":" + string(call.Arguments)
+	}
+	return content
+}
+
+func currentContractRunRoot(sess *session.Session) (string, error) {
+	entries, err := os.ReadDir(sess.RunsDir())
+	if err != nil {
+		return "", fmt.Errorf("read current production runs: %w", err)
+	}
+	var roots []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			roots = append(roots, filepath.Join(sess.RunsDir(), entry.Name()))
+		}
+	}
+	if len(roots) != 1 {
+		return "", fmt.Errorf("current production runs = %d, want 1", len(roots))
+	}
+	return roots[0], nil
+}
+
+func currentContractMetrics(path string) ([]runtimecontract.Metric, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open current production metrics: %w", err)
+	}
+	defer file.Close()
+
+	var result []runtimecontract.Metric
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var header struct {
+			Type metrics.EventType `json:"type"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
+			return nil, fmt.Errorf("decode current production metric type: %w", err)
+		}
+		switch header.Type {
+		case metrics.EventModelCall:
+			var event metrics.ModelCall
+			if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+				return nil, err
+			}
+			result = append(result, runtimecontract.Metric{Kind: string(event.Type), Turn: event.Turn, Phase: event.Phase, IsError: event.Error != ""})
+		case metrics.EventToolCall:
+			var event metrics.ToolCall
+			if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+				return nil, err
+			}
+			result = append(result, runtimecontract.Metric{Kind: string(event.Type), Turn: event.Turn, ToolName: event.ToolName, CallID: event.ToolCallID, IsError: event.IsError})
+		case metrics.EventRunSummary:
+			var event metrics.RunSummary
+			if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+				return nil, err
+			}
+			result = append(result, runtimecontract.Metric{
+				Kind: string(event.Type), ModelCalls: event.TotalModelCalls, ToolCalls: event.TotalToolCalls, ErrorCount: event.ErrorCount,
+			})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan current production metrics: %w", err)
+	}
+	return result, nil
 }

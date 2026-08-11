@@ -53,6 +53,36 @@ func TestVerifyScenarioRejectsArtifactMismatch(t *testing.T) {
 	}
 }
 
+func TestVerifyScenarioRejectsModelRequestMismatch(t *testing.T) {
+	scenario := testScenario()
+	actual := scenario.Expected.Observed
+	actual.Requests = append([]ModelRequest(nil), actual.Requests...)
+	actual.Requests[0].Model = "changed-model"
+	adapter := AdapterFunc(func(context.Context, RunInput, Script) (Observed, error) {
+		return actual, nil
+	})
+
+	err := VerifyScenario(context.Background(), adapter, scenario)
+	if err == nil || !strings.Contains(err.Error(), "model requests") {
+		t.Fatalf("VerifyScenario() error = %v, want model request mismatch", err)
+	}
+}
+
+func TestVerifyScenarioRejectsMetricMismatch(t *testing.T) {
+	scenario := testScenario()
+	actual := scenario.Expected.Observed
+	actual.Metrics = append([]Metric(nil), actual.Metrics...)
+	actual.Metrics[0].ErrorCount = 1
+	adapter := AdapterFunc(func(context.Context, RunInput, Script) (Observed, error) {
+		return actual, nil
+	})
+
+	err := VerifyScenario(context.Background(), adapter, scenario)
+	if err == nil || !strings.Contains(err.Error(), "metrics") {
+		t.Fatalf("VerifyScenario() error = %v, want metric mismatch", err)
+	}
+}
+
 func TestVerifyScenarioMatchesExpectedAdapterError(t *testing.T) {
 	scenario := testScenario()
 	scenario.Expected.AdapterErrorContains = "provider unavailable"
@@ -96,6 +126,7 @@ func testScenario() Scenario {
 		},
 		Expected: Expected{
 			Observed: Observed{
+				Requests: []ModelRequest{{Model: "scripted-model", Provider: "scripted"}},
 				Facts: []Fact{
 					{Kind: "run_started", Sequence: 1},
 					{Kind: "run_completed", Sequence: 2, Content: "done"},
@@ -105,6 +136,7 @@ func testScenario() Scenario {
 					FinishReason: "stop",
 					TurnCount:    1,
 				},
+				Metrics:   []Metric{{Kind: "run_summary", ModelCalls: 1}},
 				Artifacts: []Artifact{{Kind: "transcript", Path: "transcript.jsonl", Content: "done"}},
 			},
 		},

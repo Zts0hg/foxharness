@@ -19,8 +19,13 @@ func TestScriptedModelControlsStreamingFailuresSnapshotsAndBarrier(t *testing.T)
 	barrier := NewBarrier()
 	model := NewScriptedModel([]ModelExchange{{
 		Step: runtimecontract.ModelStep{
-			Request: runtimecontract.ModelRequest{Model: "fixed-model", Provider: "fixed-provider"},
-			Deltas:  []string{"hel", "lo"},
+			Request: runtimecontract.ModelRequest{
+				Model: "fixed-model", Provider: "fixed-provider",
+				Messages: []runtimecontract.Message{{
+					Role: "assistant", ToolCalls: []runtimecontract.ToolCall{{ID: "call-1", Name: "read_file", Arguments: `{}`}},
+				}},
+			},
+			Deltas: []string{"hel", "lo"},
 			Response: runtimecontract.ModelResponse{
 				Content: "hello",
 				Usage:   runtimecontract.Usage{InputTokens: 2, OutputTokens: 1, TotalTokens: 3},
@@ -37,7 +42,12 @@ func TestScriptedModelControlsStreamingFailuresSnapshotsAndBarrier(t *testing.T)
 	}
 	resultCh := make(chan result, 1)
 	deltas := make([]string, 0, 2)
-	request := runtimecontract.ModelRequest{Model: "fixed-model", Provider: "fixed-provider"}
+	request := runtimecontract.ModelRequest{
+		Model: "fixed-model", Provider: "fixed-provider",
+		Messages: []runtimecontract.Message{{
+			Role: "assistant", ToolCalls: []runtimecontract.ToolCall{{ID: "call-1", Name: "read_file", Arguments: `{}`}},
+		}},
+	}
 	go func() {
 		response, err := model.Invoke(context.Background(), request, func(delta string) {
 			deltas = append(deltas, delta)
@@ -58,7 +68,10 @@ func TestScriptedModelControlsStreamingFailuresSnapshotsAndBarrier(t *testing.T)
 	}
 	requests := model.Requests()
 	request.Model = "mutated"
-	if len(requests) != 2 || requests[0].Model != "fixed-model" {
+	request.Messages[0].ToolCalls[0].Name = "mutated"
+	requests[0].Messages[0].ToolCalls[0].Name = "mutated snapshot"
+	requestsAgain := model.Requests()
+	if len(requests) != 2 || requests[0].Model != "fixed-model" || requestsAgain[0].Messages[0].ToolCalls[0].Name != "read_file" {
 		t.Fatalf("Requests() = %#v", requests)
 	}
 }

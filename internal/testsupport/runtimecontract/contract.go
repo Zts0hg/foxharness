@@ -61,10 +61,12 @@ type Script struct {
 
 /* ModelStep describes one controlled model invocation. */
 type ModelStep struct {
-	Request  ModelRequest
-	Response ModelResponse
-	Deltas   []string
-	Error    string
+	Request     ModelRequest
+	Response    ModelResponse
+	Deltas      []string
+	Error       string
+	NilResponse bool
+	NilMessage  bool
 }
 
 /* ModelRequest captures request properties whose propagation is observable. */
@@ -91,6 +93,7 @@ type Message struct {
 	Role       string
 	Content    string
 	ToolCallID string
+	ToolCalls  []ToolCall
 }
 
 /* ToolDefinition is one model-visible tool declaration. */
@@ -110,8 +113,9 @@ type ToolCall struct {
 
 /* ToolBehavior maps a controlled call to its execution result. */
 type ToolBehavior struct {
-	Call   ToolCall
-	Result ToolResult
+	Call       ToolCall
+	Definition ToolDefinition
+	Result     ToolResult
 }
 
 /* ToolResult captures full and model-visible tool result forms. */
@@ -141,9 +145,11 @@ type Expected struct {
 
 /* Observed contains ordered facts, outcome, persistence, and artifacts. */
 type Observed struct {
+	Requests   []ModelRequest
 	Facts      []Fact
 	Outcome    Outcome
 	Persisted  []PersistedRecord
+	Metrics    []Metric
 	Artifacts  []Artifact
 	Warnings   []Warning
 	DirectText string
@@ -186,6 +192,19 @@ type PersistedRecord struct {
 	Path    string
 	Content string
 	Order   int
+}
+
+/* Metric captures compatibility-significant runtime metric semantics. */
+type Metric struct {
+	Kind       string
+	Turn       int
+	Phase      string
+	ToolName   string
+	CallID     string
+	IsError    bool
+	ModelCalls int
+	ToolCalls  int
+	ErrorCount int
 }
 
 /* Artifact captures one non-authoritative run artifact. */
@@ -255,9 +274,11 @@ func compareObserved(want, got Observed) error {
 		want any
 		got  any
 	}{
+		{name: "model requests", want: want.Requests, got: got.Requests},
 		{name: "facts", want: want.Facts, got: got.Facts},
 		{name: "outcome", want: want.Outcome, got: got.Outcome},
 		{name: "persisted records", want: want.Persisted, got: got.Persisted},
+		{name: "metrics", want: want.Metrics, got: got.Metrics},
 		{name: "artifacts", want: want.Artifacts, got: got.Artifacts},
 		{name: "warnings", want: want.Warnings, got: got.Warnings},
 		{name: "direct text", want: want.DirectText, got: got.DirectText},
