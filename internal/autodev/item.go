@@ -119,6 +119,12 @@ type PublishResult struct {
 type StageContext struct {
 	// Item is the backlog requirement being processed.
 	Item Item
+	// ItemID is the immutable ledger identity for the requirement.
+	ItemID ItemID
+	// RequirementBytes is the authoritative requirement's UTF-8 byte length.
+	RequirementBytes int
+	// RequirementHash is the authoritative requirement's SHA-256 identity.
+	RequirementHash string
 	// Slug is the item's unique kebab-case identifier.
 	Slug string
 	// WorkDir is the item's worktree directory (the core Agent's scope).

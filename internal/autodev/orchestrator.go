@@ -171,14 +171,17 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 	}
 
 	sc := &StageContext{
-		Item:       Item{Type: "", Title: item.Title, Priority: item.Priority, Description: item.Description},
-		Slug:       item.Slug,
-		WorkDir:    wt.Path,
-		RepoRoot:   o.deps.RepoRoot,
-		Branch:     wt.Branch,
-		BaseBranch: o.deps.Config.BaseBranch,
-		Remote:     o.deps.Config.Remote,
-		FeatureDir: item.FeatureDir,
+		Item:             Item{SourceID: item.SourceID, Type: "", Title: item.Title, Priority: item.Priority, Description: item.Description},
+		ItemID:           item.ItemID,
+		RequirementBytes: item.RequirementBytes,
+		RequirementHash:  item.RequirementHash,
+		Slug:             item.Slug,
+		WorkDir:          wt.Path,
+		RepoRoot:         o.deps.RepoRoot,
+		Branch:           wt.Branch,
+		BaseBranch:       o.deps.Config.BaseBranch,
+		Remote:           o.deps.Config.Remote,
+		FeatureDir:       item.FeatureDir,
 	}
 	core.SetUserAsker(NewEngineerAsker(o.deps.Engineer, o.deps.Reporter, sc))
 

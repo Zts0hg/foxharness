@@ -185,7 +185,7 @@ func LoadLedger(path string, clock Clock) (*Ledger, error) {
 func initializeLegacyIdentities(items []*LedgerItem) {
 	for _, item := range items {
 		item.ItemID = itemIDFromSeed("legacy", item.Slug+"\x00"+item.Title)
-		item.RequirementBytes, item.RequirementHash = requirementIdentity(item.Description)
+		item.RequirementBytes, item.RequirementHash = requirementRevisionIdentity(item.Title, item.Description)
 		item.RevisionFrozen = item.Status != StatusPending
 		item.LegacyBindingPending = true
 		switch item.Status {
@@ -275,7 +275,7 @@ func validateLedgerItems(items []*LedgerItem, version int) error {
 					return invalidLedgerItem(version, item, fmt.Sprintf("pending legacy binding requires source state %q", expected))
 				}
 			}
-			bytes, hash := requirementIdentity(item.Description)
+			bytes, hash := requirementRevisionIdentity(item.Title, item.Description)
 			if item.RequirementBytes != bytes || item.RequirementHash != hash {
 				return invalidLedgerItem(version, item, "requirement byte length or hash does not match the persisted description")
 			}
@@ -365,6 +365,17 @@ func itemIDFromSeed(namespace, value string) ItemID {
 func requirementIdentity(description string) (int, string) {
 	sum := sha256.Sum256([]byte(description))
 	return len([]byte(description)), fmt.Sprintf("sha256:%x", sum)
+}
+
+func authoritativeRequirement(title, description string) string {
+	if description != "" {
+		return description
+	}
+	return title
+}
+
+func requirementRevisionIdentity(title, description string) (int, string) {
+	return requirementIdentity(authoritativeRequirement(title, description))
 }
 
 // Seed reconciles normalized backlog items against immutable ledger
@@ -467,7 +478,7 @@ func (l *Ledger) Seed(items []Item) error {
 		}
 		slug := Slug(match.source.Title, takenSlugs)
 		takenSlugs[slug] = true
-		bytes, hash := requirementIdentity(match.source.Description)
+		bytes, hash := requirementRevisionIdentity(match.source.Title, match.source.Description)
 		candidate = append(candidate, &LedgerItem{
 			ItemID:           itemID,
 			SourceID:         match.source.SourceID,
@@ -525,7 +536,7 @@ func reconcileMatchedItem(item *LedgerItem, source Item, order int, now time.Tim
 		item.SourceID = source.SourceID
 		item.Title = source.Title
 		item.Description = source.Description
-		item.RequirementBytes, item.RequirementHash = requirementIdentity(source.Description)
+		item.RequirementBytes, item.RequirementHash = requirementRevisionIdentity(source.Title, source.Description)
 		item.Priority = source.Priority
 		item.RevisionFrozen = item.Status != StatusPending
 		item.LegacyBindingPending = false
@@ -545,7 +556,7 @@ func reconcileMatchedItem(item *LedgerItem, source Item, order int, now time.Tim
 	}
 	item.Title = source.Title
 	item.Description = source.Description
-	item.RequirementBytes, item.RequirementHash = requirementIdentity(source.Description)
+	item.RequirementBytes, item.RequirementHash = requirementRevisionIdentity(source.Title, source.Description)
 	item.Priority = source.Priority
 	return nil
 }

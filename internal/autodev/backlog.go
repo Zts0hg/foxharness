@@ -1,12 +1,15 @@
 package autodev
 
 import (
-	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
+
+const maxBacklogBytes int64 = 64 << 20
 
 // itemHeading matches "## [type] Title" headings; the bracketed type is
 // optional so plain "## Title" items still parse.
@@ -26,24 +29,54 @@ func Parse(path string) ([]Item, error) {
 		return nil, fmt.Errorf("open backlog: %w", err)
 	}
 	defer f.Close()
+	if info, err := f.Stat(); err != nil {
+		return nil, fmt.Errorf("stat backlog: %w", err)
+	} else if info.Size() > maxBacklogBytes {
+		return nil, fmt.Errorf("backlog exceeds %d-byte limit", maxBacklogBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxBacklogBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read backlog: %w", err)
+	}
+	if int64(len(data)) > maxBacklogBytes {
+		return nil, fmt.Errorf("backlog exceeds %d-byte limit", maxBacklogBytes)
+	}
+	if !utf8.Valid(data) {
+		return nil, fmt.Errorf("backlog is not valid UTF-8")
+	}
+	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
 
 	var items []Item
 	var current *Item
 	inDescription := false
+	fence := ""
 
 	flush := func() {
 		if current == nil {
 			return
 		}
-		current.Description = strings.TrimSpace(current.Description)
+		current.Description = strings.Trim(current.Description, "\n")
 		items = append(items, *current)
 		current = nil
+		fence = ""
 	}
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
+	for _, line := range strings.Split(content, "\n") {
+		if current != nil && inDescription {
+			if fence != "" {
+				current.Description += "\n" + line
+				if closesMarkdownFence(line, fence) {
+					fence = ""
+				}
+				continue
+			}
+			if marker := markdownFence(line); marker != "" {
+				current.Description += "\n" + line
+				fence = marker
+				continue
+			}
+		}
 
 		if m := itemHeading.FindStringSubmatch(line); m != nil && strings.HasPrefix(line, "## ") {
 			flush()
@@ -57,6 +90,10 @@ func Parse(path string) ([]Item, error) {
 			continue
 		}
 		if current == nil {
+			continue
+		}
+		if inDescription {
+			current.Description += "\n" + line
 			continue
 		}
 
@@ -80,16 +117,37 @@ func Parse(path string) ([]Item, error) {
 			}
 			continue
 		}
-
-		if inDescription {
-			current.Description += "\n" + line
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read backlog: %w", err)
 	}
 	flush()
 	return items, nil
+}
+
+func markdownFence(line string) string {
+	trimmed := strings.TrimLeft(line, " \t")
+	if len(trimmed) < 3 || (trimmed[0] != '`' && trimmed[0] != '~') {
+		return ""
+	}
+	count := 0
+	for count < len(trimmed) && trimmed[count] == trimmed[0] {
+		count++
+	}
+	if count < 3 {
+		return ""
+	}
+	return trimmed[:count]
+}
+
+func closesMarkdownFence(line, fence string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, fence) {
+		return false
+	}
+	for i := len(fence); i < len(trimmed); i++ {
+		if trimmed[i] != fence[0] {
+			return false
+		}
+	}
+	return true
 }
 
 func parsePriority(s string) Priority {

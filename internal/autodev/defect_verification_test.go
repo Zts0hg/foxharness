@@ -607,7 +607,7 @@ func TestDVAUT003UnfrozenActiveLedgerFailsClosed(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	invalid := `{"version":2,"items":[{"item_id":"item-invalid","slug":"invalid","title":"Invalid","description":"","requirement_bytes":0,"requirement_hash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","revision_frozen":false,"source_state":"current","source_order":0,"priority":"high","status":"in-progress","stage_state":"pending"}]}`
+	invalid := `{"version":2,"items":[{"item_id":"item-invalid","slug":"invalid","title":"Invalid","description":"","requirement_bytes":7,"requirement_hash":"sha256:96c34a0719eb565c268a1626c44313a20de4f83927890933bd9b480849adb76c","revision_frozen":false,"source_state":"current","source_order":0,"priority":"high","status":"in-progress","stage_state":"pending"}]}`
 	if err := os.WriteFile(path, []byte(invalid), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -618,42 +618,125 @@ func TestDVAUT003UnfrozenActiveLedgerFailsClosed(t *testing.T) {
 	}
 }
 
-func TestDVAUT004RequirementMaterializationLosesAuthoritativeFormattingAndLength(t *testing.T) {
+func TestDVAUT004RequirementMaterializationPreservesAuthorityAndIdentity(t *testing.T) {
 	description := "first paragraph\n\n```go\nfmt.Println(\"你好\")\n```\nlast paragraph"
+	bytes, hash := requirementIdentity(description)
 	sc := &StageContext{
-		Item:       Item{Title: "Formatting", Description: description},
-		Slug:       "formatting",
-		FeatureDir: ".codexspec/specs/2026-0811-1200ab-formatting",
+		Item:             Item{Title: "Formatting", Description: description},
+		ItemID:           "item-formatting",
+		RequirementBytes: bytes,
+		RequirementHash:  hash,
+		Slug:             "formatting",
+		FeatureDir:       ".codexspec/specs/2026-0811-1200ab-formatting",
 	}
 	doc := requirementsDocument(sc, time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC))
-	if strings.Contains(doc, description) {
-		t.Fatal("materialized document unexpectedly preserved the exact multiline description")
+	if !strings.Contains(doc, description) {
+		t.Fatalf("materialized document lost exact multiline description:\n%s", doc)
 	}
-	if !strings.Contains(doc, "first paragraph ```go fmt.Println(\"你好\") ``` last paragraph") {
-		t.Fatalf("materialized statement did not exhibit one-line collapse:\n%s", doc)
+	for _, marker := range []string{
+		"**Item ID**: `item-formatting`",
+		fmt.Sprintf("**Requirement Bytes**: %d", bytes),
+		fmt.Sprintf("**Requirement SHA-256**: `%s`", hash),
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("materialized document missing %q", marker)
+		}
 	}
 
 	long := strings.Repeat("界", 4500)
 	sc.Item.Description = long
+	sc.RequirementBytes, sc.RequirementHash = requirementIdentity(long)
 	doc = requirementsDocument(sc, time.Now())
-	if strings.Contains(doc, long) {
-		t.Fatal("materialized document unexpectedly retained the complete >4000-rune description")
-	}
-	if !strings.Contains(doc, strings.Repeat("界", 3997)+"...") {
-		t.Error("materialized document does not exhibit the fixed 4000-rune truncation")
+	if !strings.Contains(doc, long) {
+		t.Fatal("materialized document truncated the authoritative >4000-rune description")
 	}
 
 	sc.Item.Description = ""
-	if doc := requirementsDocument(sc, time.Now()); !strings.Contains(doc, "- **Statement**: Formatting") {
+	sc.RequirementBytes, sc.RequirementHash = requirementIdentity("Formatting")
+	if doc := requirementsDocument(sc, time.Now()); !strings.Contains(doc, "## Authoritative Requirement\n\nFormatting") {
 		t.Error("empty description does not fall back deterministically to the title")
 	}
 }
 
-func TestDVAUT004BacklogScannerRejectsAnOtherwiseValidLargeDescriptionLine(t *testing.T) {
-	path := writeBacklog(t, "## Large\n\n**Description**: "+strings.Repeat("x", 1024*1024+1)+"\n")
-	if _, err := Parse(path); err == nil {
-		t.Fatal("Parse accepted a description line beyond the fixed Scanner maximum")
+func TestDVAUT004BacklogPreservesExactNormalizedUTF8WithinWholeFileLimit(t *testing.T) {
+	description := "first paragraph\r\n\r\n```md\r\n**Status**: literal metadata\r\n## [feature] literal heading\r\n你好\r\n```\r\nlast paragraph"
+	path := writeBacklog(t, "## Exact\r\n\r\n**Description**: "+description+"\r\n")
+	items, err := Parse(path)
+	if err != nil {
+		t.Fatal(err)
 	}
+	want := strings.ReplaceAll(description, "\r\n", "\n")
+	if len(items) != 1 || items[0].Description != want {
+		t.Fatalf("description = %q, want exact normalized %q", items[0].Description, want)
+	}
+
+	large := strings.Repeat("x", 2*1024*1024)
+	path = writeBacklog(t, "## Large\n\n**Description**: "+large+"\n")
+	items, err = Parse(path)
+	if err != nil || len(items) != 1 || items[0].Description != large {
+		t.Fatalf("large description bytes = %d, items=%d err=%v", lenItemDescription(items), len(items), err)
+	}
+}
+
+func TestDVAUT004BacklogRejectsOversizeAndInvalidUTF8Atomically(t *testing.T) {
+	oversize := filepath.Join(t.TempDir(), "oversize.md")
+	if err := os.WriteFile(oversize, []byte("## Oversize\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(oversize, maxBacklogBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(oversize); err == nil {
+		t.Fatal("Parse accepted a backlog beyond the 64 MiB whole-file ceiling")
+	}
+
+	invalid := filepath.Join(t.TempDir(), "invalid.md")
+	if err := os.WriteFile(invalid, []byte{'#', '#', ' ', 0xff, '\n'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(invalid); err == nil {
+		t.Fatal("Parse accepted invalid UTF-8")
+	}
+}
+
+func TestDVAUT004MaterializationReplacesStaleTruncatedAuthority(t *testing.T) {
+	workDir := t.TempDir()
+	featureDir := ".codexspec/specs/2026-0811-1200ab-stale"
+	requirementsPath := filepath.Join(workDir, featureDir, "requirements.md")
+	if err := os.MkdirAll(filepath.Dir(requirementsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(requirementsPath, []byte("old truncated authority"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	description := strings.Repeat("complete\n", 1000)
+	bytes, hash := requirementIdentity(description)
+	sc := &StageContext{
+		Item:             Item{Title: "Stale", Description: description},
+		ItemID:           "item-stale",
+		RequirementBytes: bytes,
+		RequirementHash:  hash,
+		Slug:             "stale",
+		WorkDir:          workDir,
+		FeatureDir:       featureDir,
+	}
+	if err := materializeRequirements(newTestClock())(context.Background(), sc); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(requirementsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), description) || strings.Contains(string(data), "old truncated authority") {
+		t.Fatal("materialization retained stale truncated authority")
+	}
+}
+
+func lenItemDescription(items []Item) int {
+	if len(items) == 0 {
+		return 0
+	}
+	return len(items[0].Description)
 }
 
 func TestDVAUT005PersistedFeatureDirEscapesWorktreeForMaterializationAndVerification(t *testing.T) {

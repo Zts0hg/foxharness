@@ -411,3 +411,10 @@
 - **Mutation boundary**: `Seed` is the only source reconciliation path. `Mark` and transactional `Commit` reject changes to item/source identity, slug, title, description, requirement metadata, priority, source state/order, and the freeze contract before in-memory or durable authority changes. Orchestration saves blocked/orphaned state before returning reconciliation failure and starts no worktree, core, issue, or PR work.
 - **Green commands**: focused `DV-AUT-002/003` and parser migration tests; complete `internal/autodev`; `go test -race ./internal/autodev -count=1 -timeout=240s`; `go vet ./...`; and `go test ./... -count=1 -timeout=300s` outside the restricted filesystem/listener sandbox.
 - **Green result**: PASS; `DV-AUT-003` is corrected and T104 stage-state guarantees remain Green under schema v2. T106 is now unblocked while the broader T044 correction stop remains active.
+
+## T106 / D-AUT-004: Exact Bounded Requirement Authority
+
+- **Red evidence**: Corrected tests proved Scanner rejected a valid line over one MiB, multiline and fenced Markdown collapsed, authoritative text truncated at 4,000 runes, fenced metadata and headings became control syntax, and a non-empty stale truncated artifact skipped rematerialization.
+- **Green implementation**: `Parse` performs a bounded 64-MiB whole-file read, validates UTF-8 before parsing, normalizes CRLF/CR to LF, and preserves description internals including fenced control-shaped text. Oversize and invalid input fail atomically. Ledger revision identity uses the effective title fallback when description is empty.
+- **Materialization**: The generated document records item identity, UTF-8 byte length, SHA-256, and a verbatim authoritative section. Single-line bounded text remains presentation-only. Existing requirements are reused only when all identity markers and exact authority match; stale pre-correction files are rebuilt.
+- **Green gates**: focused and complete `internal/autodev`, focused race, `go vet ./...`, and `go test ./... -count=1 -timeout=300s` outside the restricted filesystem/listener sandbox all PASS. `DV-AUT-004` is corrected and T107 is unblocked.
