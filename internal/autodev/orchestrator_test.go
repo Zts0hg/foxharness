@@ -359,7 +359,8 @@ func TestOrchestratorResumesInProgressFromRecordedStage(t *testing.T) {
 	led.Mark("first-item", func(it *LedgerItem) {
 		it.Status = StatusInProgress
 		it.Branch = "auto/first-item"
-		it.Stage = "plan-to-tasks"
+		it.Stage = StagePlanToTasks
+		it.StageState = StageStateRunning
 		it.FeatureDir = ".codexspec/specs/2026-0610-1200ab-first"
 	})
 	if err := led.Save(); err != nil {
@@ -409,7 +410,11 @@ func TestOrchestratorSkipsDoneItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	led.Seed(items)
-	led.Mark("first-item", func(it *LedgerItem) { it.Status = StatusDone })
+	led.Mark("first-item", func(it *LedgerItem) {
+		it.Status = StatusDone
+		it.Stage = StageDone
+		it.StageState = StageStateVerified
+	})
 	if err := led.Save(); err != nil {
 		t.Fatal(err)
 	}

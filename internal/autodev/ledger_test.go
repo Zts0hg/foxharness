@@ -3,6 +3,7 @@ package autodev
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,6 +71,8 @@ func TestSeedNeverOverridesExistingLedgerStatus(t *testing.T) {
 	led.Seed([]Item{{Title: "Ship it", Priority: PriorityHigh}})
 	led.Mark("ship-it", func(it *LedgerItem) {
 		it.Status = StatusDone
+		it.Stage = StageDone
+		it.StageState = StageStateVerified
 		it.Issue = 31
 		it.PR = 32
 	})
@@ -202,7 +205,8 @@ func TestLedgerCommitFailureDoesNotMutateAuthoritativeMemory(t *testing.T) {
 
 	err = led.Commit("atomic-transition", func(it *LedgerItem) {
 		it.Status = StatusDone
-		it.Stage = "done"
+		it.Stage = StageDone
+		it.StageState = StageStateVerified
 	})
 	if err == nil {
 		t.Fatal("Commit returned nil, want persistence failure")
@@ -228,7 +232,8 @@ func TestSaveAndReloadRoundTrip(t *testing.T) {
 	led.Mark("round-trip", func(it *LedgerItem) {
 		it.Status = StatusInProgress
 		it.Branch = "auto/round-trip"
-		it.Stage = "spec-to-plan"
+		it.Stage = StageSpecToPlan
+		it.StageState = StageStateRunning
 		it.Issue = 7
 		it.PR = 8
 		it.FeatureDir = ".codexspec/specs/2026-0610-1200ab-x"
@@ -264,6 +269,39 @@ func TestSaveAndReloadRoundTrip(t *testing.T) {
 	}
 	if contains := string(data); contains == "" {
 		t.Error("ledger file is empty")
+	}
+}
+
+func TestLoadLedgerMigratesKnownLegacyStageAndWritesCurrentVersion(t *testing.T) {
+	path := ledgerPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"items":[{"slug":"legacy","title":"Legacy","priority":"high","status":"in-progress","stage":"spec-to-plan"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	led, err := LoadLedger(path, newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, ok := led.Get("legacy")
+	if !ok {
+		t.Fatal("legacy item missing")
+	}
+	if item.Stage != StageSpecToPlan || item.StageState != StageStateRunning {
+		t.Fatalf("legacy stage = %q/%q, want %q/%q", item.Stage, item.StageState, StageSpecToPlan, StageStateRunning)
+	}
+	if err := led.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"version": 1`) || !strings.Contains(string(data), `"stage_state": "running"`) {
+		t.Fatalf("migrated ledger = %s, want versioned running state", data)
 	}
 }
 

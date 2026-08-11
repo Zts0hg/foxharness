@@ -67,19 +67,27 @@ func TestDVAUT001LedgerSaveFailureStopsBeforeDependentWorkflow(t *testing.T) {
 	}{
 		{name: "in-progress", failAtCall: 2},
 		{name: "materialize-intent", failAtCall: 3},
-		{name: "generate-spec-intent", failAtCall: 4, maxCoreRuns: 1},
-		{name: "spec-to-plan-intent", failAtCall: 5, maxCoreRuns: 2},
-		{name: "plan-to-tasks-intent", failAtCall: 6, maxCoreRuns: 3},
-		{name: "implement-tasks-intent", failAtCall: 7, maxCoreRuns: 4},
-		{name: "publish-intent", failAtCall: 8, maxCoreRuns: 5},
-		{name: "stage-changes-intent", failAtCall: 9, maxCoreRuns: 5},
-		{name: "commit-staged-intent", failAtCall: 10, maxCoreRuns: 5},
-		{name: "push-intent", failAtCall: 11, maxCoreRuns: 5},
-		{name: "issue-intent", failAtCall: 12, maxCoreRuns: 5},
-		{name: "issue-binding", failAtCall: 13, maxCoreRuns: 6, maxIssueQueries: 1},
-		{name: "pr-intent", failAtCall: 14, maxCoreRuns: 6, maxIssueQueries: 1, maxIssueReports: 1},
-		{name: "pr-binding", failAtCall: 15, maxCoreRuns: 7, maxIssueQueries: 1, maxPRQueries: 1, maxIssueReports: 1},
-		{name: "done", failAtCall: 16, maxCoreRuns: 7, maxIssueQueries: 1, maxPRQueries: 1, maxIssueReports: 1, maxPRReports: 1},
+		{name: "materialize-verified", failAtCall: 4, maxCoreRuns: 1},
+		{name: "generate-spec-intent", failAtCall: 5, maxCoreRuns: 1},
+		{name: "generate-spec-verified", failAtCall: 6, maxCoreRuns: 2},
+		{name: "spec-to-plan-intent", failAtCall: 7, maxCoreRuns: 2},
+		{name: "spec-to-plan-verified", failAtCall: 8, maxCoreRuns: 3},
+		{name: "plan-to-tasks-intent", failAtCall: 9, maxCoreRuns: 3},
+		{name: "plan-to-tasks-verified", failAtCall: 10, maxCoreRuns: 4},
+		{name: "implement-tasks-intent", failAtCall: 11, maxCoreRuns: 4},
+		{name: "implement-tasks-verified", failAtCall: 12, maxCoreRuns: 5},
+		{name: "publish-intent", failAtCall: 13, maxCoreRuns: 5},
+		{name: "stage-changes-intent", failAtCall: 14, maxCoreRuns: 5},
+		{name: "stage-changes-verified", failAtCall: 15, maxCoreRuns: 5},
+		{name: "commit-staged-intent", failAtCall: 16, maxCoreRuns: 5},
+		{name: "commit-staged-verified", failAtCall: 17, maxCoreRuns: 5},
+		{name: "push-intent", failAtCall: 18, maxCoreRuns: 5},
+		{name: "push-verified", failAtCall: 19, maxCoreRuns: 5},
+		{name: "issue-intent", failAtCall: 20, maxCoreRuns: 5},
+		{name: "issue-binding", failAtCall: 21, maxCoreRuns: 6, maxIssueQueries: 1},
+		{name: "pr-intent", failAtCall: 22, maxCoreRuns: 6, maxIssueQueries: 1, maxIssueReports: 1},
+		{name: "pr-binding", failAtCall: 23, maxCoreRuns: 7, maxIssueQueries: 1, maxPRQueries: 1, maxIssueReports: 1},
+		{name: "done", failAtCall: 24, maxCoreRuns: 7, maxIssueQueries: 1, maxPRQueries: 1, maxIssueReports: 1, maxPRReports: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -174,64 +182,89 @@ func TestDVAUT001InitialLedgerSaveFailureStopsBeforeWorktreeCreation(t *testing.
 	}
 }
 
-func TestDVAUT002UnknownRecordedStagesBypassTheSDDPipeline(t *testing.T) {
-	repoRoot := t.TempDir()
-	deps, recorder, _, _, _ := testDeps(t, repoRoot, `## [feature] Resume item
+func TestDVAUT002InvalidRecordedStateFailsBeforeExternalWork(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+	}{
+		{name: "unknown-stage", json: `{"version":1,"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"in-progress","stage":"unknown","stage_state":"running"}]}`},
+		{name: "future-version", json: `{"version":2,"items":[]}`},
+		{name: "done-running", json: `{"version":1,"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"done","stage":"done","stage_state":"running"}]}`},
+		{name: "verified-issue-without-binding", json: `{"version":1,"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"in-progress","stage":"issue","stage_state":"verified"}]}`},
+		{name: "verified-pr-without-binding", json: `{"version":1,"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"in-progress","stage":"pr","stage_state":"verified"}]}`},
+		{name: "malformed-legacy-stage-state", json: `{"items":[{"slug":"resume-item","title":"Resume item","priority":"high","status":"in-progress","stage":"spec-to-plan","stage_state":"bogus"}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			deps, _, factory, git, gh := testDeps(t, repoRoot, `## [feature] Resume item
 
 **Priority**: high
 **Description**: resume safely
 `)
-	o := New(deps)
-	known := []string{"materialize-requirements", "generate-spec", "spec-to-plan", "plan-to-tasks", "implement-tasks"}
-	for i, stage := range known {
-		if got := o.resumeIndex(LedgerItem{Stage: stage}); got != i {
-			t.Errorf("resumeIndex(%q) = %d, want %d", stage, got, i)
-		}
-	}
-	if got := o.resumeIndex(LedgerItem{}); got != 0 {
-		t.Errorf("empty stage index = %d, want 0", got)
-	}
-	for _, stage := range []string{"publish", "done", "renamed-stage", " GENERATE-SPEC ", "future-v2", "unknown"} {
-		if got := o.resumeIndex(LedgerItem{Stage: stage}); got != len(known) {
-			t.Errorf("resumeIndex(%q) = %d, want pipeline bypass %d", stage, got, len(known))
-		}
-	}
+			ledgerPath := filepath.Join(repoRoot, ".foxharness", "autodev-state.json")
+			if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(ledgerPath, []byte(tt.json), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	led, err := LoadLedger(filepath.Join(repoRoot, ".foxharness", "autodev-state.json"), newTestClock())
-	if err != nil {
-		t.Fatal(err)
+			err := New(deps).Run(context.Background())
+			var invalid *InvalidLedgerStateError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("Run error = %v, want *InvalidLedgerStateError", err)
+			}
+			if len(git.calls) != 0 || len(gh.calls) != 0 || len(factory.created) != 0 {
+				t.Fatalf("invalid state reached external work: git=%v gh=%v core=%d", git.calls, gh.calls, len(factory.created))
+			}
+		})
 	}
-	items, err := Parse(filepath.Join(repoRoot, "BACKLOG.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	led.Seed(items)
-	led.Mark("resume-item", func(it *LedgerItem) {
-		it.Status = StatusInProgress
-		it.Branch = "auto/resume-item"
-		it.Stage = "malformed-future-stage"
-	})
-	if err := led.Save(); err != nil {
-		t.Fatal(err)
-	}
+}
 
-	if err := o.Run(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	for _, event := range recorder.list() {
-		if strings.HasPrefix(event, "stage:resume-item:") && !strings.Contains(event, ":stage-changes") &&
-			!strings.Contains(event, ":commit-staged") && !strings.Contains(event, ":push") &&
-			!strings.Contains(event, ":issue") && !strings.Contains(event, ":pr") {
-			t.Errorf("unknown stage unexpectedly ran SDD event %q", event)
+func TestDVAUT002ResumeIndexDistinguishesRunningAndVerifiedStages(t *testing.T) {
+	o := &Orchestrator{pipeline: trivialStages("materialize-requirements", "generate-spec", "spec-to-plan", "plan-to-tasks", "implement-tasks")(PipelineDeps{})}
+	for i, stage := range []PipelineStage{StageMaterializeRequirements, StageGenerateSpec, StageSpecToPlan, StagePlanToTasks, StageImplementTasks} {
+		if got := o.resumeIndex(LedgerItem{Status: StatusInProgress, Stage: stage, StageState: StageStateRunning}); got != i {
+			t.Errorf("running %q index = %d, want %d", stage, got, i)
+		}
+		if got := o.resumeIndex(LedgerItem{Status: StatusInProgress, Stage: stage, StageState: StageStateVerified}); got != i+1 {
+			t.Errorf("verified %q index = %d, want %d", stage, got, i+1)
 		}
 	}
-	reloaded, err := LoadLedger(filepath.Join(repoRoot, ".foxharness", "autodev-state.json"), newTestClock())
+}
+
+func TestDVAUT002RunningStageVerifiesBeforeCoreExecution(t *testing.T) {
+	artifact := "already present"
+	core := &fakeCore{}
+	machine := newTestMachine(&reviewingEngineer{})
+
+	if err := machine.ResumeStep(context.Background(), core, &StageContext{Slug: "resume"}, artifactStage("generate-spec", &artifact)); err != nil {
+		t.Fatal(err)
+	}
+	if len(core.prompts) != 0 {
+		t.Fatalf("core runs = %d, want 0 when the running stage already verifies", len(core.prompts))
+	}
+}
+
+func TestDVAUT002RemoteRunningIssueVerifiesBeforeCoreExecution(t *testing.T) {
+	state := &repoState{issues: map[int]string{31: "Engine memory writes"}}
+	pub, _, _, _ := newPublisher(t, state)
+	pub.cfg.RemoteFlow.OpenPR = false
+	item := happyItem()
+	item.Stage = StageIssue
+	item.StageState = StageStateRunning
+	core := &remoteCore{}
+
+	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	item, ok := reloaded.Get("resume-item")
-	if !ok || item.Status != StatusDone || item.Issue == 0 || item.PR == 0 {
-		t.Fatalf("unknown-stage item = %+v, want SDD bypass followed by publication and done", item)
+	if len(core.prompts) != 0 {
+		t.Fatalf("core runs = %d, want 0 when the recorded issue exists", len(core.prompts))
+	}
+	if result.Issue != 31 || item.Issue != 31 || item.StageState != StageStateVerified {
+		t.Fatalf("result/item = %+v / %+v, want verified issue 31", result, item)
 	}
 }
 

@@ -216,8 +216,11 @@ func TestPublishDrivesOrderedSequence(t *testing.T) {
 	}
 	wantOperations := []string{
 		"publish-stage-changes-intent",
+		"publish-stage-changes-verified",
 		"publish-commit-staged-intent",
+		"publish-commit-staged-verified",
 		"publish-push-intent",
+		"publish-push-verified",
 		"publish-issue-intent",
 		"issue-binding",
 		"publish-pr-intent",

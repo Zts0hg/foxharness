@@ -47,28 +47,99 @@ func (p *RemotePublisher) Publish(ctx context.Context, core CoreRunner, wt Workt
 		PR:         item.PR,
 	}
 
-	for _, st := range p.steps() {
-		if err := record("publish-"+st.Name+"-intent", func(it *LedgerItem) { it.Stage = st.Name }); err != nil {
-			return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
+	steps := p.steps()
+	start := remoteResumeIndex(item, steps)
+	for i := start; i < len(steps); i++ {
+		st := steps[i]
+		stage, ok := pipelineStage(st.Name)
+		if !ok {
+			return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR},
+				fmt.Errorf("remote stage %q is not part of the durable stage vocabulary", st.Name)
+		}
+		resuming := item.Stage == stage && item.StageState == StageStateRunning
+		if !resuming {
+			if err := record("publish-"+st.Name+"-intent", func(it *LedgerItem) {
+				it.Stage = stage
+				it.StageState = StageStateRunning
+			}); err != nil {
+				return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
+			}
 		}
 		previousIssue, previousPR := sc.Issue, sc.PR
-		if err := p.machine.RunStep(ctx, core, sc, st); err != nil {
+		var runErr error
+		if resuming {
+			runErr = p.machine.ResumeStep(ctx, core, sc, st)
+		} else {
+			runErr = p.machine.RunStep(ctx, core, sc, st)
+		}
+		if runErr != nil {
+			return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, runErr
+		}
+		issueChanged := sc.Issue != 0 && sc.Issue != previousIssue
+		prChanged := sc.PR != 0 && sc.PR != previousPR
+		operation := "publish-" + st.Name + "-verified"
+		if issueChanged {
+			operation = "issue-binding"
+		}
+		if prChanged {
+			operation = "pr-binding"
+		}
+		if err := record(operation, func(it *LedgerItem) {
+			it.Stage = stage
+			it.StageState = StageStateVerified
+			if issueChanged {
+				it.Issue = sc.Issue
+			}
+			if prChanged {
+				it.PR = sc.PR
+			}
+		}); err != nil {
 			return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
 		}
-		if sc.Issue != 0 && sc.Issue != previousIssue {
-			if err := record("issue-binding", func(it *LedgerItem) { it.Issue = sc.Issue }); err != nil {
-				return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
-			}
+		if issueChanged {
 			p.reporter.OnIssue(ctx, sc.Issue)
 		}
-		if sc.PR != 0 && sc.PR != previousPR {
-			if err := record("pr-binding", func(it *LedgerItem) { it.PR = sc.PR }); err != nil {
-				return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
-			}
+		if prChanged {
 			p.reporter.OnPR(ctx, sc.PR)
 		}
 	}
 	return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, nil
+}
+
+func remoteResumeIndex(item LedgerItem, steps []Stage) int {
+	currentRank := remoteStageRank(item.Stage)
+	if currentRank < 0 {
+		return 0
+	}
+	for i, step := range steps {
+		rank := remoteStageRank(PipelineStage(step.Name))
+		if item.StageState == StageStateVerified && rank > currentRank {
+			return i
+		}
+		if item.StageState != StageStateVerified && rank >= currentRank {
+			return i
+		}
+	}
+	return len(steps)
+}
+
+func remoteStageRank(stage PipelineStage) int {
+	switch stage {
+	case StagePublish:
+		return 0
+	case StageStageChanges:
+		return 1
+	case StageCommitStaged:
+		return 2
+	case StagePush:
+		return 3
+	case StageIssue:
+		return 4
+	case StagePR:
+		return 5
+	default:
+		return -1
+	}
 }
 
 // steps assembles the remote pipeline honoring the remote_flow toggles.

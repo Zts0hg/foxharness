@@ -85,6 +85,10 @@ func New(deps Deps) *Orchestrator {
 // Cases), seeds the ledger, then processes items one at a time until no
 // in-progress or pending item remains.
 func (o *Orchestrator) Run(ctx context.Context) error {
+	led, err := LoadLedger(filepath.Join(o.deps.RepoRoot, ".foxharness", "autodev-state.json"), o.deps.Clock)
+	if err != nil {
+		return err
+	}
 	if err := o.checkPreconditions(ctx); err != nil {
 		return err
 	}
@@ -97,11 +101,6 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		backlogPath = filepath.Join(o.deps.RepoRoot, backlogPath)
 	}
 	items, err := Parse(backlogPath)
-	if err != nil {
-		return err
-	}
-
-	led, err := LoadLedger(filepath.Join(o.deps.RepoRoot, ".foxharness", "autodev-state.json"), o.deps.Clock)
 	if err != nil {
 		return err
 	}
@@ -180,24 +179,52 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 	}
 	core.SetUserAsker(NewEngineerAsker(o.deps.Engineer, o.deps.Reporter, sc))
 
-	for _, st := range o.pipeline[o.resumeIndex(item):] {
-		if err := record("stage-"+st.Name+"-intent", func(it *LedgerItem) { it.Stage = st.Name }); err != nil {
-			return err
+	start := o.resumeIndex(item)
+	for i := start; i < len(o.pipeline); i++ {
+		st := o.pipeline[i]
+		stage, ok := pipelineStage(st.Name)
+		if !ok {
+			return fmt.Errorf("pipeline stage %q is not part of the durable stage vocabulary", st.Name)
 		}
-		if err := o.machine.RunStep(ctx, core, sc, st); err != nil {
-			return err
-		}
-		if sc.FeatureDir != "" {
-			if err := record("stage-"+st.Name+"-feature-dir", func(it *LedgerItem) { it.FeatureDir = sc.FeatureDir }); err != nil {
+		resuming := i == start && item.Stage == stage && item.StageState == StageStateRunning
+		if !resuming {
+			if err := record("stage-"+st.Name+"-intent", func(it *LedgerItem) {
+				it.Stage = stage
+				it.StageState = StageStateRunning
+			}); err != nil {
 				return err
 			}
 		}
+		var runErr error
+		if resuming {
+			runErr = o.machine.ResumeStep(ctx, core, sc, st)
+		} else {
+			runErr = o.machine.RunStep(ctx, core, sc, st)
+		}
+		if runErr != nil {
+			return runErr
+		}
+		if err := record("stage-"+st.Name+"-verified", func(it *LedgerItem) {
+			it.Stage = stage
+			it.StageState = StageStateVerified
+			if sc.FeatureDir != "" {
+				it.FeatureDir = sc.FeatureDir
+			}
+		}); err != nil {
+			return err
+		}
 	}
 
-	if err := record("publish-intent", func(it *LedgerItem) { it.Stage = "publish" }); err != nil {
-		return err
-	}
 	current, _ := led.Get(item.Slug)
+	if !isPublishingStage(current.Stage) {
+		if err := record("publish-intent", func(it *LedgerItem) {
+			it.Stage = StagePublish
+			it.StageState = StageStateRunning
+		}); err != nil {
+			return err
+		}
+		current, _ = led.Get(item.Slug)
+	}
 	current.Description = item.Description
 	result, err := o.publisher.Publish(ctx, core, wt, current, record)
 	if err != nil {
@@ -206,7 +233,8 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 
 	if err := record("item-done", func(it *LedgerItem) {
 		it.Status = StatusDone
-		it.Stage = "done"
+		it.Stage = StageDone
+		it.StageState = StageStateVerified
 		it.Issue = result.Issue
 		it.PR = result.PR
 	}); err != nil {
@@ -223,20 +251,31 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 	return nil
 }
 
-// resumeIndex maps the item's recorded stage to the pipeline position to
-// resume from: unknown/empty stages start at 0, a recorded SDD stage
-// resumes there, and post-pipeline stages (publish/done) skip the SDD
-// stages entirely (REQ-022).
+// resumeIndex maps a running SDD stage to itself and a verified SDD stage
+// to its successor. Post-pipeline stages skip the SDD pipeline entirely;
+// invalid stages have already failed closed while loading the ledger.
 func (o *Orchestrator) resumeIndex(item LedgerItem) int {
-	if item.Stage == "" {
+	if item.Stage == StageNone {
 		return 0
 	}
 	for i, st := range o.pipeline {
-		if st.Name == item.Stage {
+		if PipelineStage(st.Name) == item.Stage {
+			if item.StageState == StageStateVerified {
+				return i + 1
+			}
 			return i
 		}
 	}
 	return len(o.pipeline)
+}
+
+func isPublishingStage(stage PipelineStage) bool {
+	switch stage {
+	case StagePublish, StageStageChanges, StageCommitStaged, StagePush, StageIssue, StagePR:
+		return true
+	default:
+		return false
+	}
 }
 
 // checkPreconditions validates the genuine startup requirements: the repo

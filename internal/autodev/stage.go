@@ -72,6 +72,17 @@ func NewStageMachine(engineer EngineerAgent, reporter Reporter) *StageMachine {
 // design (REQ-027: no abandonment budget) and exits only on Verify success,
 // a hard runner error, or context cancellation.
 func (m *StageMachine) RunStep(ctx context.Context, core CoreRunner, sc *StageContext, st Stage) error {
+	return m.runStep(ctx, core, sc, st, false)
+}
+
+// ResumeStep verifies a durably running stage before driving the core again.
+// This closes the crash window between external completion and the ledger's
+// verified transition without changing fresh-stage behavior.
+func (m *StageMachine) ResumeStep(ctx context.Context, core CoreRunner, sc *StageContext, st Stage) error {
+	return m.runStep(ctx, core, sc, st, true)
+}
+
+func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageContext, st Stage, verifyFirst bool) error {
 	sc.Stage = st.Name
 	if m.reporter != nil {
 		m.reporter.OnStageStart(ctx, sc.Slug, st.Name)
@@ -82,6 +93,18 @@ func (m *StageMachine) RunStep(ctx context.Context, core CoreRunner, sc *StageCo
 			m.reporter.OnInfo(ctx, fmt.Sprintf("step %s already satisfied; skipping", st.Name))
 		}
 		return nil
+	}
+	if verifyFirst && st.Verify != nil {
+		ok, gap := st.Verify(ctx, sc)
+		if m.reporter != nil {
+			m.reporter.OnVerify(ctx, st.Name, ok, gap)
+		}
+		if ok {
+			if m.reporter != nil {
+				m.reporter.OnInfo(ctx, fmt.Sprintf("step %s already verified; skipping", st.Name))
+			}
+			return nil
+		}
 	}
 	if st.Prepare != nil {
 		if err := st.Prepare(ctx, sc); err != nil {
