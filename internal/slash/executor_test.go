@@ -25,7 +25,7 @@ func (f *fakeForkRunner) Run(ctx context.Context, task string, agentType string,
 	f.agentType = agentType
 	f.allowedTools = append([]string(nil), allowedTools...)
 	if f.err != nil {
-		return "", f.err
+		return f.result, f.err
 	}
 	return f.result, nil
 }
@@ -213,12 +213,15 @@ func TestExecutor_EmptyContent_Valid(t *testing.T) {
 }
 
 func TestExecutor_ForkRunnerError_Propagates(t *testing.T) {
-	fork := &fakeForkRunner{err: errors.New("boom")}
+	fork := &fakeForkRunner{result: "typed partial outcome", err: errors.New("boom")}
 	exec := NewExecutor(WithForkRunner(fork))
 	cmd := &Command{Type: CommandPrompt, Frontmatter: Frontmatter{Context: "fork"}}
-	_, err := exec.Execute(context.Background(), cmd, "", "")
+	result, err := exec.Execute(context.Background(), cmd, "", "")
 	if err == nil {
 		t.Fatal("expected propagated error")
+	}
+	if !result.Fork || result.Content != "typed partial outcome" {
+		t.Fatalf("fork failure result = %#v, want retained partial outcome", result)
 	}
 }
 

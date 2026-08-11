@@ -9,6 +9,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/slash"
 	"github.com/Zts0hg/foxharness/internal/toolpolicy"
+	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 // SkillTool is the LLM-facing tool that lets the model invoke a prompt
@@ -132,12 +133,28 @@ func (t *SkillTool) Execute(ctx context.Context, raw json.RawMessage) (string, e
 	}
 	res, err := t.executor.Execute(ctx, cmd, args.Arguments, t.sessionID())
 	if err != nil {
-		return "", err
+		return res.Content, err
 	}
 	if res.AfterHook != nil {
 		defer res.AfterHook(ctx)
 	}
 	return res.Content, nil
+}
+
+// ExecuteResult preserves a forked ChildRun's partial outcome and terminal
+// error evidence as one failed model-visible tool result.
+func (t *SkillTool) ExecuteResult(ctx context.Context, raw json.RawMessage) (tools.ExecutionResult, error) {
+	output, err := t.Execute(ctx, raw)
+	if err == nil {
+		return tools.ExecutionResult{Output: output}, nil
+	}
+	if output == "" {
+		return tools.ExecutionResult{}, err
+	}
+	if !strings.Contains(output, err.Error()) {
+		output += "\n\nError:\n" + err.Error()
+	}
+	return tools.ExecutionResult{Output: output, Failed: true}, nil
 }
 
 func (t *SkillTool) resolve(raw json.RawMessage) (skillToolArgs, *slash.Command, error) {

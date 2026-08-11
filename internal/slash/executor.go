@@ -219,7 +219,7 @@ func (e *Executor) Execute(ctx context.Context, cmd *Command, rawArgs, sessionID
 		// "after the command's execution completes".
 		_ = ExecuteAfterHook(ctx, plan.Hooks, shellWorkDir, e.hookTimeout)
 		if forkErr != nil {
-			return ExecutionResult{}, forkErr
+			return ExecutionResult{Content: out, Fork: true}, forkErr
 		}
 		return ExecutionResult{Content: out, Fork: true}, nil
 	}

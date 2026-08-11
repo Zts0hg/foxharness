@@ -2,14 +2,36 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/slash"
 )
+
+func TestHandlePromptCommandReadyRetainsForkPartialOutcomeAsFailure(t *testing.T) {
+	m := Model{running: true, runStartedAt: time.Now(), cancelRun: func() {}}
+	next, _ := m.handlePromptCommandReady(promptCommandReadyMsg{
+		result: slash.ExecutionResult{Content: "Status: failed\n\nPartial Report:\ncommitted partial", Fork: true},
+		err:    errors.New("provider failed"),
+	})
+	got := next.(Model)
+	if got.status != "Command failed" || got.running || got.cancelRun != nil {
+		t.Fatalf("fork failure state = status %q running %t cancel nil %t", got.status, got.running, got.cancelRun == nil)
+	}
+	for _, want := range []string{"Status: failed", "Partial Report:", "committed partial", "provider failed"} {
+		if !entriesContain(got.entries, "error", want) {
+			t.Fatalf("fork failure transcript missing %q: %#v", want, got.entries)
+		}
+	}
+	if entriesContain(got.entries, "assistant", "committed partial") {
+		t.Fatalf("fork partial outcome was presented as success: %#v", got.entries)
+	}
+}
 
 type restrictedFakeRunner struct {
 	*fakeRunner

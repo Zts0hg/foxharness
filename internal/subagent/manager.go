@@ -97,12 +97,16 @@ type Request struct {
 	AllowedTools []string
 }
 
-// Result holds the subagent lineage, resolved agent identity, session
-// identifier, and final report text produced by the child engine run.
+// Result is the single typed terminal outcome for one ChildRun invocation. It
+// carries correlation and lineage throughout admission, startup, and execution;
+// Report is final on success and the latest committed assistant text otherwise.
 type Result struct {
+	InvocationID    string
 	SessionID       string
+	RunID           string
 	ParentSessionID string
 	Agent           AgentID
+	Status          OutcomeStatus
 	Report          string
 }
 
@@ -129,6 +133,7 @@ type Manager struct {
 	permissions      *permission.Coordinator
 	parentEvidence   permission.EvidenceProvider
 	compactorFactory func(*session.Session) (*compaction.Compactor, error)
+	createSession    func(session.CreateOptions) (*session.Session, error)
 }
 
 type childProviderMetadata interface {
@@ -243,16 +248,22 @@ func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessi
 // Run executes the subagent task described by req. It creates a new session,
 // builds a scoped tool registry (read-only when requested), and runs the
 // engine for up to the configured turn budget (DefaultMaxTurns by default).
-// The returned Result contains the session ID and the agent's final message
-// as a report.
+// The returned Result is non-nil for every admitted, rejected, or failed
+// invocation and retains any identities established before termination.
 func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
+	outcome := newChildOutcome(req)
 	agent, err := resolveAgent(req.Agent)
 	if err != nil {
-		return nil, err
+		outcome.Status = OutcomeRejected
+		return outcome, err
 	}
+	outcome.Agent = agent.id
 
-	manager := session.NewManager(m.workDir)
-	sess, err := manager.Create(session.CreateOptions{
+	createSession := m.createSession
+	if createSession == nil {
+		createSession = session.NewManager(m.workDir).Create
+	}
+	sess, err := createSession(session.CreateOptions{
 		Source:          session.SOURCESubagent,
 		WorkDir:         m.workDir,
 		UserID:          "subagent-of-" + req.ParentSessionID,
@@ -261,8 +272,9 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 	})
 
 	if err != nil {
-		return nil, err
+		return outcome, err
 	}
+	outcome.SessionID = sess.ID
 
 	registry := m.buildRegistry(req.ReadOnly, narrowAgentTools(req.AllowedTools, agent), sess)
 	composer := m.buildComposer(sess, registry)
@@ -280,7 +292,7 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 	)
 	compactor, err := m.newCompactor(sess)
 	if err != nil {
-		return nil, err
+		return outcome, err
 	}
 	eng.WithCompactor(compactor)
 
@@ -301,22 +313,15 @@ Agent: %s
 %s
 `, req.ParentSessionID, agent.id, agent.persona, req.Task)
 
-	result, err := eng.Run(ctx, sess, subPrompt)
-	if err != nil {
-		return nil, err
-	}
-
-	report := ""
+	recorder := &outcomeRecorder{}
+	result, err := eng.RunWithReporter(ctx, sess, subPrompt, recorder)
+	outcome.RunID = recorder.runID
+	outcome.Report = recorder.report
 	if result != nil {
-		report = result.FinalMessage
+		outcome.RunID = result.RunID
 	}
-
-	return &Result{
-		SessionID:       sess.ID,
-		ParentSessionID: req.ParentSessionID,
-		Agent:           agent.id,
-		Report:          report,
-	}, nil
+	outcome.Status = classifyOutcome(err, outcome.RunID)
+	return outcome, err
 }
 
 func (m *Manager) newCompactor(sess *session.Session) (*compaction.Compactor, error) {

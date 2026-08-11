@@ -477,7 +477,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	for {
 		turnCount++
 		if e.config.MaxTurns > 0 && turnCount > e.config.MaxTurns {
-			wrapped := fmt.Errorf("超过最大 Turn 数限制: %d", e.config.MaxTurns)
+			wrapped := &TurnLimitError{MaxTurns: e.config.MaxTurns}
 			markRunError(wrapped)
 			return newRunResult(final), wrapped
 		}

@@ -1031,7 +1031,10 @@ func (s *subagentForkRunner) Run(ctx context.Context, task string, agentType str
 		AllowedTools:    allowedTools,
 	})
 	if err != nil {
-		return "", err
+		if res == nil {
+			return "", err
+		}
+		return subagent.FormatFailureOutcome(res, err), &subagent.OutcomeError{Outcome: res, Err: err}
 	}
 	if res == nil {
 		return "", nil

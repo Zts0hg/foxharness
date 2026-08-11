@@ -2991,7 +2991,13 @@ func (m Model) handlePromptCommandReady(msg promptCommandReadyMsg) (tea.Model, t
 		m.running = false
 		m.runStartedAt = time.Time{}
 		m.cancelRun = nil
-		m.appendEntry("error", "command failed", msg.err.Error(), true)
+		body := strings.TrimSpace(msg.result.Content)
+		if body == "" {
+			body = msg.err.Error()
+		} else if !strings.Contains(body, msg.err.Error()) {
+			body += "\n\nError:\n" + msg.err.Error()
+		}
+		m.appendEntry("error", "command failed", body, true)
 		m.status = "Command failed"
 		return m, nil
 	}

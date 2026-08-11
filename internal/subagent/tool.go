@@ -3,11 +3,13 @@ package subagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/toolpolicy"
+	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 // Tool implements the agent tool interface for delegating tasks to a
@@ -128,7 +130,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (string, error)
 	})
 
 	if err != nil {
-		return "", err
+		return FormatFailureOutcome(result, err), &OutcomeError{Outcome: result, Err: err}
 	}
 
 	return fmt.Sprintf(
@@ -136,4 +138,18 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (string, error)
 		result.SessionID,
 		result.Report,
 	), nil
+}
+
+// ExecuteResult preserves a failed ChildRun's correlated outcome in the model-
+// visible tool result while marking it as a failure.
+func (t *Tool) ExecuteResult(ctx context.Context, raw json.RawMessage) (tools.ExecutionResult, error) {
+	output, err := t.Execute(ctx, raw)
+	if err == nil {
+		return tools.ExecutionResult{Output: output}, nil
+	}
+	var outcomeErr *OutcomeError
+	if errors.As(err, &outcomeErr) {
+		return tools.ExecutionResult{Output: output, Failed: true}, nil
+	}
+	return tools.ExecutionResult{}, err
 }

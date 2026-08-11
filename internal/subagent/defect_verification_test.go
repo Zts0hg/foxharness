@@ -16,11 +16,13 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/compaction"
+	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/toolpolicy"
+	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 type childCaptureProvider struct {
@@ -283,8 +285,8 @@ func TestDVCHD005UnknownAgentDoesNotCreateChildSession(t *testing.T) {
 		ReadOnly:        true,
 		Agent:           AgentID("unknown-agent"),
 	})
-	if err == nil || result != nil {
-		t.Fatalf("unknown agent result/error = %#v/%v, want nil explicit rejection", result, err)
+	if err == nil || result == nil || result.Status != OutcomeRejected || result.SessionID != "" || result.RunID != "" {
+		t.Fatalf("unknown agent result/error = %#v/%v, want correlated rejection without child identity", result, err)
 	}
 	if !strings.Contains(err.Error(), `unknown agent "unknown-agent"`) {
 		t.Fatalf("unknown agent error = %q, want explicit identity", err)
@@ -454,8 +456,8 @@ func TestDVCHD004ChildCancellationKillsShellDescendantsAndPendingApproval(t *tes
 	result, err := NewManager(&backgroundBashChildProvider{command: backgroundCommand}, workDir).
 		WithMaxTurns(1).
 		Run(context.Background(), Request{ParentSessionID: "parent", Task: "start background work", ReadOnly: false})
-	if err == nil || result != nil {
-		t.Fatalf("turn-exhausted child result/error = %#v/%v, want current nil outcome and error", result, err)
+	if err == nil || result == nil || result.Status != OutcomeTurnExhausted {
+		t.Fatalf("turn-exhausted child result/error = %#v/%v, want correlated exhaustion", result, err)
 	}
 	if !strings.Contains(err.Error(), "超过最大 Turn 数限制: 1") {
 		t.Fatalf("turn-exhausted child error = %q, want turn limit", err)
@@ -474,28 +476,45 @@ func (a *cancellingApprover) Approve(ctx context.Context, _ permission.ApprovalR
 	return permission.UserDecision{}, ctx.Err()
 }
 
-func TestDVCHD006ChildWrapperDiscardsCorrelatedOutcomesForEveryFailureClass(t *testing.T) {
-	t.Run("provider", func(t *testing.T) {
-		assertNilChildOutcome(t, &errorChildProvider{err: errors.New("provider failed")}, 2, nil)
+func TestDVCHD006EveryInvocationReturnsOneTypedCorrelatedOutcome(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		result, err := runChildOutcome(t, &finalReportProvider{}, 2, context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertChildOutcome(t, result, OutcomeSucceeded, true, true, "subagent report")
 	})
 
-	t.Run("tool then provider", func(t *testing.T) {
-		provider := &toolThenErrorChildProvider{}
-		assertNilChildOutcome(t, provider, 3, nil)
+	t.Run("provider failure", func(t *testing.T) {
+		terminalErr := errors.New("provider failed")
+		result, err := runChildOutcome(t, &errorChildProvider{err: terminalErr}, 2, context.Background())
+		if !errors.Is(err, terminalErr) {
+			t.Fatalf("provider error = %v, want preserved cause", err)
+		}
+		assertChildOutcome(t, result, OutcomeFailed, true, true, "")
 	})
 
-	t.Run("persistence", func(t *testing.T) {
+	t.Run("tool then provider preserves committed assistant text", func(t *testing.T) {
+		result, err := runChildOutcome(t, &toolThenErrorChildProvider{}, 3, context.Background())
+		if err == nil || !strings.Contains(err.Error(), "provider failed after tool result") {
+			t.Fatalf("tool/provider error = %v", err)
+		}
+		assertChildOutcome(t, result, OutcomeFailed, true, true, "partial before failed tool")
+	})
+
+	t.Run("persistence excludes uncommitted assistant text", func(t *testing.T) {
 		homeDir := t.TempDir()
 		t.Setenv("HOME", homeDir)
 		workDir := t.TempDir()
 		provider := &messageLogBreakingProvider{homeDir: homeDir}
 		result, err := NewManager(provider, workDir).Run(context.Background(), Request{ParentSessionID: "parent", Task: "persist", ReadOnly: true})
-		if err == nil || result != nil {
-			t.Fatalf("persistence result/error = %#v/%v, want nil correlated outcome and error", result, err)
+		if err == nil {
+			t.Fatal("persistence error = nil")
 		}
+		assertChildOutcome(t, result, OutcomeFailed, true, true, "")
 	})
 
-	t.Run("compaction construction", func(t *testing.T) {
+	t.Run("compaction construction is correlated start failure", func(t *testing.T) {
 		homeDir := t.TempDir()
 		t.Setenv("HOME", homeDir)
 		workDir := t.TempDir()
@@ -504,43 +523,117 @@ func TestDVCHD006ChildWrapperDiscardsCorrelatedOutcomesForEveryFailureClass(t *t
 			return nil, errors.New("compactor failed")
 		}
 		result, err := mgr.Run(context.Background(), Request{ParentSessionID: "parent", Task: "compact", ReadOnly: true})
-		if err == nil || result != nil {
-			t.Fatalf("compaction result/error = %#v/%v, want nil correlated outcome and error", result, err)
+		if err == nil {
+			t.Fatal("compaction construction error = nil")
 		}
-		if _, err := session.NewManagerWithHome(workDir, homeDir).Latest(session.LookupOptions{Source: session.SOURCESubagent}); err != nil {
-			t.Fatalf("created child session is not recoverable after compactor failure: %v", err)
-		}
+		assertChildOutcome(t, result, OutcomeStartFailed, true, false, "")
 	})
 
-	t.Run("turn limit with partial report", func(t *testing.T) {
-		assertNilChildOutcome(t, &partialLoopChildProvider{}, 1, nil)
+	t.Run("turn exhaustion preserves latest committed assistant text", func(t *testing.T) {
+		result, err := runChildOutcome(t, &partialLoopChildProvider{}, 1, context.Background())
+		if err == nil || !strings.Contains(err.Error(), "超过最大 Turn 数限制: 1") {
+			t.Fatalf("turn exhaustion error = %v", err)
+		}
+		var turnLimit *engine.TurnLimitError
+		if !errors.As(err, &turnLimit) || turnLimit.MaxTurns != 1 {
+			t.Fatalf("turn exhaustion type = %T/%v, want TurnLimitError(1)", err, err)
+		}
+		assertChildOutcome(t, result, OutcomeTurnExhausted, true, true, "partial child report")
 	})
 
-	t.Run("cancellation", func(t *testing.T) {
+	t.Run("cancellation preserves classification", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		assertNilChildOutcome(t, &errorChildProvider{err: context.Canceled}, 2, ctx)
+		result, err := runChildOutcome(t, &errorChildProvider{err: context.Canceled}, 2, ctx)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation error = %v, want context.Canceled", err)
+		}
+		assertChildOutcome(t, result, OutcomeCancelled, true, true, "")
+	})
+
+	t.Run("unknown agent is correlated rejection", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		result, err := NewManager(&finalReportProvider{}, t.TempDir()).Run(context.Background(), Request{
+			ParentSessionID: "parent",
+			Task:            "reject",
+			Agent:           "unknown-agent",
+		})
+		if err == nil {
+			t.Fatal("unknown-agent error = nil")
+		}
+		assertChildOutcome(t, result, OutcomeRejected, false, false, "")
+		if result.Agent != "unknown-agent" {
+			t.Fatalf("rejected agent = %q, want attempted identity", result.Agent)
+		}
+	})
+
+	t.Run("session creation is correlated start failure", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		mgr := NewManager(&finalReportProvider{}, t.TempDir())
+		mgr.createSession = func(session.CreateOptions) (*session.Session, error) {
+			return nil, errors.New("session start failed")
+		}
+		result, err := mgr.Run(context.Background(), Request{ParentSessionID: "parent", Task: "start"})
+		if err == nil || !strings.Contains(err.Error(), "session start failed") {
+			t.Fatalf("session start error = %v", err)
+		}
+		assertChildOutcome(t, result, OutcomeStartFailed, false, false, "")
 	})
 }
 
-func assertNilChildOutcome(t *testing.T, p provider.LLMProvider, maxTurns int, ctx context.Context) {
+func runChildOutcome(t *testing.T, p provider.LLMProvider, maxTurns int, ctx context.Context) (*Result, error) {
 	t.Helper()
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	workDir := t.TempDir()
-	result, err := NewManager(p, workDir).WithMaxTurns(maxTurns).Run(ctx, Request{
+	t.Setenv("HOME", t.TempDir())
+	return NewManager(p, t.TempDir()).WithMaxTurns(maxTurns).Run(ctx, Request{
 		ParentSessionID: "parent",
-		Task:            "exercise failure",
+		Task:            "exercise outcome",
 		ReadOnly:        true,
 	})
-	if err == nil || result != nil {
-		t.Fatalf("Run() result/error = %#v/%v, want nil correlated outcome and error", result, err)
+}
+
+func assertChildOutcome(t *testing.T, result *Result, status OutcomeStatus, wantSession, wantRun bool, report string) {
+	t.Helper()
+	if result == nil {
+		t.Fatal("child outcome = nil")
 	}
-	if _, latestErr := session.NewManagerWithHome(workDir, homeDir).Latest(session.LookupOptions{Source: session.SOURCESubagent}); latestErr != nil {
-		t.Fatalf("child session persisted but its identity was not returned: %v", latestErr)
+	if result.InvocationID == "" || result.ParentSessionID != "parent" || result.Status != status {
+		t.Fatalf("child correlation/status = %#v, want parent and %q", result, status)
+	}
+	if (result.SessionID != "") != wantSession || (result.RunID != "") != wantRun {
+		t.Fatalf("child session/run identity = %q/%q, want presence %t/%t", result.SessionID, result.RunID, wantSession, wantRun)
+	}
+	if result.Report != report {
+		t.Fatalf("child report = %q, want %q", result.Report, report)
+	}
+}
+
+func TestDVCHD006DelegateAdapterRetainsPartialOutcomeAndTerminalError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	tool := NewTool(NewManager(&toolThenErrorChildProvider{}, t.TempDir()).WithMaxTurns(3), "parent")
+	args := json.RawMessage(`{"task":"inspect","read_only":true}`)
+
+	output, err := tool.Execute(context.Background(), args)
+	var outcomeErr *OutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome == nil {
+		t.Fatalf("delegate error = %T/%v, want typed outcome error", err, err)
+	}
+	if outcomeErr.Outcome.Status != OutcomeFailed || outcomeErr.Outcome.Report != "partial before failed tool" {
+		t.Fatalf("delegate typed outcome = %#v", outcomeErr.Outcome)
+	}
+	for _, want := range []string{"Status: failed", "Partial Report:", "partial before failed tool", "provider failed after tool result"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("delegate failure output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "\nReport:\n") {
+		t.Fatalf("delegate failure presents partial content as success:\n%s", output)
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(NewTool(NewManager(&toolThenErrorChildProvider{}, t.TempDir()).WithMaxTurns(3), "parent"))
+	result := registry.Execute(context.Background(), schema.ToolCall{ID: "delegate", Name: "delegate_task", Arguments: args})
+	if !result.IsError || !strings.Contains(result.Output, "Partial Report:") || !strings.Contains(result.Output, "provider failed after tool result") {
+		t.Fatalf("registry delegate outcome = %#v, want partial report and failure", result)
 	}
 }
 
