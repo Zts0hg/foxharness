@@ -52,14 +52,16 @@ func (t *structuredFailureTool) ExecuteResult(ctx context.Context, args json.Raw
 }
 
 type sequencedProvider struct {
-	responses []*provider.GenerateResponse
-	call      int
-	seen      [][]schema.Message
-	seenTools [][]string
+	responses       []*provider.GenerateResponse
+	call            int
+	seen            [][]schema.Message
+	seenTools       [][]string
+	seenDefinitions [][]schema.ToolDefinition
 }
 
 func (p *sequencedProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
 	p.seen = append(p.seen, append([]schema.Message(nil), messages...))
+	p.seenDefinitions = append(p.seenDefinitions, append([]schema.ToolDefinition(nil), availableTools...))
 	names := make([]string, 0, len(availableTools))
 	for _, definition := range availableTools {
 		names = append(names, definition.Name)
