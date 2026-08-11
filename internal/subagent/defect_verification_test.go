@@ -462,7 +462,67 @@ func TestDVCHD004ChildCancellationKillsShellDescendantsAndPendingApproval(t *tes
 	if !strings.Contains(err.Error(), "超过最大 Turn 数限制: 1") {
 		t.Fatalf("turn-exhausted child error = %q, want turn limit", err)
 	}
-	waitForFile(t, exhaustionLeak, time.Second)
+	time.Sleep(350 * time.Millisecond)
+	if _, err := os.Stat(exhaustionLeak); !os.IsNotExist(err) {
+		t.Fatalf("turn-exhausted child left a delayed side effect: %v", err)
+	}
+}
+
+func TestDVCHD004CleanupFailureOverridesSuccessWithCorrelatedOutcome(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cleanupErr := errors.New("process cleanup failed")
+	supervisor := &failingChildSupervisor{cleanupErr: cleanupErr}
+	mgr := NewManager(&finalReportProvider{}, t.TempDir())
+	mgr.supervisorFactory = func() childRunSupervisor { return supervisor }
+
+	result, err := mgr.Run(context.Background(), Request{ParentSessionID: "parent", Task: "finish", ReadOnly: false})
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("cleanup error = %v, want preserved cause", err)
+	}
+	if result == nil || result.Status != OutcomeFailed || result.SessionID == "" || result.RunID == "" || result.Report != "subagent report" {
+		t.Fatalf("cleanup failure outcome = %#v, want correlated failed outcome", result)
+	}
+	if supervisor.cleanupCalls != 1 {
+		t.Fatalf("cleanup calls = %d, want exactly one", supervisor.cleanupCalls)
+	}
+}
+
+func TestDVCHD004PanicCleansOnceAndRetainsEstablishedIdentity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	supervisor := &failingChildSupervisor{}
+	mgr := NewManager(&panicChildProvider{}, t.TempDir())
+	mgr.supervisorFactory = func() childRunSupervisor { return supervisor }
+
+	result, err := mgr.Run(context.Background(), Request{ParentSessionID: "parent", Task: "panic", ReadOnly: false})
+	if err == nil || !strings.Contains(err.Error(), "provider panic") {
+		t.Fatalf("panic error = %v", err)
+	}
+	if result == nil || result.Status != OutcomeFailed || result.SessionID == "" || result.RunID == "" {
+		t.Fatalf("panic outcome = %#v, want failed session/run correlation", result)
+	}
+	if supervisor.cleanupCalls != 1 {
+		t.Fatalf("panic cleanup calls = %d, want exactly one", supervisor.cleanupCalls)
+	}
+}
+
+type panicChildProvider struct{}
+
+func (*panicChildProvider) Generate(context.Context, []schema.Message, []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	panic("provider panic")
+}
+
+type failingChildSupervisor struct {
+	cleanupErr   error
+	cleanupCalls int
+}
+
+func (*failingChildSupervisor) Run(context.Context, string, string, time.Duration) tools.BashCommandResult {
+	return tools.BashCommandResult{}
+}
+
+func (s *failingChildSupervisor) Cleanup(context.Context) error {
+	s.cleanupCalls++
+	return s.cleanupErr
 }
 
 type cancellingApprover struct {

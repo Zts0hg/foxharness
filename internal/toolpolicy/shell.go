@@ -67,6 +67,44 @@ func AssessShell(command, workspace, cwd string) (readOnly bool, risk Risk, pars
 	return readOnly, risk, true
 }
 
+// AssessSynchronousShell reports whether a complete shell parse excludes
+// background, detach, process-substitution, and nested interpreter forms.
+func AssessSynchronousShell(command string) (synchronous bool, parsed bool) {
+	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
+	if err != nil {
+		return false, false
+	}
+	synchronous = true
+	sawCall := false
+	syntax.Walk(file, func(node syntax.Node) bool {
+		switch n := node.(type) {
+		case *syntax.Stmt:
+			if n.Background || n.Coprocess {
+				synchronous = false
+			}
+		case *syntax.ProcSubst:
+			synchronous = false
+		case *syntax.CoprocClause:
+			synchronous = false
+		case *syntax.CallExpr:
+			sawCall = true
+			if len(n.Args) == 0 || detachedShellCommands[strings.ToLower(literalWord(n.Args[0]))] {
+				synchronous = false
+			}
+		}
+		return true
+	})
+	return synchronous && sawCall, true
+}
+
+var detachedShellCommands = map[string]bool{
+	".": true, "bash": true, "bg": true, "command": true,
+	"coproc": true, "daemon": true, "dash": true, "disown": true,
+	"env": true, "eval": true, "exec": true, "fish": true,
+	"ksh": true, "nohup": true, "screen": true, "setsid": true,
+	"sh": true, "source": true, "tmux": true, "zsh": true,
+}
+
 func readOnlyCall(call *syntax.CallExpr, workspace, cwd string) bool {
 	if len(call.Assigns) > 0 || len(call.Args) == 0 {
 		return false

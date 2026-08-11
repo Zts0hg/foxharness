@@ -6,9 +6,11 @@ package subagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/compaction"
@@ -129,11 +131,17 @@ type Manager struct {
 	// maxTurns is the turn budget handed to the subagent engine. It defaults to
 	// DefaultMaxTurns (applied by NewManager) and may be overridden via
 	// WithMaxTurns, primarily for deterministic tests of the exhaustion path.
-	maxTurns         int
-	permissions      *permission.Coordinator
-	parentEvidence   permission.EvidenceProvider
-	compactorFactory func(*session.Session) (*compaction.Compactor, error)
-	createSession    func(session.CreateOptions) (*session.Session, error)
+	maxTurns          int
+	permissions       *permission.Coordinator
+	parentEvidence    permission.EvidenceProvider
+	compactorFactory  func(*session.Session) (*compaction.Compactor, error)
+	createSession     func(session.CreateOptions) (*session.Session, error)
+	supervisorFactory func() childRunSupervisor
+}
+
+type childRunSupervisor interface {
+	tools.BashCommandRunner
+	Cleanup(context.Context) error
 }
 
 type childProviderMetadata interface {
@@ -213,10 +221,16 @@ func (m *Manager) buildComposer(sess *session.Session, snapshots ...*childToolSn
 }
 
 func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessions ...*session.Session) *childToolSnapshot {
+	return m.buildRegistryWithSupervisor(readOnly, allowedTools, nil, childSessions...)
+}
+
+func (m *Manager) buildRegistryWithSupervisor(readOnly bool, allowedTools []string, supervisor tools.BashCommandRunner, childSessions ...*session.Session) *childToolSnapshot {
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(m.workDir))
 	if readOnly {
 		registry.Register(tools.NewReadOnlyBashTool(m.workDir))
+	} else if supervisor != nil {
+		registry.Register(tools.NewSupervisedBashTool(m.workDir, supervisor))
 	} else {
 		registry.Register(tools.NewBashTool(m.workDir))
 	}
@@ -250,8 +264,8 @@ func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessi
 // engine for up to the configured turn budget (DefaultMaxTurns by default).
 // The returned Result is non-nil for every admitted, rejected, or failed
 // invocation and retains any identities established before termination.
-func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
-	outcome := newChildOutcome(req)
+func (m *Manager) Run(ctx context.Context, req Request) (outcome *Result, resultErr error) {
+	outcome = newChildOutcome(req)
 	agent, err := resolveAgent(req.Agent)
 	if err != nil {
 		outcome.Status = OutcomeRejected
@@ -276,7 +290,29 @@ func (m *Manager) Run(ctx context.Context, req Request) (*Result, error) {
 	}
 	outcome.SessionID = sess.ID
 
-	registry := m.buildRegistry(req.ReadOnly, narrowAgentTools(req.AllowedTools, agent), sess)
+	supervisor := childRunSupervisor(tools.NewBashProcessSupervisor())
+	if m.supervisorFactory != nil {
+		supervisor = m.supervisorFactory()
+	}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	recorder := &outcomeRecorder{}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			resultErr = fmt.Errorf("subagent execution panic: %v", recovered)
+			outcome.RunID = recorder.runID
+			outcome.Report = recorder.report
+			outcome.Status = OutcomeFailed
+		}
+		cancelRun()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if cleanupErr := supervisor.Cleanup(cleanupCtx); cleanupErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("subagent process cleanup failed: %w", cleanupErr))
+			outcome.Status = OutcomeFailed
+		}
+	}()
+
+	registry := m.buildRegistryWithSupervisor(req.ReadOnly, narrowAgentTools(req.AllowedTools, agent), supervisor, sess)
 	composer := m.buildComposer(sess, registry)
 	eng := engine.NewAgentEngine(
 		m.provider,
@@ -313,8 +349,7 @@ Agent: %s
 %s
 `, req.ParentSessionID, agent.id, agent.persona, req.Task)
 
-	recorder := &outcomeRecorder{}
-	result, err := eng.RunWithReporter(ctx, sess, subPrompt, recorder)
+	result, err := eng.RunWithReporter(runCtx, sess, subPrompt, recorder)
 	outcome.RunID = recorder.runID
 	outcome.Report = recorder.report
 	if result != nil {

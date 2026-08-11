@@ -114,6 +114,8 @@ type BashTool struct {
 	workDir        string
 	readOnly       bool
 	readOnlyRunner readOnlyBashRunner
+	supervised     bool
+	commandRunner  BashCommandRunner
 }
 
 // NewReadOnlyBashTool creates a Bash-compatible tool whose commands must pass
@@ -131,6 +133,12 @@ func NewBashTool(workDir string) *BashTool {
 	}
 }
 
+// NewSupervisedBashTool creates a synchronous Bash tool backed by a run-owned
+// process supervisor.
+func NewSupervisedBashTool(workDir string, runner BashCommandRunner) *BashTool {
+	return &BashTool{workDir: workDir, supervised: true, commandRunner: runner}
+}
+
 // Name returns the tool identifier "bash".
 func (t *BashTool) Name() string {
 	return "bash"
@@ -142,6 +150,8 @@ func (t *BashTool) Definition() schema.ToolDefinition {
 	description := "Execute arbitrary bash commands in the current working directory. Supports chained commands (e.g., &&). Returns both stdout and stderr."
 	if t.readOnly {
 		description = "Execute conservatively validated read-only bash commands inside the current workspace. Mutation, background execution, dynamic shell forms, and network access are unavailable."
+	} else if t.supervised {
+		description = "Execute synchronous bash commands in the current working directory. Background, detached, and nested shell execution are unavailable. Returns both stdout and stderr."
 	}
 	return schema.ToolDefinition{
 		Name:        t.Name(),
@@ -181,6 +191,12 @@ func (t *BashTool) ExecuteResult(ctx context.Context, args json.RawMessage) (Exe
 			}, nil
 		}
 	}
+	if t.supervised {
+		synchronous, parsed := toolpolicy.AssessSynchronousShell(input.Command)
+		if !parsed || !synchronous {
+			return ExecutionResult{Output: "Supervised Bash rejected background, detached, or unclassified shell execution.", Failed: true}, nil
+		}
+	}
 
 	var result BashCommandResult
 	if t.readOnly {
@@ -194,6 +210,8 @@ func (t *BashTool) ExecuteResult(ctx context.Context, args json.RawMessage) (Exe
 				Timeout:       defaultBashTimeout,
 			})
 		}
+	} else if t.commandRunner != nil {
+		result = t.commandRunner.Run(ctx, t.workDir, input.Command, defaultBashTimeout)
 	} else {
 		result = RunBashCommand(ctx, t.workDir, input.Command, defaultBashTimeout)
 	}
