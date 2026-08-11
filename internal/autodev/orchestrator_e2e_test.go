@@ -53,19 +53,19 @@ func (w *e2eWorld) state(dir string) *e2eItemState {
 // answer from the per-worktree state.
 type e2eGit struct{ world *e2eWorld }
 
-func (g *e2eGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+func (g *e2eGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
 	w := g.world
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	switch args[0] {
 	case "rev-parse":
 		if len(args) > 1 && args[1] == "--is-inside-work-tree" {
-			return "true\n", nil
+			return stdoutResult("true\n"), nil
 		}
 		if w.state(dir).pushed || w.state(dir).committed {
-			return "tip-" + filepath.Base(dir) + "\n", nil
+			return stdoutResult("tip-" + filepath.Base(dir) + "\n"), nil
 		}
-		return "base\n", nil
+		return stdoutResult("base\n"), nil
 	case "worktree":
 		switch args[1] {
 		case "add":
@@ -74,60 +74,60 @@ func (g *e2eGit) Run(ctx context.Context, dir string, args ...string) (string, e
 				worktreePath = args[4]
 			}
 			if err := os.MkdirAll(worktreePath, 0o755); err != nil {
-				return "", err
+				return CommandResult{}, err
 			}
-			return "", nil
+			return CommandResult{}, nil
 		case "remove":
-			return "", os.RemoveAll(args[len(args)-1])
+			return CommandResult{}, os.RemoveAll(args[len(args)-1])
 		}
 	case "status":
 		st := w.state(dir)
 		if st.dirty || st.staged {
-			return " M code.go\n", nil
+			return stdoutResult(" M code.go\n"), nil
 		}
-		return "", nil
+		return CommandResult{}, nil
 	case "diff":
 		st := w.state(dir)
 		if len(args) > 1 && args[1] == "--cached" {
 			if st.staged {
-				return "code.go\n", nil
+				return stdoutResult("code.go\n"), nil
 			}
-			return "", nil
+			return CommandResult{}, nil
 		}
 		if st.committed {
-			return "code.go\n", nil
+			return stdoutResult("code.go\n"), nil
 		}
-		return "", nil
+		return CommandResult{}, nil
 	case "rev-list":
 		if w.state(dir).committed {
-			return "1\n", nil
+			return stdoutResult("1\n"), nil
 		}
-		return "0\n", nil
+		return stdoutResult("0\n"), nil
 	case "ls-remote":
 		if w.state(dir).pushed {
-			return "tip-" + filepath.Base(dir) + "\trefs/heads/x\n", nil
+			return stdoutResult("tip-" + filepath.Base(dir) + "\trefs/heads/x\n"), nil
 		}
-		return "", nil
+		return CommandResult{}, nil
 	}
-	return "", fmt.Errorf("unexpected git args %v", args)
+	return CommandResult{}, fmt.Errorf("unexpected git args %v", args)
 }
 
 // e2eExec simulates the gate commands and read-only gh queries.
 type e2eExec struct{ world *e2eWorld }
 
-func (e *e2eExec) Run(ctx context.Context, dir string, name string, args ...string) (string, error) {
+func (e *e2eExec) Run(ctx context.Context, dir string, name string, args ...string) (CommandResult, error) {
 	w := e.world
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if name == "go" || name == "gofmt" {
-		return "", nil
+		return CommandResult{}, nil
 	}
 	if name != "gh" {
-		return "", errors.New("unexpected command " + name)
+		return CommandResult{}, errors.New("unexpected command " + name)
 	}
 	switch args[0] {
 	case "auth":
-		return "Logged in", nil
+		return stdoutResult("Logged in"), nil
 	case "issue":
 		title := ""
 		for i, a := range args {
@@ -136,17 +136,17 @@ func (e *e2eExec) Run(ctx context.Context, dir string, name string, args ...stri
 			}
 		}
 		if n, ok := w.issues[title]; ok {
-			return fmt.Sprintf(`[{"number":%d,"title":%q}]`, n, title), nil
+			return stdoutResult(fmt.Sprintf(`[{"number":%d,"title":%q}]`, n, title)), nil
 		}
-		return "[]", nil
+		return stdoutResult("[]"), nil
 	case "pr":
 		branch := args[2]
 		if n, ok := w.prs[branch]; ok {
-			return fmt.Sprintf(`{"number":%d,"body":%q}`, n, w.prBodies[branch]), nil
+			return stdoutResult(fmt.Sprintf(`{"number":%d,"body":%q}`, n, w.prBodies[branch])), nil
 		}
-		return "no pull requests found", errors.New("exit status 1")
+		return stdoutResult("no pull requests found"), errors.New("exit status 1")
 	}
-	return "", errors.New("unexpected gh args")
+	return CommandResult{}, errors.New("unexpected gh args")
 }
 
 // e2eCore simulates the core Agent: it reacts to each seeded prompt by

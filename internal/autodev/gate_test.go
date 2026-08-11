@@ -16,10 +16,10 @@ type fakeExec struct {
 	calls   []string
 }
 
-func (f *fakeExec) Run(ctx context.Context, dir string, name string, args ...string) (string, error) {
+func (f *fakeExec) Run(ctx context.Context, dir string, name string, args ...string) (CommandResult, error) {
 	key := strings.Join(append([]string{name}, args...), " ")
 	f.calls = append(f.calls, key)
-	return f.outputs[key], f.errs[key]
+	return stdoutResult(f.outputs[key]), f.errs[key]
 }
 
 func allGates() GateConfig { return GateConfig{Build: true, Test: true, Gofmt: true} }

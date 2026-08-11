@@ -2,6 +2,9 @@ package autodev
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
@@ -53,20 +56,71 @@ type EngineerAgent interface {
 	Review(ctx context.Context, res *engine.RunResult, gap string, c StageContext) (string, error)
 }
 
-// GitRunner executes git with the given arguments in dir and returns the
-// combined output. The control plane uses it only for worktree
+// GitRunner executes git with independently bounded stdout and stderr. The
+// control plane uses it only for worktree
 // infrastructure (worktree add/remove) and read-only verification queries
 // (rev-parse, status, ls-remote); it never runs commit/push — the core
 // Agent performs all development mutations (REQ-019, REQ-029).
 type GitRunner interface {
-	Run(ctx context.Context, dir string, args ...string) (string, error)
+	Run(ctx context.Context, dir string, args ...string) (CommandResult, error)
 }
 
-// ExecRunner executes an arbitrary program in dir and returns the combined
-// output. The control plane uses it for the completion gate (go build/test,
-// gofmt) and read-only gh queries (gh ... --json); never for gh mutations.
+// ExecRunner executes an arbitrary program in dir with independently bounded
+// output streams. The control plane uses it for the completion gate and
+// read-only gh queries; never for gh mutations.
 type ExecRunner interface {
-	Run(ctx context.Context, dir string, name string, args ...string) (string, error)
+	Run(ctx context.Context, dir string, name string, args ...string) (CommandResult, error)
+}
+
+// CommandResult retains bounded stdout and stderr plus process status.
+type CommandResult struct {
+	Stdout         string
+	Stderr         string
+	StdoutOverflow bool
+	StderrOverflow bool
+	ExitCode       int
+}
+
+// Output returns both diagnostic streams without discarding either one.
+func (r CommandResult) Output() string {
+	if r.Stdout == "" {
+		return r.Stderr
+	}
+	if r.Stderr == "" {
+		return r.Stdout
+	}
+	return r.Stdout + "\n" + r.Stderr
+}
+
+// OverflowError returns typed truncation evidence, or nil when both streams
+// fit their independent limits.
+func (r CommandResult) OverflowError() error {
+	if !r.StdoutOverflow && !r.StderrOverflow {
+		return nil
+	}
+	return &CommandOverflowError{Stdout: r.StdoutOverflow, Stderr: r.StderrOverflow}
+}
+
+// CommandOverflowError identifies exactly which command streams exceeded
+// their capture limits.
+type CommandOverflowError struct {
+	Stdout bool
+	Stderr bool
+}
+
+func (e *CommandOverflowError) Error() string {
+	var streams []string
+	if e.Stdout {
+		streams = append(streams, "stdout")
+	}
+	if e.Stderr {
+		streams = append(streams, "stderr")
+	}
+	return fmt.Sprintf("command %s exceeded the capture limit", strings.Join(streams, " and "))
+}
+
+func strictCommandStdout(result CommandResult, runErr error) (string, error) {
+	return result.Stdout, errors.Join(runErr, result.OverflowError())
 }
 
 // Clock abstracts time for ledger timestamps so tests are deterministic.

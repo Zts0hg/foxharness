@@ -84,6 +84,9 @@ func (m *StageMachine) ResumeStep(ctx context.Context, core CoreRunner, sc *Stag
 }
 
 func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageContext, st Stage, verifyFirst bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	sc.Stage = st.Name
 	if m.reporter != nil {
 		m.reporter.OnStageStart(ctx, sc.Slug, st.Name)
@@ -108,13 +111,27 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 		}
 	}
 	if st.Prepare != nil {
-		if err := st.Prepare(ctx, sc); err != nil {
+		attemptCtx, cancel := withDefaultTimeout(ctx, stageAttemptTimeout)
+		err := st.Prepare(attemptCtx, sc)
+		attemptErr := attemptCtx.Err()
+		cancel()
+		if err != nil {
 			return fmt.Errorf("prepare step %s: %w", st.Name, err)
+		}
+		if attemptErr != nil {
+			return attemptErr
 		}
 	}
 	if st.Control != nil {
-		if err := st.Control(ctx, sc); err != nil {
+		attemptCtx, cancel := withDefaultTimeout(ctx, stageAttemptTimeout)
+		err := st.Control(attemptCtx, sc)
+		attemptErr := attemptCtx.Err()
+		cancel()
+		if err != nil {
 			return fmt.Errorf("control step %s: %w", st.Name, err)
+		}
+		if attemptErr != nil {
+			return attemptErr
 		}
 		if st.Verify != nil {
 			ok, gap := st.Verify(ctx, sc)
@@ -128,9 +145,15 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 		return nil
 	}
 
-	msg, err := m.seedPrompt(ctx, core, sc, st)
+	attemptCtx, cancel := withDefaultTimeout(ctx, stageAttemptTimeout)
+	msg, err := m.seedPrompt(attemptCtx, core, sc, st)
+	attemptErr := attemptCtx.Err()
+	cancel()
 	if err != nil {
 		return err
+	}
+	if attemptErr != nil {
+		return attemptErr
 	}
 
 	for {
@@ -138,9 +161,15 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 			return err
 		}
 
-		res, err := core.Run(ctx, msg, m.reporter)
+		attemptCtx, cancel := withDefaultTimeout(ctx, stageAttemptTimeout)
+		res, err := core.Run(attemptCtx, msg, m.reporter)
+		attemptErr := attemptCtx.Err()
+		cancel()
 		if err != nil {
 			return fmt.Errorf("core run for step %s: %w", st.Name, err)
+		}
+		if attemptErr != nil {
+			return attemptErr
 		}
 
 		ok, gap := st.Verify(ctx, sc)
@@ -151,9 +180,15 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 			return nil
 		}
 
-		correction, err := m.engineer.Review(ctx, res, gap, *sc)
+		attemptCtx, cancel = withDefaultTimeout(ctx, stageAttemptTimeout)
+		correction, err := m.engineer.Review(attemptCtx, res, gap, *sc)
+		attemptErr = attemptCtx.Err()
+		cancel()
 		if err != nil {
 			return fmt.Errorf("engineer review for step %s: %w", st.Name, err)
+		}
+		if attemptErr != nil {
+			return attemptErr
 		}
 		// An engineer approval cannot advance a failing step (TC-025): the
 		// ground truth wins, so a synthesized correction keeps the loop
@@ -490,11 +525,13 @@ func verifyImplement(deps PipelineDeps) func(ctx context.Context, sc *StageConte
 			return false, gateGap(result)
 		}
 
-		dirty, dirtyErr := deps.Git.Run(ctx, sc.WorkDir, "status", "--porcelain")
+		dirtyResult, runErr := deps.Git.Run(ctx, sc.WorkDir, "status", "--porcelain")
+		dirty, dirtyErr := strictCommandStdout(dirtyResult, runErr)
 		if dirtyErr == nil && strings.TrimSpace(dirty) != "" {
 			return true, ""
 		}
-		diff, diffErr := deps.Git.Run(ctx, sc.WorkDir, "diff", sc.BaseBranch+"...HEAD", "--name-only")
+		diffResult, runErr := deps.Git.Run(ctx, sc.WorkDir, "diff", sc.BaseBranch+"...HEAD", "--name-only")
+		diff, diffErr := strictCommandStdout(diffResult, runErr)
 		if diffErr == nil && strings.TrimSpace(diff) != "" {
 			return true, ""
 		}

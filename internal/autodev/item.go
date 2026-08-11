@@ -93,6 +93,9 @@ type GateStep struct {
 	Skipped bool
 	// Output is the raw command output, kept for diagnostics.
 	Output string
+	// OutputTruncated reports that stdout or stderr exceeded its independent
+	// capture ceiling. Exit status remains authoritative for ordinary gates.
+	OutputTruncated bool
 }
 
 // GateResult aggregates the completion-gate outcome for one worktree.

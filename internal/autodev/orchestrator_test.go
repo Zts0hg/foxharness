@@ -93,7 +93,7 @@ type orchestraGit struct {
 	insideWT bool
 }
 
-func (g *orchestraGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+func (g *orchestraGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
 	g.mu.Lock()
 	g.calls = append(g.calls, strings.Join(args, " "))
 	g.mu.Unlock()
@@ -101,23 +101,23 @@ func (g *orchestraGit) Run(ctx context.Context, dir string, args ...string) (str
 	case "rev-parse":
 		if len(args) > 1 && args[1] == "--is-inside-work-tree" {
 			if g.insideWT {
-				return "true\n", nil
+				return stdoutResult("true\n"), nil
 			}
-			return "fatal: not a git repository", errors.New("exit status 128")
+			return stdoutResult("fatal: not a git repository"), errors.New("exit status 128")
 		}
-		return "abc123\n", nil
+		return stdoutResult("abc123\n"), nil
 	case "status":
-		return "", nil
+		return CommandResult{}, nil
 	case "rev-list":
-		return "1\n", nil
+		return stdoutResult("1\n"), nil
 	case "ls-remote":
-		return "abc123\trefs/heads/x\n", nil
+		return stdoutResult("abc123\trefs/heads/x\n"), nil
 	case "diff":
-		return "", nil
+		return CommandResult{}, nil
 	case "worktree":
-		return "", nil
+		return CommandResult{}, nil
 	}
-	return "", nil
+	return CommandResult{}, nil
 }
 
 // orchestraGH serves gh auth/issue/pr queries from in-memory state.
@@ -129,19 +129,19 @@ type orchestraGH struct {
 	issues   map[string]int
 }
 
-func (g *orchestraGH) Run(ctx context.Context, dir string, name string, args ...string) (string, error) {
+func (g *orchestraGH) Run(ctx context.Context, dir string, name string, args ...string) (CommandResult, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls = append(g.calls, name+" "+strings.Join(args, " "))
 	if name != "gh" {
-		return "", errors.New("unexpected command")
+		return CommandResult{}, errors.New("unexpected command")
 	}
 	switch args[0] {
 	case "auth":
 		if g.authOK {
-			return "Logged in to github.com", nil
+			return stdoutResult("Logged in to github.com"), nil
 		}
-		return "you are not logged in", errors.New("exit status 1")
+		return stdoutResult("you are not logged in"), errors.New("exit status 1")
 	case "issue":
 		title := ""
 		for i, a := range args {
@@ -156,15 +156,15 @@ func (g *orchestraGH) Run(ctx context.Context, dir string, name string, args ...
 			g.issueSeq++
 			g.issues[title] = g.issueSeq
 		}
-		return fmt.Sprintf(`[{"number":%d,"title":%q}]`, g.issues[title], title), nil
+		return stdoutResult(fmt.Sprintf(`[{"number":%d,"title":%q}]`, g.issues[title], title)), nil
 	case "pr":
 		links := make([]string, 0, len(g.issues))
 		for _, n := range g.issues {
 			links = append(links, fmt.Sprintf("Closes #%d", n))
 		}
-		return fmt.Sprintf(`{"number":%d,"body":%q}`, 1000+len(g.issues), strings.Join(links, "\n")), nil
+		return stdoutResult(fmt.Sprintf(`{"number":%d,"body":%q}`, 1000+len(g.issues), strings.Join(links, "\n"))), nil
 	}
-	return "", errors.New("unexpected gh args")
+	return CommandResult{}, errors.New("unexpected gh args")
 }
 
 // trivialStages returns a pipeline whose stages verify immediately, for

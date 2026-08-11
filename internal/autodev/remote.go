@@ -50,6 +50,9 @@ func (p *RemotePublisher) Publish(ctx context.Context, core CoreRunner, wt Workt
 	steps := p.steps()
 	start := remoteResumeIndex(item, steps)
 	for i := start; i < len(steps); i++ {
+		if err := ctx.Err(); err != nil {
+			return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
+		}
 		st := steps[i]
 		stage, ok := pipelineStage(st.Name)
 		if !ok {
@@ -227,11 +230,13 @@ func (p *RemotePublisher) steps() []Stage {
 // base branch. It is monotonic across the publish flow, which makes it a
 // safe skip predicate for the stage and commit steps on resume.
 func (p *RemotePublisher) committedAndClean(ctx context.Context, sc *StageContext) bool {
-	status, err := p.git.Run(ctx, sc.WorkDir, "status", "--porcelain")
+	result, runErr := p.git.Run(ctx, sc.WorkDir, "status", "--porcelain")
+	status, err := strictCommandStdout(result, runErr)
 	if err != nil || strings.TrimSpace(status) != "" {
 		return false
 	}
-	count, err := p.git.Run(ctx, sc.WorkDir, "rev-list", "--count", sc.BaseBranch+"..HEAD")
+	result, runErr = p.git.Run(ctx, sc.WorkDir, "rev-list", "--count", sc.BaseBranch+"..HEAD")
+	count, err := strictCommandStdout(result, runErr)
 	if err != nil {
 		return false
 	}
@@ -244,7 +249,8 @@ func (p *RemotePublisher) skipWhenCommitted(ctx context.Context, sc *StageContex
 }
 
 func (p *RemotePublisher) verifyStaged(ctx context.Context, sc *StageContext) (bool, string) {
-	staged, err := p.git.Run(ctx, sc.WorkDir, "diff", "--cached", "--name-only")
+	result, runErr := p.git.Run(ctx, sc.WorkDir, "diff", "--cached", "--name-only")
+	staged, err := strictCommandStdout(result, runErr)
 	if err == nil && strings.TrimSpace(staged) != "" {
 		return true, ""
 	}
@@ -264,11 +270,13 @@ func (p *RemotePublisher) verifyCommitted(ctx context.Context, sc *StageContext)
 }
 
 func (p *RemotePublisher) verifyPushed(ctx context.Context, sc *StageContext) (bool, string) {
-	local, err := p.git.Run(ctx, sc.WorkDir, "rev-parse", "HEAD")
+	result, runErr := p.git.Run(ctx, sc.WorkDir, "rev-parse", "HEAD")
+	local, err := strictCommandStdout(result, runErr)
 	if err != nil {
 		return false, fmt.Sprintf("cannot resolve local HEAD: %v", err)
 	}
-	remote, err := p.git.Run(ctx, sc.WorkDir, "ls-remote", "--heads", sc.Remote, sc.Branch)
+	result, runErr = p.git.Run(ctx, sc.WorkDir, "ls-remote", "--heads", sc.Remote, sc.Branch)
+	remote, err := strictCommandStdout(result, runErr)
 	if err != nil {
 		return false, fmt.Sprintf("cannot query remote %s: %v", sc.Remote, err)
 	}
@@ -284,8 +292,9 @@ func (p *RemotePublisher) verifyPushed(ctx context.Context, sc *StageContext) (b
 // Publish persists and reports the verified number before the PR step runs.
 func (p *RemotePublisher) verifyIssue() func(ctx context.Context, sc *StageContext) (bool, string) {
 	return func(ctx context.Context, sc *StageContext) (bool, string) {
-		out, err := p.exec.Run(ctx, sc.WorkDir, "gh", "issue", "list",
+		result, runErr := p.exec.Run(ctx, sc.WorkDir, "gh", "issue", "list",
 			"--state", "all", "--search", sc.Item.Title, "--json", "number,title", "--limit", "20")
+		out, err := strictCommandStdout(result, runErr)
 		if err != nil {
 			return false, fmt.Sprintf("cannot query issues via gh: %v", err)
 		}
@@ -310,7 +319,8 @@ func (p *RemotePublisher) verifyIssue() func(ctx context.Context, sc *StageConte
 // when configured (TC-012). Publish persists and reports the verified number.
 func (p *RemotePublisher) verifyPR() func(ctx context.Context, sc *StageContext) (bool, string) {
 	return func(ctx context.Context, sc *StageContext) (bool, string) {
-		out, err := p.exec.Run(ctx, sc.WorkDir, "gh", "pr", "view", sc.Branch, "--json", "number,body")
+		result, runErr := p.exec.Run(ctx, sc.WorkDir, "gh", "pr", "view", sc.Branch, "--json", "number,body")
+		out, err := strictCommandStdout(result, runErr)
 		if err != nil {
 			return false, fmt.Sprintf("no pull request exists for branch %s yet", sc.Branch)
 		}

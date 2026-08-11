@@ -35,8 +35,10 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
@@ -104,7 +106,13 @@ func main() {
 		// The positional argument, when present, is the backlog path.
 		cfg.Prompt = strings.TrimSpace(cfg.Prompt)
 		reporter := autodev.NewTerminalReporter(os.Stdout)
-		if err := app.RunAutodev(context.Background(), cfg, reporter); err != nil {
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+		err := runAutodevWithSignals(context.Background(), signals, func(ctx context.Context) error {
+			return app.RunAutodev(ctx, cfg, reporter)
+		})
+		signal.Stop(signals)
+		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(exitCodeForError(err))
 		}
@@ -312,11 +320,54 @@ func exitCodeForError(err error) int {
 	if err == nil {
 		return 0
 	}
+	var signalErr *autodevSignalError
+	if errors.As(err, &signalErr) {
+		switch signalErr.Signal {
+		case os.Interrupt:
+			return 130
+		case syscall.SIGTERM:
+			return 143
+		}
+	}
 	var pre *autodev.PreconditionError
 	if errors.As(err, &pre) {
 		return 2
 	}
 	return 1
+}
+
+type autodevSignalError struct {
+	Signal os.Signal
+	Err    error
+}
+
+func (e *autodevSignalError) Error() string {
+	return fmt.Sprintf("autodev interrupted by %s: %v", e.Signal, e.Err)
+}
+
+func (e *autodevSignalError) Unwrap() error { return e.Err }
+
+func runAutodevWithSignals(parent context.Context, signals <-chan os.Signal, run func(context.Context) error) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	done := make(chan struct{})
+	observed := make(chan os.Signal, 1)
+	go func() {
+		select {
+		case sig := <-signals:
+			observed <- sig
+			cancel()
+		case <-done:
+		}
+	}()
+	err := run(ctx)
+	close(done)
+	select {
+	case sig := <-observed:
+		return &autodevSignalError{Signal: sig, Err: err}
+	default:
+		return err
+	}
 }
 
 func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, error) {

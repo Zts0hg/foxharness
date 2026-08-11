@@ -69,7 +69,8 @@ func (m *WorktreeManager) Create(ctx context.Context, item LedgerItem) (Worktree
 			continue
 		}
 
-		out, err := m.git.Run(ctx, m.repoRoot, "worktree", "add", "-b", branch, path, m.baseBranch)
+		result, runErr := m.git.Run(ctx, m.repoRoot, "worktree", "add", "-b", branch, path, m.baseBranch)
+		_, err := strictCommandStdout(result, runErr)
 		if err == nil {
 			return Worktree{Path: path, Branch: branch, Slug: item.Slug}, nil
 		}
@@ -81,7 +82,7 @@ func (m *WorktreeManager) Create(ctx context.Context, item LedgerItem) (Worktree
 		if m.branchExists(ctx, branch) {
 			continue
 		}
-		return Worktree{}, fmt.Errorf("create worktree for %s: %w (%s)", item.Slug, err, out)
+		return Worktree{}, fmt.Errorf("create worktree for %s: %w (%s)", item.Slug, err, result.Output())
 	}
 	return Worktree{}, fmt.Errorf("create worktree for %s: no free path/branch pair within %d candidates under %s", item.Slug, maxWorktreeCandidates, root)
 }
@@ -105,8 +106,9 @@ func (m *WorktreeManager) resume(ctx context.Context, root string, item LedgerIt
 	}
 
 	path = filepath.Join(root, dirNameForBranch(item.Branch, item.Slug))
-	if out, err := m.git.Run(ctx, m.repoRoot, "worktree", "add", path, item.Branch); err != nil {
-		return Worktree{}, fmt.Errorf("reattach worktree for %s: %w (%s)", item.Slug, err, out)
+	result, runErr := m.git.Run(ctx, m.repoRoot, "worktree", "add", path, item.Branch)
+	if _, err := strictCommandStdout(result, runErr); err != nil {
+		return Worktree{}, fmt.Errorf("reattach worktree for %s: %w (%s)", item.Slug, err, result.Output())
 	}
 	return Worktree{Path: path, Branch: item.Branch, Slug: item.Slug, Resumed: true}, nil
 }
@@ -135,7 +137,8 @@ type worktreeEntry struct {
 // entry). It returns nil when the query fails; callers treat that
 // conservatively (no reuse, no resume-by-registry).
 func (m *WorktreeManager) linkedWorktrees(ctx context.Context) []worktreeEntry {
-	out, err := m.git.Run(ctx, m.repoRoot, "worktree", "list", "--porcelain")
+	result, runErr := m.git.Run(ctx, m.repoRoot, "worktree", "list", "--porcelain")
+	out, err := strictCommandStdout(result, runErr)
 	if err != nil {
 		return nil
 	}
@@ -185,16 +188,19 @@ func (m *WorktreeManager) branchCheckoutPath(ctx context.Context, branch string)
 // skipping a clean one costs one suffixed duplicate, and an unreachable
 // remote dooms the pipeline's own push anyway.
 func (m *WorktreeManager) reusableLeftover(ctx context.Context, path, branch string) bool {
-	status, err := m.git.Run(ctx, path, "status", "--porcelain")
+	result, runErr := m.git.Run(ctx, path, "status", "--porcelain")
+	status, err := strictCommandStdout(result, runErr)
 	if err != nil {
 		return false
 	}
 	dirty := strings.TrimSpace(status) != ""
-	head, err := m.git.Run(ctx, path, "rev-parse", "HEAD")
+	result, runErr = m.git.Run(ctx, path, "rev-parse", "HEAD")
+	head, err := strictCommandStdout(result, runErr)
 	if err != nil {
 		return false
 	}
-	remote, err := m.git.Run(ctx, m.repoRoot, "ls-remote", "--heads", m.remote, branch)
+	result, runErr = m.git.Run(ctx, m.repoRoot, "ls-remote", "--heads", m.remote, branch)
+	remote, err := strictCommandStdout(result, runErr)
 	if err != nil {
 		return dirty
 	}
@@ -251,15 +257,17 @@ func canonicalPath(p string) string {
 // repository. rev-parse --verify exits non-zero for a missing ref, which the
 // GitRunner surfaces as an error.
 func (m *WorktreeManager) branchExists(ctx context.Context, branch string) bool {
-	_, err := m.git.Run(ctx, m.repoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	result, runErr := m.git.Run(ctx, m.repoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	_, err := strictCommandStdout(result, runErr)
 	return err == nil
 }
 
 // Remove deletes the local worktree; the branch (local and remote) is
 // deliberately retained so the pushed PR stays reviewable (REQ-006).
 func (m *WorktreeManager) Remove(ctx context.Context, wt Worktree) error {
-	if out, err := m.git.Run(ctx, m.repoRoot, "worktree", "remove", "--force", wt.Path); err != nil {
-		return fmt.Errorf("remove worktree %s: %w (%s)", wt.Path, err, out)
+	result, runErr := m.git.Run(ctx, m.repoRoot, "worktree", "remove", "--force", wt.Path)
+	if _, err := strictCommandStdout(result, runErr); err != nil {
+		return fmt.Errorf("remove worktree %s: %w (%s)", wt.Path, err, result.Output())
 	}
 	return nil
 }

@@ -35,32 +35,32 @@ type remoteGit struct {
 	calls []string
 }
 
-func (g *remoteGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+func (g *remoteGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
 	key := strings.Join(args, " ")
 	g.calls = append(g.calls, key)
 	switch args[0] {
 	case "status":
 		if g.state.dirty || g.state.staged {
-			return " M foo.go\n", nil
+			return stdoutResult(" M foo.go\n"), nil
 		}
-		return "", nil
+		return CommandResult{}, nil
 	case "diff":
 		if g.state.staged {
-			return "foo.go\n", nil
+			return stdoutResult("foo.go\n"), nil
 		}
-		return "", nil
+		return CommandResult{}, nil
 	case "rev-list":
-		return strconv.Itoa(g.state.commitCount) + "\n", nil
+		return stdoutResult(strconv.Itoa(g.state.commitCount) + "\n"), nil
 	case "rev-parse":
-		return g.state.localTip + "\n", nil
+		return stdoutResult(g.state.localTip + "\n"), nil
 	case "ls-remote":
 		if g.state.remoteTip == "" {
-			return "", nil
+			return CommandResult{}, nil
 		}
-		return g.state.remoteTip + "\trefs/heads/auto/x\n", nil
+		return stdoutResult(g.state.remoteTip + "\trefs/heads/auto/x\n"), nil
 	default:
 		g.t.Errorf("control plane ran a non-read-only git command: git %s", key)
-		return "", errors.New("forbidden")
+		return CommandResult{}, errors.New("forbidden")
 	}
 }
 
@@ -72,12 +72,12 @@ type remoteGH struct {
 	calls []string
 }
 
-func (g *remoteGH) Run(ctx context.Context, dir string, name string, args ...string) (string, error) {
+func (g *remoteGH) Run(ctx context.Context, dir string, name string, args ...string) (CommandResult, error) {
 	key := name + " " + strings.Join(args, " ")
 	g.calls = append(g.calls, key)
 	if name != "gh" {
 		g.t.Errorf("unexpected exec command %q", key)
-		return "", errors.New("forbidden")
+		return CommandResult{}, errors.New("forbidden")
 	}
 	switch {
 	case len(args) >= 2 && args[0] == "issue" && args[1] == "list":
@@ -90,15 +90,15 @@ func (g *remoteGH) Run(ctx context.Context, dir string, name string, args ...str
 			out += fmt.Sprintf(`{"number":%d,"title":%q}`, n, title)
 			first = false
 		}
-		return out + "]", nil
+		return stdoutResult(out + "]"), nil
 	case len(args) >= 2 && args[0] == "pr" && args[1] == "view":
 		if g.state.prNumber == 0 {
-			return "no pull requests found", errors.New("exit status 1")
+			return stdoutResult("no pull requests found"), errors.New("exit status 1")
 		}
-		return fmt.Sprintf(`{"number":%d,"body":%q}`, g.state.prNumber, g.state.prBody), nil
+		return stdoutResult(fmt.Sprintf(`{"number":%d,"body":%q}`, g.state.prNumber, g.state.prBody)), nil
 	default:
 		g.t.Errorf("control plane ran a non-read-only gh command: %s", key)
-		return "", errors.New("forbidden")
+		return CommandResult{}, errors.New("forbidden")
 	}
 }
 

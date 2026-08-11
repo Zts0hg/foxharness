@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -910,19 +911,19 @@ type symlinkProvisioningGit struct {
 	outside string
 }
 
-func (g *symlinkProvisioningGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+func (g *symlinkProvisioningGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
 	if len(args) >= 5 && args[0] == "worktree" && args[1] == "add" && args[2] == "-b" {
 		g.mu.Lock()
 		g.calls = append(g.calls, strings.Join(args, " "))
 		g.mu.Unlock()
 		worktreePath := args[4]
 		if err := os.MkdirAll(worktreePath, 0o755); err != nil {
-			return "", err
+			return CommandResult{}, err
 		}
 		if err := os.Symlink(g.outside, filepath.Join(worktreePath, ".codexspec")); err != nil {
-			return "", err
+			return CommandResult{}, err
 		}
-		return "", nil
+		return CommandResult{}, nil
 	}
 	return g.orchestraGit.Run(ctx, dir, args...)
 }
@@ -948,19 +949,23 @@ func TestDVAUT005WorkspaceViolationStopsBeforeCoreExecution(t *testing.T) {
 	}
 }
 
-func TestDVAUT006ExecRunnerRetainsUnboundedOutput(t *testing.T) {
+func TestDVAUT006ExecRunnerBoundsIndependentOutputStreams(t *testing.T) {
 	t.Setenv("FOX_AUTODEV_HELPER", "1")
-	out, err := NewExecCommandRunner().Run(context.Background(), t.TempDir(), os.Args[0],
+	result, err := NewExecCommandRunner().Run(context.Background(), t.TempDir(), os.Args[0],
 		"-test.run=TestAutodevExecHelperProcess", "--", "output")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 2*1024*1024 {
-		t.Fatalf("captured output bytes = %d, want entire unbounded 2 MiB", len(out))
+	if len(result.Stdout) != maxCommandStreamBytes || len(result.Stderr) != maxCommandStreamBytes {
+		t.Fatalf("captured stdout/stderr bytes = %d/%d, want %d each", len(result.Stdout), len(result.Stderr), maxCommandStreamBytes)
+	}
+	var overflow *CommandOverflowError
+	if !errors.As(result.OverflowError(), &overflow) || !overflow.Stdout || !overflow.Stderr {
+		t.Fatalf("overflow evidence = %#v, want typed stdout+stderr overflow", result.OverflowError())
 	}
 }
 
-func TestDVAUT006CancellationLeavesDescendantAliveAndStartsLaterGates(t *testing.T) {
+func TestDVAUT006CancellationReapsDescendantAndSuppressesLaterGates(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix process liveness proof")
 	}
@@ -968,36 +973,69 @@ func TestDVAUT006CancellationLeavesDescendantAliveAndStartsLaterGates(t *testing
 	runner := NewExecCommandRunner()
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	out, err := runner.Run(ctx, t.TempDir(), os.Args[0], "-test.run=TestAutodevExecHelperProcess", "--", "spawn")
+	result, err := runner.Run(ctx, t.TempDir(), os.Args[0], "-test.run=TestAutodevExecHelperProcess", "--", "spawn")
 	if err == nil {
 		t.Fatal("cancelled helper returned nil error")
 	}
-	pid, parseErr := strconv.Atoi(strings.TrimSpace(out))
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(result.Stdout))
 	if parseErr != nil {
-		t.Fatalf("parse descendant pid from %q: %v", out, parseErr)
+		t.Fatalf("parse descendant pid from %q: %v", result.Stdout, parseErr)
 	}
-	defer syscall.Kill(pid, syscall.SIGKILL)
-	if err := syscall.Kill(pid, 0); err != nil {
-		t.Fatalf("descendant was not alive after immediate-parent cancellation: %v", err)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && testProcessAlive(pid) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if testProcessAlive(pid) {
+		testForceKill(pid)
+		t.Fatal("descendant remained alive after process-tree cancellation and reaping")
 	}
 
 	fx := &cancelCountingExec{}
 	gate := NewGateRunner(fx, nil)
 	cancelled, stop := context.WithCancel(context.Background())
 	stop()
-	if _, err := gate.Check(cancelled, t.TempDir(), GateConfig{Build: true, Test: true, Gofmt: true}); err != nil {
-		t.Fatal(err)
+	if _, err := gate.Check(cancelled, t.TempDir(), GateConfig{Build: true, Test: true, Gofmt: true}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Gate Check error = %v, want context.Canceled", err)
 	}
-	if fx.calls != 3 {
-		t.Fatalf("commands started after cancellation = %d, want all 3 current gate steps", fx.calls)
+	if fx.calls != 0 {
+		t.Fatalf("commands started after cancellation = %d, want zero", fx.calls)
+	}
+}
+
+func TestDVAUT006CancellationEscalatesTERMToKILL(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix signal escalation proof")
+	}
+	t.Setenv("FOX_AUTODEV_HELPER", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	result, err := NewExecCommandRunner().Run(ctx, t.TempDir(), os.Args[0], "-test.run=TestAutodevExecHelperProcess", "--", "spawn-ignore-term")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed < commandTerminateGrace {
+		t.Fatalf("termination elapsed = %v, want TERM grace before KILL", elapsed)
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(result.Stdout))
+	if parseErr != nil {
+		t.Fatalf("parse descendant pid from %q: %v", result.Stdout, parseErr)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && testProcessAlive(pid) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if testProcessAlive(pid) {
+		testForceKill(pid)
+		t.Fatal("TERM-resistant descendant remained alive after KILL escalation")
 	}
 }
 
 type cancelCountingExec struct{ calls int }
 
-func (e *cancelCountingExec) Run(ctx context.Context, dir string, name string, args ...string) (string, error) {
+func (e *cancelCountingExec) Run(ctx context.Context, dir string, name string, args ...string) (CommandResult, error) {
 	e.calls++
-	return "cancelled", ctx.Err()
+	return CommandResult{Stderr: "cancelled"}, ctx.Err()
 }
 
 func TestAutodevExecHelperProcess(t *testing.T) {
@@ -1014,6 +1052,7 @@ func TestAutodevExecHelperProcess(t *testing.T) {
 	switch mode {
 	case "output":
 		_, _ = io.WriteString(os.Stdout, strings.Repeat("x", 2*1024*1024))
+		_, _ = io.WriteString(os.Stderr, strings.Repeat("y", 2*1024*1024))
 	case "spawn":
 		child := exec.Command(os.Args[0], "-test.run=TestAutodevExecHelperProcess", "--", "sleep")
 		child.Env = append(os.Environ(), "FOX_AUTODEV_HELPER=1")
@@ -1025,20 +1064,158 @@ func TestAutodevExecHelperProcess(t *testing.T) {
 		fmt.Fprintln(os.Stdout, child.Process.Pid)
 		_ = os.Stdout.Sync()
 		_ = child.Wait()
+	case "spawn-ignore-term":
+		signal.Ignore(syscall.SIGTERM)
+		child := exec.Command(os.Args[0], "-test.run=TestAutodevExecHelperProcess", "--", "ignore-term-sleep")
+		child.Env = append(os.Environ(), "FOX_AUTODEV_HELPER=1")
+		child.Stdout = io.Discard
+		child.Stderr = io.Discard
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		fmt.Fprintln(os.Stdout, child.Process.Pid)
+		_ = os.Stdout.Sync()
+		_ = child.Wait()
 	case "sleep":
+		time.Sleep(10 * time.Second)
+	case "ignore-term-sleep":
+		signal.Ignore(syscall.SIGTERM)
 		time.Sleep(10 * time.Second)
 	}
 	os.Exit(0)
 }
 
 type fixedExec struct {
-	out   string
-	calls [][]string
+	out    string
+	result *CommandResult
+	calls  [][]string
 }
 
-func (e *fixedExec) Run(ctx context.Context, dir string, name string, args ...string) (string, error) {
+func (e *fixedExec) Run(ctx context.Context, dir string, name string, args ...string) (CommandResult, error) {
 	e.calls = append(e.calls, append([]string{name}, args...))
-	return e.out, nil
+	if e.result != nil {
+		return *e.result, nil
+	}
+	return stdoutResult(e.out), nil
+}
+
+func TestDVAUT006StrictJSONQueryRejectsOverflow(t *testing.T) {
+	exec := &fixedExec{result: &CommandResult{
+		Stdout:         `[{"number":7,"title":"Same"}]`,
+		StdoutOverflow: true,
+	}}
+	publisher := NewRemotePublisher(newTestMachine(&reviewingEngineer{}), &orchestraGit{insideWT: true}, exec, NewTerminalReporter(io.Discard), defaultConfig(t.TempDir()))
+	ok, gap := publisher.verifyIssue()(context.Background(), &StageContext{Item: Item{Title: "Same"}, WorkDir: t.TempDir()})
+	if ok || !strings.Contains(gap, "capture limit") {
+		t.Fatalf("verifyIssue = %v, gap %q, want strict overflow failure", ok, gap)
+	}
+}
+
+type overflowGateExec struct{}
+
+func (overflowGateExec) Run(context.Context, string, string, ...string) (CommandResult, error) {
+	return CommandResult{Stdout: "successful diagnostics", StdoutOverflow: true}, nil
+}
+
+func TestDVAUT006QualityGateReportsOverflowWithoutChangingExitStatus(t *testing.T) {
+	result, err := NewGateRunner(overflowGateExec{}, nil).Check(context.Background(), t.TempDir(), GateConfig{Test: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Passed || len(result.Steps) != 3 || !result.Steps[1].Passed || !result.Steps[1].OutputTruncated {
+		t.Fatalf("gate result = %+v, want passing test step with truncation evidence", result)
+	}
+	if !strings.Contains(result.Steps[1].Output, "output truncated") {
+		t.Fatalf("gate output = %q, want explicit truncation marker", result.Steps[1].Output)
+	}
+}
+
+type deadlineCore struct {
+	stubCore
+	remaining time.Duration
+	has       bool
+}
+
+func (c *deadlineCore) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
+	deadline, ok := ctx.Deadline()
+	c.has = ok
+	if ok {
+		c.remaining = time.Until(deadline)
+	}
+	return &engine.RunResult{FinalMessage: "done"}, nil
+}
+
+func TestDVAUT006CoreAttemptReceivesDefaultDeadline(t *testing.T) {
+	core := &deadlineCore{}
+	stage := Stage{Name: "generate-spec", Prompt: func(*StageContext) string { return "work" }, Verify: func(context.Context, *StageContext) (bool, string) { return true, "" }}
+	if err := newTestMachine(&reviewingEngineer{}).RunStep(context.Background(), core, &StageContext{}, stage); err != nil {
+		t.Fatal(err)
+	}
+	if !core.has || core.remaining < 29*time.Minute || core.remaining > stageAttemptTimeout {
+		t.Fatalf("core deadline remaining = %v (present=%v), want 30-minute default", core.remaining, core.has)
+	}
+}
+
+func TestDVAUT006EarlierCallerDeadlineWins(t *testing.T) {
+	t.Setenv("FOX_AUTODEV_HELPER", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := NewExecCommandRunner().Run(ctx, t.TempDir(), os.Args[0], "-test.run=TestAutodevExecHelperProcess", "--", "sleep")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run error = %v, want caller deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("caller deadline took %v, want earlier than command default", elapsed)
+	}
+}
+
+func TestDVAUT006CommandClassesUseRequiredDefaultDeadlines(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		got  time.Duration
+		want time.Duration
+	}{
+		{name: "git-query", got: gitCommandTimeout([]string{"status", "--porcelain"}), want: 30 * time.Second},
+		{name: "worktree-list-query", got: gitCommandTimeout([]string{"worktree", "list", "--porcelain"}), want: 30 * time.Second},
+		{name: "worktree-mutation", got: gitCommandTimeout([]string{"worktree", "add"}), want: 30 * time.Minute},
+		{name: "github-query", got: execCommandTimeout("gh"), want: 30 * time.Second},
+		{name: "quality-gate", got: execCommandTimeout("go"), want: 10 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Fatalf("default timeout = %v, want %v", tc.got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDVAUT006CancelledContextSuppressesStageAndRemoteOperations(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	core := &stubCore{}
+	stage := Stage{Name: "generate-spec", Prompt: func(*StageContext) string { return "work" }, Verify: func(context.Context, *StageContext) (bool, string) { return true, "" }}
+	if err := newTestMachine(&reviewingEngineer{}).RunStep(cancelled, core, &StageContext{}, stage); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunStep error = %v, want context.Canceled", err)
+	}
+	if core.runs != 0 {
+		t.Fatalf("cancelled stage core runs = %d, want zero", core.runs)
+	}
+
+	records := 0
+	publisher := NewRemotePublisher(newTestMachine(&reviewingEngineer{}), &orchestraGit{insideWT: true}, &fixedExec{}, NewTerminalReporter(io.Discard), defaultConfig(t.TempDir()))
+	_, err := publisher.Publish(cancelled, core, Worktree{Path: t.TempDir(), Branch: "auto/x"}, LedgerItem{
+		Slug: "x", Status: StatusInProgress, Stage: StagePublish, StageState: StageStateRunning,
+	}, func(string, func(*LedgerItem)) error {
+		records++
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Publish error = %v, want context.Canceled", err)
+	}
+	if records != 0 || core.runs != 0 {
+		t.Fatalf("cancelled publish records/core runs = %d/%d, want zero", records, core.runs)
+	}
 }
 
 func TestDVAUT007IssueVerificationUsesFirstMatchingTitleWithinTwentyResults(t *testing.T) {

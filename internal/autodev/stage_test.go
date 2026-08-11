@@ -370,18 +370,18 @@ type fakeDiffGit struct {
 	diff   string
 }
 
-func (g *fakeDiffGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+func (g *fakeDiffGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
 	if len(args) > 0 && args[0] == "status" {
-		return g.status, nil
+		return stdoutResult(g.status), nil
 	}
-	return g.diff, nil
+	return stdoutResult(g.diff), nil
 }
 
 // erroringGit fails every git invocation, simulating a broken git binary.
 type erroringGit struct{}
 
-func (erroringGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
-	return "git: not found", fmt.Errorf("exec git: not found")
+func (erroringGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
+	return stdoutResult("git: not found"), fmt.Errorf("exec git: not found")
 }
 
 func TestImplementVerifySurfacesGitErrors(t *testing.T) {

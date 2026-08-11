@@ -31,8 +31,8 @@ func TestExecGitRunnerRunsGitInDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("git rev-parse returned error: %v", err)
 	}
-	if strings.TrimSpace(out) != "true" {
-		t.Errorf("rev-parse output = %q, want raw output %q for callers to parse", out, "true")
+	if strings.TrimSpace(out.Stdout) != "true" {
+		t.Errorf("rev-parse output = %q, want raw output %q for callers to parse", out.Stdout, "true")
 	}
 }
 
@@ -42,7 +42,7 @@ func TestExecGitRunnerReturnsErrorOutsideRepo(t *testing.T) {
 
 	out, err := git.Run(context.Background(), t.TempDir(), "rev-parse", "--is-inside-work-tree")
 	if err == nil {
-		t.Fatalf("rev-parse outside a repo returned nil error (out=%q), want failure", out)
+		t.Fatalf("rev-parse outside a repo returned nil error (out=%q), want failure", out.Output())
 	}
 }
 
@@ -53,8 +53,8 @@ func TestExecCommandRunnerReturnsRawOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("echo returned error: %v", err)
 	}
-	if strings.TrimSpace(out) != "hello world" {
-		t.Errorf("output = %q, want %q", out, "hello world")
+	if strings.TrimSpace(out.Stdout) != "hello world" {
+		t.Errorf("output = %q, want %q", out.Stdout, "hello world")
 	}
 }
 

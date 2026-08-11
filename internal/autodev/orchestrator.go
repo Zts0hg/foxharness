@@ -115,6 +115,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	total := len(led.InProgress()) + len(led.Pending())
 	index := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		item, ok := o.nextItem(led)
 		if !ok {
 			break
@@ -144,6 +147,9 @@ func (o *Orchestrator) nextItem(led *Ledger) (LedgerItem, bool) {
 // the engineer asker installed, SDD stages from the recorded resume point,
 // remote publishing, ledger completion, and worktree cleanup.
 func (o *Orchestrator) processItem(ctx context.Context, index, total int, item LedgerItem, led *Ledger) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	o.deps.Reporter.OnItemStart(ctx, index, total, item)
 
 	wt, err := o.worktrees.Create(ctx, item)
@@ -197,6 +203,9 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 
 	start := o.resumeIndex(item)
 	for i := start; i < len(o.pipeline); i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		st := o.pipeline[i]
 		stage, ok := pipelineStage(st.Name)
 		if !ok {
@@ -236,6 +245,9 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := ensureCore(); err != nil {
 		return err
 	}
@@ -306,13 +318,15 @@ func isPublishingStage(stage PipelineStage) bool {
 // root is a git work tree and gh is installed and authenticated. These are
 // the only failure paths handled outside the engineer↔core loop (REQ-027).
 func (o *Orchestrator) checkPreconditions(ctx context.Context) error {
-	out, err := o.deps.Git.Run(ctx, o.deps.RepoRoot, "rev-parse", "--is-inside-work-tree")
+	result, runErr := o.deps.Git.Run(ctx, o.deps.RepoRoot, "rev-parse", "--is-inside-work-tree")
+	out, err := strictCommandStdout(result, runErr)
 	if err != nil || strings.TrimSpace(out) != "true" {
-		return &PreconditionError{Reason: fmt.Sprintf("%s is not a git repository (git rev-parse: %s)", o.deps.RepoRoot, strings.TrimSpace(out))}
+		return &PreconditionError{Reason: fmt.Sprintf("%s is not a git repository (git rev-parse: %s; %v)", o.deps.RepoRoot, strings.TrimSpace(result.Output()), err)}
 	}
 	if o.deps.Config.RemoteFlow.CreateIssue || o.deps.Config.RemoteFlow.OpenPR {
-		if out, err := o.deps.Exec.Run(ctx, o.deps.RepoRoot, "gh", "auth", "status"); err != nil {
-			return &PreconditionError{Reason: fmt.Sprintf("gh is not installed or not authenticated (gh auth status: %s)", strings.TrimSpace(out))}
+		result, runErr := o.deps.Exec.Run(ctx, o.deps.RepoRoot, "gh", "auth", "status")
+		if _, err := strictCommandStdout(result, runErr); err != nil {
+			return &PreconditionError{Reason: fmt.Sprintf("gh is not installed or not authenticated (gh auth status: %s; %v)", strings.TrimSpace(result.Output()), err)}
 		}
 	}
 	return nil

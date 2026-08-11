@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/app"
@@ -480,6 +482,32 @@ func TestExitCodeForError(t *testing.T) {
 	}
 	if got := exitCodeForError(errors.New("boom")); got != 1 {
 		t.Errorf("exitCodeForError(unexpected) = %d, want 1", got)
+	}
+}
+
+func TestAutodevSignalsCancelRunAndMapExitStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sig  os.Signal
+		code int
+	}{
+		{name: "interrupt", sig: os.Interrupt, code: 130},
+		{name: "terminate", sig: syscall.SIGTERM, code: 143},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			signals := make(chan os.Signal, 1)
+			signals <- tc.sig
+			err := runAutodevWithSignals(context.Background(), signals, func(ctx context.Context) error {
+				<-ctx.Done()
+				return ctx.Err()
+			})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("run error = %v, want cancellation-compatible signal error", err)
+			}
+			if got := exitCodeForError(err); got != tc.code {
+				t.Fatalf("exit code = %d, want %d", got, tc.code)
+			}
+		})
 	}
 }
 
