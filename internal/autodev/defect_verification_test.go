@@ -739,64 +739,75 @@ func lenItemDescription(items []Item) int {
 	return len(items[0].Description)
 }
 
-func TestDVAUT005PersistedFeatureDirEscapesWorktreeForMaterializationAndVerification(t *testing.T) {
+func TestDVAUT005FeatureWorkspaceRejectsInvalidFeatureDirectories(t *testing.T) {
 	clock := newTestClock()
-	workDir := t.TempDir()
 	outside := t.TempDir()
+	cases := map[string]string{
+		"absolute":           filepath.Join(outside, "absolute-feature"),
+		"traversal":          ".codexspec/specs/../escape",
+		"missing-prefix":     "specs/feature",
+		"extra-component":    ".codexspec/specs/feature/nested",
+		"empty-component":    ".codexspec/specs//feature",
+		"malformed-name":     ".codexspec/specs/feature name",
+		"platform-separator": `.codexspec\specs\feature`,
+	}
+	for name, featureDir := range cases {
+		t.Run(name, func(t *testing.T) {
+			workDir := t.TempDir()
+			sc := &StageContext{
+				Item:       Item{Title: "Invalid", Description: "must remain rooted"},
+				Slug:       "invalid",
+				WorkDir:    workDir,
+				FeatureDir: featureDir,
+			}
+			if err := materializeRequirements(clock)(context.Background(), sc); err == nil {
+				t.Fatalf("materializeRequirements accepted FeatureDir %q", featureDir)
+			}
+			if ok, _ := verifySpecArtifact("requirements.md")(context.Background(), sc); ok {
+				t.Fatalf("verifySpecArtifact accepted FeatureDir %q", featureDir)
+			}
+		})
+	}
+}
 
-	t.Run("absolute-is-lexically-reanchored", func(t *testing.T) {
-		absolute := filepath.Join(outside, "absolute-feature")
-		sc := &StageContext{Item: Item{Title: "Absolute", Description: "reanchored"}, Slug: "absolute", WorkDir: workDir, FeatureDir: absolute}
-		if err := materializeRequirements(clock)(context.Background(), sc); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Stat(filepath.Join(absolute, "requirements.md")); !os.IsNotExist(err) {
-			t.Fatalf("absolute FeatureDir reached its absolute target: err=%v", err)
-		}
-		reanchored := filepath.Join(workDir, absolute, "requirements.md")
-		if _, err := os.Stat(reanchored); err != nil {
-			t.Fatalf("absolute FeatureDir was not reanchored by filepath.Join: %v", err)
-		}
-	})
+func TestDVAUT005FeatureWorkspaceRejectsSymlinksAndNonRegularTargets(t *testing.T) {
+	clock := newTestClock()
 
-	t.Run("traversal", func(t *testing.T) {
-		escapeDir := filepath.Join(workDir, "..", filepath.Base(outside), "traversal-feature")
-		rel, err := filepath.Rel(workDir, escapeDir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		sc := &StageContext{Item: Item{Title: "Escape", Description: "outside"}, Slug: "escape", WorkDir: workDir, FeatureDir: rel}
-		if err := materializeRequirements(clock)(context.Background(), sc); err != nil {
-			t.Fatal(err)
-		}
-		outsideFile := filepath.Join(escapeDir, "requirements.md")
-		if _, err := os.Stat(outsideFile); err != nil {
-			t.Fatalf("outside materialization not observed: %v", err)
-		}
-		if ok, gap := verifySpecArtifact("requirements.md")(context.Background(), sc); !ok {
-			t.Fatalf("verification rejected outside artifact: %s", gap)
-		}
-	})
+	for _, component := range []string{".codexspec", "specs", "linked-feature"} {
+		t.Run("directory-symlink-"+component, func(t *testing.T) {
+			workDir := t.TempDir()
+			outside := t.TempDir()
+			link := filepath.Join(workDir, ".codexspec")
+			switch component {
+			case "specs":
+				if err := os.MkdirAll(link, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				link = filepath.Join(link, "specs")
+			case "linked-feature":
+				link = filepath.Join(link, "specs")
+				if err := os.MkdirAll(link, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				link = filepath.Join(link, "linked-feature")
+			}
+			if err := os.Symlink(outside, link); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			sc := &StageContext{Item: Item{Title: "Link", Description: "outside"}, Slug: "link", WorkDir: workDir, FeatureDir: ".codexspec/specs/linked-feature"}
+			if err := materializeRequirements(clock)(context.Background(), sc); err == nil {
+				t.Fatalf("materialization accepted symlink component %s", component)
+			}
+			entries, err := os.ReadDir(outside)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("materialization changed symlink target: entries=%v err=%v", entries, err)
+			}
+		})
+	}
 
-	t.Run("directory-symlink", func(t *testing.T) {
-		linkParent := filepath.Join(workDir, ".codexspec", "specs")
-		if err := os.MkdirAll(linkParent, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		link := filepath.Join(linkParent, "linked-feature")
-		if err := os.Symlink(outside, link); err != nil {
-			t.Skipf("symlink unavailable: %v", err)
-		}
-		sc := &StageContext{Item: Item{Title: "Link", Description: "outside"}, Slug: "link", WorkDir: workDir, FeatureDir: filepath.Join(".codexspec", "specs", "linked-feature")}
-		if err := materializeRequirements(clock)(context.Background(), sc); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Stat(filepath.Join(outside, "requirements.md")); err != nil {
-			t.Fatalf("directory symlink was not followed: %v", err)
-		}
-	})
-
-	t.Run("file-symlink", func(t *testing.T) {
+	t.Run("materialization-file-symlink", func(t *testing.T) {
+		workDir := t.TempDir()
+		outside := t.TempDir()
 		feature := filepath.Join(workDir, ".codexspec", "specs", "file-link")
 		if err := os.MkdirAll(feature, 0o755); err != nil {
 			t.Fatal(err)
@@ -808,11 +819,133 @@ func TestDVAUT005PersistedFeatureDirEscapesWorktreeForMaterializationAndVerifica
 		if err := os.Symlink(target, filepath.Join(feature, "requirements.md")); err != nil {
 			t.Skipf("symlink unavailable: %v", err)
 		}
-		sc := &StageContext{WorkDir: workDir, FeatureDir: filepath.Join(".codexspec", "specs", "file-link")}
-		if ok, gap := verifySpecArtifact("requirements.md")(context.Background(), sc); !ok {
-			t.Fatalf("verification rejected outside file symlink: %s", gap)
+		sc := &StageContext{Item: Item{Title: "Link", Description: "replacement"}, WorkDir: workDir, FeatureDir: ".codexspec/specs/file-link"}
+		if err := materializeRequirements(clock)(context.Background(), sc); err == nil {
+			t.Fatal("materialization accepted a symlink requirements target")
+		}
+		data, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "external authority" {
+			t.Fatalf("external target changed to %q", data)
 		}
 	})
+
+	t.Run("all-read-consumers", func(t *testing.T) {
+		workDir := t.TempDir()
+		outside := t.TempDir()
+		featureDir := ".codexspec/specs/read-links"
+		feature := filepath.Join(workDir, filepath.FromSlash(featureDir))
+		if err := os.MkdirAll(feature, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		artifacts := map[string]string{
+			"requirements.md": "authority",
+			"review-spec.md":  "**Overall Status**: PASS\n",
+			"tasks.md":        "- [x] complete\n",
+		}
+		for name, content := range artifacts {
+			target := filepath.Join(outside, name)
+			if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(feature, name)); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(feature, "spec.md"), []byte("spec"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sc := &StageContext{WorkDir: workDir, FeatureDir: featureDir}
+		if ok, _ := verifySpecArtifact("requirements.md")(context.Background(), sc); ok {
+			t.Fatal("stage verification accepted a symlink artifact")
+		}
+		if ok, _ := verifyReviewedArtifact("spec.md", "review-spec.md")(context.Background(), sc); ok {
+			t.Fatal("review parsing accepted a symlink artifact")
+		}
+		if ok, _ := verifyTasksComplete(sc); ok {
+			t.Fatal("task inspection accepted a symlink artifact")
+		}
+
+		if err := os.Remove(filepath.Join(feature, "requirements.md")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(feature, "requirements.md"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := verifySpecArtifact("requirements.md")(context.Background(), sc); ok {
+			t.Fatal("stage verification accepted a non-regular artifact")
+		}
+	})
+}
+
+func TestDVAUT005LegacyLedgerRejectsIllegalFeatureDir(t *testing.T) {
+	repoRoot := t.TempDir()
+	deps, _, factory, git, gh := testDeps(t, repoRoot, `## [feature] Legacy
+
+**Priority**: high
+**Description**: authority
+`)
+	path := filepath.Join(repoRoot, ".foxharness", "autodev-state.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"items":[{"slug":"legacy","title":"Legacy","description":"authority","priority":"high","status":"in-progress","stage":"generate-spec","feature_dir":"../escape"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := New(deps).Run(context.Background())
+	var invalid *InvalidLedgerStateError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("Run error = %T %v, want InvalidLedgerStateError", err, err)
+	}
+	if len(git.calls) != 0 || len(gh.calls) != 0 || len(factory.created) != 0 {
+		t.Fatalf("illegal legacy feature directory reached external work: git=%v gh=%v core=%d", git.calls, gh.calls, len(factory.created))
+	}
+}
+
+type symlinkProvisioningGit struct {
+	orchestraGit
+	outside string
+}
+
+func (g *symlinkProvisioningGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+	if len(args) >= 5 && args[0] == "worktree" && args[1] == "add" && args[2] == "-b" {
+		g.mu.Lock()
+		g.calls = append(g.calls, strings.Join(args, " "))
+		g.mu.Unlock()
+		worktreePath := args[4]
+		if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+			return "", err
+		}
+		if err := os.Symlink(g.outside, filepath.Join(worktreePath, ".codexspec")); err != nil {
+			return "", err
+		}
+		return "", nil
+	}
+	return g.orchestraGit.Run(ctx, dir, args...)
+}
+
+func TestDVAUT005WorkspaceViolationStopsBeforeCoreExecution(t *testing.T) {
+	repoRoot := t.TempDir()
+	deps, _, factory, _, _ := testDeps(t, repoRoot, `## [feature] Rooted
+
+**Priority**: high
+**Description**: remain inside the worktree
+`)
+	git := &symlinkProvisioningGit{outside: t.TempDir()}
+	git.insideWT = true
+	deps.Git = git
+	deps.BuildPipeline = RequirementsFirstPipeline
+
+	err := New(deps).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("Run error = %v, want workspace symlink rejection", err)
+	}
+	if len(factory.created) != 0 {
+		t.Fatalf("workspace violation created %d core runner(s), want zero", len(factory.created))
+	}
 }
 
 func TestDVAUT006ExecRunnerRetainsUnboundedOutput(t *testing.T) {

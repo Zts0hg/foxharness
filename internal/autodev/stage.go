@@ -3,10 +3,11 @@ package autodev
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
-	"path/filepath"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -229,7 +230,7 @@ func RequirementsFirstPipeline(deps PipelineDeps) []Stage {
 			Name:    "generate-spec",
 			Command: "codexspec:generate-spec",
 			Args: func(sc *StageContext) string {
-				return filepath.Join(sc.FeatureDir, "requirements.md")
+				return path.Join(sc.FeatureDir, "requirements.md")
 			},
 			Verify: verifyReviewedArtifact("spec.md", "review-spec.md"),
 		},
@@ -237,7 +238,7 @@ func RequirementsFirstPipeline(deps PipelineDeps) []Stage {
 			Name:    "spec-to-plan",
 			Command: "codexspec:spec-to-plan",
 			Args: func(sc *StageContext) string {
-				return filepath.Join(sc.FeatureDir, "spec.md")
+				return path.Join(sc.FeatureDir, "spec.md")
 			},
 			Verify: verifyReviewedArtifact("plan.md", "review-plan.md"),
 		},
@@ -245,7 +246,7 @@ func RequirementsFirstPipeline(deps PipelineDeps) []Stage {
 			Name:    "plan-to-tasks",
 			Command: "codexspec:plan-to-tasks",
 			Args: func(sc *StageContext) string {
-				return filepath.Join(sc.FeatureDir, "plan.md")
+				return path.Join(sc.FeatureDir, "plan.md")
 			},
 			Verify: verifyReviewedArtifact("tasks.md", "review-tasks.md"),
 		},
@@ -253,7 +254,7 @@ func RequirementsFirstPipeline(deps PipelineDeps) []Stage {
 			Name:    "implement-tasks",
 			Command: "codexspec:implement-tasks",
 			Args: func(sc *StageContext) string {
-				return filepath.Join(sc.FeatureDir, "tasks.md")
+				return path.Join(sc.FeatureDir, "tasks.md")
 			},
 			Verify: verifyImplement(deps),
 		},
@@ -270,17 +271,23 @@ func materializeRequirements(clock Clock) func(ctx context.Context, sc *StageCon
 			if err != nil {
 				return err
 			}
-			sc.FeatureDir = filepath.Join(specsRelDir, name)
+			sc.FeatureDir = path.Join(specsRelDir, name)
 		}
-		reqPath := filepath.Join(sc.WorkDir, sc.FeatureDir, "requirements.md")
-		document := requirementsDocument(sc, clock.Now())
-		if existing, err := os.ReadFile(reqPath); err == nil && requirementsDocumentMatches(existing, sc) {
-			return nil
-		}
-		if err := os.MkdirAll(filepath.Dir(reqPath), 0o755); err != nil {
+		workspace, err := openFeatureWorkspace(sc.WorkDir, sc.FeatureDir, true)
+		if err != nil {
 			return err
 		}
-		return os.WriteFile(reqPath, []byte(document), 0o644)
+		defer workspace.Close()
+		document := requirementsDocument(sc, clock.Now())
+		existing, err := workspace.readRegular("requirements.md")
+		if err == nil {
+			if requirementsDocumentMatches(existing, sc) {
+				return nil
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect requirements artifact: %w", err)
+		}
+		return workspace.writeRegular("requirements.md", []byte(document), 0o644)
 	}
 }
 
@@ -316,13 +323,18 @@ func verifySpecArtifact(artifact string) func(ctx context.Context, sc *StageCont
 }
 
 func nonEmptyFile(sc *StageContext, artifact string) (bool, string) {
-	path := filepath.Join(sc.FeatureDir, artifact)
-	info, err := os.Stat(filepath.Join(sc.WorkDir, path))
+	artifactPath := path.Join(sc.FeatureDir, artifact)
+	workspace, err := openFeatureWorkspace(sc.WorkDir, sc.FeatureDir, false)
 	if err != nil {
-		return false, fmt.Sprintf("%s does not exist", path)
+		return false, fmt.Sprintf("%s is unavailable: %v", artifactPath, err)
 	}
-	if info.Size() == 0 {
-		return false, fmt.Sprintf("%s exists but is empty", path)
+	defer workspace.Close()
+	size, err := workspace.regularSize(artifact)
+	if err != nil {
+		return false, fmt.Sprintf("%s is unavailable: %v", artifactPath, err)
+	}
+	if size == 0 {
+		return false, fmt.Sprintf("%s exists but is empty", artifactPath)
 	}
 	return true, ""
 }
@@ -335,7 +347,16 @@ func verifyReviewedArtifact(artifact, review string) func(ctx context.Context, s
 		if ok, gap := verifySpecArtifact(review)(ctx, sc); !ok {
 			return false, gap
 		}
-		status, err := readReviewStatus(filepath.Join(sc.WorkDir, sc.FeatureDir, review))
+		workspace, err := openFeatureWorkspace(sc.WorkDir, sc.FeatureDir, false)
+		if err != nil {
+			return false, err.Error()
+		}
+		defer workspace.Close()
+		data, err := workspace.readRegular(review)
+		if err != nil {
+			return false, fmt.Sprintf("read review status: %v", err)
+		}
+		status, err := readReviewStatus(data, path.Join(sc.FeatureDir, review))
 		if err != nil {
 			return false, err.Error()
 		}
@@ -343,21 +364,17 @@ func verifyReviewedArtifact(artifact, review string) func(ctx context.Context, s
 		case "PASS", "PASS_WITH_WARNINGS":
 			return true, ""
 		default:
-			return false, fmt.Sprintf("%s reports Overall Status %s", filepath.Join(sc.FeatureDir, review), status)
+			return false, fmt.Sprintf("%s reports Overall Status %s", path.Join(sc.FeatureDir, review), status)
 		}
 	}
 }
 
 var reviewStatusRE = regexp.MustCompile(`(?im)\*\*Overall Status\*\*\s*:\s*([A-Z_]+)`)
 
-func readReviewStatus(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read review status: %w", err)
-	}
+func readReviewStatus(data []byte, artifactPath string) (string, error) {
 	m := reviewStatusRE.FindSubmatch(data)
 	if len(m) != 2 {
-		return "", fmt.Errorf("%s has no parseable Overall Status", path)
+		return "", fmt.Errorf("%s has no parseable Overall Status", artifactPath)
 	}
 	return string(m[1]), nil
 }
@@ -401,7 +418,7 @@ func requirementsDocument(sc *StageContext, now time.Time) string {
 	if requirementHash == "" {
 		requirementBytes, requirementHash = requirementIdentity(statement)
 	}
-	featureName := filepath.Base(sc.FeatureDir)
+	featureName := path.Base(sc.FeatureDir)
 	featureID := featureName
 	if len(featureID) >= len("2006-0102-1504ab") {
 		featureID = featureID[:len("2006-0102-1504ab")]
@@ -496,14 +513,19 @@ func verifyTasksComplete(sc *StageContext) (bool, string) {
 	if sc.FeatureDir == "" {
 		return false, "no feature directory is bound for this item"
 	}
-	path := filepath.Join(sc.WorkDir, sc.FeatureDir, "tasks.md")
-	data, err := os.ReadFile(path)
+	artifactPath := path.Join(sc.FeatureDir, "tasks.md")
+	workspace, err := openFeatureWorkspace(sc.WorkDir, sc.FeatureDir, false)
 	if err != nil {
-		return false, fmt.Sprintf("%s does not exist", filepath.Join(sc.FeatureDir, "tasks.md"))
+		return false, fmt.Sprintf("%s is unavailable: %v", artifactPath, err)
+	}
+	defer workspace.Close()
+	data, err := workspace.readRegular("tasks.md")
+	if err != nil {
+		return false, fmt.Sprintf("%s is unavailable: %v", artifactPath, err)
 	}
 	matches := taskCheckboxRE.FindAllSubmatch(data, -1)
 	if len(matches) == 0 {
-		return false, fmt.Sprintf("%s contains no markdown task checkboxes", filepath.Join(sc.FeatureDir, "tasks.md"))
+		return false, fmt.Sprintf("%s contains no markdown task checkboxes", artifactPath)
 	}
 	var unchecked int
 	for _, m := range matches {
@@ -512,7 +534,7 @@ func verifyTasksComplete(sc *StageContext) (bool, string) {
 		}
 	}
 	if unchecked > 0 {
-		return false, fmt.Sprintf("%s has %d unchecked task checkbox(es)", filepath.Join(sc.FeatureDir, "tasks.md"), unchecked)
+		return false, fmt.Sprintf("%s has %d unchecked task checkbox(es)", artifactPath, unchecked)
 	}
 	return true, ""
 }

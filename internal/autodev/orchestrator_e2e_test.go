@@ -69,11 +69,11 @@ func (g *e2eGit) Run(ctx context.Context, dir string, args ...string) (string, e
 	case "worktree":
 		switch args[1] {
 		case "add":
-			path := args[3]
-			if args[2] != "-b" {
-				path = args[2]
+			worktreePath := args[2]
+			if args[2] == "-b" {
+				worktreePath = args[4]
 			}
-			if err := os.MkdirAll(path, 0o755); err != nil {
+			if err := os.MkdirAll(worktreePath, 0o755); err != nil {
 				return "", err
 			}
 			return "", nil

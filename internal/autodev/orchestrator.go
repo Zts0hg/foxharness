@@ -165,11 +165,6 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 		return err
 	}
 
-	core, err := o.deps.CoreFactory.New(ctx, wt.Path, o.deps.Config.Model)
-	if err != nil {
-		return fmt.Errorf("create core runner for %s: %w", item.Slug, err)
-	}
-
 	sc := &StageContext{
 		Item:             Item{SourceID: item.SourceID, Type: "", Title: item.Title, Priority: item.Priority, Description: item.Description},
 		ItemID:           item.ItemID,
@@ -183,7 +178,22 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 		Remote:           o.deps.Config.Remote,
 		FeatureDir:       item.FeatureDir,
 	}
-	core.SetUserAsker(NewEngineerAsker(o.deps.Engineer, o.deps.Reporter, sc))
+	if err := preflightFeatureWorkspace(sc); err != nil {
+		return fmt.Errorf("validate feature workspace for %s: %w", item.Slug, err)
+	}
+	var core CoreRunner
+	ensureCore := func() error {
+		if core != nil {
+			return nil
+		}
+		created, err := o.deps.CoreFactory.New(ctx, wt.Path, o.deps.Config.Model)
+		if err != nil {
+			return fmt.Errorf("create core runner for %s: %w", item.Slug, err)
+		}
+		created.SetUserAsker(NewEngineerAsker(o.deps.Engineer, o.deps.Reporter, sc))
+		core = created
+		return nil
+	}
 
 	start := o.resumeIndex(item)
 	for i := start; i < len(o.pipeline); i++ {
@@ -198,6 +208,11 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 				it.Stage = stage
 				it.StageState = StageStateRunning
 			}); err != nil {
+				return err
+			}
+		}
+		if st.Control == nil {
+			if err := ensureCore(); err != nil {
 				return err
 			}
 		}
@@ -221,6 +236,9 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 		}
 	}
 
+	if err := ensureCore(); err != nil {
+		return err
+	}
 	current, _ := led.Get(item.Slug)
 	if !isPublishingStage(current.Stage) {
 		if err := record("publish-intent", func(it *LedgerItem) {

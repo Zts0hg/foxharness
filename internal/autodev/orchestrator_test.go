@@ -367,7 +367,7 @@ func TestOrchestratorResumesInProgressFromRecordedStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	wtPath := filepath.Join(filepath.Dir(repoRoot), filepath.Base(repoRoot)+"-worktrees", "first-item")
-	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(wtPath, ".codexspec", "specs", "2026-0610-1200ab-first"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 

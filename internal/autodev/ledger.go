@@ -244,6 +244,11 @@ func validateLedgerItems(items []*LedgerItem, version int) error {
 		if item == nil {
 			return invalidLedgerItem(version, nil, "item is null")
 		}
+		if item.FeatureDir != "" {
+			if err := validateFeatureDir(item.FeatureDir); err != nil {
+				return invalidLedgerItem(version, item, err.Error())
+			}
+		}
 		if version >= 2 {
 			if item.ItemID == "" {
 				return invalidLedgerItem(version, item, "item_id is required")
