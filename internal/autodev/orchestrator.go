@@ -2,6 +2,7 @@ package autodev
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -146,7 +147,7 @@ func (o *Orchestrator) nextItem(led *Ledger) (LedgerItem, bool) {
 // processItem runs one item end to end: worktree, per-item core runner with
 // the engineer asker installed, SDD stages from the recorded resume point,
 // remote publishing, ledger completion, and worktree cleanup.
-func (o *Orchestrator) processItem(ctx context.Context, index, total int, item LedgerItem, led *Ledger) error {
+func (o *Orchestrator) processItem(ctx context.Context, index, total int, item LedgerItem, led *Ledger) (retErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -188,6 +189,24 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 		return fmt.Errorf("validate feature workspace for %s: %w", item.Slug, err)
 	}
 	var core CoreRunner
+	coreCloseAttempted := false
+	closeCore := func() error {
+		if core == nil || coreCloseAttempted {
+			return nil
+		}
+		coreCloseAttempted = true
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coreLifecycleTimeout)
+		defer cancel()
+		if err := core.Close(closeCtx); err != nil {
+			return &CoreLifecycleError{Operation: "close", Err: err}
+		}
+		return nil
+	}
+	defer func() {
+		if err := closeCore(); err != nil {
+			retErr = errors.Join(retErr, err)
+		}
+	}()
 	ensureCore := func() error {
 		if core != nil {
 			return nil
@@ -264,6 +283,9 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 	current.Description = item.Description
 	result, err := o.publisher.Publish(ctx, core, wt, current, record)
 	if err != nil {
+		return err
+	}
+	if err := closeCore(); err != nil {
 		return err
 	}
 

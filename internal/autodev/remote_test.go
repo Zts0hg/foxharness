@@ -161,6 +161,9 @@ func (c *remoteCore) Run(ctx context.Context, prompt string, r engine.Reporter) 
 	return &engine.RunResult{FinalMessage: "step attempted"}, nil
 }
 
+func (c *remoteCore) Drain(context.Context) error { return nil }
+func (c *remoteCore) Close(context.Context) error { return nil }
+
 func (c *remoteCore) SetUserAsker(a tools.UserAsker) {}
 func (c *remoteCore) SetModel(model string) error    { return nil }
 func (c *remoteCore) WorkDir() string                { return "/wt" }

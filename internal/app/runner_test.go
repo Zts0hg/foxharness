@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,6 +49,40 @@ func TestNewAgentRunnerMissingLLMConfigReturnsHelpfulError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "missing LLM configuration") {
 		t.Fatalf("error = %q, want missing LLM configuration", err.Error())
+	}
+}
+
+func TestNewAgentRunnerExtractionLifecycleRequiresExplicitOwner(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	startupCtx, cancelStartup := context.WithCancel(context.Background())
+	cancelStartup()
+	ordinary, err := NewAgentRunner(startupCtx, AgentRunnerConfig{
+		WorkDir:  t.TempDir(),
+		Model:    "test-model",
+		LLM:      testResolvedLLM(llmconfig.ProtocolOpenAI, "test-model"),
+		MaxTurns: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ordinary.extractionContext().Err(); err != nil {
+		t.Fatalf("ordinary extraction inherited startup cancellation: %v", err)
+	}
+
+	ownerCtx, cancelOwner := context.WithCancel(context.Background())
+	owned, err := NewAgentRunner(context.Background(), AgentRunnerConfig{
+		WorkDir:           t.TempDir(),
+		Model:             "test-model",
+		LLM:               testResolvedLLM(llmconfig.ProtocolOpenAI, "test-model"),
+		MaxTurns:          1,
+		ExtractionContext: ownerCtx,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelOwner()
+	if err := owned.extractionContext().Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("owned extraction context error = %v, want context.Canceled", err)
 	}
 }
 
@@ -954,6 +989,74 @@ func TestOneShotRunAwaitsExtraction(t *testing.T) {
 	// 1 Generate for the main run, plus >=1 for the extraction pass.
 	if got, want := prov.count(), 2; got < want {
 		t.Fatalf("extraction not awaited: Generate calls = %d, want >= %d", got, want)
+	}
+}
+
+type lifecycleExtractionProvider struct {
+	entered chan struct{}
+	done    chan struct{}
+	once    sync.Once
+}
+
+func (p *lifecycleExtractionProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*providerpkg.GenerateResponse, error) {
+	p.once.Do(func() { close(p.entered) })
+	<-ctx.Done()
+	close(p.done)
+	return nil, ctx.Err()
+}
+
+func launchLifecycleExtraction(t *testing.T, parent context.Context) (*AgentRunner, *lifecycleExtractionProvider) {
+	t.Helper()
+	workDir := t.TempDir()
+	home := t.TempDir()
+	manager := session.NewManagerWithHome(workDir, home)
+	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.NewMessageLog(sess).Append("run-lifecycle", schema.Message{Role: schema.RoleUser, Content: "remember this"}); err != nil {
+		t.Fatal(err)
+	}
+	provider := &lifecycleExtractionProvider{entered: make(chan struct{}), done: make(chan struct{})}
+	extractCtx, extractCancel := context.WithCancel(parent)
+	runner := &AgentRunner{extractCtx: extractCtx, extractCancel: extractCancel}
+	hooks := automemory.NewPerRunHooks(provider, automemory.NewStore(home, workDir), workDir)
+	hooks.FireTrackedContext(runner.extractionContext(), &runner.extractWG, sess, "run-lifecycle", nil)
+	select {
+	case <-provider.entered:
+	case <-time.After(time.Second):
+		t.Fatal("extraction provider did not start")
+	}
+	return runner, provider
+}
+
+func TestAgentRunnerCloseExtractionCancelsAndJoins(t *testing.T) {
+	runner, provider := launchLifecycleExtraction(t, context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runner.CloseExtraction(ctx); err != nil {
+		t.Fatalf("CloseExtraction returned error: %v", err)
+	}
+	select {
+	case <-provider.done:
+	default:
+		t.Fatal("CloseExtraction returned before the provider observed cancellation")
+	}
+}
+
+func TestAgentRunnerDrainJoinsAfterParentCancellation(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	runner, provider := launchLifecycleExtraction(t, parent)
+	cancelParent()
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), time.Second)
+	defer cancelDrain()
+	if err := runner.DrainExtraction(drainCtx); err != nil {
+		t.Fatalf("DrainExtraction returned error: %v", err)
+	}
+	select {
+	case <-provider.done:
+	default:
+		t.Fatal("DrainExtraction returned before parent cancellation reached the provider")
 	}
 }
 

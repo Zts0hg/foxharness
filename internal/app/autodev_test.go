@@ -28,18 +28,22 @@ type fakeRunnerAPI struct {
 	model     string
 	registry  *slash.Registry
 	executor  *slash.Executor
+	drains    int
+	closes    int
 }
 
 func (f *fakeRunnerAPI) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
 	f.runPrompt = prompt
 	return &engine.RunResult{FinalMessage: "ran"}, nil
 }
-func (f *fakeRunnerAPI) SetUserAsker(asker tools.UserAsker) { f.asker = asker }
-func (f *fakeRunnerAPI) SetModel(model string) error        { f.model = model; return nil }
-func (f *fakeRunnerAPI) WorkDir() string                    { return f.workDir }
-func (f *fakeRunnerAPI) SlashRegistry() *slash.Registry     { return f.registry }
-func (f *fakeRunnerAPI) SlashExecutor() *slash.Executor     { return f.executor }
-func (f *fakeRunnerAPI) SessionID() string                  { return "sess-1" }
+func (f *fakeRunnerAPI) DrainExtraction(context.Context) error { f.drains++; return nil }
+func (f *fakeRunnerAPI) CloseExtraction(context.Context) error { f.closes++; return nil }
+func (f *fakeRunnerAPI) SetUserAsker(asker tools.UserAsker)    { f.asker = asker }
+func (f *fakeRunnerAPI) SetModel(model string) error           { f.model = model; return nil }
+func (f *fakeRunnerAPI) WorkDir() string                       { return f.workDir }
+func (f *fakeRunnerAPI) SlashRegistry() *slash.Registry        { return f.registry }
+func (f *fakeRunnerAPI) SlashExecutor() *slash.Executor        { return f.executor }
+func (f *fakeRunnerAPI) SessionID() string                     { return "sess-1" }
 
 type fakeAutodevAsker struct{}
 
@@ -58,6 +62,15 @@ func TestCoreRunnerAdapterDelegates(t *testing.T) {
 	}
 	if api.runPrompt != "do it" {
 		t.Errorf("runner prompt = %q, want %q", api.runPrompt, "do it")
+	}
+	if err := adapter.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if api.drains != 1 || api.closes != 1 {
+		t.Errorf("runner drain/close calls = %d/%d, want 1/1", api.drains, api.closes)
 	}
 
 	adapter.SetUserAsker(fakeAutodevAsker{})

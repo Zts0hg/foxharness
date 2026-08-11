@@ -47,6 +47,9 @@ type AgentRunnerConfig struct {
 	NewSession      bool
 	OnModelChange   func(model string) error
 	Permission      *permission.Coordinator
+	// ExtractionContext optionally binds asynchronous post-run extraction to
+	// an external lifecycle owner. Ordinary profiles leave it nil.
+	ExtractionContext context.Context
 }
 
 // AgentRunner owns one long-lived session and can execute many user prompts
@@ -92,9 +95,12 @@ type AgentRunner struct {
 	contextUsedTokens   int64
 	contextWindowTokens int64
 
-	// extractWG tracks in-flight post-run memory extraction goroutines so a
-	// short-lived runner (the one-shot CLI) can await them before exiting.
-	extractWG sync.WaitGroup
+	// extractWG tracks in-flight post-run memory extraction goroutines so
+	// short-lived or item-scoped owners can join them before cleanup.
+	extractWG     sync.WaitGroup
+	extractMu     sync.Mutex
+	extractCtx    context.Context
+	extractCancel context.CancelFunc
 }
 
 func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
@@ -116,7 +122,6 @@ func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
 // NewSession is called.
 func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, error) {
 	_ = ctx
-
 	workDir, err := filepath.Abs(cfg.WorkDir)
 	if err != nil {
 		return nil, err
@@ -159,6 +164,11 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		log.Printf("[slash] registry load failed: %v", err)
 	}
 
+	extractParent := cfg.ExtractionContext
+	if extractParent == nil {
+		extractParent = context.Background()
+	}
+	extractCtx, extractCancel := context.WithCancel(extractParent)
 	ar := &AgentRunner{
 		workDir:                workDir,
 		model:                  cfg.LLM.Model,
@@ -178,6 +188,8 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		currentSession:         sess,
 		checkpointer:           cp,
 		slashRegistry:          slashRegistry,
+		extractCtx:             extractCtx,
+		extractCancel:          extractCancel,
 	}
 	ar.slashExecutor = slash.NewExecutor(
 		slash.WithWorkDir(workDir),
@@ -584,9 +596,9 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 			if r.extractionFire != nil {
 				r.extractionFire(sess, result.RunID, tracker)
 			} else {
-				// Tracked launch so the one-shot CLI can drain extraction before
-				// the process exits (P2-A); the interactive TUI simply never waits.
-				hooks.FireTracked(&r.extractWG, sess, result.RunID, tracker)
+				// Tracked launch lets one-shot and item-scoped callers drain before
+				// process or worktree cleanup; long-lived profiles need not wait.
+				hooks.FireTrackedContext(r.extractionContext(), &r.extractWG, sess, result.RunID, tracker)
 			}
 		}()
 	}
@@ -612,7 +624,51 @@ func (r *AgentRunner) AutoMemoryIndex() string {
 // asynchronous extraction is not killed mid-call; the interactive TUI does not
 // call it (extraction stays fire-and-forget across runs).
 func (r *AgentRunner) WaitForExtraction() {
-	r.extractWG.Wait()
+	_ = r.DrainExtraction(context.Background())
+}
+
+// DrainExtraction waits for every post-run extraction launched before the
+// call. It serializes with Run so no later run can race the join boundary.
+func (r *AgentRunner) DrainExtraction(ctx context.Context) error {
+	r.runMu.Lock()
+	defer r.runMu.Unlock()
+	return r.waitForExtraction(ctx)
+}
+
+// CloseExtraction cancels the runner-owned extraction lifecycle and joins all
+// launched work before returning. Calls are idempotent.
+func (r *AgentRunner) CloseExtraction(ctx context.Context) error {
+	r.runMu.Lock()
+	defer r.runMu.Unlock()
+	r.extractMu.Lock()
+	if r.extractCancel != nil {
+		r.extractCancel()
+	}
+	r.extractMu.Unlock()
+	return r.waitForExtraction(ctx)
+}
+
+func (r *AgentRunner) extractionContext() context.Context {
+	r.extractMu.Lock()
+	defer r.extractMu.Unlock()
+	if r.extractCtx == nil {
+		r.extractCtx, r.extractCancel = context.WithCancel(context.Background())
+	}
+	return r.extractCtx
+}
+
+func (r *AgentRunner) waitForExtraction(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		r.extractWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // NewSession switches the runner to a fresh CLI session.

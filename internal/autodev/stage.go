@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+var coreLifecycleTimeout = 2 * time.Minute
+
 // GateChecker runs the completion gate inside a worktree. gate.go provides
 // the production implementation; the implement stage's Verify depends on
 // this seam so stage tests need no real go/gofmt processes.
@@ -186,6 +188,10 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 		res, err := core.Run(attemptCtx, msg, m.reporter)
 		attemptErr := attemptCtx.Err()
 		cancel()
+		drainErr := drainCore(ctx, core)
+		if drainErr != nil {
+			return &CoreLifecycleError{Operation: "drain", Err: errors.Join(err, drainErr)}
+		}
 		if err != nil {
 			return fmt.Errorf("core run for step %s: %w", st.Name, err)
 		}
@@ -227,6 +233,16 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 		}
 		msg = correction
 	}
+}
+
+func drainCore(ctx context.Context, core CoreRunner) error {
+	drainParent := ctx
+	if ctx.Err() != nil {
+		drainParent = context.WithoutCancel(ctx)
+	}
+	drainCtx, cancel := context.WithTimeout(drainParent, coreLifecycleTimeout)
+	defer cancel()
+	return core.Drain(drainCtx)
 }
 
 func verifyStage(ctx context.Context, sc *StageContext, st Stage) (bool, string, error) {

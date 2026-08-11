@@ -68,6 +68,9 @@ func (c *stubCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*
 	c.runs++
 	return &engine.RunResult{FinalMessage: "ok"}, nil
 }
+
+func (c *stubCore) Drain(context.Context) error    { return nil }
+func (c *stubCore) Close(context.Context) error    { return nil }
 func (c *stubCore) SetUserAsker(a tools.UserAsker) { c.asker = a }
 func (c *stubCore) SetModel(model string) error    { return nil }
 func (c *stubCore) WorkDir() string                { return c.workDir }

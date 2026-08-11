@@ -238,6 +238,9 @@ func (c *e2eCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*e
 	return &engine.RunResult{FinalMessage: "done"}, nil
 }
 
+func (c *e2eCore) Drain(context.Context) error { return nil }
+func (c *e2eCore) Close(context.Context) error { return nil }
+
 func issueMarkerFromPrompt(prompt string) string {
 	const prefix = "<!-- fox-autodev-item-id:"
 	start := strings.Index(prompt, prefix)

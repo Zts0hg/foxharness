@@ -1314,13 +1314,29 @@ func TestDVAUT007TerminalReporterConsumesEventIDIdempotently(t *testing.T) {
 
 type lifecycleCore struct {
 	stubCore
-	release <-chan struct{}
-	done    chan<- struct{}
-	once    sync.Once
+	release      <-chan struct{}
+	closeRelease <-chan struct{}
+	done         chan struct{}
+	drainStarted chan struct{}
+	closeStarted chan struct{}
+	launchOnce   sync.Once
+	drainOnce    sync.Once
+	closeOnce    sync.Once
+	mu           sync.Mutex
+	runCount     int
+	drainedRuns  int
+	closeCalls   int
 }
 
 func (c *lifecycleCore) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
-	c.once.Do(func() {
+	c.mu.Lock()
+	if c.drainedRuns != c.runCount {
+		c.mu.Unlock()
+		return nil, errors.New("next core run started before prior post-run work drained")
+	}
+	c.runCount++
+	c.mu.Unlock()
+	c.launchOnce.Do(func() {
 		go func() {
 			<-c.release
 			close(c.done)
@@ -1329,19 +1345,47 @@ func (c *lifecycleCore) Run(ctx context.Context, prompt string, reporter engine.
 	return c.stubCore.Run(ctx, prompt, reporter)
 }
 
+func (c *lifecycleCore) Drain(ctx context.Context) error {
+	c.drainOnce.Do(func() { close(c.drainStarted) })
+	select {
+	case <-c.done:
+		c.mu.Lock()
+		c.drainedRuns = c.runCount
+		c.mu.Unlock()
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *lifecycleCore) Close(ctx context.Context) error {
+	c.mu.Lock()
+	c.closeCalls++
+	c.mu.Unlock()
+	c.closeOnce.Do(func() { close(c.closeStarted) })
+	select {
+	case <-c.closeRelease:
+		return c.Drain(ctx)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 type lifecycleCoreFactory struct {
-	release <-chan struct{}
-	done    chan<- struct{}
+	core *lifecycleCore
 }
 
 func (f *lifecycleCoreFactory) New(ctx context.Context, workDir, model string) (CoreRunner, error) {
-	return &lifecycleCore{stubCore: stubCore{workDir: workDir}, release: f.release, done: f.done}, nil
+	f.core.workDir = workDir
+	return f.core, nil
 }
 
-func TestDVAUT008OrchestratorCleansWorktreeWithoutAsyncRuntimeDrain(t *testing.T) {
+func TestDVAUT008OrchestratorDrainsEveryRunAndClosesBeforeWorktreeRemoval(t *testing.T) {
 	coreType := reflect.TypeOf((*CoreRunner)(nil)).Elem()
-	if _, ok := coreType.MethodByName("WaitForExtraction"); ok {
-		t.Fatal("CoreRunner unexpectedly exposes an extraction drain")
+	for _, method := range []string{"Drain", "Close"} {
+		if _, ok := coreType.MethodByName(method); !ok {
+			t.Fatalf("CoreRunner does not expose %s lifecycle ownership", method)
+		}
 	}
 
 	repoRoot := t.TempDir()
@@ -1350,28 +1394,232 @@ func TestDVAUT008OrchestratorCleansWorktreeWithoutAsyncRuntimeDrain(t *testing.T
 **Description**: async extraction
 `)
 	release := make(chan struct{})
-	done := make(chan struct{})
-	deps.CoreFactory = &lifecycleCoreFactory{release: release, done: done}
-	if err := New(deps).Run(context.Background()); err != nil {
-		t.Fatal(err)
+	closeRelease := make(chan struct{})
+	core := &lifecycleCore{
+		release:      release,
+		closeRelease: closeRelease,
+		done:         make(chan struct{}),
+		drainStarted: make(chan struct{}),
+		closeStarted: make(chan struct{}),
+	}
+	deps.CoreFactory = &lifecycleCoreFactory{core: core}
+	runDone := make(chan error, 1)
+	go func() { runDone <- New(deps).Run(context.Background()) }()
+	select {
+	case <-core.drainStarted:
+	case <-time.After(time.Second):
+		t.Fatal("orchestrator did not drain after the first core run")
 	}
 	select {
-	case <-done:
-		t.Fatal("async post-run work completed before the orchestrator returned")
+	case err := <-runDone:
+		t.Fatalf("orchestrator returned before extraction completed: %v", err)
 	default:
 	}
 	removed := false
 	for _, call := range git.calls {
 		removed = removed || strings.HasPrefix(call, "worktree remove")
 	}
-	if !removed {
-		t.Fatal("orchestrator did not remove the worktree before returning")
+	if removed {
+		t.Fatal("orchestrator removed the worktree while post-run work was pending")
 	}
 	close(release)
 	select {
-	case <-done:
+	case <-core.closeStarted:
 	case <-time.After(time.Second):
-		t.Fatal("async proof goroutine did not finish")
+		t.Fatal("orchestrator did not perform final CoreRunner.Close")
+	}
+	for _, call := range git.calls {
+		if strings.HasPrefix(call, "worktree remove") {
+			t.Fatal("orchestrator removed the worktree before CoreRunner.Close completed")
+		}
+	}
+	close(closeRelease)
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+	core.mu.Lock()
+	runCount, drainedRuns, closeCalls := core.runCount, core.drainedRuns, core.closeCalls
+	core.mu.Unlock()
+	if runCount == 0 || drainedRuns != runCount || closeCalls != 1 {
+		t.Fatalf("lifecycle runs/drained/close = %d/%d/%d, want every run drained and one close", runCount, drainedRuns, closeCalls)
+	}
+	removed = false
+	for _, call := range git.calls {
+		removed = removed || strings.HasPrefix(call, "worktree remove")
+	}
+	if !removed {
+		t.Fatal("orchestrator did not remove the worktree after lifecycle close")
+	}
+}
+
+type failingCloseCore struct{ stubCore }
+
+func (c *failingCloseCore) Drain(context.Context) error { return nil }
+func (c *failingCloseCore) Close(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type failingCloseFactory struct{ core *failingCloseCore }
+
+func (f failingCloseFactory) New(ctx context.Context, workDir, model string) (CoreRunner, error) {
+	f.core.workDir = workDir
+	return f.core, nil
+}
+
+func TestDVAUT008UndrainedLifecycleFailsAndRetainsWorktree(t *testing.T) {
+	originalTimeout := coreLifecycleTimeout
+	coreLifecycleTimeout = 50 * time.Millisecond
+	defer func() { coreLifecycleTimeout = originalTimeout }()
+	started := time.Now()
+	repoRoot := t.TempDir()
+	deps, recorder, _, git, _ := testDeps(t, repoRoot, `## Item
+
+**Description**: retain undrained work
+`)
+	deps.CoreFactory = failingCloseFactory{core: &failingCloseCore{}}
+	err := New(deps).Run(context.Background())
+	var lifecycleErr *CoreLifecycleError
+	if !errors.As(err, &lifecycleErr) {
+		t.Fatalf("Run error = %T %v, want *CoreLifecycleError", err, err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("bounded lifecycle close took %v, want under one second", elapsed)
+	}
+	for _, call := range git.calls {
+		if strings.HasPrefix(call, "worktree remove") {
+			t.Fatal("undrained lifecycle removed the item worktree")
+		}
+	}
+	for _, event := range recorder.list() {
+		if strings.HasPrefix(event, "done:") {
+			t.Fatal("undrained lifecycle reported the item done")
+		}
+	}
+}
+
+type cancelingLifecycleCore struct {
+	stubCore
+	cancel     context.CancelFunc
+	drainFresh bool
+	closeFresh bool
+}
+
+func (c *cancelingLifecycleCore) Run(context.Context, string, engine.Reporter) (*engine.RunResult, error) {
+	c.cancel()
+	return &engine.RunResult{FinalMessage: "partial"}, context.Canceled
+}
+
+func (c *cancelingLifecycleCore) Drain(ctx context.Context) error {
+	_, hasDeadline := ctx.Deadline()
+	c.drainFresh = ctx.Err() == nil && hasDeadline
+	return nil
+}
+
+func (c *cancelingLifecycleCore) Close(ctx context.Context) error {
+	_, hasDeadline := ctx.Deadline()
+	c.closeFresh = ctx.Err() == nil && hasDeadline
+	return nil
+}
+
+type cancelingLifecycleFactory struct{ core *cancelingLifecycleCore }
+
+func (f cancelingLifecycleFactory) New(ctx context.Context, workDir, model string) (CoreRunner, error) {
+	f.core.workDir = workDir
+	return f.core, nil
+}
+
+func TestDVAUT008ParentCancellationUsesFreshBoundedDrainAndClose(t *testing.T) {
+	repoRoot := t.TempDir()
+	deps, _, _, git, _ := testDeps(t, repoRoot, `## Item
+
+**Description**: cancel extraction
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	core := &cancelingLifecycleCore{cancel: cancel}
+	deps.CoreFactory = cancelingLifecycleFactory{core: core}
+	err := New(deps).Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context cancellation", err)
+	}
+	if !core.drainFresh || !core.closeFresh {
+		t.Fatalf("fresh bounded lifecycle contexts drain/close = %v/%v, want true/true", core.drainFresh, core.closeFresh)
+	}
+	for _, call := range git.calls {
+		if strings.HasPrefix(call, "worktree remove") {
+			t.Fatal("canceled lifecycle removed the item worktree")
+		}
+	}
+}
+
+type visibilityLifecycleFactory struct {
+	mu             sync.Mutex
+	createdItems   int
+	completedItems int
+}
+
+type visibilityLifecycleCore struct {
+	stubCore
+	factory *visibilityLifecycleFactory
+	index   int
+	pending bool
+	closed  bool
+}
+
+func (f *visibilityLifecycleFactory) New(ctx context.Context, workDir, model string) (CoreRunner, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	index := f.createdItems
+	if f.completedItems != index {
+		return nil, fmt.Errorf("item %d started before %d prior item lifecycles completed", index, index)
+	}
+	f.createdItems++
+	return &visibilityLifecycleCore{stubCore: stubCore{workDir: workDir}, factory: f, index: index}, nil
+}
+
+func (c *visibilityLifecycleCore) Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error) {
+	if c.pending {
+		return nil, errors.New("next run started before prior extraction became visible")
+	}
+	c.pending = true
+	return c.stubCore.Run(ctx, prompt, reporter)
+}
+
+func (c *visibilityLifecycleCore) Drain(context.Context) error {
+	if !c.pending {
+		return errors.New("drain did not correspond to one completed run")
+	}
+	c.pending = false
+	return nil
+}
+
+func (c *visibilityLifecycleCore) Close(context.Context) error {
+	if c.pending {
+		return errors.New("item closed with pending extraction")
+	}
+	if c.closed {
+		return nil
+	}
+	c.closed = true
+	c.factory.mu.Lock()
+	c.factory.completedItems++
+	c.factory.mu.Unlock()
+	return nil
+}
+
+func TestDVAUT008NextRunAndItemObserveCompletedPostRunState(t *testing.T) {
+	repoRoot := t.TempDir()
+	deps, _, _, _, _ := testDeps(t, repoRoot, twoItemBacklog)
+	factory := &visibilityLifecycleFactory{}
+	deps.CoreFactory = factory
+	if err := New(deps).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	factory.mu.Lock()
+	created, completed := factory.createdItems, factory.completedItems
+	factory.mu.Unlock()
+	if created != 2 || completed != 2 {
+		t.Fatalf("item lifecycles created/completed = %d/%d, want 2/2", created, completed)
 	}
 }
 
@@ -1419,6 +1667,8 @@ type partialErrorCore struct {
 func (c *partialErrorCore) Run(context.Context, string, engine.Reporter) (*engine.RunResult, error) {
 	return c.result, c.err
 }
+func (*partialErrorCore) Drain(context.Context) error  { return nil }
+func (*partialErrorCore) Close(context.Context) error  { return nil }
 func (*partialErrorCore) SetUserAsker(tools.UserAsker) {}
 func (*partialErrorCore) SetModel(string) error        { return nil }
 func (*partialErrorCore) WorkDir() string              { return "" }

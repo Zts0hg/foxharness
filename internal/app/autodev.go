@@ -23,6 +23,8 @@ import (
 // extracted as an interface so the adapter is testable without a provider.
 type agentRunnerAPI interface {
 	Run(ctx context.Context, prompt string, reporter engine.Reporter) (*engine.RunResult, error)
+	DrainExtraction(ctx context.Context) error
+	CloseExtraction(ctx context.Context) error
 	SetUserAsker(asker tools.UserAsker)
 	SetModel(model string) error
 	WorkDir() string
@@ -45,6 +47,16 @@ var _ autodev.CoreRunner = (*coreRunnerAdapter)(nil)
 // Run implements autodev.CoreRunner.
 func (a *coreRunnerAdapter) Run(ctx context.Context, prompt string, r engine.Reporter) (*engine.RunResult, error) {
 	return a.runner.Run(ctx, prompt, r)
+}
+
+// Drain implements autodev.CoreRunner.
+func (a *coreRunnerAdapter) Drain(ctx context.Context) error {
+	return a.runner.DrainExtraction(ctx)
+}
+
+// Close implements autodev.CoreRunner.
+func (a *coreRunnerAdapter) Close(ctx context.Context) error {
+	return a.runner.CloseExtraction(ctx)
 }
 
 // SetUserAsker implements autodev.CoreRunner; installing the EngineerAsker
@@ -104,10 +116,11 @@ func (f *appCoreRunnerFactory) New(ctx context.Context, workDir, model string) (
 	}
 	llmConfig := f.llmConfig.WithModel(model)
 	runner, err := NewAgentRunner(ctx, AgentRunnerConfig{
-		WorkDir:  workDir,
-		Model:    llmConfig.Model,
-		LLM:      llmConfig,
-		MaxTurns: f.maxTurns,
+		WorkDir:           workDir,
+		Model:             llmConfig.Model,
+		LLM:               llmConfig,
+		MaxTurns:          f.maxTurns,
+		ExtractionContext: ctx,
 	})
 	if err != nil {
 		return nil, err

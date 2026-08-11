@@ -17,6 +17,12 @@ import (
 type CoreRunner interface {
 	// Run executes one prompt to completion and returns the run result.
 	Run(ctx context.Context, prompt string, r engine.Reporter) (*engine.RunResult, error)
+	// Drain waits for post-run work from every completed Run. Callers invoke
+	// it before another Run so memory visibility is scheduler-independent.
+	Drain(ctx context.Context) error
+	// Close cancels outstanding post-run work and joins the item-scoped
+	// runtime before its worktree can be removed.
+	Close(ctx context.Context) error
 	// SetUserAsker installs the asker answering ask_user_question calls;
 	// autodev installs an EngineerAsker so no human is required (REQ-013).
 	SetUserAsker(a tools.UserAsker)
@@ -30,6 +36,19 @@ type CoreRunner interface {
 	// ctx bounds any embedded-shell processing in the command body.
 	StagePrompt(ctx context.Context, command, args string) (string, error)
 }
+
+// CoreLifecycleError reports post-run work that could not be joined. The
+// owning item must retain its worktree and stop dependent transitions.
+type CoreLifecycleError struct {
+	Operation string
+	Err       error
+}
+
+func (e *CoreLifecycleError) Error() string {
+	return fmt.Sprintf("core lifecycle %s: %v", e.Operation, e.Err)
+}
+
+func (e *CoreLifecycleError) Unwrap() error { return e.Err }
 
 // CoreRunnerFactory creates a CoreRunner bound to a work directory. The
 // orchestrator calls it once per item so every item gets a fresh engine

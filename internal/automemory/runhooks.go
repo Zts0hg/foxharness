@@ -80,13 +80,22 @@ func (h *PerRunHooks) Fire(sess *session.Session, runID string, tracker *Tracker
 // FireTracked is like Fire but registers the launch on the provided WaitGroup so
 // a short-lived runner (e.g. the one-shot CLI) can Wait for extraction to finish
 // before the process exits, preventing the detached goroutine from being killed
-// mid-call. The wait is bounded by extractionTimeout. Long-lived runners should
-// use Fire instead.
+// mid-call. The wait is bounded by extractionTimeout. Item-scoped runtimes may
+// instead use FireTrackedContext to link cancellation to their owner.
 func (h *PerRunHooks) FireTracked(wg *sync.WaitGroup, sess *session.Session, runID string, tracker *Tracker) {
+	h.FireTrackedContext(context.Background(), wg, sess, runID, tracker)
+}
+
+// FireTrackedContext tracks extraction while linking it to the lifecycle
+// owned by the caller. The extraction timeout remains an independent ceiling.
+func (h *PerRunHooks) FireTrackedContext(parent context.Context, wg *sync.WaitGroup, sess *session.Session, runID string, tracker *Tracker) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		h.fireWithTimeout(sess, runID, tracker)
+		h.fireWithContext(parent, sess, runID, tracker)
 	}()
 }
 
@@ -94,7 +103,11 @@ func (h *PerRunHooks) FireTracked(wg *sync.WaitGroup, sess *session.Session, run
 // slow or unreachable provider cannot make the pass (or a caller draining it)
 // hang indefinitely.
 func (h *PerRunHooks) fireWithTimeout(sess *session.Session, runID string, tracker *Tracker) {
-	ctx, cancel := context.WithTimeout(context.Background(), extractionTimeout)
+	h.fireWithContext(context.Background(), sess, runID, tracker)
+}
+
+func (h *PerRunHooks) fireWithContext(parent context.Context, sess *session.Session, runID string, tracker *Tracker) {
+	ctx, cancel := context.WithTimeout(parent, extractionTimeout)
 	defer cancel()
 	h.RunExtraction(ctx, sess, runID, tracker)
 }
