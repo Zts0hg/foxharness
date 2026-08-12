@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -321,6 +322,35 @@ func TestGenerationVerifyRequiresArtifactAndPassingReview(t *testing.T) {
 	ok, gap = gen.Verify(context.Background(), sc)
 	if !ok {
 		t.Fatalf("Verify failed with artifact and passing review: %s", gap)
+	}
+}
+
+func TestCPAUT016ReviewedArtifactRejectsStalePassingReview(t *testing.T) {
+	workDir := t.TempDir()
+	featureDir := filepath.Join(".codexspec", "specs", "2026-0610-1200ab-stale-review")
+	sc := &StageContext{WorkDir: workDir, FeatureDir: featureDir}
+	verify := RequirementsFirstPipeline(PipelineDeps{Clock: newTestClock()})[1].Verify
+	writeArtifact(t, workDir, featureDir, "spec.md", "# Current spec\n")
+	writeArtifact(t, workDir, featureDir, "review-spec.md", "# Review\n\n- **Overall Status**: PASS\n")
+
+	artifactPath := filepath.Join(workDir, featureDir, "spec.md")
+	reviewPath := filepath.Join(workDir, featureDir, "review-spec.md")
+	artifactTime := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(artifactPath, artifactTime, artifactTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(reviewPath, artifactTime.Add(-time.Minute), artifactTime.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	if ok, gap := verify(context.Background(), sc); ok || !strings.Contains(strings.ToLower(gap), "stale") {
+		t.Fatalf("Verify = %v, gap = %q, want stale passing review rejected", ok, gap)
+	}
+	if err := os.Chtimes(reviewPath, artifactTime.Add(time.Minute), artifactTime.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if ok, gap := verify(context.Background(), sc); !ok {
+		t.Fatalf("Verify rejected a fresh passing review: %s", gap)
 	}
 }
 

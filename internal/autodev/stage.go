@@ -532,6 +532,17 @@ func verifyReviewedArtifact(artifact, review string) func(ctx context.Context, s
 			return false, err.Error()
 		}
 		defer workspace.Close()
+		artifactInfo, err := workspace.regularInfo(artifact)
+		if err != nil {
+			return false, fmt.Sprintf("inspect reviewed artifact: %v", err)
+		}
+		reviewInfo, err := workspace.regularInfo(review)
+		if err != nil {
+			return false, fmt.Sprintf("inspect review artifact: %v", err)
+		}
+		if reviewInfo.ModTime().Before(artifactInfo.ModTime()) {
+			return false, fmt.Sprintf("%s is stale: it predates %s", path.Join(sc.FeatureDir, review), path.Join(sc.FeatureDir, artifact))
+		}
 		data, err := workspace.readRegular(review)
 		if err != nil {
 			return false, fmt.Sprintf("read review status: %v", err)
