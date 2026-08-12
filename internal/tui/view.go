@@ -156,15 +156,17 @@ func (m Model) View() string {
 			fmt.Sprintf("terminal too narrow (%d cols) - please widen to at least %d cols", m.width, minWidth))
 	}
 	if m.rewindSelector != nil {
+		selectorView := m.rewindSelector.View()
 		parts := []string{
 			m.renderHeader(width),
 			"",
-			m.rewindSelector.View(),
+			selectorView,
 			"",
 			m.renderStatusBar(width),
 			m.renderKeybinds(width),
 		}
-		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+		full := outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+		return m.fitOverlayToTerminal(full, selectorView)
 	}
 	if m.planForm != nil {
 		formHeight := max(min(m.height/2, 18), 10)
@@ -183,7 +185,8 @@ func (m Model) View() string {
 			m.renderStatusBar(width),
 			m.renderKeybinds(width),
 		}
-		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+		full := outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+		return m.fitOverlayToTerminal(full, card)
 	}
 
 	if m.approvalForm != nil {
@@ -204,7 +207,8 @@ func (m Model) View() string {
 			m.renderStatusBar(width),
 			m.renderKeybinds(width),
 		}
-		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+		full := outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+		return m.fitOverlayToTerminal(full, cardRow)
 	}
 
 	if m.permissionForm != nil {
@@ -223,7 +227,8 @@ func (m Model) View() string {
 			m.renderStatusBar(width),
 			m.renderKeybinds(width),
 		}
-		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+		full := outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+		return m.fitOverlayToTerminal(full, card)
 	}
 
 	if m.effortForm != nil {
@@ -242,7 +247,8 @@ func (m Model) View() string {
 			m.renderStatusBar(width),
 			m.renderKeybinds(width),
 		}
-		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+		full := outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+		return m.fitOverlayToTerminal(full, card)
 	}
 
 	if m.askForm != nil {
@@ -264,7 +270,8 @@ func (m Model) View() string {
 			m.renderStatusBar(width),
 			m.renderKeybinds(width),
 		}
-		return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+		full := outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+		return m.fitOverlayToTerminal(full, card)
 	}
 
 	_, bodyHeight := m.contentDimensions()
@@ -286,6 +293,42 @@ func (m Model) View() string {
 		m.renderKeybinds(width),
 	)
 	return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+}
+
+// fitOverlayToTerminal preserves the normal inline layout when it fits and
+// falls back to an overlay-only viewport when surrounding chrome would exceed
+// the real terminal height.
+func (m Model) fitOverlayToTerminal(full string, overlay string) string {
+	if lipgloss.Height(full) <= m.height {
+		return full
+	}
+	available := max(m.height-outerStyle.GetVerticalFrameSize(), 0)
+	return outerStyle.Render(fitOverlayHeight(overlay, available))
+}
+
+// fitOverlayHeight keeps both the overlay identity and its trailing actions
+// visible when the complete card cannot fit in the available rows.
+func fitOverlayHeight(overlay string, height int) string {
+	if height <= 0 {
+		return ""
+	}
+	lines := strings.Split(overlay, "\n")
+	if len(lines) <= height {
+		return overlay
+	}
+	if height == 1 {
+		return lines[0]
+	}
+
+	head := max((height-1)/2, 1)
+	tail := height - head - 1
+	visible := make([]string, 0, height)
+	visible = append(visible, lines[:head]...)
+	visible = append(visible, mutedStyle.Render("..."))
+	if tail > 0 {
+		visible = append(visible, lines[len(lines)-tail:]...)
+	}
+	return strings.Join(visible, "\n")
 }
 
 func (m Model) popupCardWidth(width int) int {
