@@ -77,19 +77,16 @@ func (s *BashProcessSupervisor) Run(ctx context.Context, workDir, command string
 	case <-process.done:
 		reaped = true
 	case <-runCtx.Done():
-		_ = signalShellProcessTree(cmd, false)
-		timer := time.NewTimer(bashTerminateGrace)
+		// A cancelled tool must stop producing side effects immediately. A TERM
+		// grace period lets descendants that ignore TERM continue mutating the
+		// workspace after the runtime has already cancelled the call.
+		_ = signalShellProcessTree(cmd, true)
+		timer := time.NewTimer(bashReapTimeout)
 		select {
 		case <-process.done:
 			reaped = true
 			timer.Stop()
 		case <-timer.C:
-			_ = signalShellProcessTree(cmd, true)
-			select {
-			case <-process.done:
-				reaped = true
-			case <-time.After(bashReapTimeout):
-			}
 		}
 	}
 	if !reaped {

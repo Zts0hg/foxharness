@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -43,6 +44,36 @@ func TestBashProcessSupervisorCancellationTerminatesAndReapsActiveGroup(t *testi
 	}
 	if err := supervisor.Cleanup(context.Background()); err != nil {
 		t.Fatalf("post-cancellation cleanup error = %v", err)
+	}
+}
+
+func TestBashProcessSupervisorCancellationPreventsDescendantSideEffects(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group cancellation requires Unix")
+	}
+	workDir := t.TempDir()
+	started := filepath.Join(workDir, "started")
+	leaked := filepath.Join(workDir, "leaked")
+	supervisor := NewBashProcessSupervisor()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan BashCommandResult, 1)
+	go func() {
+		command := "(trap '' TERM; touch started; sleep 0.1; touch leaked) & wait"
+		done <- supervisor.Run(ctx, workDir, command, 10*time.Second)
+	}()
+	waitForSupervisorFile(t, started, time.Second)
+	cancel()
+	select {
+	case result := <-done:
+		if !errors.Is(result.Err, context.Canceled) {
+			t.Fatalf("cancelled supervisor error = %v, want context.Canceled", result.Err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled supervised process did not return")
+	}
+	time.Sleep(150 * time.Millisecond)
+	if _, err := os.Stat(leaked); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled descendant produced a late side effect: %v", err)
 	}
 }
 
@@ -98,4 +129,16 @@ func TestBashProcessSupervisorRegistersBeforeStartAndCleansAfterWait(t *testing.
 	if err := supervisor.Cleanup(context.Background()); err != nil {
 		t.Fatalf("idle cleanup error = %v", err)
 	}
+}
+
+func waitForSupervisorFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("file %q was not created before timeout", path)
 }

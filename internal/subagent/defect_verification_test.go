@@ -388,33 +388,31 @@ func TestDVCHD004ChildCancellationKillsShellDescendantsAndPendingApproval(t *tes
 	t.Setenv("HOME", t.TempDir())
 	workDir := t.TempDir()
 	mgr := NewManager(nil, workDir)
-	registry := mgr.buildRegistry(false, nil)
+	supervisor := tools.NewBashProcessSupervisor()
+	registry := mgr.buildRegistryWithSupervisor(false, nil, supervisor)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := supervisor.Cleanup(cleanupCtx); err != nil {
+			t.Errorf("supervisor cleanup error = %v", err)
+		}
+	})
 	started := filepath.Join(workDir, "started")
 	leaked := filepath.Join(workDir, "leaked")
 	command := fmt.Sprintf("touch %q; (sleep 0.25; touch %q) & wait", started, leaked)
 	arguments := mustJSON(t, map[string]string{"command": command})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan schema.ToolResult, 1)
-	go func() {
-		done <- registry.Execute(ctx, schema.ToolCall{
-			ID:        "cancel-child-tree",
-			Name:      "bash",
-			Arguments: arguments,
-		})
-	}()
-	waitForFile(t, started, time.Second)
-	cancel()
-	select {
-	case result := <-done:
-		if !result.IsError {
-			t.Fatalf("cancelled Bash result = %#v, want error", result)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("cancelled ChildRun Bash did not return")
+	shellResult := registry.Execute(context.Background(), schema.ToolCall{
+		ID:        "reject-child-background",
+		Name:      "bash",
+		Arguments: arguments,
+	})
+	if !shellResult.IsError || !strings.Contains(shellResult.Output, "rejected background") {
+		t.Fatalf("supervised ChildRun Bash result = %#v, want background rejection", shellResult)
 	}
-	time.Sleep(350 * time.Millisecond)
-	if _, err := os.Stat(leaked); !os.IsNotExist(err) {
-		t.Fatalf("shell descendant produced a late side effect: %v", err)
+	for _, path := range []string{started, leaked} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("rejected ChildRun Bash produced side effect %q: %v", path, err)
+		}
 	}
 
 	approver := &cancellingApprover{started: make(chan struct{})}
@@ -791,16 +789,4 @@ func mustJSON(t *testing.T, value any) json.RawMessage {
 		t.Fatal(err)
 	}
 	return data
-}
-
-func waitForFile(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("file %q was not created before timeout", path)
 }
