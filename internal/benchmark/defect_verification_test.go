@@ -40,13 +40,18 @@ func TestDVBEN001CaseDeadlineCoversFactoryAndStopsUnstartedValidations(t *testin
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
-	runner.caseTimeout = func(*Case) time.Duration { return 10 * time.Millisecond }
+	runner.caseTimeout = func(*Case) time.Duration { return time.Second }
 	timeoutResult, err := runner.RunCase(context.Background(), &Case{ID: "timeout", Fixture: fixture, Prompt: "run", TimeoutSeconds: 600})
 	if err != nil || timeoutResult.Status != ResultStatusTimedOut {
 		t.Fatalf("RunCase() result/error = %#v/%v, want whole-case timeout", timeoutResult, err)
 	}
-	if !<-deadlineObserved {
-		t.Fatal("HarnessFactory did not receive the case deadline")
+	select {
+	case observed := <-deadlineObserved:
+		if !observed {
+			t.Fatal("HarnessFactory did not receive the case deadline")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HarnessFactory was not invoked before RunCase returned")
 	}
 
 	workDir := t.TempDir()
