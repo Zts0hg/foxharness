@@ -112,6 +112,8 @@ func newChildOutcome(req Request) *Result {
 	return &Result{
 		InvocationID:    newChildInvocationID(),
 		ParentSessionID: req.ParentSessionID,
+		ParentRunID:     req.ParentRunID,
+		DelegationID:    req.DelegationID,
 		Agent:           agent,
 		Depth:           req.Depth,
 		Status:          OutcomeStartFailed,

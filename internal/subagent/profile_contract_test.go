@@ -2,8 +2,10 @@ package subagent
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -95,8 +97,82 @@ func TestPFCHD011DepthGateRejectsNestedRunBeforeCapacityOrSession(t *testing.T) 
 	}
 }
 
+func TestPFCHD014PermissionEvidenceCorrelatesCompleteChildLineage(t *testing.T) {
+	workDir := t.TempDir()
+	homeDir := t.TempDir()
+	reviewer := &recordingPermissionReviewer{}
+	coordinator := permission.NewCoordinator(permission.Config{
+		State:     permission.NewState(permission.ModeApprove, false),
+		Workspace: workDir,
+		CWD:       workDir,
+		Reviewer:  reviewer,
+	})
+	manager := NewManager(&childPermissionCallProvider{}, workDir).
+		WithPermission(coordinator).
+		WithParentEvidence(func(request permission.Request) permission.Evidence {
+			return permission.BuildEvidence([]schema.Message{{Role: schema.RoleUser, Content: "trusted parent request"}}, nil, request)
+		})
+	manager.homeDir = homeDir
+	manager.createSession = session.NewManagerWithHome(workDir, homeDir).Create
+
+	result, err := manager.Run(context.Background(), Request{
+		ParentSessionID: "parent-session",
+		ParentRunID:     "parent-run",
+		DelegationID:    "delegate-call",
+		Task:            "inspect the workspace",
+		ReadOnly:        false,
+		Depth:           1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ParentSessionID != "parent-session" || result.ParentRunID != "parent-run" || result.DelegationID != "delegate-call" {
+		t.Fatalf("terminal lineage = %#v", result)
+	}
+	wantCorrelation := permission.EvidenceCorrelation{
+		ParentSessionID: "parent-session",
+		ParentRunID:     "parent-run",
+		ChildSessionID:  result.SessionID,
+		ChildRunID:      result.RunID,
+		DelegationID:    "delegate-call",
+		ToolCallID:      "child-tool-call",
+	}
+	if reviewer.evidence.Correlation != wantCorrelation {
+		t.Fatalf("permission correlation = %#v, want %#v", reviewer.evidence.Correlation, wantCorrelation)
+	}
+	if reviewer.result.Decision != permission.ReviewApprove || reviewer.result.Risk != permission.RiskLow {
+		t.Fatalf("terminal permission result = %#v", reviewer.result)
+	}
+	stored, openErr := session.NewManagerWithHome(workDir, homeDir).Open(result.SessionID)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	if stored.ParentSessionID != "parent-session" || stored.ParentRunID != "parent-run" || stored.DelegationID != "delegate-call" {
+		t.Fatalf("persisted child lineage = %#v", stored)
+	}
+}
+
 type childDefinitionCaptureProvider struct {
 	toolNames []string
+}
+
+type childPermissionCallProvider struct {
+	calls int
+}
+
+func (p *childPermissionCallProvider) Generate(_ context.Context, _ []schema.Message, _ []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	p.calls++
+	if p.calls == 1 {
+		return &provider.GenerateResponse{Message: &schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{{
+				ID:        "child-tool-call",
+				Name:      "bash",
+				Arguments: json.RawMessage(`{"command":"true"}`),
+			}},
+		}}, nil
+	}
+	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}}, nil
 }
 
 func (p *childDefinitionCaptureProvider) Generate(_ context.Context, _ []schema.Message, definitions []schema.ToolDefinition) (*provider.GenerateResponse, error) {

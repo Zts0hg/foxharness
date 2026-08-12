@@ -86,6 +86,8 @@ func cloneToolNames(names []string) []string {
 // mode.
 type Request struct {
 	ParentSessionID string
+	ParentRunID     string
+	DelegationID    string
 	Task            string
 	ReadOnly        bool
 	Agent           AgentID
@@ -110,6 +112,8 @@ type Result struct {
 	SessionID       string
 	RunID           string
 	ParentSessionID string
+	ParentRunID     string
+	DelegationID    string
 	Agent           AgentID
 	Depth           int
 	Status          OutcomeStatus
@@ -233,6 +237,22 @@ func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessi
 }
 
 func (m *Manager) buildRegistryWithSupervisor(readOnly bool, allowedTools []string, supervisor tools.BashCommandRunner, childSessions ...*session.Session) *childToolSnapshot {
+	var evidenceProvider permission.EvidenceProvider
+	if len(childSessions) > 0 && childSessions[0] != nil {
+		childSession := childSessions[0]
+		evidenceProvider = func(request permission.Request) permission.Evidence {
+			parent := permission.BuildEvidence(nil, nil, request)
+			if m.parentEvidence != nil {
+				parent = m.parentEvidence(request)
+			}
+			messages, _ := session.NewMessageLog(childSession).LoadMessages()
+			return permission.BuildChildEvidence(parent, messages, request)
+		}
+	}
+	return m.buildRegistryWithEvidence(readOnly, allowedTools, supervisor, evidenceProvider)
+}
+
+func (m *Manager) buildRegistryWithEvidence(readOnly bool, allowedTools []string, supervisor tools.BashCommandRunner, evidenceProvider permission.EvidenceProvider) *childToolSnapshot {
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(m.workDir))
 	if readOnly {
@@ -248,18 +268,6 @@ func (m *Manager) buildRegistryWithSupervisor(readOnly bool, allowedTools []stri
 		registry.Register(tools.NewEditFileTool(m.workDir))
 	}
 
-	var evidenceProvider permission.EvidenceProvider
-	if len(childSessions) > 0 && childSessions[0] != nil {
-		childSession := childSessions[0]
-		evidenceProvider = func(request permission.Request) permission.Evidence {
-			parent := permission.BuildEvidence(nil, nil, request)
-			if m.parentEvidence != nil {
-				parent = m.parentEvidence(request)
-			}
-			messages, _ := session.NewMessageLog(childSession).LoadMessages()
-			return permission.BuildChildEvidence(parent, messages, request)
-		}
-	}
 	if allowedTools != nil {
 		registry = tools.NewFilteredRegistry(registry, allowedTools)
 	}
@@ -298,6 +306,8 @@ func (m *Manager) Run(ctx context.Context, req Request) (outcome *Result, result
 		WorkDir:         m.workDir,
 		UserID:          "subagent-of-" + req.ParentSessionID,
 		ParentSessionID: req.ParentSessionID,
+		ParentRunID:     req.ParentRunID,
+		DelegationID:    req.DelegationID,
 		Agent:           string(agent.id),
 	})
 
@@ -328,7 +338,8 @@ func (m *Manager) Run(ctx context.Context, req Request) (outcome *Result, result
 		}
 	}()
 
-	registry := m.buildRegistryWithSupervisor(req.ReadOnly, narrowAgentTools(req.AllowedTools, agent), supervisor, sess)
+	evidenceProvider := m.childEvidenceProvider(sess, req, recorder)
+	registry := m.buildRegistryWithEvidence(req.ReadOnly, narrowAgentTools(req.AllowedTools, agent), supervisor, evidenceProvider)
 	composer := m.buildComposer(sess, registry)
 	eng := engine.NewAgentEngine(
 		m.provider,
@@ -373,6 +384,25 @@ Agent: %s
 	}
 	outcome.Status = classifyOutcome(err, outcome.RunID)
 	return outcome, err
+}
+
+func (m *Manager) childEvidenceProvider(childSession *session.Session, req Request, recorder *outcomeRecorder) permission.EvidenceProvider {
+	return func(request permission.Request) permission.Evidence {
+		parent := permission.BuildEvidence(nil, nil, request)
+		if m.parentEvidence != nil {
+			parent = m.parentEvidence(request)
+		}
+		messages, _ := session.NewMessageLog(childSession).LoadMessages()
+		evidence := permission.BuildChildEvidence(parent, messages, request)
+		evidence.Correlation = permission.EvidenceCorrelation{
+			ParentSessionID: req.ParentSessionID,
+			ParentRunID:     req.ParentRunID,
+			ChildSessionID:  childSession.ID,
+			ChildRunID:      recorder.runID,
+			DelegationID:    req.DelegationID,
+		}
+		return evidence
+	}
 }
 
 func (m *Manager) newCompactor(sess *session.Session) (*compaction.Compactor, error) {

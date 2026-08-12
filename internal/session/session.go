@@ -74,6 +74,10 @@ type Session struct {
 	ChatID string `json:"chat_id,omitempty"`
 	// ParentSessionID identifies the parent for a nested runtime session.
 	ParentSessionID string `json:"parent_session_id,omitempty"`
+	// ParentRunID identifies the parent run that created a nested runtime session.
+	ParentRunID string `json:"parent_run_id,omitempty"`
+	// DelegationID correlates the request that created a nested runtime session.
+	DelegationID string `json:"delegation_id,omitempty"`
 	// Agent identifies the resolved child agent definition for nested runs.
 	Agent string `json:"agent,omitempty"`
 	// CreatedAt is the timestamp when the session was created.
@@ -206,6 +210,10 @@ type CreateOptions struct {
 	ChatID string
 	// ParentSessionID identifies the parent for a nested runtime session.
 	ParentSessionID string
+	// ParentRunID identifies the parent run that created a nested runtime session.
+	ParentRunID string
+	// DelegationID correlates the request that created a nested runtime session.
+	DelegationID string
 	// Agent identifies the resolved child agent definition for nested runs.
 	Agent string
 }
@@ -245,6 +253,8 @@ func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 		UserID:          opts.UserID,
 		ChatID:          opts.ChatID,
 		ParentSessionID: opts.ParentSessionID,
+		ParentRunID:     opts.ParentRunID,
+		DelegationID:    opts.DelegationID,
 		Agent:           opts.Agent,
 		CreatedAt:       time.Now(),
 	}

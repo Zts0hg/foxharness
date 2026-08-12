@@ -43,12 +43,14 @@ func TestManagerBuildRegistryCombinesParentAndChildEvidence(t *testing.T) {
 
 type recordingPermissionReviewer struct {
 	evidence permission.Evidence
+	result   permission.ReviewResult
 }
 
 func (r *recordingPermissionReviewer) Review(_ context.Context, _ permission.Request, evidence permission.Evidence) (permission.ReviewResult, error) {
 	r.evidence = evidence
-	return permission.ReviewResult{
+	r.result = permission.ReviewResult{
 		Decision: permission.ReviewApprove, Risk: permission.RiskLow,
 		UserAuthorization: permission.AuthorizationMedium, Rationale: "scoped test command",
-	}, nil
+	}
+	return r.result, nil
 }
