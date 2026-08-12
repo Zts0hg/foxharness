@@ -182,11 +182,15 @@ func NewManager(p provider.LLMProvider, workDir string) *Manager {
 	}
 }
 
-// WithMaxTurns overrides the subagent turn budget and returns the receiver for
-// chaining. It is intended for internal and test injection; production callers
-// use the DefaultMaxTurns default applied by NewManager.
+// WithMaxTurns narrows the subagent turn budget and returns the receiver for
+// chaining. Non-positive values and values at or above the profile ceiling use
+// DefaultMaxTurns; production callers receive that ceiling from NewManager.
 func (m *Manager) WithMaxTurns(n int) *Manager {
-	m.maxTurns = n
+	if n > 0 && n < DefaultMaxTurns {
+		m.maxTurns = n
+	} else {
+		m.maxTurns = DefaultMaxTurns
+	}
 	return m
 }
 
@@ -265,6 +269,7 @@ func (m *Manager) buildRegistryWithSupervisor(readOnly bool, allowedTools []stri
 // The returned Result is non-nil for every admitted, rejected, or failed
 // invocation and retains any identities established before termination.
 func (m *Manager) Run(ctx context.Context, req Request) (outcome *Result, resultErr error) {
+	req.AllowedTools = cloneToolNames(req.AllowedTools)
 	outcome = newChildOutcome(req)
 	agent, err := resolveAgent(req.Agent)
 	if err != nil {
