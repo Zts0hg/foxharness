@@ -57,6 +57,17 @@ type CoreOutcome struct {
 	Lifecycle      CoreLifecycleEvidence
 }
 
+// CorePanicError reports that a CoreRunner violated its terminal-outcome
+// contract by panicking across the control-plane boundary.
+type CorePanicError struct {
+	Value any
+}
+
+// Error implements error.
+func (e *CorePanicError) Error() string {
+	return fmt.Sprintf("core runner panicked before returning a terminal outcome: %v", e.Value)
+}
+
 // Validate rejects ambiguous or internally contradictory terminal outcomes.
 func (o CoreOutcome) Validate() error {
 	if o.Attempt.AttemptID == "" || o.Attempt.CorrelationID == "" || o.Attempt.Ordinal <= 0 {

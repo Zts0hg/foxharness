@@ -193,7 +193,7 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 			return err
 		}
 		attemptCtx, cancel := withDefaultTimeout(ctx, stageAttemptTimeout)
-		outcome := core.Run(attemptCtx, attempt, m.reporter)
+		outcome := runCoreAttempt(attemptCtx, core, attempt, m.reporter)
 		attemptErr := attemptCtx.Err()
 		cancel()
 		var contractErr error
@@ -295,6 +295,20 @@ func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageCo
 		}
 		msg = correction
 	}
+}
+
+func runCoreAttempt(ctx context.Context, core CoreRunner, attempt CoreAttempt, reporter Reporter) (outcome CoreOutcome) {
+	defer func() {
+		if value := recover(); value != nil {
+			outcome = CoreOutcome{
+				Attempt:    attempt,
+				Status:     CoreOutcomeStartFailed,
+				Cause:      &CorePanicError{Value: value},
+				RetryClass: CoreRetryNever,
+			}
+		}
+	}()
+	return core.Run(ctx, attempt, reporter)
 }
 
 func coreVerificationContext(ctx context.Context, outcome CoreOutcome) (context.Context, context.CancelFunc) {
