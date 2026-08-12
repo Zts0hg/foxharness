@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -44,6 +45,77 @@ func TestParseArgsDefaultsToTUI(t *testing.T) {
 	}
 	if cfg.MaxTurns != 0 {
 		t.Fatalf("MaxTurns = %d, want 0 for unlimited", cfg.MaxTurns)
+	}
+}
+
+func TestUITUI001LaunchRoutingHelpAndErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		wantMode   launchMode
+		wantPrompt string
+	}{
+		{name: "default", wantMode: launchTUI},
+		{name: "positional prompt", args: []string{"inspect", "main.go"}, wantMode: launchTUI, wantPrompt: "inspect main.go"},
+		{name: "prompt flag", args: []string{"-prompt", "inspect main.go"}, wantMode: launchTUI, wantPrompt: "inspect main.go"},
+		{name: "explicit tui", args: []string{"-tui", "inspect"}, wantMode: launchTUI, wantPrompt: "inspect"},
+		{name: "exec", args: []string{"exec", "inspect"}, wantMode: launchPrint, wantPrompt: "inspect"},
+		{name: "print", args: []string{"-p", "inspect"}, wantMode: launchPrint, wantPrompt: "inspect"},
+		{name: "autodev", args: []string{"autodev", "WORK.md"}, wantMode: launchAutodev, wantPrompt: "WORK.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, mode, err := parseArgs(tc.args, io.Discard)
+			if err != nil || mode != tc.wantMode || cfg.Prompt != tc.wantPrompt {
+				t.Fatalf("parseArgs(%#v) = mode %v prompt %q error %v; want %v/%q", tc.args, mode, cfg.Prompt, err, tc.wantMode, tc.wantPrompt)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "exec with tui", args: []string{"exec", "-tui", "inspect"}, want: "-tui/-interactive 不能和 exec、-p/-print 或 autodev 同时使用"},
+		{name: "print with interactive", args: []string{"-p", "-interactive", "inspect"}, want: "-tui/-interactive 不能和 exec、-p/-print 或 autodev 同时使用"},
+		{name: "two prompt sources", args: []string{"-prompt", "flag", "position"}, want: "不能同时使用 -prompt 和位置参数 prompt"},
+		{name: "autodev with print", args: []string{"autodev", "-p"}, want: "-p/-print 不能和 autodev 同时使用"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := parseArgs(tc.args, io.Discard)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("parseArgs(%#v) error = %v, want %q", tc.args, err, tc.want)
+			}
+		})
+	}
+
+	var help bytes.Buffer
+	_, _, err := parseArgs([]string{"-help"}, &help)
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("parseArgs(-help) error = %v, want flag.ErrHelp", err)
+	}
+	helpText := help.String()
+	ordered := []string{
+		"Usage:\n",
+		"fox [options] [prompt]       start the interactive TUI",
+		"fox exec [options] [prompt]  run once and print the result",
+		"fox -p [options] [prompt]    run once and print the result",
+		"fox autodev [backlog-path]   drain the backlog autonomously (SDD pipeline per item)",
+		"fox render [options]         render a built-in TUI scene to a self-contained HTML snapshot",
+		"Options:\n",
+	}
+	position := -1
+	for _, fragment := range ordered {
+		next := strings.Index(helpText[position+1:], fragment)
+		if next < 0 {
+			t.Fatalf("help missing ordered fragment %q:\n%s", fragment, helpText)
+		}
+		position += next + 1
+	}
+	for _, option := range []string{"-C string", "-continue", "-effort string", "-interactive", "-max-turns int", "-new", "-prompt string", "-session string", "-tui"} {
+		if !strings.Contains(helpText, option) {
+			t.Fatalf("help missing option %q:\n%s", option, helpText)
+		}
 	}
 }
 
