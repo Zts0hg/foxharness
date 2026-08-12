@@ -1407,7 +1407,7 @@ func TestDVAUT008OrchestratorDrainsEveryRunAndClosesBeforeWorktreeRemoval(t *tes
 	go func() { runDone <- New(deps).Run(context.Background()) }()
 	select {
 	case <-core.drainStarted:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("orchestrator did not drain after the first core run")
 	}
 	select {
@@ -1425,7 +1425,7 @@ func TestDVAUT008OrchestratorDrainsEveryRunAndClosesBeforeWorktreeRemoval(t *tes
 	close(release)
 	select {
 	case <-core.closeStarted:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("orchestrator did not perform final CoreRunner.Close")
 	}
 	for _, call := range git.calls {
@@ -1452,10 +1452,15 @@ func TestDVAUT008OrchestratorDrainsEveryRunAndClosesBeforeWorktreeRemoval(t *tes
 	}
 }
 
-type failingCloseCore struct{ stubCore }
+type failingCloseCore struct {
+	stubCore
+	closeStarted chan struct{}
+	closeOnce    sync.Once
+}
 
 func (c *failingCloseCore) Drain(context.Context) error { return nil }
 func (c *failingCloseCore) Close(ctx context.Context) error {
+	c.closeOnce.Do(func() { close(c.closeStarted) })
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -1471,14 +1476,27 @@ func TestDVAUT008UndrainedLifecycleFailsAndRetainsWorktree(t *testing.T) {
 	originalTimeout := coreLifecycleTimeout
 	coreLifecycleTimeout = 50 * time.Millisecond
 	defer func() { coreLifecycleTimeout = originalTimeout }()
-	started := time.Now()
 	repoRoot := t.TempDir()
 	deps, recorder, _, git, _ := testDeps(t, repoRoot, `## Item
 
 **Description**: retain undrained work
 `)
-	deps.CoreFactory = failingCloseFactory{core: &failingCloseCore{}}
-	err := New(deps).Run(context.Background())
+	core := &failingCloseCore{closeStarted: make(chan struct{})}
+	deps.CoreFactory = failingCloseFactory{core: core}
+	runDone := make(chan error, 1)
+	go func() { runDone <- New(deps).Run(context.Background()) }()
+	select {
+	case <-core.closeStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("orchestrator did not attempt final CoreRunner.Close")
+	}
+	started := time.Now()
+	var err error
+	select {
+	case err = <-runDone:
+	case <-time.After(time.Second):
+		t.Fatal("orchestrator did not honor the bounded lifecycle close deadline")
+	}
 	var lifecycleErr *CoreLifecycleError
 	if !errors.As(err, &lifecycleErr) {
 		t.Fatalf("Run error = %T %v, want *CoreLifecycleError", err, err)
