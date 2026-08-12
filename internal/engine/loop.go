@@ -335,6 +335,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	if err != nil {
 		return nil, err
 	}
+	ctx = tools.WithRunContext(ctx, sess.ID, run.ID)
 	var runErr error
 	var finalResult *RunResult
 	telemetry := &telemetryRecorder{}

@@ -257,6 +257,7 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 
 		}
 	}
+	ctx = withToolCallContext(ctx, call.ID)
 
 	if resultTool, ok := tool.(ResultTool); ok {
 		result, err := resultTool.ExecuteResult(ctx, call.Arguments)

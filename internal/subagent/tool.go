@@ -123,10 +123,14 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (string, error)
 		readOnly = *input.ReadOnly
 	}
 
+	invocation, _ := tools.InvocationContextFrom(ctx)
 	result, err := t.manager.Run(ctx, Request{
 		ParentSessionID: t.ParentSessionID,
+		ParentRunID:     invocation.RunID,
+		DelegationID:    invocation.ToolCallID,
 		Task:            input.Task,
 		ReadOnly:        readOnly,
+		Depth:           1,
 	})
 
 	if err != nil {

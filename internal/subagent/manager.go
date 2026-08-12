@@ -286,6 +286,10 @@ func (m *Manager) Run(ctx context.Context, req Request) (outcome *Result, result
 		req.Depth = 1
 	}
 	outcome = newChildOutcome(req)
+	if req.DelegationID == "" {
+		req.DelegationID = outcome.InvocationID
+		outcome.DelegationID = req.DelegationID
+	}
 	if req.Depth != 1 {
 		outcome.Status = OutcomeRejected
 		return outcome, fmt.Errorf("subagent: child depth must be exactly 1, got %d", req.Depth)

@@ -1088,11 +1088,15 @@ func (s *subagentForkRunner) Run(ctx context.Context, task string, agentType str
 	if mgr == nil {
 		return "", fmt.Errorf("fork runner: subagent manager unavailable")
 	}
+	invocation, _ := tools.InvocationContextFrom(ctx)
 	res, err := mgr.Run(ctx, subagent.Request{
 		ParentSessionID: s.getSession(),
+		ParentRunID:     invocation.RunID,
+		DelegationID:    invocation.ToolCallID,
 		Task:            task,
 		ReadOnly:        false,
 		Agent:           subagent.AgentID(agentType),
+		Depth:           1,
 		AllowedTools:    allowedTools,
 	})
 	if err != nil {

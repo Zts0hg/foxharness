@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/subagent"
+	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 type failingForkChildProvider struct {
@@ -136,4 +139,44 @@ func TestDVCHD006ForkAdapterRetainsPartialOutcomeAndTerminalError(t *testing.T) 
 			t.Fatalf("fork output missing %q:\n%s", want, output)
 		}
 	}
+}
+
+func TestIACHD005ForkAdapterCarriesLiveParentInvocationLineage(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	workDir := t.TempDir()
+	provider := &forkChildCaptureProvider{}
+	manager := subagent.NewManager(provider, workDir)
+	runner := &subagentForkRunner{
+		getManager: func() *subagent.Manager { return manager },
+		getSession: func() string { return "parent-session" },
+	}
+	registry := tools.NewRegistry()
+	registry.Register(forkInvocationTool{runner: runner})
+	ctx := tools.WithRunContext(context.Background(), "parent-session", "parent-run")
+	result := registry.Execute(ctx, schema.ToolCall{ID: "fork-tool-call", Name: "fork_test", Arguments: json.RawMessage(`{}`)})
+	if result.IsError {
+		t.Fatalf("fork adapter execution = %#v", result)
+	}
+	child, err := session.NewManagerWithHome(workDir, homeDir).Latest(session.LookupOptions{Source: session.SOURCESubagent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ParentRunID != "parent-run" || child.DelegationID != "fork-tool-call" {
+		t.Fatalf("fork child lineage = %#v", child)
+	}
+}
+
+type forkInvocationTool struct {
+	runner *subagentForkRunner
+}
+
+func (forkInvocationTool) Name() string { return "fork_test" }
+
+func (forkInvocationTool) Definition() schema.ToolDefinition {
+	return schema.ToolDefinition{Name: "fork_test", InputSchema: map[string]interface{}{"type": "object"}}
+}
+
+func (t forkInvocationTool) Execute(ctx context.Context, _ json.RawMessage) (string, error) {
+	return t.runner.Run(ctx, "processed fork task", "general-purpose", []string{"read_file"})
 }
