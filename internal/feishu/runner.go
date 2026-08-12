@@ -167,12 +167,7 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	hooks := automemory.NewPerRunHooks(r.provider, autoStore, r.workDir)
 	tracker := hooks.NewTracker()
 
-	taskPrompt := fmt.Sprintf(
-		"以下任务来自飞书用户 %s，消息 ID 为 %s。\n\n%s",
-		task.SenderID,
-		task.MessageID,
-		taskText,
-	)
+	taskPrompt := feishuTaskPrompt(task, taskText)
 	registry := r.buildRegistry(sess, task.ChatID, taskPrompt)
 
 	composer := r.buildComposer(sess, autoStore)
@@ -221,6 +216,15 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	}
 
 	r.deliverTaskText(runCtx, task, DeliveryStageFinal, fmt.Sprintf("任务 %s 已完成，Session: %s，Run: %s", task.TaskID, sess.ID, result.RunID))
+}
+
+func feishuTaskPrompt(task Task, taskText string) string {
+	return fmt.Sprintf(
+		"以下任务来自飞书用户 %s，消息 ID 为 %s。\n\n%s",
+		task.SenderID,
+		task.MessageID,
+		taskText,
+	)
 }
 
 // buildComposer assembles the system-prompt composer for a task, injecting the
