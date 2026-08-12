@@ -678,3 +678,10 @@
 - **Green semantics**: The PR query now requests `number,body,baseRefName,headRefName`. A valid non-zero PR must target the configured base from the exact item branch before issue-link validation and durable PR binding; a mismatch remains the same stage's precise verification gap and follows the existing single correlated retry path.
 - **Compatibility**: Valid publication order, issue outbox delivery, prompt text, no-merge policy, restart behavior, and existing issue-link semantics are unchanged. Test GitHub fixtures now return the same target fields as the production query.
 - **Green gates**: Focused publication tests, complete Autodev and app packages, affected race tests, architecture tests, `go vet ./...`, and sandbox-external `go test ./... -count=1 -timeout=300s` PASS.
+
+## T122 / D-AUT-014: Startup Cancellation Classification
+
+- **Red**: `TestCPAUT008StartupCancellationIsNotARepositoryPreconditionFailure` passed an already cancelled context through a deterministic Git boundary. `Run` returned `PreconditionError("... is not a git repository ... context canceled")` instead of preserving `context.Canceled`.
+- **Cross-validation**: Codex represents interruption separately from failed turns and preflight/configuration errors; Claude Code threads abort signals through query and cleanup paths without relabelling cancellation as an environment failure. Fox adopts only this terminal-classification rule and adds no background or resumable execution behavior.
+- **Green semantics**: Startup checks `ctx.Err()` before the repository probe and after both the repository and conditional `gh auth status` probes. Genuine probe failures retain the existing precondition classification and diagnostics; caller cancellation remains an ordinary context terminal and suppresses later startup work.
+- **Green gates**: Focused cancellation and precondition tests; complete Autodev, app, and fox entry packages; affected race tests; architecture tests; `go vet ./...`; and sandbox-external `go test ./... -count=1 -timeout=300s` PASS.

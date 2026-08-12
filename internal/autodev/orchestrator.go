@@ -335,13 +335,22 @@ func isPublishingStage(stage PipelineStage) bool {
 // root is a git work tree and gh is installed and authenticated. These are
 // the only failure paths handled outside the engineer↔core loop (REQ-027).
 func (o *Orchestrator) checkPreconditions(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	result, runErr := o.deps.Git.Run(ctx, o.deps.RepoRoot, "rev-parse", "--is-inside-work-tree")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	out, err := strictCommandStdout(result, runErr)
 	if err != nil || strings.TrimSpace(out) != "true" {
 		return &PreconditionError{Reason: fmt.Sprintf("%s is not a git repository (git rev-parse: %s; %v)", o.deps.RepoRoot, strings.TrimSpace(result.Output()), err)}
 	}
 	if o.deps.Config.RemoteFlow.CreateIssue || o.deps.Config.RemoteFlow.OpenPR {
 		result, runErr := o.deps.Exec.Run(ctx, o.deps.RepoRoot, "gh", "auth", "status")
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, err := strictCommandStdout(result, runErr); err != nil {
 			return &PreconditionError{Reason: fmt.Sprintf("gh is not installed or not authenticated (gh auth status: %s; %v)", strings.TrimSpace(result.Output()), err)}
 		}
