@@ -14,6 +14,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/memory"
+	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -337,6 +338,7 @@ func (autodevFakeLLM) Generate(ctx context.Context, messages []schema.Message, _
 
 func TestAutodevToolCallsNeedNoHumanApproval(t *testing.T) {
 	workDir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
 	store := memory.NewStore(workDir)
 	if err := store.EnsureFiles(); err != nil {
 		t.Fatalf("EnsureFiles() error = %v", err)
@@ -353,6 +355,11 @@ func TestAutodevToolCallsNeedNoHumanApproval(t *testing.T) {
 		manager:        manager,
 		llmProvider:    autodevFakeLLM{},
 		currentSession: sess,
+		permissionCoordinator: permission.NewCoordinator(permission.Config{
+			State:     permission.NewState(permission.ModeFullAccess, true),
+			Workspace: workDir,
+			CWD:       workDir,
+		}),
 	}
 	runner.SetUserAsker(fakeAutodevAsker{})
 
@@ -370,5 +377,44 @@ func TestAutodevToolCallsNeedNoHumanApproval(t *testing.T) {
 	}
 	if !strings.Contains(result.Output, "autodev-no-approval") {
 		t.Errorf("bash output = %q, want the command to have run without any human-approval gate (TC-020)", result.Output)
+	}
+
+	delegateArgs, _ := json.Marshal(map[string]string{"task": "return a concise report"})
+	delegated := reg.Execute(context.Background(), schema.ToolCall{
+		ID:        "delegate-call-1",
+		Name:      "delegate_task",
+		Arguments: delegateArgs,
+	})
+	if delegated.IsError || !strings.Contains(delegated.Output, "ok") {
+		t.Fatalf("delegate_task result = %#v, want non-interactive child execution", delegated)
+	}
+}
+
+func TestPFAUT009FactoryInstallsNonInteractiveChildPermissionCeiling(t *testing.T) {
+	workDir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	factory := &appCoreRunnerFactory{
+		llmConfig: testAutodevResolvedLLM("fixture-model"),
+		maxTurns:  1,
+	}
+	core, err := factory.New(context.Background(), workDir, "fixture-model")
+	if err != nil {
+		t.Fatalf("factory.New() error = %v", err)
+	}
+	defer func() {
+		if err := core.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	adapter, ok := core.(*coreRunnerAdapter)
+	if !ok {
+		t.Fatalf("factory core = %T, want *coreRunnerAdapter", core)
+	}
+	runner, ok := adapter.runner.(*AgentRunner)
+	if !ok {
+		t.Fatalf("adapter runner = %T, want *AgentRunner", adapter.runner)
+	}
+	if manager := runner.currentSubagentManager(); manager == nil || !manager.PermissionEnforced() {
+		t.Fatal("Autodev advertised delegate_task without a non-interactive child permission boundary")
 	}
 }

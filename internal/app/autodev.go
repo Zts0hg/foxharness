@@ -15,6 +15,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
+	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/slash"
@@ -227,12 +228,18 @@ func (f *appCoreRunnerFactory) New(ctx context.Context, workDir, model string) (
 		model = f.llmConfig.Model
 	}
 	llmConfig := f.llmConfig.WithModel(model)
+	permissions := permission.NewCoordinator(permission.Config{
+		State:     permission.NewState(permission.ModeFullAccess, true),
+		Workspace: workDir,
+		CWD:       workDir,
+	})
 	runner, err := NewAgentRunner(ctx, AgentRunnerConfig{
 		WorkDir:           workDir,
 		Model:             llmConfig.Model,
 		LLM:               llmConfig,
 		MaxTurns:          f.maxTurns,
 		ExtractionContext: ctx,
+		Permission:        permissions,
 	})
 	if err != nil {
 		return nil, err
