@@ -113,6 +113,19 @@ func TestDVAUT010OutcomeReporterDoesNotAdvertiseUnsupportedOptionalCapabilities(
 		t.Fatal("nil downstream reporter unexpectedly advertised streaming deltas")
 	}
 }
+
+func TestPFAUT005OutcomeReporterNeverEnablesModelDeltaStreaming(t *testing.T) {
+	downstream := &autodevDeltaReporter{}
+	_, reporter := newCoreOutcomeReporter(downstream)
+	if _, ok := reporter.(engine.MessageDeltaReporter); ok {
+		t.Fatal("Autodev reporter advertised model deltas from presentation capability")
+	}
+}
+
+type autodevDeltaReporter struct{ engine.Reporter }
+
+func (*autodevDeltaReporter) OnMessageDelta(context.Context, string) {}
+
 func (f *fakeRunnerAPI) DrainExtraction(context.Context) error { f.drains++; return nil }
 func (f *fakeRunnerAPI) CloseExtraction(context.Context) error { f.closes++; return nil }
 func (f *fakeRunnerAPI) SetUserAsker(asker tools.UserAsker)    { f.asker = asker }

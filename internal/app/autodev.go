@@ -89,23 +89,14 @@ type coreOutcomeReporter struct {
 }
 
 type detailedCoreOutcomeReporter struct{ *coreOutcomeReporter }
-type deltaCoreOutcomeReporter struct{ *coreOutcomeReporter }
-type detailedDeltaCoreOutcomeReporter struct{ *coreOutcomeReporter }
 
 func newCoreOutcomeReporter(next engine.Reporter) (*coreOutcomeReporter, engine.Reporter) {
 	recorder := &coreOutcomeReporter{next: next}
 	_, detailed := next.(engine.DetailedReporter)
-	_, delta := next.(engine.MessageDeltaReporter)
-	switch {
-	case detailed && delta:
-		return recorder, &detailedDeltaCoreOutcomeReporter{recorder}
-	case detailed:
+	if detailed {
 		return recorder, &detailedCoreOutcomeReporter{recorder}
-	case delta:
-		return recorder, &deltaCoreOutcomeReporter{recorder}
-	default:
-		return recorder, recorder
 	}
+	return recorder, recorder
 }
 
 func (r *coreOutcomeReporter) OnRunStart(ctx context.Context, sessionID, runID string) {
@@ -162,26 +153,6 @@ func (r *detailedCoreOutcomeReporter) OnToolCallDetail(ctx context.Context, call
 func (r *detailedCoreOutcomeReporter) OnToolResultDetail(ctx context.Context, call schema.ToolCall, result schema.ToolResult) {
 	if next, ok := r.next.(engine.DetailedReporter); ok {
 		next.OnToolResultDetail(ctx, call, result)
-	}
-}
-func (r *deltaCoreOutcomeReporter) OnMessageDelta(ctx context.Context, content string) {
-	if next, ok := r.next.(engine.MessageDeltaReporter); ok {
-		next.OnMessageDelta(ctx, content)
-	}
-}
-func (r *detailedDeltaCoreOutcomeReporter) OnToolCallDetail(ctx context.Context, call schema.ToolCall) {
-	if next, ok := r.next.(engine.DetailedReporter); ok {
-		next.OnToolCallDetail(ctx, call)
-	}
-}
-func (r *detailedDeltaCoreOutcomeReporter) OnToolResultDetail(ctx context.Context, call schema.ToolCall, result schema.ToolResult) {
-	if next, ok := r.next.(engine.DetailedReporter); ok {
-		next.OnToolResultDetail(ctx, call, result)
-	}
-}
-func (r *detailedDeltaCoreOutcomeReporter) OnMessageDelta(ctx context.Context, content string) {
-	if next, ok := r.next.(engine.MessageDeltaReporter); ok {
-		next.OnMessageDelta(ctx, content)
 	}
 }
 func (r *coreOutcomeReporter) snapshot() (string, string, string) {
