@@ -117,6 +117,9 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (string, error)
 	if input.Task == "" {
 		return "", fmt.Errorf("task 不能为空")
 	}
+	if t.manager == nil || !t.manager.PermissionEnforced() {
+		return "", fmt.Errorf("delegate_task requires child permission coordination")
+	}
 
 	readOnly := true
 	if input.ReadOnly != nil {

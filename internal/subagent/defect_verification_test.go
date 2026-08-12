@@ -667,7 +667,7 @@ func assertChildOutcome(t *testing.T, result *Result, status OutcomeStatus, want
 
 func TestDVCHD006DelegateAdapterRetainsPartialOutcomeAndTerminalError(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	tool := NewTool(NewManager(&toolThenErrorChildProvider{}, t.TempDir()).WithMaxTurns(3), "parent")
+	tool := NewTool(childManagerWithTestPermission(NewManager(&toolThenErrorChildProvider{}, t.TempDir()).WithMaxTurns(3)), "parent")
 	args := json.RawMessage(`{"task":"inspect","read_only":true}`)
 
 	output, err := tool.Execute(context.Background(), args)
@@ -688,7 +688,7 @@ func TestDVCHD006DelegateAdapterRetainsPartialOutcomeAndTerminalError(t *testing
 	}
 
 	registry := tools.NewRegistry()
-	registry.Register(NewTool(NewManager(&toolThenErrorChildProvider{}, t.TempDir()).WithMaxTurns(3), "parent"))
+	registry.Register(NewTool(childManagerWithTestPermission(NewManager(&toolThenErrorChildProvider{}, t.TempDir()).WithMaxTurns(3)), "parent"))
 	result := registry.Execute(context.Background(), schema.ToolCall{ID: "delegate", Name: "delegate_task", Arguments: args})
 	if !result.IsError || !strings.Contains(result.Output, "Partial Report:") || !strings.Contains(result.Output, "provider failed after tool result") {
 		t.Fatalf("registry delegate outcome = %#v, want partial report and failure", result)
