@@ -3039,6 +3039,9 @@ func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *sla
 			}
 		}
 		res, err := exec.Execute(ctx, cmd, args, sessionID)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		}
 		return promptCommandReadyMsg{
 			operationID:       operationID,
 			cmdName:           cmd.Name,

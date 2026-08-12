@@ -2,12 +2,38 @@ package tui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/permission"
+	"github.com/Zts0hg/foxharness/internal/slash"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
+
+func TestPFTUI017CancellationStopsPromptCommandPreparation(t *testing.T) {
+	workDir := t.TempDir()
+	marker := filepath.Join(workDir, "must-not-exist")
+	runner := newFakeRunner()
+	runner.workDir = workDir
+	registry := newRegistryWithPromptCommand(t, "prepare", "Inspect !`touch "+marker+"`")
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(registry, slash.NewExecutor(slash.WithWorkDir(workDir)))
+
+	m, _ = update(t, m, keyRunes("/prepare"))
+	m, prepareCmd := update(t, m, keyEnter())
+	if prepareCmd == nil || !m.running || m.cancelRun == nil {
+		t.Fatalf("prompt preparation did not become cancellable: running=%v cancel=%v cmd=%v", m.running, m.cancelRun != nil, prepareCmd)
+	}
+	m, _ = update(t, m, keyCtrlC())
+	m, _ = update(t, m, prepareCmd())
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("cancelled prompt preparation created marker: %v", err)
+	}
+	if m.running || m.cancelRun != nil {
+		t.Fatalf("cancelled prompt preparation retained active state: running=%v cancel=%v", m.running, m.cancelRun != nil)
+	}
+}
 
 func TestPFTUI017StaleCompletionCannotTerminateLaterRun(t *testing.T) {
 	runner := newFakeRunner()
