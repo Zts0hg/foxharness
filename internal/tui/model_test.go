@@ -46,6 +46,7 @@ type fakeRunner struct {
 	history           []session.MessageRecord
 	historyErr        error
 	truncatedSeq      int64
+	truncateErr       error
 	restoreStateSeq   int64
 	restoreStateOK    bool
 	restoreStateErr   error
@@ -123,6 +124,9 @@ func (r *fakeRunner) NewSession(ctx context.Context) (string, error) {
 	r.sessionID = "sess-new"
 	r.sessionDir = "/tmp/sess-new"
 	r.collaborationMode = collaboration.ModeDefault
+	if r.permissionState != nil {
+		r.permissionState.ClearGrants()
+	}
 	return r.sessionID, nil
 }
 
@@ -165,6 +169,9 @@ func (r *fakeRunner) MessageHistory() ([]session.MessageRecord, error) {
 }
 
 func (r *fakeRunner) TruncateMessageHistory(seq int64) error {
+	if r.truncateErr != nil {
+		return r.truncateErr
+	}
 	r.truncatedSeq = seq
 	var next []session.MessageRecord
 	for _, record := range r.history {
