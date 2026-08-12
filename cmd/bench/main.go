@@ -37,11 +37,46 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
-func run(args []string) int {
+type benchmarkOptions struct {
+	casePath string
+	outPath  string
+	repeat   int
+}
+
+type benchmarkCommandDependencies struct {
+	loadCase     func(string) (*benchmark.Case, error)
+	execute      func(context.Context, *benchmark.Case, int) ([]*benchmark.Result, bool)
+	printSummary func([]*benchmark.Result)
+	writeJSON    func(string, []*benchmark.Result) error
+}
+
+func newBenchmarkFlagSet() (*flag.FlagSet, *benchmarkOptions) {
 	flags := flag.NewFlagSet("bench", flag.ContinueOnError)
-	casePath := flags.String("case", "", "benchmark case yaml path")
-	outPath := flags.String("out", "benchmark-result.json", "result json path")
-	repeat := flags.Int("repeat", 1, "number of times to repeat the benchmark")
+	options := &benchmarkOptions{}
+	flags.StringVar(&options.casePath, "case", "", "benchmark case yaml path")
+	flags.StringVar(&options.outPath, "out", "benchmark-result.json", "result json path")
+	flags.IntVar(&options.repeat, "repeat", 1, "number of times to repeat the benchmark")
+	return flags, options
+}
+
+func run(args []string) int {
+	return runWithDependencies(args, defaultBenchmarkCommandDependencies())
+}
+
+func defaultBenchmarkCommandDependencies() benchmarkCommandDependencies {
+	return benchmarkCommandDependencies{
+		loadCase: benchmark.LoadCase,
+		execute: func(ctx context.Context, c *benchmark.Case, repeat int) ([]*benchmark.Result, bool) {
+			runner := benchmark.NewRunner(buildHarness)
+			return executeRepeats(ctx, c, repeat, runner.RunRepeat)
+		},
+		printSummary: benchmark.PrintSummary,
+		writeJSON:    benchmark.WriteJSON,
+	}
+}
+
+func runWithDependencies(args []string, dependencies benchmarkCommandDependencies) int {
+	flags, options := newBenchmarkFlagSet()
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -49,27 +84,26 @@ func run(args []string) int {
 		log.Print("benchmark 不接受位置参数")
 		return 2
 	}
-	if *repeat <= 0 {
+	if options.repeat <= 0 {
 		log.Print("-repeat 必须是正整数")
 		return 2
 	}
 
-	if *casePath == "" {
+	if options.casePath == "" {
 		log.Print("请通过 -case 指定 benchmark case")
 		return 2
 	}
 
-	c, err := benchmark.LoadCase(*casePath)
+	c, err := dependencies.loadCase(options.casePath)
 	if err != nil {
 		log.Print(err)
 		return 2
 	}
 
-	runner := benchmark.NewRunner(buildHarness)
-	results, infrastructureFailed := executeRepeats(context.Background(), c, *repeat, runner.RunRepeat)
+	results, infrastructureFailed := dependencies.execute(context.Background(), c, options.repeat)
 
-	benchmark.PrintSummary(results)
-	if err := benchmark.WriteJSON(*outPath, results); err != nil {
+	dependencies.printSummary(results)
+	if err := dependencies.writeJSON(options.outPath, results); err != nil {
 		log.Print(err)
 		return 2
 	}

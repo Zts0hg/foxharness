@@ -35,6 +35,7 @@ type Runner struct {
 	factory         HarnessFactory
 	caseTimeout     func(*Case) time.Duration
 	cleanupTimeout  func() time.Duration
+	createWorkspace func() (string, error)
 	removeWorkspace func(context.Context, string) error
 }
 
@@ -139,7 +140,7 @@ func (r *Runner) RunRepeat(ctx context.Context, c *Case, repeatIndex int) (retur
 	if deadline, ok := caseCtx.Deadline(); ok {
 		result.CaseDeadline = deadline
 	}
-	workspace, err := os.MkdirTemp("", "foxharness-benchmark-*")
+	workspace, err := r.createWorkspaceOrDefault()
 	if err != nil {
 		return infrastructureFailure(result, err)
 	}
@@ -268,6 +269,13 @@ func (r *Runner) cleanupTimeoutOrDefault() time.Duration {
 		return r.cleanupTimeout()
 	}
 	return defaultCleanupTimeout
+}
+
+func (r *Runner) createWorkspaceOrDefault() (string, error) {
+	if r.createWorkspace != nil {
+		return r.createWorkspace()
+	}
+	return os.MkdirTemp("", "foxharness-benchmark-*")
 }
 
 func (r *Runner) removeWorkspaceWithContext(ctx context.Context, workspace string) error {
