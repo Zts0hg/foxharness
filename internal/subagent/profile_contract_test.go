@@ -71,6 +71,30 @@ func TestPFCHD006ConfiguredTurnBudgetCanOnlyNarrowProfileCeiling(t *testing.T) {
 	}
 }
 
+func TestPFCHD011DepthGateRejectsNestedRunBeforeCapacityOrSession(t *testing.T) {
+	createCalled := false
+	manager := NewManager(&finalReportProvider{}, t.TempDir())
+	manager.createSession = func(session.CreateOptions) (*session.Session, error) {
+		createCalled = true
+		return nil, nil
+	}
+	result, err := manager.Run(context.Background(), Request{
+		ParentSessionID: "already-child",
+		Task:            "attempt nested child",
+		ReadOnly:        true,
+		Depth:           2,
+	})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want nested depth rejection; result=%#v", result)
+	}
+	if createCalled {
+		t.Fatal("nested depth rejection created child session capacity")
+	}
+	if result == nil || result.Status != OutcomeRejected || result.SessionID != "" || result.RunID != "" {
+		t.Fatalf("nested depth outcome = %#v", result)
+	}
+}
+
 type childDefinitionCaptureProvider struct {
 	toolNames []string
 }

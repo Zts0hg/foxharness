@@ -113,6 +113,7 @@ func newChildOutcome(req Request) *Result {
 		InvocationID:    newChildInvocationID(),
 		ParentSessionID: req.ParentSessionID,
 		Agent:           agent,
+		Depth:           req.Depth,
 		Status:          OutcomeStartFailed,
 	}
 }

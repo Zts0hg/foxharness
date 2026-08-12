@@ -89,6 +89,9 @@ type Request struct {
 	Task            string
 	ReadOnly        bool
 	Agent           AgentID
+	// Depth is one for the only accepted ChildRun level. Zero is normalized to
+	// one for compatibility with existing callers; every other value is rejected.
+	Depth int
 
 	// AllowedTools, when non-nil, restricts the sub-agent's tool registry to
 	// exactly the named tools; an explicit empty slice permits no tools. The filter is applied on
@@ -108,6 +111,7 @@ type Result struct {
 	RunID           string
 	ParentSessionID string
 	Agent           AgentID
+	Depth           int
 	Status          OutcomeStatus
 	Report          string
 }
@@ -270,7 +274,14 @@ func (m *Manager) buildRegistryWithSupervisor(readOnly bool, allowedTools []stri
 // invocation and retains any identities established before termination.
 func (m *Manager) Run(ctx context.Context, req Request) (outcome *Result, resultErr error) {
 	req.AllowedTools = cloneToolNames(req.AllowedTools)
+	if req.Depth == 0 {
+		req.Depth = 1
+	}
 	outcome = newChildOutcome(req)
+	if req.Depth != 1 {
+		outcome.Status = OutcomeRejected
+		return outcome, fmt.Errorf("subagent: child depth must be exactly 1, got %d", req.Depth)
+	}
 	agent, err := resolveAgent(req.Agent)
 	if err != nil {
 		outcome.Status = OutcomeRejected

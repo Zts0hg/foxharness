@@ -594,3 +594,10 @@
 - **Turn-ceiling Red**: A direct boundary table proved `WithMaxTurns(201)`, zero, and negative values replaced the confirmed 200-turn profile ceiling. This contradicted the already confirmed profile rule that configuration can narrow but never expand or invalidate the ceiling.
 - **Green semantics**: `Run` copies the only slice-backed request field before any admission or startup work. `WithMaxTurns` accepts positive values below 200 as test/internal narrowing; 200, larger, zero, and negative values resolve to `DefaultMaxTurns`. No provider, tool, permission, prompt, or outcome semantics changed.
 - **Green gates**: Focused admission and turn-limit tests, complete subagent and affected adapter packages, race, `go vet ./...`, architecture tests, and sandbox-external `go test ./...` PASS. The correction remains in the current ChildRun owner and does not introduce the target runtime architecture early.
+
+## T115 / D-CHD-008: Explicit Runtime Depth-One Gate
+
+- **Compile Red**: The confirmed nested-run test could not compile because `subagent.Request` had no depth field. Current one-level behavior therefore depended only on omitting `delegate_task` and fork helpers from the child tool registry; a direct internal or future adapter call had no runtime admission invariant to enforce.
+- **Green semantics**: `Request.Depth=0` normalizes to one for all existing callers. Any explicit value other than one returns the existing typed correlated `rejected` outcome before agent resolution or session creation, so no run, tool, permission, supervisor, or process capacity can start. `Result.Depth` retains the admitted or rejected lineage value.
+- **Scope**: The correction adds no recursive child capability, adapter argument, background protocol, worktree, resume, or send-input behavior. It makes the already confirmed one-level ceiling non-relaxable in the current runtime owner and supplies the contract later migrated to `runtime.ChildRunner`.
+- **Green gates**: Focused depth, unknown-agent, and typed-outcome tests; complete subagent/app/slash adapters; race; architecture tests; `go vet ./...`; and sandbox-external `go test ./...` PASS.
