@@ -391,7 +391,7 @@ func TestPFCLI014CoreCapabilitiesDoNotOwnPrintPresentation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, label := range []string{"fmt.Println", "Session: ", "Transcript: ", "Metrics: ", "Trace: "} {
+	for _, label := range []string{"fmt.Fprintln", "Session: ", "Transcript: ", "Metrics: ", "Trace: "} {
 		if !strings.Contains(string(adapter), label) {
 			t.Fatalf("current CLI adapter no longer owns expected presentation token %q", label)
 		}

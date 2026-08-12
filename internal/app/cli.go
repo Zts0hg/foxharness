@@ -7,8 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"os"
 
+	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
@@ -35,33 +38,53 @@ type CLIConfig struct {
 // subagent support, and runs the engine. Session metadata (transcript, metrics,
 // trace) is printed on completion.
 func RunCLI(ctx context.Context, cfg CLIConfig) error {
-	runner, err := NewAgentRunner(ctx, agentRunnerConfigFromCLI(cfg))
+	return runCLIWithFactory(ctx, cfg, os.Stdout, log.Default(), func(ctx context.Context, cfg AgentRunnerConfig) (cliPresentationRunnerAPI, error) {
+		return NewAgentRunner(ctx, cfg)
+	})
+}
+
+type cliPresentationRunnerAPI interface {
+	SessionID() string
+	SessionDir() string
+	TranscriptPath() string
+	Run(context.Context, string, engine.Reporter) (*engine.RunResult, error)
+	WaitForExtraction()
+}
+
+type cliPresentationRunnerFactory func(context.Context, AgentRunnerConfig) (cliPresentationRunnerAPI, error)
+
+type cliPresentationLogger interface {
+	Printf(string, ...any)
+}
+
+func runCLIWithFactory(ctx context.Context, cfg CLIConfig, stdout io.Writer, logger cliPresentationLogger, newRunner cliPresentationRunnerFactory) error {
+	runner, err := newRunner(ctx, agentRunnerConfigFromCLI(cfg))
 	if err != nil {
 		return err
 	}
 
-	log.Printf("[CLI] Session: %s", runner.SessionID())
-	log.Printf("[CLI] Session dir: %s", runner.SessionDir())
+	logger.Printf("[CLI] Session: %s", runner.SessionID())
+	logger.Printf("[CLI] Session dir: %s", runner.SessionDir())
 
 	result, err := runner.Run(ctx, cfg.Prompt, nil)
 	if err != nil {
-		log.Printf("[CLI] 任务失败: %v", err)
+		logger.Printf("[CLI] 任务失败: %v", err)
 	}
 
 	// Print the completed run result first so the user is not blocked on the
 	// out-of-band memory extraction, then drain extraction (bounded) before the
 	// process exits so US3 (automatic capture) is not killed mid-call.
 	if result != nil && result.FinalMessage != "" {
-		fmt.Println(result.FinalMessage)
+		fmt.Fprintln(stdout, result.FinalMessage)
 	}
 
-	fmt.Println()
-	fmt.Println("Session: ", runner.SessionID())
-	fmt.Println("Transcript: ", runner.TranscriptPath())
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Session: ", runner.SessionID())
+	fmt.Fprintln(stdout, "Transcript: ", runner.TranscriptPath())
 	if result != nil {
-		fmt.Println("Run: ", result.RunID)
-		fmt.Println("Metrics: ", result.MetricsPath)
-		fmt.Println("Trace: ", result.TracePath)
+		fmt.Fprintln(stdout, "Run: ", result.RunID)
+		fmt.Fprintln(stdout, "Metrics: ", result.MetricsPath)
+		fmt.Fprintln(stdout, "Trace: ", result.TracePath)
 	}
 
 	runner.WaitForExtraction()
