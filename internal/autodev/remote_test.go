@@ -44,6 +44,8 @@ type repoState struct {
 	issues      map[int]string
 	prBody      string
 	prNumber    int
+	prBase      string
+	prHead      string
 }
 
 // remoteGit is a read-only fake GitRunner over repoState. It fails the test
@@ -135,7 +137,15 @@ func (g *remoteGH) Run(ctx context.Context, dir string, name string, args ...str
 		if g.state.prNumber == 0 {
 			return stdoutResult("no pull requests found"), errors.New("exit status 1")
 		}
-		return stdoutResult(fmt.Sprintf(`{"number":%d,"body":%q}`, g.state.prNumber, g.state.prBody)), nil
+		base, head := g.state.prBase, g.state.prHead
+		if base == "" {
+			base = "main"
+		}
+		if head == "" {
+			head = "auto/x"
+		}
+		return stdoutResult(fmt.Sprintf(`{"number":%d,"body":%q,"baseRefName":%q,"headRefName":%q}`,
+			g.state.prNumber, g.state.prBody, base, head)), nil
 	default:
 		g.t.Errorf("control plane ran a non-read-only gh command: %s", key)
 		return CommandResult{}, errors.New("forbidden")
@@ -454,6 +464,47 @@ func TestPublishPRMustLinkIssue(t *testing.T) {
 	}
 	if len(core.prompts) != 6 {
 		t.Fatalf("core runs = %d, want 6 (PR body fixed once, TC-012): %q", len(core.prompts), core.prompts)
+	}
+}
+
+func TestCPAUT022PublishPRMustTargetConfiguredBaseAndItemBranch(t *testing.T) {
+	state := &repoState{dirty: true, localTip: "aaa111", issues: map[int]string{}}
+	pub, _, _, eng := newPublisher(t, state)
+	eng.reviews = []string{"Retarget the pull request to main from auto/x."}
+
+	core := &remoteCore{effects: []func(){
+		func() { state.staged = true },
+		func() { state.staged = false; state.dirty = false; state.commitCount = 1; state.localTip = "bbb222" },
+		func() { state.remoteTip = state.localTip },
+		func() { state.issues[31] = "Engine memory writes" },
+		func() {
+			state.prNumber = 32
+			state.prBody = "Closes #31"
+			state.prBase = "release"
+			state.prHead = "wrong-branch"
+		},
+		func() {
+			state.prBase = "main"
+			state.prHead = "auto/x"
+		},
+	}}
+
+	item := happyItem()
+	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil))
+	if err != nil {
+		t.Fatalf("Publish returned error: %v", err)
+	}
+	if result.PR != 32 {
+		t.Errorf("result.PR = %d, want 32 after correcting the PR target", result.PR)
+	}
+	if len(core.prompts) != 6 {
+		t.Fatalf("core runs = %d, want 6 (wrong PR target corrected once): %q", len(core.prompts), core.prompts)
+	}
+	if eng.reviewCalls != 1 {
+		t.Errorf("Engineer review calls = %d, want 1 for the wrong PR target", eng.reviewCalls)
+	}
+	if len(eng.gaps) != 1 || !strings.Contains(eng.gaps[0], "main") || !strings.Contains(eng.gaps[0], "auto/x") {
+		t.Errorf("Engineer gaps = %q, want the exact expected base and head", eng.gaps)
 	}
 }
 

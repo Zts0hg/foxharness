@@ -432,17 +432,24 @@ func (p *RemotePublisher) resolveIssue(ctx context.Context, sc *StageContext) (b
 // when configured (TC-012). Publish persists and reports the verified number.
 func (p *RemotePublisher) verifyPR() func(ctx context.Context, sc *StageContext) (bool, string) {
 	return func(ctx context.Context, sc *StageContext) (bool, string) {
-		result, runErr := p.exec.Run(ctx, sc.WorkDir, "gh", "pr", "view", sc.Branch, "--json", "number,body")
+		result, runErr := p.exec.Run(ctx, sc.WorkDir, "gh", "pr", "view", sc.Branch, "--json", "number,body,baseRefName,headRefName")
 		out, err := strictCommandStdout(result, runErr)
 		if err != nil {
 			return false, fmt.Sprintf("no pull request exists for branch %s yet", sc.Branch)
 		}
 		var pr struct {
-			Number int    `json:"number"`
-			Body   string `json:"body"`
+			Number      int    `json:"number"`
+			Body        string `json:"body"`
+			BaseRefName string `json:"baseRefName"`
+			HeadRefName string `json:"headRefName"`
 		}
 		if err := json.Unmarshal([]byte(extractJSON(out)), &pr); err != nil || pr.Number == 0 {
 			return false, fmt.Sprintf("cannot parse gh pr view output for branch %s", sc.Branch)
+		}
+		if pr.BaseRefName != sc.BaseBranch || pr.HeadRefName != sc.Branch {
+			return false, fmt.Sprintf(
+				"the pull request targets %s from %s; retarget it to %s from %s",
+				pr.BaseRefName, pr.HeadRefName, sc.BaseBranch, sc.Branch)
 		}
 		if p.cfg.RemoteFlow.LinkIssue && sc.Issue != 0 {
 			link := fmt.Sprintf("Closes #%d", sc.Issue)

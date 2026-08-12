@@ -162,7 +162,8 @@ func (e *e2eExec) Run(ctx context.Context, dir string, name string, args ...stri
 	case "pr":
 		branch := args[2]
 		if n, ok := w.prs[branch]; ok {
-			return stdoutResult(fmt.Sprintf(`{"number":%d,"body":%q}`, n, w.prBodies[branch])), nil
+			return stdoutResult(fmt.Sprintf(`{"number":%d,"body":%q,"baseRefName":"main","headRefName":%q}`,
+				n, w.prBodies[branch], branch)), nil
 		}
 		return stdoutResult("no pull requests found"), errors.New("exit status 1")
 	}
