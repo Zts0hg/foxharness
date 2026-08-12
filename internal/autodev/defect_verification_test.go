@@ -1007,14 +1007,44 @@ func TestDVAUT006CancellationEscalatesTERMToKILL(t *testing.T) {
 		t.Skip("Unix signal escalation proof")
 	}
 	t.Setenv("FOX_AUTODEV_HELPER", "1")
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	started := time.Now()
-	result, err := NewExecCommandRunner().Run(ctx, t.TempDir(), os.Args[0], "-test.run=TestAutodevExecHelperProcess", "--", "spawn-ignore-term")
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Run error = %v, want deadline exceeded", err)
+	workDir := t.TempDir()
+	readyPath := filepath.Join(workDir, "ignore-term-ready")
+	t.Setenv("FOX_AUTODEV_READY", readyPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	type commandOutcome struct {
+		result CommandResult
+		err    error
 	}
-	if elapsed := time.Since(started); elapsed < commandTerminateGrace {
+	completed := make(chan commandOutcome, 1)
+	go func() {
+		result, err := NewExecCommandRunner().Run(ctx, workDir, os.Args[0], "-test.run=TestAutodevExecHelperProcess", "--", "spawn-ignore-term")
+		completed <- commandOutcome{result: result, err: err}
+	}()
+	readyDeadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			cancel()
+			<-completed
+			t.Fatalf("inspect TERM readiness barrier: %v", err)
+		}
+		if time.Now().After(readyDeadline) {
+			cancel()
+			<-completed
+			t.Fatal("TERM-resistant helper did not reach readiness barrier")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancelledAt := time.Now()
+	cancel()
+	outcome := <-completed
+	result, err := outcome.result, outcome.err
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want cancellation", err)
+	}
+	if elapsed := time.Since(cancelledAt); elapsed < commandTerminateGrace {
 		t.Fatalf("termination elapsed = %v, want TERM grace before KILL", elapsed)
 	}
 	pid, parseErr := strconv.Atoi(strings.TrimSpace(result.Stdout))
@@ -1080,6 +1110,11 @@ func TestAutodevExecHelperProcess(t *testing.T) {
 		time.Sleep(10 * time.Second)
 	case "ignore-term-sleep":
 		signal.Ignore(syscall.SIGTERM)
+		if readyPath := os.Getenv("FOX_AUTODEV_READY"); readyPath != "" {
+			if err := os.WriteFile(readyPath, []byte("ready"), 0o644); err != nil {
+				os.Exit(3)
+			}
+		}
 		time.Sleep(10 * time.Second)
 	}
 	os.Exit(0)
