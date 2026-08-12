@@ -28,8 +28,12 @@ type TUIReporter struct {
 
 // NewTUIReporter creates a TUIReporter sending into events.
 func NewTUIReporter(events chan<- tea.Msg) *TUIReporter {
+	return newTUIReporterForOperation(events, 0)
+}
+
+func newTUIReporterForOperation(events chan<- tea.Msg, operationID uint64) *TUIReporter {
 	return &TUIReporter{
-		channelReporter: channelReporter{events: events},
+		channelReporter: channelReporter{events: events, operationID: operationID},
 		deliveredRemote: make(map[string]struct{}),
 	}
 }
@@ -119,7 +123,7 @@ func (r *TUIReporter) OnRemoteEvent(ctx context.Context, event autodev.RemoteEve
 		return fmt.Errorf("unsupported remote event kind %q", event.Kind)
 	}
 	select {
-	case r.events <- runEventMsg{role: "system", title: "autodev remote", body: body}:
+	case r.events <- runEventMsg{operationID: r.operationID, role: "system", title: "autodev remote", body: body}:
 		r.deliveredRemote[event.EventID] = struct{}{}
 		return nil
 	case <-ctx.Done():

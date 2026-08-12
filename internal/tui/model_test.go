@@ -399,8 +399,9 @@ func TestModelBangCommandCompletionStartsQueuedPrompt(t *testing.T) {
 	}
 
 	m, queuedCmd := update(t, m, shellCommandFinishedMsg{
-		command: "printf shell",
-		result:  tools.BashCommandResult{Output: "shell"},
+		operationID: m.activeOperationID,
+		command:     "printf shell",
+		result:      tools.BashCommandResult{Output: "shell"},
 	})
 	if queuedCmd == nil {
 		t.Fatalf("shell command completion did not start queued prompt")
@@ -438,8 +439,9 @@ func TestModelFailedBangCommandCompletionStartsQueuedPrompt(t *testing.T) {
 	}
 
 	m, queuedCmd := update(t, m, shellCommandFinishedMsg{
-		command: "false",
-		result:  tools.BashCommandResult{Err: errors.New("exit status 1"), ExitCode: 1},
+		operationID: m.activeOperationID,
+		command:     "false",
+		result:      tools.BashCommandResult{Err: errors.New("exit status 1"), ExitCode: 1},
 	})
 	if queuedCmd == nil {
 		t.Fatalf("failed shell command completion did not start queued prompt")

@@ -12,9 +12,10 @@ import (
 )
 
 type channelReporter struct {
-	events    chan<- tea.Msg
-	mu        sync.Mutex
-	streaming bool
+	events      chan<- tea.Msg
+	operationID uint64
+	mu          sync.Mutex
+	streaming   bool
 }
 
 func (r *channelReporter) OnRunStart(ctx context.Context, sessionID string, runID string) {
@@ -123,6 +124,10 @@ func (r *channelReporter) OnRunError(ctx context.Context, sessionID string, runI
 func (r *channelReporter) send(ctx context.Context, msg tea.Msg) {
 	if r == nil || r.events == nil {
 		return
+	}
+	if event, ok := msg.(runEventMsg); ok {
+		event.operationID = r.operationID
+		msg = event
 	}
 	select {
 	case r.events <- msg:

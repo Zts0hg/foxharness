@@ -236,6 +236,8 @@ type Model struct {
 	entries            []entry
 	status             string
 	running            bool
+	operationSeq       uint64
+	activeOperationID  uint64
 	runStartedAt       time.Time
 	spinnerFrame       int
 	scrollOffset       int
@@ -417,26 +419,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case runEventMsg:
+		if !m.acceptsOperation(msg.operationID) {
+			return m, waitForRunEvent(m.ctx, m.events)
+		}
 		m.applyRunEvent(msg)
 		return m, waitForRunEvent(m.ctx, m.events)
 
 	case runFinishedMsg:
+		if !m.acceptsOperation(msg.operationID) {
+			return m, nil
+		}
 		m.drainRunEvents()
 		runDuration := m.runningElapsed()
 		m.running = false
+		m.activeOperationID = 0
 		m.runStartedAt = time.Time{}
 		m.cancelRun = nil
 		m.refreshRuntimeInfo()
 		if msg.err != nil {
 			if isRunCancellation(msg.err) {
+				m.cancelRunInteractions()
 				m.status = "Conversation interrupted"
 				if !entriesContainText(m.entries, "system", interruptedTurnMessage) {
 					m.appendEntry("system", "interrupted", interruptedTurnMessage, false)
 				}
-				if len(m.queuedPrompts) > 0 {
-					return m.startNextQueuedPrompt()
-				}
-				return m, nil
+				return m.startQueuedPromptIfReady()
 			}
 			m.status = "Run failed"
 			if len(m.queuedPrompts) > 0 {
@@ -445,10 +452,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.lastEntryContainsError(msg.err) {
 				m.appendEntry("error", "run failed", msg.err.Error(), true)
 			}
-			if len(m.queuedPrompts) > 0 {
-				return m.startNextQueuedPrompt()
-			}
-			return m, nil
+			return m.startQueuedPromptIfReady()
 		}
 		if msg.result != nil {
 			m.status = fmt.Sprintf("Run complete: %s", msg.result.RunID)
@@ -457,10 +461,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Run complete"
 			m.appendWorkedForSeparator(runDuration)
 		}
-		if len(m.queuedPrompts) > 0 {
-			return m.startNextQueuedPrompt()
-		}
-		return m, nil
+		return m.startQueuedPromptIfReady()
 
 	case selector.ResultMsg:
 		return m.handleSelectorResult(msg)
@@ -506,6 +507,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleEffortDone()
 
 	case promptCommandReadyMsg:
+		if !m.acceptsOperation(msg.operationID) {
+			return m, nil
+		}
 		return m.handlePromptCommandReady(msg)
 
 	case compactFinishedMsg:
@@ -530,7 +534,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case shellCommandFinishedMsg:
+		if !m.acceptsOperation(msg.operationID) {
+			return m, nil
+		}
 		m.running = false
+		m.activeOperationID = 0
 		m.runStartedAt = time.Time{}
 		m.cancelRun = nil
 		m.refreshRuntimeInfo()
@@ -1170,10 +1178,11 @@ func (m Model) handleAskDone() (tea.Model, tea.Cmd) {
 		cancelled: m.askForm.cancelled,
 	}
 	m.askForm = nil
+	next, queued := m.startQueuedPromptIfReady()
 	if m.asker != nil {
-		return m, listenForAsk(m.ctx, m.asker)
+		return next, tea.Batch(queued, listenForAsk(m.ctx, m.asker))
 	}
-	return m, nil
+	return next, queued
 }
 
 func (m Model) handlePlanReviewDone() (tea.Model, tea.Cmd) {
@@ -1195,10 +1204,11 @@ func (m Model) handlePlanReviewDone() (tea.Model, tea.Cmd) {
 	}
 	m.planForm.req.reply <- result
 	m.planForm = nil
+	next, queued := m.startQueuedPromptIfReady()
 	if m.planReviewer != nil {
-		return m, listenForPlanReview(m.ctx, m.planReviewer)
+		return next, tea.Batch(queued, listenForPlanReview(m.ctx, m.planReviewer))
 	}
-	return m, nil
+	return next, queued
 }
 
 func (m Model) handleApprovalDone() (tea.Model, tea.Cmd) {
@@ -1211,10 +1221,11 @@ func (m Model) handleApprovalDone() (tea.Model, tea.Cmd) {
 	m.approvalForm = nil
 	m.appendUserDecisionEntry(decision, action)
 	m.permissionSnapshot = permissionSnapshot(m.runner)
+	next, queued := m.startQueuedPromptIfReady()
 	if m.permissionBridge != nil {
-		return m, listenForPermissionRequest(m.ctx, m.permissionBridge)
+		return next, tea.Batch(queued, listenForPermissionRequest(m.ctx, m.permissionBridge))
 	}
-	return m, nil
+	return next, queued
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2020,13 +2031,14 @@ func (m Model) submitBangCommand(text string) (tea.Model, tea.Cmd) {
 	m.resetCompletions()
 	m.scrollOffset = 0
 	m.running = true
+	operationID := m.beginOperation()
 	m.runStartedAt = m.nowTime()
 	m.spinnerFrame = 0
 	m.status = "Running shell command"
 
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
-	return m, runShellCommandCmd(runCtx, m.runner.WorkDir(), command)
+	return m, runShellCommandCmd(runCtx, m.runner.WorkDir(), command, operationID)
 }
 
 func (m Model) startPrompt(text string) (tea.Model, tea.Cmd) {
@@ -2036,6 +2048,7 @@ func (m Model) startPrompt(text string) (tea.Model, tea.Cmd) {
 func (m Model) startPromptInCollaborationMode(text string, mode collaboration.Mode) (tea.Model, tea.Cmd) {
 	m.scrollOffset = 0
 	m.running = true
+	operationID := m.beginOperation()
 	m.runStartedAt = m.nowTime()
 	m.spinnerFrame = 0
 	m.status = "Running"
@@ -2043,7 +2056,53 @@ func (m Model) startPromptInCollaborationMode(text string, mode collaboration.Mo
 
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
-	return m, runPromptCmd(runCtx, m.runner, text, mode, m.events)
+	return m, runPromptCmd(runCtx, m.runner, text, mode, operationID, m.events)
+}
+
+func (m *Model) beginOperation() uint64 {
+	m.operationSeq++
+	m.activeOperationID = m.operationSeq
+	return m.activeOperationID
+}
+
+func (m Model) acceptsOperation(operationID uint64) bool {
+	return operationID == m.activeOperationID
+}
+
+func (m Model) hasBlockingInteraction() bool {
+	return m.askForm != nil || m.planForm != nil || m.approvalForm != nil || m.permissionForm != nil || m.effortForm != nil || m.rewindSelector != nil
+}
+
+func (m *Model) cancelRunInteractions() {
+	if m.askForm != nil {
+		select {
+		case m.askForm.req.reply <- answerResult{cancelled: true}:
+		default:
+		}
+		m.askForm = nil
+	}
+	if m.planForm != nil {
+		select {
+		case m.planForm.req.reply <- planReviewResult{cancelled: true}:
+		default:
+		}
+		m.planForm = nil
+	}
+	if m.approvalForm != nil {
+		select {
+		case m.approvalForm.req.reply <- permission.UserDecision{Kind: permission.UserDeny}:
+		default:
+		}
+		m.approvalForm = nil
+	}
+}
+
+func (m Model) startQueuedPromptIfReady() (Model, tea.Cmd) {
+	if m.running || m.hasBlockingInteraction() || len(m.queuedPrompts) == 0 {
+		return m, nil
+	}
+	next, cmd := m.startNextQueuedPrompt()
+	return next.(Model), cmd
 }
 
 func (m Model) startNextQueuedPrompt() (tea.Model, tea.Cmd) {
@@ -2932,13 +2991,14 @@ func (m Model) executePromptCommand(cmd *slash.Command, args string, displayProm
 	}
 	m.scrollOffset = 0
 	m.running = true
+	operationID := m.beginOperation()
 	m.runStartedAt = m.nowTime()
 	m.spinnerFrame = 0
 	m.status = "Preparing skill " + cmd.Name
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
 	sessionID := m.runner.SessionID()
-	return m, executePromptCommandCmd(runCtx, exec, cmd, args, sessionID, displayPrompt, m.collaborationMode)
+	return m, executePromptCommandCmd(runCtx, exec, cmd, args, sessionID, displayPrompt, m.collaborationMode, operationID)
 }
 
 // promptCommandReadyMsg is emitted by the executor goroutine once
@@ -2947,6 +3007,7 @@ func (m Model) executePromptCommand(cmd *slash.Command, args string, displayProm
 // whether to start an inline run, render a fork report, or surface an
 // error.
 type promptCommandReadyMsg struct {
+	operationID       uint64
 	cmdName           string
 	displayPrompt     string
 	collaborationMode collaboration.Mode
@@ -2954,13 +3015,14 @@ type promptCommandReadyMsg struct {
 	err               error
 }
 
-func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *slash.Command, args, sessionID, displayPrompt string, mode collaboration.Mode) tea.Cmd {
+func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *slash.Command, args, sessionID, displayPrompt string, mode collaboration.Mode, operationID uint64) tea.Cmd {
 	return func() tea.Msg {
 		mode = collaboration.Normalize(mode)
 		if mode == collaboration.ModeFormalPlan {
 			switch {
 			case strings.EqualFold(strings.TrimSpace(cmd.Frontmatter.Context), "fork"):
 				return promptCommandReadyMsg{
+					operationID:       operationID,
 					cmdName:           cmd.Name,
 					displayPrompt:     displayPrompt,
 					collaborationMode: mode,
@@ -2968,6 +3030,7 @@ func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *sla
 				}
 			case cmd.RunsShellAroundAgent():
 				return promptCommandReadyMsg{
+					operationID:       operationID,
 					cmdName:           cmd.Name,
 					displayPrompt:     displayPrompt,
 					collaborationMode: mode,
@@ -2977,6 +3040,7 @@ func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *sla
 		}
 		res, err := exec.Execute(ctx, cmd, args, sessionID)
 		return promptCommandReadyMsg{
+			operationID:       operationID,
 			cmdName:           cmd.Name,
 			displayPrompt:     displayPrompt,
 			collaborationMode: mode,
@@ -2989,6 +3053,7 @@ func executePromptCommandCmd(ctx context.Context, exec *slash.Executor, cmd *sla
 func (m Model) handlePromptCommandReady(msg promptCommandReadyMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.running = false
+		m.activeOperationID = 0
 		m.runStartedAt = time.Time{}
 		m.cancelRun = nil
 		body := strings.TrimSpace(msg.result.Content)
@@ -3008,6 +3073,7 @@ func (m Model) handlePromptCommandReady(msg promptCommandReadyMsg) (tea.Model, t
 		// goroutine already ran before/after hooks synchronously, so
 		// nothing more to drive.
 		m.running = false
+		m.activeOperationID = 0
 		m.runStartedAt = time.Time{}
 		m.cancelRun = nil
 		body := strings.TrimSpace(msg.result.Content)
@@ -3021,6 +3087,7 @@ func (m Model) handlePromptCommandReady(msg promptCommandReadyMsg) (tea.Model, t
 	}
 	if strings.TrimSpace(msg.result.Content) == "" {
 		m.running = false
+		m.activeOperationID = 0
 		m.runStartedAt = time.Time{}
 		m.cancelRun = nil
 		m.status = "Command produced empty output"
@@ -3030,10 +3097,10 @@ func (m Model) handlePromptCommandReady(msg promptCommandReadyMsg) (tea.Model, t
 	// The prepare-stage runCtx is no longer relevant — derive a fresh
 	// run context so Ctrl+C cancellation maps to the run, not to the
 	// already-finished prepare phase.
-	return m.runInlinePromptCommand(msg.result, msg.displayPrompt, msg.collaborationMode)
+	return m.runInlinePromptCommand(msg.result, msg.displayPrompt, msg.collaborationMode, msg.operationID)
 }
 
-func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPrompt string, mode collaboration.Mode) (tea.Model, tea.Cmd) {
+func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPrompt string, mode collaboration.Mode, operationID uint64) (tea.Model, tea.Cmd) {
 	text := result.Content
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
@@ -3077,9 +3144,9 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPromp
 				m.status = "Effort run unsupported"
 				return m, nil
 			}
-			return m, runRestrictedPromptCmdWithEffort(runCtx, effortRunner, text, displayPrompt, allowedCopy, runEffort, mode, result.AfterHook, m.events)
+			return m, runRestrictedPromptCmdWithEffort(runCtx, effortRunner, text, displayPrompt, allowedCopy, runEffort, mode, result.AfterHook, operationID, m.events)
 		}
-		return m, runRestrictedPromptCmd(runCtx, rr, text, displayPrompt, allowedCopy, mode, result.AfterHook, m.events)
+		return m, runRestrictedPromptCmd(runCtx, rr, text, displayPrompt, allowedCopy, mode, result.AfterHook, operationID, m.events)
 	}
 	m.status = "Running"
 	if runEffort != "" {
@@ -3092,9 +3159,9 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPromp
 			m.status = "Effort run unsupported"
 			return m, nil
 		}
-		return m, runPromptCmdWithEffortAndAfter(runCtx, effortRunner, text, displayPrompt, runEffort, mode, result.AfterHook, m.events)
+		return m, runPromptCmdWithEffortAndAfter(runCtx, effortRunner, text, displayPrompt, runEffort, mode, result.AfterHook, operationID, m.events)
 	}
-	return m, runPromptCmdWithAfter(runCtx, m.runner, text, displayPrompt, mode, result.AfterHook, m.events)
+	return m, runPromptCmdWithAfter(runCtx, m.runner, text, displayPrompt, mode, result.AfterHook, operationID, m.events)
 }
 
 // restrictedRunner is the optional interface a Runner implements to
@@ -3125,9 +3192,9 @@ type projectInputHistoryRunner interface {
 	ProjectInputHistory(limit int) ([]string, error)
 }
 
-func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, displayPrompt string, allowed []string, mode collaboration.Mode, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, displayPrompt string, allowed []string, mode collaboration.Mode, afterHook func(context.Context), operationID uint64, events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		reporter := &channelReporter{events: events}
+		reporter := &channelReporter{events: events, operationID: operationID}
 		var result *engine.RunResult
 		var err error
 		if displayRunner, ok := runner.(restrictedDisplayRunner); ok && strings.TrimSpace(displayPrompt) != "" {
@@ -3138,24 +3205,24 @@ func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt
 		if afterHook != nil {
 			afterHook(ctx)
 		}
-		return runFinishedMsg{result: result, err: err}
+		return runFinishedMsg{operationID: operationID, result: result, err: err}
 	}
 }
 
-func runRestrictedPromptCmdWithEffort(ctx context.Context, runner restrictedEffortRunner, prompt string, displayPrompt string, allowed []string, effort string, mode collaboration.Mode, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+func runRestrictedPromptCmdWithEffort(ctx context.Context, runner restrictedEffortRunner, prompt string, displayPrompt string, allowed []string, effort string, mode collaboration.Mode, afterHook func(context.Context), operationID uint64, events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		reporter := &channelReporter{events: events}
+		reporter := &channelReporter{events: events, operationID: operationID}
 		result, err := runner.RunRestrictedWithDisplayAndEffortInCollaborationMode(ctx, prompt, displayPrompt, allowed, effort, mode, reporter)
 		if afterHook != nil {
 			afterHook(ctx)
 		}
-		return runFinishedMsg{result: result, err: err}
+		return runFinishedMsg{operationID: operationID, result: result, err: err}
 	}
 }
 
-func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, displayPrompt string, mode collaboration.Mode, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, displayPrompt string, mode collaboration.Mode, afterHook func(context.Context), operationID uint64, events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		reporter := &channelReporter{events: events}
+		reporter := &channelReporter{events: events, operationID: operationID}
 		var result *engine.RunResult
 		var err error
 		if displayRunner, ok := runner.(collaborationDisplayRunner); ok && strings.TrimSpace(displayPrompt) != "" {
@@ -3166,18 +3233,18 @@ func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, di
 		if afterHook != nil {
 			afterHook(ctx)
 		}
-		return runFinishedMsg{result: result, err: err}
+		return runFinishedMsg{operationID: operationID, result: result, err: err}
 	}
 }
 
-func runPromptCmdWithEffortAndAfter(ctx context.Context, runner effortRunner, prompt string, displayPrompt string, effort string, mode collaboration.Mode, afterHook func(context.Context), events chan<- tea.Msg) tea.Cmd {
+func runPromptCmdWithEffortAndAfter(ctx context.Context, runner effortRunner, prompt string, displayPrompt string, effort string, mode collaboration.Mode, afterHook func(context.Context), operationID uint64, events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		reporter := &channelReporter{events: events}
+		reporter := &channelReporter{events: events, operationID: operationID}
 		result, err := runner.RunWithDisplayAndEffortInCollaborationMode(ctx, prompt, displayPrompt, effort, mode, reporter)
 		if afterHook != nil {
 			afterHook(ctx)
 		}
-		return runFinishedMsg{result: result, err: err}
+		return runFinishedMsg{operationID: operationID, result: result, err: err}
 	}
 }
 
@@ -3741,7 +3808,7 @@ func (m *Model) drainRunEvents() {
 	for {
 		select {
 		case msg := <-m.events:
-			if event, ok := msg.(runEventMsg); ok {
+			if event, ok := msg.(runEventMsg); ok && m.acceptsOperation(event.operationID) {
 				m.applyRunEvent(event)
 			}
 		default:
@@ -3914,6 +3981,7 @@ func mouseTailCmd(id uint64) tea.Cmd {
 }
 
 type runEventMsg struct {
+	operationID uint64
 	role        string
 	title       string
 	body        string
@@ -3924,8 +3992,9 @@ type runEventMsg struct {
 }
 
 type runFinishedMsg struct {
-	result *engine.RunResult
-	err    error
+	operationID uint64
+	result      *engine.RunResult
+	err         error
 }
 
 type newSessionFinishedMsg struct {
@@ -3939,23 +4008,25 @@ type compactFinishedMsg struct {
 }
 
 type shellCommandFinishedMsg struct {
-	command string
-	result  tools.BashCommandResult
+	operationID uint64
+	command     string
+	result      tools.BashCommandResult
 }
 
-func runPromptCmd(ctx context.Context, runner Runner, prompt string, mode collaboration.Mode, events chan<- tea.Msg) tea.Cmd {
+func runPromptCmd(ctx context.Context, runner Runner, prompt string, mode collaboration.Mode, operationID uint64, events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		reporter := &channelReporter{events: events}
+		reporter := &channelReporter{events: events, operationID: operationID}
 		result, err := runner.RunInCollaborationMode(ctx, prompt, mode, reporter)
-		return runFinishedMsg{result: result, err: err}
+		return runFinishedMsg{operationID: operationID, result: result, err: err}
 	}
 }
 
-func runShellCommandCmd(ctx context.Context, workDir string, command string) tea.Cmd {
+func runShellCommandCmd(ctx context.Context, workDir string, command string, operationID uint64) tea.Cmd {
 	return func() tea.Msg {
 		return shellCommandFinishedMsg{
-			command: command,
-			result:  tools.RunBashCommand(ctx, workDir, command, 0),
+			operationID: operationID,
+			command:     command,
+			result:      tools.RunBashCommand(ctx, workDir, command, 0),
 		}
 	}
 }
