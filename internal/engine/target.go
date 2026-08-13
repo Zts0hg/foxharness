@@ -23,10 +23,12 @@ const (
 type RunInput struct {
 	Prompt   string
 	MaxTurns int
+	Thinking bool
 }
 
 /* RunContext is an immutable model-visible snapshot for one invocation. */
 type RunContext struct {
+	Turn            int
 	Phase           Phase
 	Messages        []schema.Message
 	ToolDefinitions []schema.ToolDefinition
@@ -42,9 +44,31 @@ type ModelResult struct {
 	Usage        schema.Usage
 }
 
-/* ModelInvoker owns provider invocation, streaming, fallback, and normalization. */
+/* ModelFactKind identifies one normalized fact produced during model invocation. */
+type ModelFactKind string
+
+const (
+	/* ModelFactMessageDelta carries one visible assistant text delta. */
+	ModelFactMessageDelta ModelFactKind = "message_delta"
+)
+
+/* ModelFact is one synchronous normalized model-invocation observation. */
+type ModelFact struct {
+	Kind    ModelFactKind
+	Content string
+}
+
+/* ModelFactEmitter synchronously returns normalized invocation facts to the engine. */
+type ModelFactEmitter func(ModelFact)
+
+/* ModelRunInvoker owns mutable provider fallback state for exactly one engine run. */
+type ModelRunInvoker interface {
+	Invoke(context.Context, RunContext, ModelFactEmitter) (ModelResult, error)
+}
+
+/* ModelInvoker creates isolated provider invocation state for each engine run. */
 type ModelInvoker interface {
-	Invoke(context.Context, RunContext) (ModelResult, error)
+	StartRun(context.Context) (ModelRunInvoker, error)
 }
 
 /* ToolSnapshot pairs model-visible definitions with one constrained execution scope. */
@@ -69,6 +93,8 @@ type ConversationChangeKind string
 const (
 	/* ConversationAppendMessage requests that one message be appended in order. */
 	ConversationAppendMessage ConversationChangeKind = "append_message"
+	/* ConversationAppendContextMessage requests a non-persisted model-visible message. */
+	ConversationAppendContextMessage ConversationChangeKind = "append_context_message"
 )
 
 /* ConversationChange describes one ordered context change requested by the engine. */
@@ -107,6 +133,14 @@ const (
 	FactRunStarted FactKind = "run_started"
 	/* FactMessage carries one complete assistant message. */
 	FactMessage FactKind = "message"
+	/* FactMessageDelta carries one streamed assistant text delta. */
+	FactMessageDelta FactKind = "message_delta"
+	/* FactThinking marks the thinking phase for one turn. */
+	FactThinking FactKind = "thinking"
+	/* FactToolCall carries one ordered model-requested tool invocation. */
+	FactToolCall FactKind = "tool_call"
+	/* FactToolResult carries one ordered correlated tool result. */
+	FactToolResult FactKind = "tool_result"
 	/* FactRunCompleted marks successful terminal completion. */
 	FactRunCompleted FactKind = "run_completed"
 	/* FactRunError marks failed terminal completion. */
@@ -119,6 +153,8 @@ type Fact struct {
 	Sequence int
 	Turn     int
 	Phase    Phase
+	CallID   string
+	Name     string
 	Content  string
 	IsError  bool
 }
@@ -181,48 +217,145 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 	}
 	emit(Fact{Kind: FactRunStarted})
 
+	modelRun, err := e.model.StartRun(ctx)
+	if err != nil {
+		return e.fail(emit, RunOutcome{}, "provider", fmt.Errorf("模型生成失败: %w", err))
+	}
 	snapshot, err := e.tools.Snapshot(ctx)
 	if err != nil {
-		return e.fail(ctx, emit, RunOutcome{}, "tool", err)
+		return e.fail(emit, RunOutcome{}, "tool", err)
 	}
+
+	definitions := cloneToolDefinitions(snapshot.ToolDefinitions())
+	outcome := RunOutcome{}
+	emitModelFact := func(fact ModelFact) {
+		if fact.Kind == ModelFactMessageDelta && fact.Content != "" {
+			emit(Fact{Kind: FactMessageDelta, Content: fact.Content})
+		}
+	}
+
+	for turn := 1; ; turn++ {
+		outcome.TurnCount = turn
+		if input.Thinking {
+			emit(Fact{Kind: FactThinking, Turn: turn})
+			thinkingContext, err := e.prepareContext(ctx, input, turn, PhaseThinking, nil)
+			if err != nil {
+				return e.fail(emit, outcome, "conversation", err)
+			}
+			thinking, err := modelRun.Invoke(ctx, thinkingContext, emitModelFact)
+			if err != nil {
+				return e.fail(emit, outcome, "provider", fmt.Errorf("模型生成失败: %w", err))
+			}
+			outcome.Usage = addUsage(outcome.Usage, thinking.Usage)
+			if err := e.applyChanges(ctx, []ConversationChange{{
+				Kind:    ConversationAppendContextMessage,
+				Message: schema.NormalizeMessage(thinking.Message),
+			}}); err != nil {
+				return e.fail(emit, outcome, "conversation", err)
+			}
+		}
+
+		runContext, err := e.prepareContext(ctx, input, turn, PhaseAction, definitions)
+		if err != nil {
+			return e.fail(emit, outcome, "conversation", err)
+		}
+		modelResult, err := modelRun.Invoke(ctx, runContext, emitModelFact)
+		if err != nil {
+			return e.fail(emit, outcome, "provider", fmt.Errorf("模型生成失败: %w", err))
+		}
+		outcome.FinalMessage = modelResult.Message.Content
+		outcome.FinishReason = modelResult.FinishReason
+		outcome.Usage = addUsage(outcome.Usage, modelResult.Usage)
+
+		decision, err := e.policy.Decide(ctx, TurnState{Turn: turn, Model: cloneModelResult(modelResult)})
+		if err != nil {
+			return e.fail(emit, outcome, "policy", err)
+		}
+		if err := e.applyChanges(ctx, []ConversationChange{{
+			Kind:    ConversationAppendMessage,
+			Message: schema.NormalizeMessage(modelResult.Message),
+		}}); err != nil {
+			return e.fail(emit, outcome, "conversation", err)
+		}
+		if modelResult.Message.Content != "" {
+			emit(Fact{Kind: FactMessage, Content: modelResult.Message.Content})
+		}
+
+		if len(modelResult.Message.ToolCalls) > 0 {
+			if err := e.executeTools(ctx, emit, snapshot, modelResult.Message.ToolCalls); err != nil {
+				return e.fail(emit, outcome, "tool", err)
+			}
+		}
+		if decision.Complete {
+			emit(Fact{Kind: FactRunCompleted, Content: outcome.FinalMessage})
+			return outcome, nil
+		}
+		if input.MaxTurns > 0 && turn >= input.MaxTurns {
+			outcome.Partial = true
+			err := fmt.Errorf("超过最大 Turn 数限制: %d", input.MaxTurns)
+			return e.fail(emit, outcome, "turn_limit", err)
+		}
+	}
+}
+
+func (e *AgentEngine) prepareContext(
+	ctx context.Context,
+	input RunInput,
+	turn int,
+	phase Phase,
+	definitions []schema.ToolDefinition,
+) (RunContext, error) {
 	runContext, err := e.conversation.Prepare(ctx, input)
 	if err != nil {
-		return e.fail(ctx, emit, RunOutcome{}, "conversation", err)
+		return RunContext{}, err
 	}
-	if runContext.Phase == "" {
-		runContext.Phase = PhaseAction
-	}
-	runContext.ToolDefinitions = cloneToolDefinitions(snapshot.ToolDefinitions())
+	runContext.Turn = turn
+	runContext.Phase = phase
+	runContext.ToolDefinitions = cloneToolDefinitions(definitions)
+	return cloneRunContext(runContext), nil
+}
 
-	outcome := RunOutcome{TurnCount: 1}
-	modelResult, err := e.model.Invoke(ctx, cloneRunContext(runContext))
+func (e *AgentEngine) executeTools(
+	ctx context.Context,
+	emit func(Fact),
+	snapshot ToolSnapshot,
+	calls []schema.ToolCall,
+) error {
+	for _, call := range calls {
+		emit(Fact{Kind: FactToolCall, CallID: call.ID, Name: call.Name, Content: string(call.Arguments)})
+	}
+	batch, err := e.tools.Execute(ctx, snapshot, cloneToolCalls(calls))
 	if err != nil {
-		return e.fail(ctx, emit, outcome, "provider", fmt.Errorf("模型生成失败: %w", err))
+		return err
 	}
-	outcome.FinishReason = modelResult.FinishReason
-	outcome.Usage = modelResult.Usage
+	if len(batch.Results) != len(calls) {
+		return fmt.Errorf("tool result count = %d, want %d", len(batch.Results), len(calls))
+	}
+	changes := make([]ConversationChange, 0, len(batch.Results))
+	for index, result := range batch.Results {
+		call := calls[index]
+		result.ToolCallID = call.ID
+		emit(Fact{
+			Kind: FactToolResult, CallID: call.ID, Name: call.Name,
+			Content: result.Output, IsError: result.IsError,
+		})
+		changes = append(changes, ConversationChange{
+			Kind: ConversationAppendMessage,
+			Message: schema.Message{
+				Role: schema.RoleUser, Content: result.Output, ToolCallID: call.ID,
+			},
+		})
+	}
+	return e.applyChanges(ctx, changes)
+}
 
-	decision, err := e.policy.Decide(ctx, TurnState{Turn: 1, Model: cloneModelResult(modelResult)})
-	if err != nil {
-		return e.fail(ctx, emit, outcome, "policy", err)
+func (e *AgentEngine) applyChanges(ctx context.Context, changes []ConversationChange) error {
+	cloned := make([]ConversationChange, len(changes))
+	for index, change := range changes {
+		change.Message = cloneMessage(change.Message)
+		cloned[index] = change
 	}
-	if err := e.conversation.Apply(ctx, []ConversationChange{{
-		Kind:    ConversationAppendMessage,
-		Message: schema.NormalizeMessage(modelResult.Message),
-	}}); err != nil {
-		return e.fail(ctx, emit, outcome, "conversation", err)
-	}
-	if modelResult.Message.Content != "" {
-		emit(Fact{Kind: FactMessage, Content: modelResult.Message.Content})
-	}
-	if decision.Complete {
-		outcome.FinalMessage = modelResult.Message.Content
-		emit(Fact{Kind: FactRunCompleted, Content: outcome.FinalMessage})
-		return outcome, nil
-	}
-
-	err = errors.New("target engine requires another turn")
-	return e.fail(ctx, emit, outcome, "turn_limit", err)
+	return e.conversation.Apply(ctx, cloned)
 }
 
 func (e *AgentEngine) validate() error {
@@ -242,11 +375,19 @@ func (e *AgentEngine) validate() error {
 	}
 }
 
-func (e *AgentEngine) fail(_ context.Context, emit func(Fact), outcome RunOutcome, kind string, err error) (RunOutcome, error) {
+func (e *AgentEngine) fail(emit func(Fact), outcome RunOutcome, kind string, err error) (RunOutcome, error) {
 	outcome.ErrorKind = kind
 	outcome.Err = err
 	emit(Fact{Kind: FactRunError, Content: err.Error(), IsError: true})
 	return outcome, err
+}
+
+func addUsage(left, right schema.Usage) schema.Usage {
+	left.InputTokens += right.InputTokens
+	left.OutputTokens += right.OutputTokens
+	left.CacheCreationTokens += right.CacheCreationTokens
+	left.CacheReadTokens += right.CacheReadTokens
+	return left
 }
 
 func cloneRunContext(runContext RunContext) RunContext {
@@ -269,15 +410,20 @@ func cloneMessages(messages []schema.Message) []schema.Message {
 }
 
 func cloneMessage(message schema.Message) schema.Message {
-	message.ToolCalls = append([]schema.ToolCall(nil), message.ToolCalls...)
-	for index := range message.ToolCalls {
-		message.ToolCalls[index].Arguments = append([]byte(nil), message.ToolCalls[index].Arguments...)
-	}
+	message.ToolCalls = cloneToolCalls(message.ToolCalls)
 	if message.Usage != nil {
 		usage := *message.Usage
 		message.Usage = &usage
 	}
 	return message
+}
+
+func cloneToolCalls(calls []schema.ToolCall) []schema.ToolCall {
+	result := append([]schema.ToolCall(nil), calls...)
+	for index := range result {
+		result[index].Arguments = append([]byte(nil), result[index].Arguments...)
+	}
+	return result
 }
 
 func cloneToolDefinitions(definitions []schema.ToolDefinition) []schema.ToolDefinition {

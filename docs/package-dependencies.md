@@ -73,6 +73,8 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 
 The previous implementation is explicitly named `LegacyEngine`/`NewLegacyEngine`. Every production profile continues to use that compatibility path until its atomic cutover; only the target characterization adapter calls `NewAgentEngine`. An AST gate rejects any production reference to the target constructor before those cutovers. The old engine's concrete imports remain in the existing decreasing allowlist for removal at `M25`; M04 adds no import edge and does not change either allowlist.
 
+`M05` expands the target coordinator through the complete shared model-turn and streaming contracts. `ModelInvoker.StartRun` creates one `ModelRunInvoker` whose streaming/fallback state may be shared by thinking and action calls and later turns in that run, but cannot leak into another run. Model deltas return synchronously through a restricted emitter and are sequenced once by engine `Observer`; provider transports, retry/fallback selection, and response normalization remain outside engine. Engine owns thinking/action phase transitions, usage aggregation, tool-free and tool-continuation transitions, and the exact hard turn-limit boundary. Conversation receives defensive ordered proposals, including non-persisted thinking context, and cannot mutate pending model/tool state. Production profiles still use only `LegacyEngine`.
+
 ## Allowed Dependencies
 
 | Importer | Allowed target architecture dependencies |
