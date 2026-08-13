@@ -566,8 +566,10 @@ func TestCPAUT022PullRequestGroundTruthMatrix(t *testing.T) {
 		{name: "wrong base", result: stdoutResult(`[{"number":7,"baseRefName":"release","headRefName":"auto/x"}]`), wantGap: "retarget"},
 		{name: "wrong head", result: stdoutResult(`[{"number":7,"baseRefName":"main","headRefName":"other"}]`), wantGap: "retarget"},
 		{name: "missing exact link", result: stdoutResult(`[{"number":7,"body":"Related #4","baseRefName":"main","headRefName":"auto/x"}]`), link: true, issue: 4, wantGap: "Closes #4"},
+		{name: "prefixed link is not exact", result: stdoutResult(`[{"number":7,"body":"NotCloses #4","baseRefName":"main","headRefName":"auto/x"}]`), link: true, issue: 4, wantGap: "Closes #4"},
+		{name: "inline link is not exact", result: stdoutResult(`[{"number":7,"body":"Summary: Closes #4","baseRefName":"main","headRefName":"auto/x"}]`), link: true, issue: 4, wantGap: "Closes #4"},
 		{name: "link disabled", result: stdoutResult(`[{"number":7,"body":"","baseRefName":"main","headRefName":"auto/x"}]`), issue: 4, wantOK: true},
-		{name: "exact", result: stdoutResult(`[{"number":7,"body":"Closes #4","baseRefName":"main","headRefName":"auto/x"}]`), link: true, issue: 4, wantOK: true},
+		{name: "exact line", result: stdoutResult(`[{"number":7,"body":"Summary\r\n\r\nCloses #4\r\n","baseRefName":"main","headRefName":"auto/x"}]`), link: true, issue: 4, wantOK: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			exec := &prGroundTruthExec{result: tc.result, err: tc.err}

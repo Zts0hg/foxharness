@@ -501,12 +501,21 @@ func (p *RemotePublisher) resolvePR(ctx context.Context, sc *StageContext) (bool
 	}
 	if p.cfg.RemoteFlow.LinkIssue && sc.Issue != 0 {
 		link := fmt.Sprintf("Closes #%d", sc.Issue)
-		if !strings.Contains(pr.Body, link) {
+		if !containsExactLine(pr.Body, link) {
 			return false, fmt.Sprintf("the PR body does not contain %q; edit the PR body (gh pr edit %d --body ...) to include it", link, pr.Number), nil
 		}
 	}
 	sc.PR = pr.Number
 	return true, "", nil
+}
+
+func containsExactLine(body, expected string) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		if line == expected {
+			return true
+		}
+	}
+	return false
 }
 
 // extractJSONArray returns the first top-level [...] block in s so banners
