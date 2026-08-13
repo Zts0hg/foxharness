@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -90,6 +91,61 @@ func TestAutodevCommandRefusesWhileRunning(t *testing.T) {
 	}
 	if !strings.Contains(next.(Model).status, "run") {
 		t.Errorf("status = %q, want busy explanation", next.(Model).status)
+	}
+}
+
+func TestUIAUT003AutodevRunLifecycleAndCancellation(t *testing.T) {
+	started := make(chan context.Context, 1)
+	m := NewModel(context.Background(), newFakeRunner(), Config{
+		Autodev: func(ctx context.Context, backlogPath string, reporter autodev.Reporter) error {
+			if backlogPath != "WORK.md" {
+				t.Errorf("backlog path = %q, want WORK.md", backlogPath)
+			}
+			started <- ctx
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+
+	next, cmd := m.handleSlashCommand("/autodev WORK.md")
+	running := next.(Model)
+	if !running.running || running.cancelRun == nil || running.status != "autodev running" || running.activeOperationID == 0 {
+		t.Fatalf("running state = running:%t cancel:%t status:%q operation:%d", running.running, running.cancelRun != nil, running.status, running.activeOperationID)
+	}
+	startEntry := running.entries[len(running.entries)-1]
+	if startEntry.title != "Autodev" || !strings.Contains(startEntry.body, "Draining the backlog autonomously") {
+		t.Fatalf("start entry = %+v", startEntry)
+	}
+
+	finished := make(chan tea.Msg, 1)
+	go func() { finished <- cmd() }()
+	runCtx := <-started
+	select {
+	case <-runCtx.Done():
+		t.Fatal("autodev context cancelled before an explicit cancel command")
+	default:
+	}
+
+	cancelledModel, cancelCmd := running.handleSlashCommand("/cancel")
+	cancelling := cancelledModel.(Model)
+	if cancelCmd != nil || cancelling.status != "Cancel requested" {
+		t.Fatalf("cancel result = cmd:%v status:%q", cancelCmd, cancelling.status)
+	}
+	msg := (<-finished).(runFinishedMsg)
+	if !errors.Is(msg.err, context.Canceled) || msg.operationID != running.activeOperationID {
+		t.Fatalf("finished message = %+v", msg)
+	}
+
+	updated, _ := cancelling.Update(msg)
+	done := updated.(Model)
+	if done.running || done.cancelRun != nil || done.activeOperationID != 0 || done.status != "Conversation interrupted" {
+		t.Fatalf("finished state = running:%t cancel:%t status:%q operation:%d", done.running, done.cancelRun != nil, done.status, done.activeOperationID)
+	}
+	entryCount := len(done.entries)
+	updated, _ = done.Update(msg)
+	duplicate := updated.(Model)
+	if duplicate.running || len(duplicate.entries) != entryCount || duplicate.status != done.status {
+		t.Fatalf("duplicate finish changed state: before entries/status %d/%q after %d/%q", entryCount, done.status, len(duplicate.entries), duplicate.status)
 	}
 }
 

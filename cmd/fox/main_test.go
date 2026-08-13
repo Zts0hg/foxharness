@@ -413,6 +413,66 @@ func TestParseArgsAutodevRejectsInteractive(t *testing.T) {
 	}
 }
 
+func TestUIAUT001AutodevRoutingMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		wantPrompt string
+		check      func(t *testing.T, cfg app.CLIConfig)
+	}{
+		{name: "default backlog", args: []string{"autodev"}},
+		{name: "single positional backlog", args: []string{"autodev", "missing-but-uninterpreted.md"}, wantPrompt: "missing-but-uninterpreted.md"},
+		{name: "prompt backlog", args: []string{"autodev", "-prompt", "PROMPT.md"}, wantPrompt: "PROMPT.md"},
+		{name: "short workdir", args: []string{"autodev", "-C", "/repo", "WORK.md"}, wantPrompt: "WORK.md", check: func(t *testing.T, cfg app.CLIConfig) {
+			if cfg.WorkDir != "/repo" {
+				t.Fatalf("WorkDir = %q, want /repo", cfg.WorkDir)
+			}
+		}},
+		{name: "long workdir and runtime options", args: []string{"autodev", "-workdir", "/repo", "-llm-provider", "fixture", "-protocol", "claude", "-base-url", "http://fixture", "-auth", "none", "-model", "model-x", "-max-turns", "17", "WORK.md"}, wantPrompt: "WORK.md", check: func(t *testing.T, cfg app.CLIConfig) {
+			if cfg.WorkDir != "/repo" || cfg.LLM.ProviderID != "fixture" || cfg.LLM.Protocol != "claude" || cfg.LLM.BaseURL != "http://fixture" || cfg.LLM.Auth != "none" || cfg.Model != "model-x" || cfg.MaxTurns != 17 {
+				t.Fatalf("resolved parse snapshot = %+v", cfg)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, mode, err := parseArgs(tc.args, io.Discard)
+			if err != nil || mode != launchAutodev || cfg.Prompt != tc.wantPrompt {
+				t.Fatalf("parseArgs(%v) = mode %v prompt %q error %v", tc.args, mode, cfg.Prompt, err)
+			}
+			if tc.check != nil {
+				tc.check(t, cfg)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "duplicate positional backlog", args: []string{"autodev", "ONE.md", "TWO.md"}, want: "autodev 最多接受一个 backlog-path 位置参数"},
+		{name: "flag and positional backlog", args: []string{"autodev", "-prompt", "ONE.md", "TWO.md"}, want: "不能同时使用 -prompt 和位置参数 prompt"},
+		{name: "print conflict", args: []string{"autodev", "-print"}, want: "-p/-print 不能和 autodev 同时使用"},
+		{name: "tui conflict", args: []string{"autodev", "-interactive"}, want: "-tui/-interactive 不能和 exec、-p/-print 或 autodev 同时使用"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := parseArgs(tc.args, io.Discard)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("parseArgs(%v) error = %v, want %q", tc.args, err, tc.want)
+			}
+		})
+	}
+
+	var help bytes.Buffer
+	_, _, err := parseArgs([]string{"autodev", "-help"}, &help)
+	if !errors.Is(err, flag.ErrHelp) || !strings.Contains(help.String(), "fox autodev [backlog-path]") {
+		t.Fatalf("autodev help error/output = %v / %q", err, help.String())
+	}
+	if _, _, err := parseArgs([]string{"autodev", "-unknown"}, io.Discard); err == nil {
+		t.Fatal("unknown autodev flag was accepted")
+	}
+}
+
 func TestResolveLLMConfigUsesSettingsDefaultProvider(t *testing.T) {
 	home := t.TempDir()
 	writeSettings(t, home, map[string]any{
@@ -582,6 +642,50 @@ func TestAutodevSignalsCancelRunAndMapExitStatus(t *testing.T) {
 				t.Fatalf("exit code = %d, want %d", got, tc.code)
 			}
 		})
+	}
+}
+
+func TestUIAUT002TerminalOutcomeAndStreamContract(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		err        error
+		wantCode   int
+		wantStderr string
+	}{
+		{name: "drained", wantCode: 0},
+		{name: "precondition", err: &autodev.PreconditionError{Reason: "gh unavailable"}, wantCode: 2, wantStderr: "autodev precondition failed: gh unavailable\n"},
+		{name: "ordinary failure", err: errors.New("pipeline failed"), wantCode: 1, wantStderr: "pipeline failed\n"},
+		{name: "cancelled without signal", err: context.Canceled, wantCode: 1, wantStderr: "context canceled\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			if got := reportAutodevResult(tc.err, &stderr); got != tc.wantCode || stderr.String() != tc.wantStderr {
+				t.Fatalf("reportAutodevResult = %d / %q, want %d / %q", got, stderr.String(), tc.wantCode, tc.wantStderr)
+			}
+		})
+	}
+
+	var stdout bytes.Buffer
+	reporter := autodev.NewTerminalReporter(&stdout)
+	ctx := context.Background()
+	reporter.OnRunStart(ctx, "session-1", "run-1")
+	reporter.OnMessage(ctx, "first line\nsecond line")
+	reporter.OnRunError(ctx, "session-1", "run-1", errors.New("model failed"))
+	reporter.OnItemStart(ctx, 1, 1, autodev.LedgerItem{Slug: "item", Priority: autodev.PriorityHigh})
+	reporter.OnStageStart(ctx, "item", "generate-spec")
+	reporter.OnVerify(ctx, "generate-spec", false, "spec missing")
+	reporter.OnInfo(ctx, "retaining worktree")
+	wantOrder := []string{"run run-1 started", "first line\n           second line", "run run-1 error: model failed", "item 1/1", "[stage] generate-spec", "NOT DONE: spec missing", "retaining worktree"}
+	position := -1
+	for _, want := range wantOrder {
+		next := strings.Index(stdout.String()[position+1:], want)
+		if next < 0 {
+			t.Fatalf("terminal stream missing ordered %q:\n%s", want, stdout.String())
+		}
+		position += next + 1
+	}
+	if !strings.HasSuffix(stdout.String(), "\n") {
+		t.Fatalf("terminal stream is not line-oriented: %q", stdout.String())
 	}
 }
 

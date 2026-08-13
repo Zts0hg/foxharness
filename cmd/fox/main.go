@@ -113,8 +113,7 @@ func main() {
 		})
 		signal.Stop(signals)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(exitCodeForError(err))
+			os.Exit(reportAutodevResult(err, os.Stderr))
 		}
 		return
 	}
@@ -336,6 +335,13 @@ func exitCodeForError(err error) int {
 	return 1
 }
 
+func reportAutodevResult(err error, stderr io.Writer) int {
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+	}
+	return exitCodeForError(err)
+}
+
 type autodevSignalError struct {
 	Signal os.Signal
 	Err    error
@@ -439,9 +445,13 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 		return cfg, mode, fmt.Errorf("-tui/-interactive 不能和 exec、-p/-print 或 autodev 同时使用")
 	}
 
-	positionalPrompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	positionalArgs := fs.Args()
+	positionalPrompt := strings.TrimSpace(strings.Join(positionalArgs, " "))
 	if strings.TrimSpace(cfg.Prompt) != "" && positionalPrompt != "" {
 		return cfg, mode, fmt.Errorf("不能同时使用 -prompt 和位置参数 prompt")
+	}
+	if mode == launchAutodev && len(positionalArgs) > 1 {
+		return cfg, mode, fmt.Errorf("autodev 最多接受一个 backlog-path 位置参数")
 	}
 	if strings.TrimSpace(cfg.Prompt) == "" {
 		cfg.Prompt = positionalPrompt
