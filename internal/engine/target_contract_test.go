@@ -515,7 +515,7 @@ func (c *targetTestConversation) Prepare(_ context.Context, input RunInput) (Run
 	}, nil
 }
 
-func (c *targetTestConversation) Apply(_ context.Context, changes []ConversationChange) error {
+func (c *targetTestConversation) RequestChanges(_ context.Context, changes []ConversationChange) error {
 	for _, change := range changes {
 		c.messages = append(c.messages, cloneMessage(change.Message))
 		if change.Kind == ConversationAppendMessage {
@@ -643,7 +643,7 @@ func (c *immutableTargetConversation) Prepare(context.Context, RunInput) (RunCon
 	return c.runContext, nil
 }
 
-func (*immutableTargetConversation) Apply(context.Context, []ConversationChange) error {
+func (*immutableTargetConversation) RequestChanges(context.Context, []ConversationChange) error {
 	return nil
 }
 
@@ -653,7 +653,7 @@ func (*proposalMutatingConversation) Prepare(context.Context, RunInput) (RunCont
 	return RunContext{}, nil
 }
 
-func (*proposalMutatingConversation) Apply(_ context.Context, changes []ConversationChange) error {
+func (*proposalMutatingConversation) RequestChanges(_ context.Context, changes []ConversationChange) error {
 	for index := range changes {
 		if len(changes[index].Message.ToolCalls) == 0 {
 			continue
@@ -701,7 +701,7 @@ func (c *injectionOrderingConversation) Prepare(_ context.Context, input RunInpu
 	return RunContext{Messages: cloneMessages(c.messages)}, nil
 }
 
-func (c *injectionOrderingConversation) Apply(_ context.Context, changes []ConversationChange) error {
+func (c *injectionOrderingConversation) RequestChanges(_ context.Context, changes []ConversationChange) error {
 	for _, change := range changes {
 		c.messages = append(c.messages, cloneMessage(change.Message))
 		if change.Message.ToolCallID != "" {

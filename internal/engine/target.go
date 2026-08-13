@@ -135,7 +135,7 @@ type ConversationChange struct {
 /* Conversation prepares immutable invocation snapshots and accepts ordered change requests. */
 type Conversation interface {
 	Prepare(context.Context, RunInput) (RunContext, error)
-	Apply(context.Context, []ConversationChange) error
+	RequestChanges(context.Context, []ConversationChange) error
 }
 
 /* TurnState contains the run-scoped values available to turn policy. */
@@ -305,7 +305,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		if err != nil {
 			return e.fail(emit, outcome, "policy", err)
 		}
-		if err := e.applyChanges(ctx, beforeTurn.Changes); err != nil {
+		if err := e.requestChanges(ctx, beforeTurn.Changes); err != nil {
 			return e.fail(emit, outcome, "conversation", err)
 		}
 		if input.Thinking {
@@ -319,7 +319,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 				return e.fail(emit, outcome, "provider", fmt.Errorf("模型生成失败: %w", err))
 			}
 			outcome.Usage = addUsage(outcome.Usage, thinking.Usage)
-			if err := e.applyChanges(ctx, []ConversationChange{{
+			if err := e.requestChanges(ctx, []ConversationChange{{
 				Kind:    ConversationAppendContextMessage,
 				Source:  ConversationSourceThinking,
 				Message: schema.NormalizeMessage(thinking.Message),
@@ -340,7 +340,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		outcome.FinishReason = modelResult.FinishReason
 		outcome.Usage = addUsage(outcome.Usage, modelResult.Usage)
 
-		if err := e.applyChanges(ctx, []ConversationChange{{
+		if err := e.requestChanges(ctx, []ConversationChange{{
 			Kind:    ConversationAppendMessage,
 			Message: schema.NormalizeMessage(modelResult.Message),
 		}}); err != nil {
@@ -353,7 +353,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		if err != nil {
 			return e.fail(emit, outcome, "policy", err)
 		}
-		if err := e.applyChanges(ctx, decision.Changes); err != nil {
+		if err := e.requestChanges(ctx, decision.Changes); err != nil {
 			return e.fail(emit, outcome, "conversation", err)
 		}
 		if decision.Terminal != nil {
@@ -373,7 +373,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 			if err != nil {
 				return e.fail(emit, outcome, "policy", err)
 			}
-			if err := e.applyChanges(ctx, toolDecision.Changes); err != nil {
+			if err := e.requestChanges(ctx, toolDecision.Changes); err != nil {
 				return e.fail(emit, outcome, "conversation", err)
 			}
 		}
@@ -451,13 +451,13 @@ func (e *AgentEngine) executeTools(
 			},
 		})
 	}
-	if err := e.applyChanges(ctx, changes); err != nil {
+	if err := e.requestChanges(ctx, changes); err != nil {
 		return state, err
 	}
 	return state, ctx.Err()
 }
 
-func (e *AgentEngine) applyChanges(ctx context.Context, changes []ConversationChange) error {
+func (e *AgentEngine) requestChanges(ctx context.Context, changes []ConversationChange) error {
 	if len(changes) == 0 {
 		return nil
 	}
@@ -466,7 +466,7 @@ func (e *AgentEngine) applyChanges(ctx context.Context, changes []ConversationCh
 		change.Message = cloneMessage(change.Message)
 		cloned[index] = change
 	}
-	return e.conversation.Apply(ctx, cloned)
+	return e.conversation.RequestChanges(ctx, cloned)
 }
 
 func (e *AgentEngine) validate() error {

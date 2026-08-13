@@ -139,7 +139,7 @@ func (c *policyConversation) Prepare(_ context.Context, input engine.RunInput) (
 	return engine.RunContext{Messages: request}, nil
 }
 
-func (c *policyConversation) Apply(_ context.Context, changes []engine.ConversationChange) error {
+func (c *policyConversation) RequestChanges(_ context.Context, changes []engine.ConversationChange) error {
 	for _, change := range changes {
 		c.messages = append(c.messages, clonePolicyMessage(change.Message))
 	}
