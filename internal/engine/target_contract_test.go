@@ -724,8 +724,22 @@ func (e *recordingTargetToolExecutor) Execute(_ context.Context, _ ToolSnapshot,
 
 type targetTestPolicy struct{}
 
-func (targetTestPolicy) Decide(_ context.Context, state TurnState) (TurnDecision, error) {
+func (targetTestPolicy) StartRun(context.Context, RunInput) (TurnRunPolicy, error) {
+	return targetTestRunPolicy{}, nil
+}
+
+type targetTestRunPolicy struct{}
+
+func (targetTestRunPolicy) BeforeTurn(context.Context, TurnState) (PolicyChanges, error) {
+	return PolicyChanges{}, nil
+}
+
+func (targetTestRunPolicy) AfterModel(_ context.Context, state TurnState) (TurnDecision, error) {
 	return TurnDecision{Complete: len(state.Model.Message.ToolCalls) == 0}, nil
+}
+
+func (targetTestRunPolicy) AfterTools(context.Context, ToolState) (PolicyChanges, error) {
+	return PolicyChanges{}, nil
 }
 
 type targetTestObserver struct {

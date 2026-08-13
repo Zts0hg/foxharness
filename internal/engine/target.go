@@ -107,9 +107,28 @@ const (
 	ConversationAppendContextMessage ConversationChangeKind = "append_context_message"
 )
 
+/* ConversationChangeSource identifies the producer of a non-persisted context proposal. */
+type ConversationChangeSource string
+
+const (
+	/* ConversationSourceThinking identifies private thinking context. */
+	ConversationSourceThinking ConversationChangeSource = "thinking"
+	/* ConversationSourceRecovery identifies a failed-tool recovery notice. */
+	ConversationSourceRecovery ConversationChangeSource = "recovery"
+	/* ConversationSourceReminder identifies an ordinary loop, verification, or re-anchor reminder. */
+	ConversationSourceReminder ConversationChangeSource = "reminder"
+	/* ConversationSourceNextTurnReminder identifies runtime-queued next-turn content. */
+	ConversationSourceNextTurnReminder ConversationChangeSource = "next_turn_reminder"
+	/* ConversationSourceCompletionGate identifies a completion-gate continuation. */
+	ConversationSourceCompletionGate ConversationChangeSource = "completion_gate"
+	/* ConversationSourceTODOGate identifies a TODO completion continuation. */
+	ConversationSourceTODOGate ConversationChangeSource = "todo_gate"
+)
+
 /* ConversationChange describes one ordered context change requested by the engine. */
 type ConversationChange struct {
 	Kind    ConversationChangeKind
+	Source  ConversationChangeSource
 	Message schema.Message
 }
 
@@ -119,20 +138,47 @@ type Conversation interface {
 	Apply(context.Context, []ConversationChange) error
 }
 
-/* TurnState contains the run-scoped values available to completion policy. */
+/* TurnState contains the run-scoped values available to turn policy. */
 type TurnState struct {
 	Turn  int
 	Model ModelResult
 }
 
-/* TurnDecision describes how the engine should transition after a model result. */
-type TurnDecision struct {
-	Complete bool
+/* ToolState contains one completed, ordered tool round available to run policy. */
+type ToolState struct {
+	Turn    int
+	Calls   []schema.ToolCall
+	Results []ToolExecutionResult
 }
 
-/* TurnPolicy decides completion and other run-scoped policy transitions. */
+/* PolicyChanges contains ordered context proposals from a non-terminal policy phase. */
+type PolicyChanges struct {
+	Changes []ConversationChange
+}
+
+/* TurnDecision describes ordered context proposals and the next run transition. */
+type TurnDecision struct {
+	Complete bool
+	Changes  []ConversationChange
+	Terminal *PolicyTerminal
+}
+
+/* PolicyTerminal describes a policy-selected terminal error and partial-result semantics. */
+type PolicyTerminal struct {
+	Err     error
+	Partial bool
+}
+
+/* TurnRunPolicy owns mutable policy state for exactly one engine run. */
+type TurnRunPolicy interface {
+	BeforeTurn(context.Context, TurnState) (PolicyChanges, error)
+	AfterModel(context.Context, TurnState) (TurnDecision, error)
+	AfterTools(context.Context, ToolState) (PolicyChanges, error)
+}
+
+/* TurnPolicy creates isolated completion and reminder state for each run. */
 type TurnPolicy interface {
-	Decide(context.Context, TurnState) (TurnDecision, error)
+	StartRun(context.Context, RunInput) (TurnRunPolicy, error)
 }
 
 /* FactKind identifies one canonically ordered engine observation. */
@@ -229,6 +275,13 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 	}
 	emit(Fact{Kind: FactRunStarted})
 
+	policyRun, err := e.policy.StartRun(ctx, input)
+	if err != nil {
+		return e.fail(emit, RunOutcome{}, "policy", err)
+	}
+	if policyRun == nil {
+		return e.fail(emit, RunOutcome{}, "policy", errors.New("turn policy returned nil run policy"))
+	}
 	modelRun, err := e.model.StartRun(ctx)
 	if err != nil {
 		return e.fail(emit, RunOutcome{}, "provider", fmt.Errorf("模型生成失败: %w", err))
@@ -248,6 +301,13 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 
 	for turn := 1; ; turn++ {
 		outcome.TurnCount = turn
+		beforeTurn, err := policyRun.BeforeTurn(ctx, TurnState{Turn: turn})
+		if err != nil {
+			return e.fail(emit, outcome, "policy", err)
+		}
+		if err := e.applyChanges(ctx, beforeTurn.Changes); err != nil {
+			return e.fail(emit, outcome, "conversation", err)
+		}
 		if input.Thinking {
 			emit(Fact{Kind: FactThinking, Turn: turn})
 			thinkingContext, err := e.prepareContext(ctx, input, turn, PhaseThinking, nil)
@@ -261,6 +321,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 			outcome.Usage = addUsage(outcome.Usage, thinking.Usage)
 			if err := e.applyChanges(ctx, []ConversationChange{{
 				Kind:    ConversationAppendContextMessage,
+				Source:  ConversationSourceThinking,
 				Message: schema.NormalizeMessage(thinking.Message),
 			}}); err != nil {
 				return e.fail(emit, outcome, "conversation", err)
@@ -279,10 +340,6 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		outcome.FinishReason = modelResult.FinishReason
 		outcome.Usage = addUsage(outcome.Usage, modelResult.Usage)
 
-		decision, err := e.policy.Decide(ctx, TurnState{Turn: turn, Model: cloneModelResult(modelResult)})
-		if err != nil {
-			return e.fail(emit, outcome, "policy", err)
-		}
 		if err := e.applyChanges(ctx, []ConversationChange{{
 			Kind:    ConversationAppendMessage,
 			Message: schema.NormalizeMessage(modelResult.Message),
@@ -292,13 +349,35 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		if modelResult.Message.Content != "" {
 			emit(Fact{Kind: FactMessage, Content: modelResult.Message.Content})
 		}
+		decision, err := policyRun.AfterModel(ctx, TurnState{Turn: turn, Model: cloneModelResult(modelResult)})
+		if err != nil {
+			return e.fail(emit, outcome, "policy", err)
+		}
+		if err := e.applyChanges(ctx, decision.Changes); err != nil {
+			return e.fail(emit, outcome, "conversation", err)
+		}
+		if decision.Terminal != nil {
+			if decision.Terminal.Err == nil {
+				return e.fail(emit, outcome, "policy", errors.New("turn policy returned a terminal decision without an error"))
+			}
+			outcome.Partial = decision.Terminal.Partial
+			return e.fail(emit, outcome, "policy", decision.Terminal.Err)
+		}
 
 		if len(modelResult.Message.ToolCalls) > 0 {
-			if err := e.executeTools(ctx, emit, snapshot, modelResult.Message.ToolCalls); err != nil {
+			toolState, err := e.executeTools(ctx, emit, snapshot, turn, modelResult.Message.ToolCalls)
+			if err != nil {
 				return e.fail(emit, outcome, "tool", err)
 			}
+			toolDecision, err := policyRun.AfterTools(ctx, toolState)
+			if err != nil {
+				return e.fail(emit, outcome, "policy", err)
+			}
+			if err := e.applyChanges(ctx, toolDecision.Changes); err != nil {
+				return e.fail(emit, outcome, "conversation", err)
+			}
 		}
-		if decision.Complete {
+		if len(modelResult.Message.ToolCalls) == 0 && decision.Complete {
 			emit(Fact{Kind: FactRunCompleted, Content: outcome.FinalMessage})
 			return outcome, nil
 		}
@@ -331,27 +410,31 @@ func (e *AgentEngine) executeTools(
 	ctx context.Context,
 	emit func(Fact),
 	snapshot ToolSnapshot,
+	turn int,
 	calls []schema.ToolCall,
-) error {
+) (ToolState, error) {
+	state := ToolState{Turn: turn, Calls: cloneToolCalls(calls)}
 	for _, call := range calls {
 		emit(Fact{Kind: FactToolCall, CallID: call.ID, Name: call.Name, Content: string(call.Arguments)})
 	}
 	batch, err := e.tools.Execute(ctx, snapshot, cloneToolCalls(calls))
 	if err != nil {
-		return err
+		return state, err
 	}
 	if len(batch.Results) != len(calls) {
-		return fmt.Errorf("tool result count = %d, want %d", len(batch.Results), len(calls))
+		return state, fmt.Errorf("tool result count = %d, want %d", len(batch.Results), len(calls))
 	}
 	changes := make([]ConversationChange, 0, len(batch.Results))
+	state.Results = make([]ToolExecutionResult, 0, len(batch.Results))
 	for index, result := range batch.Results {
 		call := calls[index]
 		if result.CallID == "" {
 			result.CallID = call.ID
 		}
 		if result.CallID != call.ID {
-			return fmt.Errorf("tool result %d call ID = %q, want %q", index, result.CallID, call.ID)
+			return state, fmt.Errorf("tool result %d call ID = %q, want %q", index, result.CallID, call.ID)
 		}
+		state.Results = append(state.Results, result)
 		observerContent := result.ObserverContent
 		if observerContent == "" {
 			observerContent = result.ModelContent
@@ -369,12 +452,15 @@ func (e *AgentEngine) executeTools(
 		})
 	}
 	if err := e.applyChanges(ctx, changes); err != nil {
-		return err
+		return state, err
 	}
-	return ctx.Err()
+	return state, ctx.Err()
 }
 
 func (e *AgentEngine) applyChanges(ctx context.Context, changes []ConversationChange) error {
+	if len(changes) == 0 {
+		return nil
+	}
 	cloned := make([]ConversationChange, len(changes))
 	for index, change := range changes {
 		change.Message = cloneMessage(change.Message)

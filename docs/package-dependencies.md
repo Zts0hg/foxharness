@@ -30,10 +30,15 @@ flowchart TD
     ENGINE --> SCHEMA[internal/schema]
 
     TOOLEXEC[internal/toolexec] --> ENGINE
-	TOOLEXEC --> SCHEMA
+    TOOLEXEC --> SCHEMA
+    TURNPOLICY[internal/turnpolicy] --> ENGINE
+    TURNPOLICY --> SCHEMA
+    TURNPOLICY --> RECOVERY[internal/recovery]
+    TURNPOLICY --> REMINDER[internal/reminder]
 
     WIRE -. injects .-> PROVIDER[provider implementations]
     WIRE -. injects .-> TOOLS[tool implementations]
+    WIRE -. injects .-> TURNPOLICY
     WIRE -. injects .-> COMPACTION[compaction]
     WIRE -. injects .-> TELEMETRY[metrics and tracing]
 ```
@@ -47,6 +52,7 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 | `internal/schema` | Narrow model protocol values: messages, usage, tool definitions, calls, and results. It is not a general DTO or utility package. |
 | `internal/engine` | Infrastructure-independent run/turn transitions and consumer-owned model, tool, conversation, policy, and observer ports. |
 | `internal/toolexec` | Immutable resolved capability snapshots, parallel/exclusive batch scheduling, cancellation completion, and ordered structured tool results. It does not own catalogs, permissions, session persistence, or presentation. |
+| `internal/turnpolicy` | Immutable factories for run-scoped recovery, reminder, completion, and TODO decisions. Runtime supplies already-bound queries; this package does not read persistence, select tools, emit telemetry, or own conversation state. |
 | `internal/runtime` | Harness construction, immutable profile resolution, live session/run lifecycle, context-injection decisions, recoverable-state commit coordination, and child-run control. |
 | `internal/app` | User-entry commands, UI-neutral DTOs, runtime-notification mapping, and correlated interaction ports. |
 | `internal/tui` | Fox-specific Bubble Tea input, queue, overlay, and terminal presentation behavior. |
@@ -81,11 +87,14 @@ The previous implementation is explicitly named `LegacyEngine`/`NewLegacyEngine`
 
 `M06` introduces the focused `internal/toolexec` adapter. Composition supplies already constrained and alias-resolved `Capability` values, so one snapshot freezes each advertised definition, executable function, and parallel-safety decision together. Consecutive parallel-safe calls overlap; non-parallel calls form exclusive boundaries; every batch returns in model-call order; unknown, invalid, business, infrastructure, and cancellation outcomes remain structured and correlated. `ToolExecutionResult` keeps full artifact content, model preview, observer preview, and artifact path distinct. Engine commits model-visible results before preparing the next context and exposes only normalized observer forms. Session-message persistence, permission policy, catalogs, and artifact storage remain outside both engine and toolexec.
 
+`M07` introduces the focused `internal/turnpolicy` factory. `TurnPolicy.StartRun` creates a fresh `TurnRunPolicy` for every engine run, so recovery fingerprints, reminder history/cooldown, completion attempts, and TODO-update state cannot leak through a reused `AgentEngine`. Its binder also creates run-owned, context-aware completion/TODO/next-turn queries instead of sharing mutable callbacks across runs. The run policy receives immutable model and completed-tool facts and returns ordered, source-typed, non-persisted context proposals; engine commits and observes each assistant message before evaluating completion, commits correlated tool results before recovery, and applies ordinary then next-turn reminders before the following invocation. Runtime remains responsible for binding queries to its authoritative state. M08/M11 will make `Conversation` place these typed overlays after compatible context preparation and compaction. The policy package imports only engine/schema contracts and the existing focused recovery/reminder mechanisms.
+
 ## Allowed Dependencies
 
 | Importer | Allowed target architecture dependencies |
 |---|---|
 | `internal/engine` | Go standard library and `internal/schema` only. |
+| `internal/turnpolicy` | `internal/engine`, `internal/schema`, `internal/recovery`, and `internal/reminder` only. |
 | `internal/runtime` | `internal/engine`, persisted values/storage contracts implemented by `internal/session`, and pure `internal/prompt`. Concrete mechanisms arrive through runtime-owned ports. |
 | `internal/app` | `internal/runtime` through application use cases and mapping code. Application DTOs and ports are app-owned. |
 | TUI, CLI, Feishu, AgentOps adapters | `internal/app` plus adapter-local presentation/transport helpers and independently owned control-plane values. They do not operate concrete runtime subsystems. |
@@ -98,6 +107,7 @@ An interface belongs to the package that consumes it. Concrete provider, tool, c
 ## Forbidden Dependencies
 
 - `internal/engine` must not import runtime, app, adapters, persistence, providers, tools, compaction, checkpoints, memory, telemetry, recovery, reminders, or tool-result storage.
+- `internal/turnpolicy` must not import runtime, session persistence, app/adapters, providers, tools, compaction, memory, telemetry, or any package other than engine/schema contracts and the focused recovery/reminder mechanisms.
 - `internal/runtime` must not import app, TUI, CLI, Feishu, AgentOps, or the model-facing subagent adapter.
 - `internal/session` must not import runtime or own live runtime lifecycle and recoverable-state commit policy.
 - `internal/app` must not import presentation adapters or concrete engine, persistence, provider, tool, compaction, checkpoint, memory, or telemetry implementations.
@@ -159,6 +169,7 @@ A fact is produced once and remains canonically ordered. Session artifacts may b
 |---|---|---|
 | Model invocation | `engine.ModelInvoker` | provider packages and composition |
 | Tool snapshot/execution | `engine.ToolExecutor` | tool catalog/executor packages and composition |
+| Turn completion/reminders | `engine.TurnPolicy` | `internal/turnpolicy`, configured with runtime-owned queries through composition |
 | Conversation projection | `engine.Conversation` | `runtime.ContextController` |
 | Recoverable persistence | `runtime.SessionStore` | `session.FileStore` |
 | Prompt fragments | pure renderer calls | `internal/prompt` |

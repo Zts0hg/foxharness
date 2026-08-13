@@ -60,6 +60,7 @@ func TestViolationRulesDetectConfirmedForbiddenEdges(t *testing.T) {
 		edge importEdge
 	}{
 		{name: "engine concrete provider", edge: importEdge{From: "internal/engine", To: "internal/provider"}},
+		{name: "turn policy persistence", edge: importEdge{From: "internal/turnpolicy", To: "internal/session"}},
 		{name: "runtime presentation", edge: importEdge{From: "internal/runtime", To: "internal/tui"}},
 		{name: "runtime bypasses engine schema contract", edge: importEdge{From: "internal/runtime", To: "internal/schema"}},
 		{name: "session owns runtime lifecycle", edge: importEdge{From: "internal/session", To: "internal/runtime"}},
@@ -83,6 +84,10 @@ func TestViolationRulesDetectConfirmedForbiddenEdges(t *testing.T) {
 func TestViolationRulesAllowConfirmedEdges(t *testing.T) {
 	tests := []importEdge{
 		{From: "internal/engine", To: "internal/schema"},
+		{From: "internal/turnpolicy", To: "internal/engine"},
+		{From: "internal/turnpolicy", To: "internal/recovery"},
+		{From: "internal/turnpolicy", To: "internal/reminder"},
+		{From: "internal/turnpolicy", To: "internal/schema"},
 		{From: "internal/runtime", To: "internal/engine"},
 		{From: "internal/runtime", To: "internal/session"},
 		{From: "internal/runtime", To: "internal/prompt"},
@@ -482,6 +487,10 @@ func violationReason(edge importEdge) string {
 	case edge.From == "internal/engine":
 		if edge.To != "internal/schema" {
 			return "engine may depend only on schema"
+		}
+	case edge.From == "internal/turnpolicy":
+		if !oneOf(edge.To, "internal/engine", "internal/recovery", "internal/reminder", "internal/schema") {
+			return "turn policy may depend only on engine contracts and focused policy mechanisms"
 		}
 	case edge.From == "internal/runtime":
 		if !oneOf(edge.To, "internal/engine", "internal/session", "internal/prompt") {
