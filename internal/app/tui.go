@@ -73,11 +73,14 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 		PlanReviewer:      planReviewer,
 		Permissions:       permissionBridge,
 		Autodev: func(runCtx context.Context, backlogPath string, reporter autodev.Reporter) error {
-			autodevCfg := cfg
-			autodevCfg.Prompt = backlogPath
-			return RunAutodev(runCtx, autodevCfg, reporter)
+			return RunAutodev(runCtx, autodevConfigForTUILaunch(cfg, backlogPath), reporter)
 		},
 	})
+}
+
+func autodevConfigForTUILaunch(cfg CLIConfig, backlogPath string) CLIConfig {
+	cfg.Prompt = backlogPath
+	return cfg
 }
 
 func attachInteractivePlanReviewer(runner *AgentRunner) *tui.PlanReviewer {

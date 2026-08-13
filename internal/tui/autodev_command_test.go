@@ -149,4 +149,35 @@ func TestUIAUT003AutodevRunLifecycleAndCancellation(t *testing.T) {
 	}
 }
 
+func TestUIAUT003AutodevCompletionRestoresStateExactlyOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		runErr     error
+		wantStatus string
+	}{
+		{name: "success", wantStatus: "Run complete"},
+		{name: "ordinary failure", runErr: errors.New("pipeline failed"), wantStatus: "Run failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel(context.Background(), newFakeRunner(), Config{
+				Autodev: func(context.Context, string, autodev.Reporter) error { return tc.runErr },
+			})
+			next, cmd := m.handleSlashCommand("/autodev WORK.md")
+			running := next.(Model)
+			msg := cmd().(runFinishedMsg)
+			updated, _ := running.Update(msg)
+			done := updated.(Model)
+			if done.running || done.cancelRun != nil || done.activeOperationID != 0 || done.status != tc.wantStatus {
+				t.Fatalf("finished state = running:%t cancel:%t status:%q operation:%d", done.running, done.cancelRun != nil, done.status, done.activeOperationID)
+			}
+			entryCount := len(done.entries)
+			updated, _ = done.Update(msg)
+			duplicate := updated.(Model)
+			if duplicate.status != done.status || len(duplicate.entries) != entryCount {
+				t.Fatalf("duplicate completion changed state: before %q/%d after %q/%d", done.status, entryCount, duplicate.status, len(duplicate.entries))
+			}
+		})
+	}
+}
+
 var _ = tea.Quit
