@@ -122,7 +122,7 @@
 
 ## Phase 0E: Baseline Freeze
 
-- [ ] **T046** Freeze `B00`: complete every trace row with test, fixture/outcome, command, passing result, and source commit; verify no skips or unresolved `DV-*`; run architecture baseline tests and `go test ./...`; record the baseline evidence. Dependencies: T001-T045. Covers: REQ-001..015, NFR-001..013; Plan: Phase 0 baseline gate.
+- [x] **T046** Freeze `B00`: complete every trace row with test, fixture/outcome, command, passing result, and source commit; verify no skips or unresolved `DV-*`; run architecture baseline tests and `go test ./...`; record the baseline evidence. Dependencies: T001-T045. Covers: REQ-001..015, NFR-001..013; Plan: Phase 0 baseline gate. **Completed:** corrected source `9d5f010e64920adc72ec262c1031d3956d883156` is B00. Exact catalog comparison yields 274/274 rows, all 235 behavior rows pass and all 39 DV rows are corrected with full existing ancestor commit hashes. Twenty-two immutable fixtures and the exact 68-entry architecture ceiling verify; fixture, architecture, vet and complete repository gates pass without production architecture movement.
 
 **Checkpoint B00**: Production migration is now permitted. If this checkpoint is not complete, all following tasks remain blocked.
 
