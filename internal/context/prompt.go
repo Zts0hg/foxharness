@@ -14,6 +14,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
+	renderprompt "github.com/Zts0hg/foxharness/internal/prompt"
 )
 
 // AutoMemoryStore supplies the cross-session persistent memory injected into the
@@ -137,12 +138,12 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 	if c.toolCapabilities != nil {
 		basePrompt = capabilityScopedSystemPrompt(c.toolCapabilities)
 	}
-	parts := []string{basePrompt}
+	parts := []renderprompt.Fragment{renderprompt.Text(basePrompt)}
 	if c.collaborationMode == collaboration.ModeFormalPlan {
-		parts = append(parts, section("Formal Plan Collaboration Mode", formalPlanGuidance()))
+		parts = append(parts, renderprompt.Section("Formal Plan Collaboration Mode", formalPlanGuidance()))
 	}
 	if c.interactiveAsk && (c.toolCapabilities == nil || hasCapability(c.toolCapabilities, "ask_user_question")) {
-		parts = append(parts, section("Asking the User", askGuidance()))
+		parts = append(parts, renderprompt.Section("Asking the User", askGuidance()))
 	}
 	memoryGuidance := memoryInstructions()
 	if c.collaborationMode == collaboration.ModeFormalPlan {
@@ -151,11 +152,11 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 		memoryGuidance = capabilityScopedTodoInstructions(c.toolCapabilities)
 	}
 	if memoryGuidance != "" {
-		parts = append(parts, section("Session Plan and Todo Files", memoryGuidance))
+		parts = append(parts, renderprompt.Section("Session Plan and Todo Files", memoryGuidance))
 	}
 
 	if c.autoMemory != nil && (c.toolCapabilities == nil || hasCapability(c.toolCapabilities, "read_file")) {
-		parts = append(parts, section("Persistent Memory", c.persistentMemoryBody()))
+		parts = append(parts, renderprompt.Section("Persistent Memory", c.persistentMemoryBody()))
 	}
 
 	agents, err := c.loadAgentsFile()
@@ -163,7 +164,7 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 		return "", err
 	}
 	if agents != "" {
-		parts = append(parts, section("Project Instructions from AGENTS.md", agents))
+		parts = append(parts, renderprompt.Section("Project Instructions from AGENTS.md", agents))
 	}
 
 	skills, err := c.loadMentionedSkills(userPrompt)
@@ -171,7 +172,7 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 		return "", err
 	}
 	for _, skill := range skills {
-		parts = append(parts, skillSection(skill))
+		parts = append(parts, skillFragment(skill))
 	}
 
 	if c.memoryPath != "" {
@@ -179,7 +180,7 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		parts = append(parts, section("Session Working Memory", workingMemoryBody(
+		parts = append(parts, renderprompt.Section("Session Working Memory", workingMemoryBody(
 			memory,
 			c.relToWorkDir(c.memoryPath),
 			c.memoryRO,
@@ -189,11 +190,11 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 
 	if c.skillListFn != nil && (c.toolCapabilities == nil || hasCapability(c.toolCapabilities, "skill")) {
 		if list := strings.TrimSpace(c.skillListFn()); list != "" {
-			parts = append(parts, section("Available Skills (invoke via the `skill` tool)", list))
+			parts = append(parts, renderprompt.Section("Available Skills (invoke via the `skill` tool)", list))
 		}
 	}
 
-	return strings.Join(parts, "\n\n"), nil
+	return renderprompt.Render(parts), nil
 
 }
 
@@ -439,15 +440,6 @@ Core rules:
 `)
 }
 
-func section(title, body string) string {
-	body = strings.TrimSpace(body)
-	if body == "" {
-		return ""
-	}
-
-	return fmt.Sprintf("## %s\n\n%s", title, body)
-}
-
 func (c *Composer) loadAgentsFile() (string, error) {
 	path := filepath.Join(c.workDir, "AGENTS.md")
 	content, err := os.ReadFile(path)
@@ -563,7 +555,7 @@ func parseSkillMarkdown(requestedName, content string) loadedSkill {
 	return skill
 }
 
-func skillSection(skill loadedSkill) string {
+func skillFragment(skill loadedSkill) renderprompt.Fragment {
 	var b strings.Builder
 	if skill.RequestedName != "" && skill.RequestedName != skill.Name {
 		b.WriteString(fmt.Sprintf("Requested as: $%s\n\n", skill.RequestedName))
@@ -575,7 +567,7 @@ func skillSection(skill loadedSkill) string {
 	}
 	b.WriteString(skill.Content)
 
-	return section("Loaded Skill: "+skill.Name, b.String())
+	return renderprompt.Section("Loaded Skill: "+skill.Name, b.String())
 }
 
 func (c *Composer) loadWorkingMemory() (string, error) {

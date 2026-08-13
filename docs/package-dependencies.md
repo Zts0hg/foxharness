@@ -57,6 +57,12 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 | Provider, tool, compaction, checkpoint, memory, automemory, metrics, and tracing packages | Focused mechanisms injected through consumer-owned contracts. Infrastructure is a classification; there is no aggregate `internal/infrastructure` package. |
 | `cmd/*` | Process input/configuration, concrete construction, dependency wiring, entry selection, and startup only. |
 
+### Current Migration State
+
+`M01` establishes `internal/prompt` as the standard-library-only fragment representation and renderer. It accepts already-resolved fragments in caller-supplied order and performs no file discovery, memory access, collaboration selection, capability selection, persistence, or injection timing.
+
+`internal/context` remains a temporary compatibility facade for unmigrated callers. It currently owns the legacy discovery and selection work, converts the resolved values to `prompt.Fragment` values, and forwards final ordering and rendering to `prompt.Render`. The dependency is one-way: `internal/context` may import `internal/prompt`; `internal/prompt` cannot import `internal/context` or any other project package. Runtime takes over discovery and injection decisions at `M11`, profile cutovers remove consumers according to their migration boundaries, and `M26` deletes the facade.
+
 ## Allowed Dependencies
 
 | Importer | Allowed target architecture dependencies |

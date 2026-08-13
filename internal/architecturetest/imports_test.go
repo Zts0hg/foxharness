@@ -61,6 +61,7 @@ func TestViolationRulesDetectConfirmedForbiddenEdges(t *testing.T) {
 		{name: "engine concrete provider", edge: importEdge{From: "internal/engine", To: "internal/provider"}},
 		{name: "runtime presentation", edge: importEdge{From: "internal/runtime", To: "internal/tui"}},
 		{name: "runtime bypasses engine schema contract", edge: importEdge{From: "internal/runtime", To: "internal/schema"}},
+		{name: "prompt discovers automemory", edge: importEdge{From: "internal/prompt", To: "internal/automemory"}},
 		{name: "application concrete engine", edge: importEdge{From: "internal/app", To: "internal/engine"}},
 		{name: "tui concrete session", edge: importEdge{From: "internal/tui", To: "internal/session"}},
 		{name: "subagent concrete runtime", edge: importEdge{From: "internal/subagent", To: "internal/runtime"}},
@@ -188,6 +189,8 @@ func violationReason(edge importEdge) string {
 	}
 
 	switch {
+	case edge.From == "internal/prompt":
+		return "prompt renderer must not depend on project mechanisms"
 	case edge.From == "internal/engine":
 		if edge.To != "internal/schema" {
 			return "engine may depend only on schema"
