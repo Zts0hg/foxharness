@@ -72,14 +72,14 @@ type AgentRunner struct {
 
 	store          *memory.Store
 	autoMemory     *automemory.Store
-	manager        *session.Manager
+	manager        *session.FileStore
 	llmProvider    provider.LLMProvider
-	currentSession *session.Session
+	currentSession *session.StoredSession
 
 	// extractionFire overrides the default post-run memory extraction launcher.
 	// It is nil in production (which uses automemory.PerRunHooks.Fire); tests set
 	// it to observe the hook synchronously.
-	extractionFire func(sess *session.Session, runID string, tracker *automemory.Tracker)
+	extractionFire func(sess *session.StoredSession, runID string, tracker *automemory.Tracker)
 	checkpointer   checkpoint.Checkpointer
 	slashRegistry  *slash.Registry
 	slashExecutor  *slash.Executor
@@ -127,7 +127,7 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		return nil, err
 	}
 
-	manager := session.NewManager(workDir)
+	manager := session.NewFileStore(workDir)
 	sess, err := resolveRunnerSession(manager, workDir, cfg)
 	if err != nil {
 		return nil, err
@@ -281,7 +281,7 @@ func (r *AgentRunner) currentSubagentManager() *subagent.Manager {
 	return subagent.NewManager(p, wd).WithPermission(permissions).WithParentEvidence(r.permissionEvidenceProvider(sess, ""))
 }
 
-func (r *AgentRunner) permissionEvidenceProvider(sess *session.Session, currentPrompt string, trustCurrentPrompt ...bool) permission.EvidenceProvider {
+func (r *AgentRunner) permissionEvidenceProvider(sess *session.StoredSession, currentPrompt string, trustCurrentPrompt ...bool) permission.EvidenceProvider {
 	trustPrompt := true
 	if len(trustCurrentPrompt) > 0 {
 		trustPrompt = trustCurrentPrompt[0]
@@ -340,7 +340,7 @@ func (r *AgentRunner) currentSessionIDLocked() string {
 	if r.currentSession == nil {
 		return ""
 	}
-	return r.currentSession.ID
+	return string(r.currentSession.ID)
 }
 
 // SlashRegistry exposes the runner's slash command registry to callers
@@ -699,13 +699,13 @@ func (r *AgentRunner) NewSession(ctx context.Context) (string, error) {
 	if checkpointDisabledFromEnv() {
 		r.checkpointer.SetDisabled(true)
 	}
-	return sess.ID, nil
+	return string(sess.ID), nil
 }
 
 func (r *AgentRunner) SessionID() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.currentSession.ID
+	return string(r.currentSession.ID)
 }
 
 func (r *AgentRunner) SessionDir() string {
@@ -848,7 +848,7 @@ func (r *AgentRunner) ProjectInputHistory(limit int) ([]string, error) {
 				text:      text,
 				when:      record.Time,
 				seq:       record.Seq,
-				sessionID: sess.ID,
+				sessionID: string(sess.ID),
 				current:   sess.ID == current.ID,
 			})
 		}
@@ -1121,7 +1121,7 @@ func extractFilePath(raw []byte) string {
 	return args.Path
 }
 
-func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.LLMProvider, cp checkpoint.Checkpointer, getMessageID func() string, evidenceProviders ...permission.EvidenceProvider) tools.Registry {
+func (r *AgentRunner) buildRegistry(sess *session.StoredSession, llmProvider provider.LLMProvider, cp checkpoint.Checkpointer, getMessageID func() string, evidenceProviders ...permission.EvidenceProvider) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Use(middleware.NewCheckpointMiddleware(cp, getMessageID, r.workDir))
 	registry.Register(tools.NewReadFileTool(r.workDir))
@@ -1140,7 +1140,7 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 		evidenceProvider = evidenceProviders[0]
 	}
 	subManager := subagent.NewManager(llmProvider, r.workDir).WithPermission(permissions).WithParentEvidence(evidenceProvider)
-	registry.Register(subagent.NewTool(subManager, sess.ID))
+	registry.Register(subagent.NewTool(subManager, string(sess.ID)))
 
 	r.mu.Lock()
 	slashReg := r.slashRegistry
@@ -1148,7 +1148,7 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 	userAsker := r.userAsker
 	r.mu.Unlock()
 	if slashReg != nil && slashExec != nil {
-		registry.Register(skilltool.NewSkillTool(slashReg, slashExec, func() string { return sess.ID }))
+		registry.Register(skilltool.NewSkillTool(slashReg, slashExec, func() string { return string(sess.ID) }))
 	}
 	// The ask_user_question tool is only registered when an interactive asker is
 	// available (set by the TUI). Non-interactive runners leave it nil so the
@@ -1160,7 +1160,7 @@ func (r *AgentRunner) buildRegistry(sess *session.Session, llmProvider provider.
 	return permission.DecorateRegistry(registry, permissions, evidenceProviders...)
 }
 
-func (r *AgentRunner) buildPlanLifecycle(sess *session.Session, store *memory.Store, defaultRegistry tools.Registry, evidenceProviders ...permission.EvidenceProvider) *planLifecycle {
+func (r *AgentRunner) buildPlanLifecycle(sess *session.StoredSession, store *memory.Store, defaultRegistry tools.Registry, evidenceProviders ...permission.EvidenceProvider) *planLifecycle {
 	r.mu.Lock()
 	userAsker := r.userAsker
 	planReviewer := r.planReviewer

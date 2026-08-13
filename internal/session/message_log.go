@@ -22,7 +22,7 @@ const (
 // messages at session scope so future runs can continue from original context.
 type MessageRecord struct {
 	Seq            int64          `json:"seq"`
-	RunID          string         `json:"run_id"`
+	RunID          RunID          `json:"run_id"`
 	Time           time.Time      `json:"time"`
 	Kind           string         `json:"kind,omitempty"`
 	Message        schema.Message `json:"message"`
@@ -52,29 +52,29 @@ type MessageLog struct {
 }
 
 // NewMessageLog creates a MessageLog for the provided session.
-func NewMessageLog(s *Session) *MessageLog {
+func NewMessageLog(s *StoredSession) *MessageLog {
 	return &MessageLog{path: s.MessagesPath()}
 }
 
 // Append records a normal model-visible message for a run and returns its
 // assigned sequence number.
-func (l *MessageLog) Append(runID string, msg schema.Message) (int64, error) {
+func (l *MessageLog) Append(runID RunID, msg schema.Message) (int64, error) {
 	return l.AppendKind(runID, MessageKindNormal, msg)
 }
 
 // AppendWithDisplay records a normal model-visible message with an optional
 // human-facing display form.
-func (l *MessageLog) AppendWithDisplay(runID string, msg schema.Message, displayContent string) (int64, error) {
+func (l *MessageLog) AppendWithDisplay(runID RunID, msg schema.Message, displayContent string) (int64, error) {
 	return l.appendRecord(runID, MessageKindNormal, msg, displayContent)
 }
 
 // AppendKind records a model-visible message with a specific kind and returns
 // its assigned sequence number.
-func (l *MessageLog) AppendKind(runID, kind string, msg schema.Message) (int64, error) {
+func (l *MessageLog) AppendKind(runID RunID, kind string, msg schema.Message) (int64, error) {
 	return l.appendRecord(runID, kind, msg, "")
 }
 
-func (l *MessageLog) appendRecord(runID, kind string, msg schema.Message, displayContent string) (int64, error) {
+func (l *MessageLog) appendRecord(runID RunID, kind string, msg schema.Message, displayContent string) (int64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -212,7 +212,7 @@ func (l *MessageLog) LoadMessages() ([]schema.Message, error) {
 // It is timing-independent, so a post-run consumer (e.g. the extraction hook)
 // never picks up a later run's messages even if it reads the log after the next
 // run has started appending.
-func (l *MessageLog) LoadMessagesForRun(runID string) ([]schema.Message, error) {
+func (l *MessageLog) LoadMessagesForRun(runID RunID) ([]schema.Message, error) {
 	records, err := l.LoadRecords()
 	if err != nil {
 		return nil, err

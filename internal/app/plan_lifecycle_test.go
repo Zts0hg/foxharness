@@ -229,7 +229,7 @@ func TestFormalPlanLifecycleContinuesInOneRunAndGatesImplementation(t *testing.T
 	userPrompts := 0
 	runIDs := map[string]bool{}
 	for _, record := range records {
-		runIDs[record.RunID] = true
+		runIDs[string(record.RunID)] = true
 		if record.Message.Role == schema.RoleUser && record.Message.ToolCallID == "" {
 			userPrompts++
 		}

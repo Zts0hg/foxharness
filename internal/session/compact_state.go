@@ -19,7 +19,7 @@ type CompactState struct {
 
 // LoadCompactState loads the persisted compaction state for a session. Missing
 // state returns an empty value.
-func LoadCompactState(s *Session) (*CompactState, error) {
+func LoadCompactState(s *StoredSession) (*CompactState, error) {
 	data, err := os.ReadFile(s.CompactStatePath())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -36,7 +36,7 @@ func LoadCompactState(s *Session) (*CompactState, error) {
 }
 
 // SaveCompactState persists the session compaction state.
-func SaveCompactState(s *Session, state *CompactState) error {
+func SaveCompactState(s *StoredSession, state *CompactState) error {
 	if state == nil {
 		return nil
 	}

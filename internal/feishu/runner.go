@@ -30,7 +30,7 @@ type Runner struct {
 	provider       provider.LLMProvider
 	workDir        string
 	messenger      *Messenger
-	sessionManager *session.Manager
+	sessionManager *session.FileStore
 	approvalStore  *approval.Store
 	locksMu        sync.Mutex
 	locks          map[string]*sessionLock
@@ -65,7 +65,7 @@ func NewRunner(
 	provider provider.LLMProvider,
 	workDir string,
 	messenger *Messenger,
-	sessionManager *session.Manager,
+	sessionManager *session.FileStore,
 	approvalStore *approval.Store,
 ) *Runner {
 	return &Runner{
@@ -229,7 +229,7 @@ func feishuTaskPrompt(task Task, taskText string) string {
 
 // buildComposer assembles the system-prompt composer for a task, injecting the
 // cross-session persistent memory index when a store is available (REQ-006).
-func (r *Runner) buildComposer(sess *session.Session, store *automemory.Store) *prompt.Composer {
+func (r *Runner) buildComposer(sess *session.StoredSession, store *automemory.Store) *prompt.Composer {
 	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
 	if store != nil {
 		composer = composer.WithAutoMemory(store)
@@ -239,7 +239,7 @@ func (r *Runner) buildComposer(sess *session.Session, store *automemory.Store) *
 
 // fireMemoryExtraction launches the post-run memory extraction hook (PLD-8). It
 // is fire-and-forget and panic-guarded so it can never disturb the task result.
-func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *session.Session, runID string, tracker *automemory.Tracker) {
+func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *session.StoredSession, runID string, tracker *automemory.Tracker) {
 	if hooks == nil {
 		return
 	}
@@ -251,7 +251,7 @@ func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *sessi
 	hooks.Fire(sess, runID, tracker)
 }
 
-func (r *Runner) buildRegistry(sess *session.Session, chatID string, currentPrompt ...string) tools.Registry {
+func (r *Runner) buildRegistry(sess *session.StoredSession, chatID string, currentPrompt ...string) tools.Registry {
 	evidenceProvider := remotePermissionEvidenceProvider(sess, firstPrompt(currentPrompt))
 	var approver permission.UserApprover
 	if r.messenger != nil && r.approvalStore != nil {
@@ -276,11 +276,11 @@ func (r *Runner) buildRegistry(sess *session.Session, chatID string, currentProm
 	registry.Register(tools.NewBashTool(r.workDir))
 	registry.Register(tools.NewReadTodoTool(sess.RootDir))
 	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
-	registry.Register(subagent.NewTool(subManager, sess.ID))
+	registry.Register(subagent.NewTool(subManager, string(sess.ID)))
 	return permission.DecorateRegistry(registry, coordinator, evidenceProvider)
 }
 
-func remotePermissionEvidenceProvider(sess *session.Session, currentPrompt string) permission.EvidenceProvider {
+func remotePermissionEvidenceProvider(sess *session.StoredSession, currentPrompt string) permission.EvidenceProvider {
 	return func(request permission.Request) permission.Evidence {
 		var messages []schema.Message
 		if sess != nil {
@@ -315,7 +315,7 @@ func containsDirectUserMessage(messages []schema.Message, content string) bool {
 	return false
 }
 
-func (r *Runner) resolveSession(forceNew bool, task Task) (*session.Session, bool, error) {
+func (r *Runner) resolveSession(forceNew bool, task Task) (*session.StoredSession, bool, error) {
 	if !forceNew {
 		sess, err := r.sessionManager.Latest(session.LookupOptions{
 			Source: session.SOURCEFeishu,

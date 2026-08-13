@@ -101,28 +101,28 @@ func TestPFCLI002SessionSelectionPreservesCurrentContracts(t *testing.T) {
 		cfg  CLIConfig
 		want string
 	}{
-		{name: "explicit", cfg: CLIConfig{SessionID: existingCLI.ID}, want: existingCLI.ID},
-		{name: "continue latest CLI", cfg: CLIConfig{ContinueSession: true}, want: existingCLI.ID},
+		{name: "explicit", cfg: CLIConfig{SessionID: string(existingCLI.ID)}, want: string(existingCLI.ID)},
+		{name: "continue latest CLI", cfg: CLIConfig{ContinueSession: true}, want: string(existingCLI.ID)},
 		{name: "default fresh", cfg: CLIConfig{}},
 		{name: "forced fresh", cfg: CLIConfig{NewSession: true}},
 	}
-	created := map[string]bool{existingCLI.ID: true}
+	created := map[string]bool{string(existingCLI.ID): true}
 	for _, tc := range checks {
 		t.Run(tc.name, func(t *testing.T) {
 			sess, err := resolveCLISession(manager, workDir, tc.cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.want != "" && sess.ID != tc.want {
+			if tc.want != "" && string(sess.ID) != tc.want {
 				t.Fatalf("session = %q, want %q", sess.ID, tc.want)
 			}
-			if tc.want == "" && created[sess.ID] {
+			if tc.want == "" && created[string(sess.ID)] {
 				t.Fatalf("fresh selection reused session %q", sess.ID)
 			}
 			if sess.Source != session.SOURCECLI {
 				t.Fatalf("session source = %q, want CLI", sess.Source)
 			}
-			created[sess.ID] = true
+			created[string(sess.ID)] = true
 		})
 	}
 
@@ -130,9 +130,9 @@ func TestPFCLI002SessionSelectionPreservesCurrentContracts(t *testing.T) {
 		cfg  CLIConfig
 		want string
 	}{
-		{cfg: CLIConfig{NewSession: true, SessionID: existingCLI.ID}, want: "-new 不能和 -session 或 -continue 同时使用"},
+		{cfg: CLIConfig{NewSession: true, SessionID: string(existingCLI.ID)}, want: "-new 不能和 -session 或 -continue 同时使用"},
 		{cfg: CLIConfig{NewSession: true, ContinueSession: true}, want: "-new 不能和 -session 或 -continue 同时使用"},
-		{cfg: CLIConfig{SessionID: existingCLI.ID, ContinueSession: true}, want: "-session 不能和 -continue 同时使用"},
+		{cfg: CLIConfig{SessionID: string(existingCLI.ID), ContinueSession: true}, want: "-session 不能和 -continue 同时使用"},
 		{cfg: CLIConfig{SessionID: "missing"}, want: "Session missing 不存在"},
 	} {
 		if _, err := resolveCLISession(manager, workDir, tc.cfg); err == nil || err.Error() != tc.want {
@@ -345,7 +345,7 @@ func TestPFCLI012SuccessfulResultAndArtifactsAreCorrelatedOnce(t *testing.T) {
 	if err != nil || result == nil {
 		t.Fatalf("Run() = %#v, %v", result, err)
 	}
-	if result.SessionID != sess.ID || result.RunID == "" || result.FinalMessage != "done:artifact request" {
+	if result.SessionID != string(sess.ID) || result.RunID == "" || result.FinalMessage != "done:artifact request" {
 		t.Fatalf("result identity = %#v", result)
 	}
 	for _, path := range []string{runner.TranscriptPath(), result.MetricsPath, result.TracePath} {
@@ -360,7 +360,7 @@ func TestPFCLI012SuccessfulResultAndArtifactsAreCorrelatedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 2 || records[0].RunID != result.RunID || records[1].RunID != result.RunID || records[1].Message.Usage == nil || records[1].Message.Usage.InputTokens != 7 || records[1].Message.Usage.OutputTokens != 3 {
+	if len(records) != 2 || records[0].RunID != session.RunID(result.RunID) || records[1].RunID != session.RunID(result.RunID) || records[1].Message.Usage == nil || records[1].Message.Usage.InputTokens != 7 || records[1].Message.Usage.OutputTokens != 3 {
 		t.Fatalf("correlated records = %#v", records)
 	}
 }

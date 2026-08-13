@@ -5117,7 +5117,7 @@ func queuedPromptTexts(prompts []queuedPrompt) []string {
 func historyRecord(seq int64, runID string, msg schema.Message) session.MessageRecord {
 	return session.MessageRecord{
 		Seq:     seq,
-		RunID:   runID,
+		RunID:   session.RunID(runID),
 		Time:    time.Date(2026, 5, 17, 12, 0, int(seq), 0, time.Local),
 		Kind:    session.MessageKindNormal,
 		Message: msg,

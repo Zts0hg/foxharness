@@ -40,7 +40,7 @@ type WorkingMemory struct {
 
 // NewMemory creates a new WorkingMemory for the given session.
 // Returns a WorkingMemory that operates on the session's memory file.
-func NewMemory(s *Session) *WorkingMemory {
+func NewMemory(s *StoredSession) *WorkingMemory {
 	return &WorkingMemory{path: s.MemoryPath()}
 }
 

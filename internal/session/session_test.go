@@ -360,7 +360,7 @@ func TestManagerDoesNotReadLegacyProjectLocalSessions(t *testing.T) {
 		t.Fatalf("MkdirAll(legacyRoot) error = %v", err)
 	}
 	legacy := &Session{
-		ID:        legacyID,
+		ID:        ID(legacyID),
 		Source:    SOURCECLI,
 		WorkDir:   cleanAbsPath(workDir),
 		RootDir:   legacyRoot,
@@ -374,7 +374,7 @@ func TestManagerDoesNotReadLegacyProjectLocalSessions(t *testing.T) {
 		t.Fatalf("WriteFile(legacy session.json) error = %v", err)
 	}
 
-	if _, err := manager.Open(legacyID); !errors.Is(err, ErrNotFound) {
+	if _, err := manager.Open(ID(legacyID)); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Open(legacy) error = %v, want ErrNotFound", err)
 	}
 	if _, err := manager.Latest(LookupOptions{}); !errors.Is(err, ErrNotFound) {

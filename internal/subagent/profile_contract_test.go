@@ -181,7 +181,7 @@ func TestPFCHD014PermissionEvidenceCorrelatesCompleteChildLineage(t *testing.T) 
 	if reviewer.result.Decision != permission.ReviewApprove || reviewer.result.Risk != permission.RiskLow {
 		t.Fatalf("terminal permission result = %#v", reviewer.result)
 	}
-	stored, openErr := session.NewManagerWithHome(workDir, homeDir).Open(result.SessionID)
+	stored, openErr := session.NewManagerWithHome(workDir, homeDir).Open(session.ID(result.SessionID))
 	if openErr != nil {
 		t.Fatal(openErr)
 	}
@@ -213,7 +213,7 @@ func TestPFCHD003FreshSessionsAndRunsRemainIsolatedFromParentAndSiblings(t *test
 	results := make([]*Result, 0, 2)
 	for _, task := range []string{"first isolated task", "second isolated task"} {
 		result, runErr := manager.Run(context.Background(), Request{
-			ParentSessionID: parent.ID,
+			ParentSessionID: string(parent.ID),
 			ParentRunID:     "parent-run",
 			DelegationID:    "delegate-" + task,
 			Task:            task,
@@ -231,11 +231,11 @@ func TestPFCHD003FreshSessionsAndRunsRemainIsolatedFromParentAndSiblings(t *test
 		t.Fatalf("child reports crossed invocations: %q / %q", results[0].Report, results[1].Report)
 	}
 	for i, result := range results {
-		child, openErr := sessionManager.Open(result.SessionID)
+		child, openErr := sessionManager.Open(session.ID(result.SessionID))
 		if openErr != nil {
 			t.Fatal(openErr)
 		}
-		if child.Source != session.SOURCESubagent || child.UserID != "subagent-of-"+parent.ID || child.ParentSessionID != parent.ID {
+		if child.Source != session.SOURCESubagent || child.UserID != "subagent-of-"+string(parent.ID) || child.ParentSessionID != parent.ID {
 			t.Fatalf("child %d metadata = %#v", i, child)
 		}
 		messages, loadErr := session.NewMessageLog(child).LoadMessages()

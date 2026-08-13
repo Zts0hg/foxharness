@@ -271,14 +271,14 @@ func loadSessionRecords(value string, workDir string) ([]session.MessageRecord, 
 		if !info.IsDir() {
 			dir = filepath.Dir(value)
 		}
-		sess := &session.Session{RootDir: dir}
+		sess := &session.StoredSession{RootDir: dir}
 		if _, statErr := os.Stat(sess.MessagesPath()); statErr != nil {
 			return nil, fmt.Errorf("render -session %q: no messages.jsonl found (looked at %s)", value, sess.MessagesPath())
 		}
 		return session.NewMessageLog(sess).LoadRecords()
 	}
 
-	sess, err := session.NewManager(workDir).Open(value)
+	sess, err := session.NewFileStore(workDir).Open(session.ID(value))
 	if err != nil {
 		return nil, fmt.Errorf("render -session %q: not a readable path and not a known session id under %q: %w", value, workDir, err)
 	}

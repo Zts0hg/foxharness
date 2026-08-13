@@ -7,29 +7,41 @@ import (
 	"time"
 )
 
-// Run represents one user-submitted task or message within a long-lived
-// session. Metrics, traces, and run-local artifacts are written under the run
-// directory so multiple runs in the same session remain distinguishable.
-type Run struct {
-	ID        string     `json:"id"`
-	SessionID string     `json:"session_id"`
+// StoredRun contains persisted metadata for one submitted task or message.
+type StoredRun struct {
+	ID        RunID      `json:"id"`
+	SessionID ID         `json:"session_id"`
 	RootDir   string     `json:"root_dir"`
 	Prompt    string     `json:"prompt"`
 	StartedAt time.Time  `json:"started_at"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 }
 
-// StartRun creates a run directory and writes initial run metadata.
-func (s *Session) StartRun(prompt string) (*Run, error) {
-	id := newSessionID()
-	root := filepath.Join(s.RunsDir(), id)
+// Run is the deprecated compatibility name for StoredRun.
+// Deprecated: use StoredRun.
+type Run = StoredRun
+
+// StartRun persists a new stored run for the provided session.
+func (s *FileStore) StartRun(storedSession *StoredSession, prompt string) (*StoredRun, error) {
+	return startStoredRun(storedSession, prompt)
+}
+
+// StartRun is the deprecated compatibility wrapper for FileStore.StartRun.
+// Deprecated: use FileStore.StartRun for new code.
+func (s *StoredSession) StartRun(prompt string) (*StoredRun, error) {
+	return startStoredRun(s, prompt)
+}
+
+func startStoredRun(storedSession *StoredSession, prompt string) (*StoredRun, error) {
+	id := newRunID()
+	root := filepath.Join(storedSession.RunsDir(), string(id))
 	if err := os.MkdirAll(filepath.Join(root, "artifacts"), 0755); err != nil {
 		return nil, fmt.Errorf("创建 Run 目录失败: %w", err)
 	}
 
-	r := &Run{
+	r := &StoredRun{
 		ID:        id,
-		SessionID: s.ID,
+		SessionID: storedSession.ID,
 		RootDir:   root,
 		Prompt:    prompt,
 		StartedAt: time.Now(),
@@ -40,29 +52,39 @@ func (s *Session) StartRun(prompt string) (*Run, error) {
 	return r, nil
 }
 
-// Finish marks the run as completed and rewrites run metadata.
-func (r *Run) Finish() error {
+// FinishRun marks a stored run as completed and rewrites its metadata.
+func (s *FileStore) FinishRun(run *StoredRun) error {
+	return finishStoredRun(run)
+}
+
+// Finish is the deprecated compatibility wrapper for FileStore.FinishRun.
+// Deprecated: use FileStore.FinishRun for new code.
+func (r *StoredRun) Finish() error {
+	return finishStoredRun(r)
+}
+
+func finishStoredRun(r *StoredRun) error {
 	now := time.Now()
 	r.EndedAt = &now
 	return r.write()
 }
 
 // MetricsPath returns the run-local metrics path.
-func (r *Run) MetricsPath() string {
+func (r *StoredRun) MetricsPath() string {
 	return filepath.Join(r.RootDir, "metrics.jsonl")
 }
 
 // TracePath returns the run-local trace path.
-func (r *Run) TracePath() string {
+func (r *StoredRun) TracePath() string {
 	return filepath.Join(r.RootDir, "trace.jsonl")
 }
 
 // ArtifactsDir returns the run-local artifacts directory.
-func (r *Run) ArtifactsDir() string {
+func (r *StoredRun) ArtifactsDir() string {
 	return filepath.Join(r.RootDir, "artifacts")
 }
 
-func (r *Run) write() error {
+func (r *StoredRun) write() error {
 	if err := writeJSON(filepath.Join(r.RootDir, "run.json"), r); err != nil {
 		return fmt.Errorf("写入 Run 元数据失败: %w", err)
 	}

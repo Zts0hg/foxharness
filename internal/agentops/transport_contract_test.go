@@ -28,10 +28,10 @@ func TestUIAOP004ExactDefaultAndFailurePresentation(t *testing.T) {
 		if err != nil || len(records) != 2 || records[0].RunID == "" {
 			t.Fatalf("records = %#v, %v", records, err)
 		}
-		runID := records[0].RunID
+		runID := string(records[0].RunID)
 		want := []agentOpsTransportMessage{
-			{chatID: "chat", text: "已创建 AgentOps Session: " + sess.ID + "\n开始分析。"},
-			{chatID: "chat", text: "任务执行完成。\n\nSession: " + sess.ID + "\nRun: " + runID + "\nTrace: " + filepath.Join(sess.RunsDir(), runID, "trace.jsonl") + "\nMetrics: " + filepath.Join(sess.RunsDir(), runID, "metrics.jsonl")},
+			{chatID: "chat", text: "已创建 AgentOps Session: " + string(sess.ID) + "\n开始分析。"},
+			{chatID: "chat", text: "任务执行完成。\n\nSession: " + string(sess.ID) + "\nRun: " + runID + "\nTrace: " + filepath.Join(sess.RunsDir(), runID, "trace.jsonl") + "\nMetrics: " + filepath.Join(sess.RunsDir(), runID, "metrics.jsonl")},
 		}
 		if got := messenger.snapshot(); !equalAgentOpsTransportMessages(got, want) {
 			t.Fatalf("messages = %#v, want %#v", got, want)

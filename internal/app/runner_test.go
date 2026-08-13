@@ -750,7 +750,7 @@ func writeProjectHistoryRecords(t *testing.T, sess *session.Session, records []s
 func projectHistoryRecord(seq int64, when time.Time, msg schema.Message) session.MessageRecord {
 	return session.MessageRecord{
 		Seq:     seq,
-		RunID:   fmt.Sprintf("run-%d", seq),
+		RunID:   session.RunID(fmt.Sprintf("run-%d", seq)),
 		Time:    when,
 		Kind:    session.MessageKindNormal,
 		Message: msg,

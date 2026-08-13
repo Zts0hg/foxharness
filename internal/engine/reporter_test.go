@@ -376,7 +376,7 @@ func TestRunWithReporterEmitsLifecycleAndPersistsMessages(t *testing.T) {
 	if result == nil {
 		t.Fatalf("RunWithReporter() result = nil")
 	}
-	if result.SessionID != sess.ID {
+	if result.SessionID != string(sess.ID) {
 		t.Fatalf("result.SessionID = %q, want %q", result.SessionID, sess.ID)
 	}
 	if result.RunID == "" {

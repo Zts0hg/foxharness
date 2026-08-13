@@ -45,7 +45,7 @@ type Runner struct {
 	workDir                 string
 	logDir                  string
 	messenger               Messenger
-	sessions                *session.Manager
+	sessions                *session.FileStore
 	approvalStore           *approval.Store
 	maxConcurrentTasks      int
 	taskTimeout             time.Duration
@@ -80,7 +80,7 @@ func NewRunner(
 		workDir:             workDir,
 		logDir:              logDir,
 		messenger:           messenger,
-		sessions:            session.NewManager(workDir),
+		sessions:            session.NewFileStore(workDir),
 		approvalStore:       approvalStore,
 		maxConcurrentTasks:  defaultMaxConcurrentTasks,
 		taskTimeout:         defaultTaskTimeout,
@@ -328,7 +328,7 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 
 // buildComposer assembles the system-prompt composer for a task, injecting the
 // cross-session persistent memory index when a store is available (REQ-006).
-func (r *Runner) buildComposer(sess *session.Session, store *automemory.Store) *prompt.Composer {
+func (r *Runner) buildComposer(sess *session.StoredSession, store *automemory.Store) *prompt.Composer {
 	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
 	if store != nil {
 		composer = composer.WithAutoMemory(store)
@@ -338,7 +338,7 @@ func (r *Runner) buildComposer(sess *session.Session, store *automemory.Store) *
 
 // fireMemoryExtraction launches the post-run memory extraction hook (PLD-8). It
 // is fire-and-forget and panic-guarded so it can never disturb the task result.
-func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *session.Session, runID string, tracker *automemory.Tracker) {
+func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *session.StoredSession, runID string, tracker *automemory.Tracker) {
 	if hooks == nil {
 		return
 	}
@@ -350,7 +350,7 @@ func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *sessi
 	hooks.Fire(sess, runID, tracker)
 }
 
-func (r *Runner) buildRegistry(task Task, sess *session.Session, taskProviders ...provider.LLMProvider) tools.Registry {
+func (r *Runner) buildRegistry(task Task, sess *session.StoredSession, taskProviders ...provider.LLMProvider) tools.Registry {
 	registry := tools.NewRegistry()
 	evidenceProvider := agentOpsPermissionEvidenceProvider(sess, BuildPrompt(task))
 	var approver permission.UserApprover
@@ -381,12 +381,12 @@ func (r *Runner) buildRegistry(task Task, sess *session.Session, taskProviders .
 	subManager := subagent.NewManager(taskProvider, r.workDir).
 		WithPermission(coordinator).
 		WithParentEvidence(evidenceProvider)
-	registry.Register(subagent.NewTool(subManager, sess.ID))
+	registry.Register(subagent.NewTool(subManager, string(sess.ID)))
 
 	return permission.DecorateRegistry(registry, coordinator, evidenceProvider)
 }
 
-func agentOpsPermissionEvidenceProvider(sess *session.Session, currentPrompt string) permission.EvidenceProvider {
+func agentOpsPermissionEvidenceProvider(sess *session.StoredSession, currentPrompt string) permission.EvidenceProvider {
 	return func(request permission.Request) permission.Evidence {
 		var messages []schema.Message
 		if sess != nil {

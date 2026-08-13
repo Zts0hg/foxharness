@@ -39,11 +39,11 @@ func TestRunLifecycleSuccessIsOrderedFinishedAndReportedOnce(t *testing.T) {
 		t.Fatalf("RunWithReporter() error = %v", err)
 	}
 	wantEvents := []string{
-		"start:" + sess.ID + ":" + result.RunID,
+		"start:" + string(sess.ID) + ":" + result.RunID,
 		"tool_call:lifecycle_tool",
 		"tool_result:lifecycle_tool:false",
 		"message:lifecycle complete",
-		"complete:" + sess.ID + ":" + result.RunID,
+		"complete:" + string(sess.ID) + ":" + result.RunID,
 	}
 	if fmt.Sprint(reporter.events) != fmt.Sprint(wantEvents) {
 		t.Fatalf("reporter events = %#v, want %#v", reporter.events, wantEvents)
@@ -401,7 +401,7 @@ func assertLifecycleRunFinished(t *testing.T, sess *session.Session, wantRunID s
 	if run.SessionID != sess.ID || run.EndedAt == nil {
 		t.Fatalf("finished run = %#v, want session %q and ended_at", run, sess.ID)
 	}
-	if wantRunID != "" && run.ID != wantRunID {
+	if wantRunID != "" && run.ID != session.RunID(wantRunID) {
 		t.Fatalf("run ID = %q, want %q", run.ID, wantRunID)
 	}
 	return &run
@@ -413,7 +413,7 @@ func assertLifecycleResultPaths(t *testing.T, sess *session.Session, result *Run
 		t.Fatal("result = nil")
 	}
 	runRoot := filepath.Join(sess.RunsDir(), result.RunID)
-	if result.SessionID != sess.ID || result.MetricsPath != filepath.Join(runRoot, "metrics.jsonl") || result.TracePath != filepath.Join(runRoot, "trace.jsonl") {
+	if result.SessionID != string(sess.ID) || result.MetricsPath != filepath.Join(runRoot, "metrics.jsonl") || result.TracePath != filepath.Join(runRoot, "trace.jsonl") {
 		t.Fatalf("result identity/paths = %#v, want session %q under %s", result, sess.ID, runRoot)
 	}
 	for _, path := range []string{result.MetricsPath, result.TracePath, filepath.Join(runRoot, "artifacts")} {

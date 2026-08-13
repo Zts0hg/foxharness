@@ -128,10 +128,10 @@ func TestPFAOP003EveryTaskCreatesFreshIsolatedSession(t *testing.T) {
 		if err != nil || len(records) != 2 {
 			t.Fatalf("session %s records = %#v, %v", sess.ID, records, err)
 		}
-		if records[0].RunID == "" || seenRuns[records[0].RunID] || records[1].RunID != records[0].RunID {
+		if records[0].RunID == "" || seenRuns[string(records[0].RunID)] || records[1].RunID != records[0].RunID {
 			t.Fatalf("session %s run identity = %#v", sess.ID, records)
 		}
-		seenRuns[records[0].RunID] = true
+		seenRuns[string(records[0].RunID)] = true
 		seenPrompts[records[0].Message.Content] = true
 	}
 	for _, text := range []string{"/new investigate first", "new session investigate second"} {
@@ -345,14 +345,15 @@ func TestPFAOP016And017TerminalPresentationAndArtifactsAreCorrelated(t *testing.
 	if err != nil || len(records) != 2 || records[0].RunID == "" || records[1].RunID != records[0].RunID {
 		t.Fatalf("records = %#v, %v", records, err)
 	}
-	wantFinal := "incident resolved\n\nSession: " + sess.ID + "\nRun: " + records[0].RunID + "\nTrace: " + filepath.Join(sess.RunsDir(), records[0].RunID, "trace.jsonl") + "\nMetrics: " + filepath.Join(sess.RunsDir(), records[0].RunID, "metrics.jsonl")
+	runID := string(records[0].RunID)
+	wantFinal := "incident resolved\n\nSession: " + string(sess.ID) + "\nRun: " + runID + "\nTrace: " + filepath.Join(sess.RunsDir(), runID, "trace.jsonl") + "\nMetrics: " + filepath.Join(sess.RunsDir(), runID, "metrics.jsonl")
 	if texts[1] != wantFinal {
 		t.Fatalf("final presentation = %q, want %q", texts[1], wantFinal)
 	}
 	for _, path := range []string{
-		filepath.Join(sess.RunsDir(), records[0].RunID, "run.json"),
-		filepath.Join(sess.RunsDir(), records[0].RunID, "trace.jsonl"),
-		filepath.Join(sess.RunsDir(), records[0].RunID, "metrics.jsonl"),
+		filepath.Join(sess.RunsDir(), runID, "run.json"),
+		filepath.Join(sess.RunsDir(), runID, "trace.jsonl"),
+		filepath.Join(sess.RunsDir(), runID, "metrics.jsonl"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("run artifact %s: %v", path, err)

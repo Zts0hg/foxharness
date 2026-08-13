@@ -182,7 +182,7 @@ func TestCharacterizationV1PersistedSessionIsReadableAfterCopy(t *testing.T) {
 	}
 
 	sessionRoot := filepath.Join(destinationRoot, "sessions", "context-lifecycle")
-	var persistedSession session.Session
+	var persistedSession session.StoredSession
 	decodeJSONFile(t, filepath.Join(sessionRoot, "session.json"), &persistedSession)
 	if persistedSession.ID != "session-baseline-0001" || persistedSession.Source != session.SOURCECLI {
 		t.Fatalf("persisted session identity = %#v", persistedSession)
@@ -235,7 +235,7 @@ func TestCharacterizationV1PersistedSessionIsReadableAfterCopy(t *testing.T) {
 		t.Fatalf("PLAN.md after absent-state restore: stat error = %v", err)
 	}
 
-	var firstRun session.Run
+	var firstRun session.StoredRun
 	decodeJSONFile(t, filepath.Join(sessionRoot, "runs", "run-baseline-0001", "run.json"), &firstRun)
 	if firstRun.SessionID != persistedSession.ID || firstRun.EndedAt == nil {
 		t.Fatalf("first run = %#v", firstRun)
@@ -340,7 +340,7 @@ func decodeJSONFile(t *testing.T, path string, destination any) {
 	}
 }
 
-func decodeTranscript(t *testing.T, path string) []session.Event {
+func decodeTranscript(t *testing.T, path string) []session.TranscriptEvent {
 	t.Helper()
 	file, err := os.Open(path)
 	if err != nil {
@@ -348,10 +348,10 @@ func decodeTranscript(t *testing.T, path string) []session.Event {
 	}
 	defer file.Close()
 
-	var events []session.Event
+	var events []session.TranscriptEvent
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		var event session.Event
+		var event session.TranscriptEvent
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			t.Fatalf("Unmarshal transcript event error = %v", err)
 		}

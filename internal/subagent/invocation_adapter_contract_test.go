@@ -128,7 +128,7 @@ func TestIACHD004DelegateCarriesParentRunAndToolCallLineage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if childOptions.ParentRunID != result.RunID || childOptions.DelegationID != "delegate-call" {
+	if childOptions.ParentRunID != session.RunID(result.RunID) || childOptions.DelegationID != "delegate-call" {
 		t.Fatalf("delegate child lineage = parent run %q delegation %q, want %q/%q", childOptions.ParentRunID, childOptions.DelegationID, result.RunID, "delegate-call")
 	}
 	if createCalls != 1 {

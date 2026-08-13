@@ -9,7 +9,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/session"
 )
 
-func (e *AgentEngine) todoCompletionReminder(sess *session.Session) string {
+func (e *AgentEngine) todoCompletionReminder(sess *session.StoredSession) string {
 	if sess == nil || !e.hasTool("update_todo") {
 		return ""
 	}

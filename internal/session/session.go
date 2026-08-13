@@ -1,32 +1,8 @@
-// Package session provides session lifecycle management for the foxharness agent.
-//
-// Each session represents a continuous conversation with its own isolated
-// workspace containing memory, raw message history, transcript, metrics, and
-// tracing data. A session may contain multiple runs, where each run represents
-// one user-submitted task or message.
-//
-// Key Components:
-//   - Manager: Creates and manages sessions
-//   - Session: Represents a continuous conversation with metadata
-//   - Run: Represents one user-submitted task within a session
-//   - Transcript: Records conversation history
-//   - Memory: Manages working memory state
-//
-// Session Structure:
-//
-//	~/.foxharness/projects/{encoded-workdir}/sessions/{id}/
-//	  ├── session.json      - Session metadata
-//	  ├── working_memory.md - Working memory for the agent
-//	  ├── PLAN.md           - Session-local generated plan
-//	  ├── TODO.md           - Session-local generated task checklist
-//	  ├── messages.jsonl    - Raw model-visible message history
-//	  ├── transcript.jsonl  - Session event log
-//	  ├── artifacts/        - Files created during the session
-//	  └── runs/{run-id}/
-//	      ├── run.json      - Run metadata
-//	      ├── metrics.jsonl - Token usage and performance metrics
-//	      ├── trace.jsonl   - Span-based tracing
-//	      └── artifacts/    - Files created during the run
+/*
+Package session provides persisted agent-session records and file-backed
+storage mechanics. Live session lifecycle and recoverable-state commit policy
+belong to the runtime layer.
+*/
 package session
 
 import (
@@ -57,11 +33,19 @@ const (
 // ErrNotFound indicates that a requested session could not be found.
 var ErrNotFound = errors.New("session not found")
 
-// Session represents a continuous agent conversation with its isolated
-// workspace. Each session has a unique ID and may contain multiple runs.
-type Session struct {
+// ID is a durable stored-session identifier. Its JSON representation is the
+// existing plain string encoding.
+type ID string
+
+// RunID is a durable stored-run identifier. Its JSON representation is the
+// existing plain string encoding.
+type RunID string
+
+// StoredSession contains persisted conversation metadata and derived artifact
+// paths. It does not coordinate a live runtime session.
+type StoredSession struct {
 	// ID is the unique session identifier (format: YYYYMMDD-HHMMSS-random).
-	ID string `json:"id"`
+	ID ID `json:"id"`
 	// Source indicates where the session request originated.
 	Source Source `json:"source"`
 	// WorkDir is the working directory for file operations during execution.
@@ -73,9 +57,9 @@ type Session struct {
 	// ChatID optionally identifies the conversation (for chat platforms).
 	ChatID string `json:"chat_id,omitempty"`
 	// ParentSessionID identifies the parent for a nested runtime session.
-	ParentSessionID string `json:"parent_session_id,omitempty"`
+	ParentSessionID ID `json:"parent_session_id,omitempty"`
 	// ParentRunID identifies the parent run that created a nested runtime session.
-	ParentRunID string `json:"parent_run_id,omitempty"`
+	ParentRunID RunID `json:"parent_run_id,omitempty"`
 	// DelegationID correlates the request that created a nested runtime session.
 	DelegationID string `json:"delegation_id,omitempty"`
 	// Agent identifies the resolved child agent definition for nested runs.
@@ -84,48 +68,52 @@ type Session struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// Session is the deprecated compatibility name for StoredSession.
+// Deprecated: use StoredSession.
+type Session = StoredSession
+
 // MemoryPath returns the path to the working memory file for this session.
-func (s *Session) MemoryPath() string {
+func (s *StoredSession) MemoryPath() string {
 	return filepath.Join(s.RootDir, "working_memory.md")
 }
 
 // PlanPath returns the path to the session-local plan file.
-func (s *Session) PlanPath() string {
+func (s *StoredSession) PlanPath() string {
 	return filepath.Join(s.RootDir, "PLAN.md")
 }
 
 // TodoPath returns the path to the session-local todo file.
-func (s *Session) TodoPath() string {
+func (s *StoredSession) TodoPath() string {
 	return filepath.Join(s.RootDir, "TODO.md")
 }
 
 // TranscriptPath returns the path to the transcript file for this session.
-func (s *Session) TranscriptPath() string {
+func (s *StoredSession) TranscriptPath() string {
 	return filepath.Join(s.RootDir, "transcript.jsonl")
 }
 
 // MessagesPath returns the path to the raw model-visible message log.
-func (s *Session) MessagesPath() string {
+func (s *StoredSession) MessagesPath() string {
 	return filepath.Join(s.RootDir, "messages.jsonl")
 }
 
 // CheckpointsDir returns the directory that stores file checkpoint backups.
-func (s *Session) CheckpointsDir() string {
+func (s *StoredSession) CheckpointsDir() string {
 	return filepath.Join(s.RootDir, "checkpoints")
 }
 
 // CheckpointsLogPath returns the JSONL file that stores checkpoint snapshots.
-func (s *Session) CheckpointsLogPath() string {
+func (s *StoredSession) CheckpointsLogPath() string {
 	return filepath.Join(s.RootDir, "checkpoints.jsonl")
 }
 
 // CompactStatePath returns the path to the persisted context compaction state.
-func (s *Session) CompactStatePath() string {
+func (s *StoredSession) CompactStatePath() string {
 	return filepath.Join(s.RootDir, "compact_state.json")
 }
 
 // ArtifactsDir returns the directory path for session artifacts.
-func (s *Session) ArtifactsDir() string {
+func (s *StoredSession) ArtifactsDir() string {
 	return filepath.Join(s.RootDir, "artifacts")
 }
 
@@ -133,28 +121,28 @@ func (s *Session) ArtifactsDir() string {
 // exceed the in-context size threshold. The directory is created lazily by
 // the persistence layer rather than at session construction so existing
 // session directories remain backward-compatible.
-func (s *Session) ToolResultsDir() string {
+func (s *StoredSession) ToolResultsDir() string {
 	return filepath.Join(s.RootDir, "tool-results")
 }
 
 // RunsDir returns the directory path for run-specific artifacts.
-func (s *Session) RunsDir() string {
+func (s *StoredSession) RunsDir() string {
 	return filepath.Join(s.RootDir, "runs")
 }
 
 // MetricsPath returns the path to the metrics file for this session.
-func (s *Session) MetricsPath() string {
+func (s *StoredSession) MetricsPath() string {
 	return filepath.Join(s.RootDir, "metrics.jsonl")
 }
 
 // TracePath returns the path to the tracing file for this session.
-func (s *Session) TracePath() string {
+func (s *StoredSession) TracePath() string {
 	return filepath.Join(s.RootDir, "trace.jsonl")
 }
 
-// Manager creates and manages agent sessions.
-// All sessions are stored under a user-level project directory with unique IDs.
-type Manager struct {
+// FileStore persists stored sessions and runs under one project-scoped user
+// directory. It owns storage mechanics, not live runtime lifecycle policy.
+type FileStore struct {
 	// workDir is the absolute project working directory for this manager.
 	workDir string
 	// homeDir is the user home directory that owns .foxharness.
@@ -165,24 +153,26 @@ type Manager struct {
 	baseDir string
 }
 
-// NewManager creates a new Manager that stores sessions under the user's home directory.
-// Sessions are stored in ~/.foxharness/projects/{encoded-workdir}/sessions/{session-id}/.
-// Returns a configured Manager.
-func NewManager(workDir string) *Manager {
+// Manager is the deprecated compatibility name for FileStore.
+// Deprecated: use FileStore.
+type Manager = FileStore
+
+// NewFileStore creates a FileStore under the current user's home directory.
+func NewFileStore(workDir string) *FileStore {
 	homeDir, err := os.UserHomeDir()
 	if err != nil || homeDir == "" {
 		homeDir = "."
 	}
-	return NewManagerWithHome(workDir, homeDir)
+	return NewFileStoreWithHome(workDir, homeDir)
 }
 
-// NewManagerWithHome creates a Manager rooted at the provided home directory.
-// It is primarily useful for tests and embedded callers that need storage isolation.
-func NewManagerWithHome(workDir string, homeDir string) *Manager {
+// NewFileStoreWithHome creates a FileStore rooted at the provided home
+// directory. It supports hermetic callers that require isolated storage.
+func NewFileStoreWithHome(workDir string, homeDir string) *FileStore {
 	cleanWorkDir := cleanAbsPath(workDir)
 	cleanHomeDir := cleanAbsPath(homeDir)
 	projectKey := encodeProjectPath(cleanWorkDir)
-	return &Manager{
+	return &FileStore{
 		workDir:    cleanWorkDir,
 		homeDir:    cleanHomeDir,
 		projectKey: projectKey,
@@ -190,11 +180,24 @@ func NewManagerWithHome(workDir string, homeDir string) *Manager {
 	}
 }
 
+// NewManager is the deprecated compatibility constructor for NewFileStore.
+// Deprecated: use NewFileStore.
+func NewManager(workDir string) *Manager {
+	return NewFileStore(workDir)
+}
+
+// NewManagerWithHome is the deprecated compatibility constructor for
+// NewFileStoreWithHome.
+// Deprecated: use NewFileStoreWithHome.
+func NewManagerWithHome(workDir string, homeDir string) *Manager {
+	return NewFileStoreWithHome(workDir, homeDir)
+}
+
 // HomeDir returns the user home directory that owns this manager's .foxharness
 // storage root. Callers that need to place sibling state under the same home
 // (e.g. the persistent memory store) use this to stay aligned with session
 // storage.
-func (m *Manager) HomeDir() string {
+func (m *FileStore) HomeDir() string {
 	return m.homeDir
 }
 
@@ -209,9 +212,9 @@ type CreateOptions struct {
 	// ChatID optionally identifies the conversation (for chat platforms).
 	ChatID string
 	// ParentSessionID identifies the parent for a nested runtime session.
-	ParentSessionID string
+	ParentSessionID ID
 	// ParentRunID identifies the parent run that created a nested runtime session.
-	ParentRunID string
+	ParentRunID RunID
 	// DelegationID correlates the request that created a nested runtime session.
 	DelegationID string
 	// Agent identifies the resolved child agent definition for nested runs.
@@ -230,9 +233,9 @@ type LookupOptions struct {
 // A unique session ID is generated, and the session directory structure
 // is initialized with all required files.
 // Returns the created Session, or an error if initialization fails.
-func (m *Manager) Create(opts CreateOptions) (*Session, error) {
+func (m *FileStore) Create(opts CreateOptions) (*StoredSession, error) {
 	id := newSessionID()
-	root := filepath.Join(m.baseDir, id)
+	root := filepath.Join(m.baseDir, string(id))
 	workDir := cleanAbsPath(opts.WorkDir)
 	if workDir == "" || workDir == "." {
 		workDir = m.workDir
@@ -245,7 +248,7 @@ func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 		return nil, fmt.Errorf("创建 Run 目录失败: %w", err)
 	}
 
-	s := &Session{
+	s := &StoredSession{
 		ID:              id,
 		Source:          opts.Source,
 		WorkDir:         workDir,
@@ -272,8 +275,8 @@ func (m *Manager) Create(opts CreateOptions) (*Session, error) {
 }
 
 // Open loads an existing session by ID.
-func (m *Manager) Open(id string) (*Session, error) {
-	path := filepath.Join(m.baseDir, id, "session.json")
+func (m *FileStore) Open(id ID) (*StoredSession, error) {
+	path := filepath.Join(m.baseDir, string(id), "session.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -282,12 +285,12 @@ func (m *Manager) Open(id string) (*Session, error) {
 		return nil, fmt.Errorf("读取 Session 失败: %w", err)
 	}
 
-	var s Session
+	var s StoredSession
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("解析 Session 失败: %w", err)
 	}
 	if s.RootDir == "" {
-		s.RootDir = filepath.Join(m.baseDir, id)
+		s.RootDir = filepath.Join(m.baseDir, string(id))
 	}
 	if s.ID == "" {
 		s.ID = id
@@ -296,7 +299,7 @@ func (m *Manager) Open(id string) (*Session, error) {
 }
 
 // Latest returns the most recently created session matching opts.
-func (m *Manager) Latest(opts LookupOptions) (*Session, error) {
+func (m *FileStore) Latest(opts LookupOptions) (*StoredSession, error) {
 	sessions, err := m.List(opts)
 	if err != nil {
 		return nil, err
@@ -308,7 +311,7 @@ func (m *Manager) Latest(opts LookupOptions) (*Session, error) {
 }
 
 // List returns sessions matching opts, newest session first.
-func (m *Manager) List(opts LookupOptions) ([]*Session, error) {
+func (m *FileStore) List(opts LookupOptions) ([]*StoredSession, error) {
 	entries, err := os.ReadDir(m.baseDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -317,12 +320,12 @@ func (m *Manager) List(opts LookupOptions) ([]*Session, error) {
 		return nil, fmt.Errorf("读取 Session 目录失败: %w", err)
 	}
 
-	var sessions []*Session
+	var sessions []*StoredSession
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		s, err := m.Open(entry.Name())
+		s, err := m.Open(ID(entry.Name()))
 		if err != nil {
 			continue
 		}
@@ -337,7 +340,7 @@ func (m *Manager) List(opts LookupOptions) ([]*Session, error) {
 	return sessions, nil
 }
 
-func matchesLookup(s *Session, opts LookupOptions) bool {
+func matchesLookup(s *StoredSession, opts LookupOptions) bool {
 	if opts.Source != "" && s.Source != opts.Source {
 		return false
 	}
@@ -383,7 +386,15 @@ func encodeProjectPath(workDir string) string {
 	return EncodeProjectPath(workDir)
 }
 
-func newSessionID() string {
+func newSessionID() ID {
+	return ID(newIdentifier())
+}
+
+func newRunID() RunID {
+	return RunID(newIdentifier())
+}
+
+func newIdentifier() string {
 	var b [3]byte
 	_, _ = rand.Read(b[:])
 	return time.Now().Format("20060102-150405") + "-" + hex.EncodeToString(b[:])

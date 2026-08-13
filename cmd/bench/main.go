@@ -147,7 +147,7 @@ func resultExitCode(results []*benchmark.Result, infrastructureFailed bool) int 
 // manager configured for the given benchmark case.
 func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benchmark.Harness, error) {
 	_ = ctx
-	manager := session.NewManager(workDir)
+	manager := session.NewFileStore(workDir)
 	sess, err := manager.Create(session.CreateOptions{
 		Source:  session.SOURCECLI,
 		WorkDir: workDir,
@@ -205,7 +205,7 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 	}, nil
 }
 
-func buildBenchmarkRegistry(workDir string, sess *session.Session) tools.Registry {
+func buildBenchmarkRegistry(workDir string, sess *session.StoredSession) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
 	registry.Register(tools.NewWriteFileTool(workDir))

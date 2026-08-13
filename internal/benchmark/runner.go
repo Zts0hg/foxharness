@@ -26,7 +26,7 @@ type HarnessFactory func(ctx context.Context, workDir string, c *Case) (*Harness
 // runtime fidelity metadata that will be copied into the benchmark result.
 type Harness struct {
 	Engine          *engine.AgentEngine
-	Session         *session.Session
+	Session         *session.StoredSession
 	RuntimeFidelity RuntimeFidelity
 }
 
@@ -199,7 +199,7 @@ func (r *Runner) RunRepeat(ctx context.Context, c *Case, repeatIndex int) (retur
 		return infrastructureFailure(result, fmt.Errorf("创建 Harness 失败: harness missing engine or session"))
 	}
 
-	result.SessionID = harness.Session.ID
+	result.SessionID = string(harness.Session.ID)
 	result.RuntimeFidelity = harness.RuntimeFidelity
 	result.ProviderProtocol = harness.RuntimeFidelity.Spec.ProviderProtocol
 	result.Model = harness.RuntimeFidelity.Spec.Model

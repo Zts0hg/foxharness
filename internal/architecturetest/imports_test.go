@@ -6,6 +6,7 @@ package architecturetest
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
@@ -61,6 +62,7 @@ func TestViolationRulesDetectConfirmedForbiddenEdges(t *testing.T) {
 		{name: "engine concrete provider", edge: importEdge{From: "internal/engine", To: "internal/provider"}},
 		{name: "runtime presentation", edge: importEdge{From: "internal/runtime", To: "internal/tui"}},
 		{name: "runtime bypasses engine schema contract", edge: importEdge{From: "internal/runtime", To: "internal/schema"}},
+		{name: "session owns runtime lifecycle", edge: importEdge{From: "internal/session", To: "internal/runtime"}},
 		{name: "prompt discovers automemory", edge: importEdge{From: "internal/prompt", To: "internal/automemory"}},
 		{name: "application concrete engine", edge: importEdge{From: "internal/app", To: "internal/engine"}},
 		{name: "tui concrete session", edge: importEdge{From: "internal/tui", To: "internal/session"}},
@@ -93,6 +95,18 @@ func TestViolationRulesAllowConfirmedEdges(t *testing.T) {
 		if reason := violationReason(edge); reason != "" {
 			t.Errorf("expected %s -> %s to be allowed, got %s", edge.From, edge.To, reason)
 		}
+	}
+}
+
+func TestDeprecatedSessionCompatibilityUsageMatchesCeiling(t *testing.T) {
+	root := moduleRoot(t)
+	got := deprecatedSessionCompatibilityUsage(t, root)
+	want := []string{
+		"internal/engine/loop.go:Finish=1",
+		"internal/engine/loop.go:StartRun=1",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("deprecated session compatibility usage = %v, want exact decreasing ceiling %v", got, want)
 	}
 }
 
@@ -173,6 +187,89 @@ func productionImportEdges(t *testing.T, root string) []importEdge {
 	return result
 }
 
+func deprecatedSessionCompatibilityUsage(t *testing.T, root string) []string {
+	t.Helper()
+	counts := make(map[string]int)
+	fset := token.NewFileSet()
+	deprecatedQualified := map[string]bool{
+		"Event": true, "Manager": true, "NewManager": true,
+		"NewManagerWithHome": true, "NewTranscript": true, "Run": true,
+		"Session": true, "Transcript": true,
+	}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if oneOf(entry.Name(), ".git", "vendor", "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if strings.HasPrefix(rel, "internal/session/") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		aliases := make(map[string]bool)
+		for _, spec := range file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return fmt.Errorf("unquote import in %s: %w", path, err)
+			}
+			if importPath != modulePath+"/internal/session" {
+				continue
+			}
+			alias := "session"
+			if spec.Name != nil {
+				alias = spec.Name.Name
+			}
+			if alias == "." || alias == "_" {
+				counts[rel+":dot-or-blank-session-import"]++
+				continue
+			}
+			aliases[alias] = true
+		}
+		if len(aliases) == 0 {
+			return nil
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if ident, ok := selector.X.(*ast.Ident); ok && aliases[ident.Name] && deprecatedQualified[selector.Sel.Name] {
+				counts[rel+":"+selector.Sel.Name]++
+			}
+			if selector.Sel.Name == "StartRun" || selector.Sel.Name == "Finish" {
+				counts[rel+":"+selector.Sel.Name]++
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan deprecated session compatibility usage: %v", err)
+	}
+
+	keys := make([]string, 0, len(counts))
+	for key, count := range counts {
+		keys = append(keys, fmt.Sprintf("%s=%d", key, count))
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func violationSet(edges []importEdge) map[string]struct{} {
 	result := make(map[string]struct{})
 	for _, edge := range edges {
@@ -191,6 +288,8 @@ func violationReason(edge importEdge) string {
 	switch {
 	case edge.From == "internal/prompt":
 		return "prompt renderer must not depend on project mechanisms"
+	case edge.From == "internal/session" && edge.To == "internal/runtime":
+		return "session persistence must not depend on runtime lifecycle"
 	case edge.From == "internal/engine":
 		if edge.To != "internal/schema" {
 			return "engine may depend only on schema"

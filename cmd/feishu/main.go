@@ -56,7 +56,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	sessionManager := session.NewManager(workDir)
+	sessionManager := session.NewFileStore(workDir)
 	messenger := feishu.NewMessenger(appID, appSecret)
 	approvalStore := approval.NewStore()
 

@@ -91,7 +91,7 @@ func TestPFTUI002SessionSelectionPreservesCurrentCLIContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	explicit, err := resolveRunnerSession(manager, workDir, AgentRunnerConfig{SessionID: existingCLI.ID})
+	explicit, err := resolveRunnerSession(manager, workDir, AgentRunnerConfig{SessionID: string(existingCLI.ID)})
 	if err != nil || explicit.ID != existingCLI.ID {
 		t.Fatalf("explicit session = %#v, %v; want %s", explicit, err, existingCLI.ID)
 	}
@@ -114,9 +114,9 @@ func TestPFTUI002SessionSelectionPreservesCurrentCLIContracts(t *testing.T) {
 		cfg  AgentRunnerConfig
 		want string
 	}{
-		{name: "new and explicit", cfg: AgentRunnerConfig{NewSession: true, SessionID: existingCLI.ID}, want: "-new 不能和 -session 或 -continue 同时使用"},
+		{name: "new and explicit", cfg: AgentRunnerConfig{NewSession: true, SessionID: string(existingCLI.ID)}, want: "-new 不能和 -session 或 -continue 同时使用"},
 		{name: "new and continue", cfg: AgentRunnerConfig{NewSession: true, ContinueSession: true}, want: "-new 不能和 -session 或 -continue 同时使用"},
-		{name: "explicit and continue", cfg: AgentRunnerConfig{SessionID: existingCLI.ID, ContinueSession: true}, want: "-session 不能和 -continue 同时使用"},
+		{name: "explicit and continue", cfg: AgentRunnerConfig{SessionID: string(existingCLI.ID), ContinueSession: true}, want: "-session 不能和 -continue 同时使用"},
 	}
 	for _, tc := range conflicts {
 		t.Run(tc.name, func(t *testing.T) {

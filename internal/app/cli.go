@@ -91,11 +91,11 @@ func runCLIWithFactory(ctx context.Context, cfg CLIConfig, stdout io.Writer, log
 	return err
 }
 
-func resolveCLISession(manager *session.Manager, workDir string, cfg CLIConfig) (*session.Session, error) {
+func resolveCLISession(manager *session.FileStore, workDir string, cfg CLIConfig) (*session.StoredSession, error) {
 	return resolveRunnerSession(manager, workDir, agentRunnerConfigFromCLI(cfg))
 }
 
-func resolveRunnerSession(manager *session.Manager, workDir string, cfg AgentRunnerConfig) (*session.Session, error) {
+func resolveRunnerSession(manager *session.FileStore, workDir string, cfg AgentRunnerConfig) (*session.StoredSession, error) {
 	if cfg.NewSession && (cfg.SessionID != "" || cfg.ContinueSession) {
 		return nil, fmt.Errorf("-new 不能和 -session 或 -continue 同时使用")
 	}
@@ -104,7 +104,7 @@ func resolveRunnerSession(manager *session.Manager, workDir string, cfg AgentRun
 	}
 
 	if cfg.SessionID != "" {
-		sess, err := manager.Open(cfg.SessionID)
+		sess, err := manager.Open(session.ID(cfg.SessionID))
 		if err != nil {
 			if errors.Is(err, session.ErrNotFound) {
 				return nil, fmt.Errorf("Session %s 不存在", cfg.SessionID)

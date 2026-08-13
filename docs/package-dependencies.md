@@ -63,6 +63,10 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 
 `internal/context` remains a temporary compatibility facade for unmigrated callers. It currently owns the legacy discovery and selection work, converts the resolved values to `prompt.Fragment` values, and forwards final ordering and rendering to `prompt.Render`. The dependency is one-way: `internal/context` may import `internal/prompt`; `internal/prompt` cannot import `internal/context` or any other project package. Runtime takes over discovery and injection decisions at `M11`, profile cutovers remove consumers according to their migration boundaries, and `M26` deletes the facade.
 
+`M02` establishes `StoredSession`, `StoredRun`, `ID`, `RunID`, `FileStore`, `TranscriptEvent`, and `TranscriptLog` as the authoritative persistence vocabulary. `ID` and `RunID` are distinct Go types but retain the exact existing JSON string encodings. Production callers use the new names; `Session`, `Run`, `Manager`, `Event`, `Transcript`, and their legacy constructors remain deprecated aliases or wrappers until `M26`. The aliases preserve legacy symbol names, while the repository has been synchronously migrated to the strong ID types; compatibility does not promise unchanged internal Go source typing.
+
+`FileStore` is the new-code boundary for file-backed create, lookup, run-start, and run-finish mechanics. The final stored-record contract contains data and derived artifact paths only. Until the runtime cutover, `StoredSession.StartRun` and `StoredRun.Finish` are the two explicitly allowlisted compatibility exceptions required by the current engine; no new caller may use them. `M10` introduces `runtime.AgentSession` and the consumer-owned `runtime.SessionStore` and makes runtime the sole live recoverable-state owner; `M11` moves context, compaction, resume, and rewind coordination to its single commit path. `M26` deletes the aliases and compatibility methods. `internal/session` must never import `internal/runtime`.
+
 ## Allowed Dependencies
 
 | Importer | Allowed target architecture dependencies |
@@ -81,6 +85,7 @@ An interface belongs to the package that consumes it. Concrete provider, tool, c
 
 - `internal/engine` must not import runtime, app, adapters, persistence, providers, tools, compaction, checkpoints, memory, telemetry, recovery, reminders, or tool-result storage.
 - `internal/runtime` must not import app, TUI, CLI, Feishu, AgentOps, or the model-facing subagent adapter.
+- `internal/session` must not import runtime or own live runtime lifecycle and recoverable-state commit policy.
 - `internal/app` must not import presentation adapters or concrete engine, persistence, provider, tool, compaction, checkpoint, memory, or telemetry implementations.
 - Presentation and transport adapters must not import or construct engine, runtime, session store, compaction, checkpoint, provider, tool registry, memory, telemetry, or concrete permission-policy implementations.
 - `internal/subagent` and `internal/runtime` must not import each other. Composition maps `subagent.Runner` to `runtime.ChildRunner`.

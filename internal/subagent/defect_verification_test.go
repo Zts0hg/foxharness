@@ -127,7 +127,7 @@ func TestDVCHD002ChildModelInvocationAndCompactorShareFrozenSnapshot(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := session.NewManagerWithHome(workDir, homeDir).Open(result.SessionID)
+	sess, err := session.NewManagerWithHome(workDir, homeDir).Open(session.ID(result.SessionID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestDVCHD002UnknownChildModelUsesOneExplicitFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := session.NewManagerWithHome(workDir, homeDir).Open(result.SessionID)
+	sess, err := session.NewManagerWithHome(workDir, homeDir).Open(session.ID(result.SessionID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestDVCHD005DefaultAgentIdentityPropagatesThroughOutcomeLineageAndTelemetry
 		t.Fatalf("child outcome identity = agent %q parent %q", result.Agent, result.ParentSessionID)
 	}
 
-	sess, err := session.NewManagerWithHome(workDir, homeDir).Open(result.SessionID)
+	sess, err := session.NewManagerWithHome(workDir, homeDir).Open(session.ID(result.SessionID))
 	if err != nil {
 		t.Fatal(err)
 	}

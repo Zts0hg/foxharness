@@ -319,7 +319,7 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, tracer *tracing.Trac
 //
 // Returns a RunResult containing the final agent message and session ID,
 // or an error if the run fails catastrophically.
-func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt string) (*RunResult, error) {
+func (e *AgentEngine) Run(ctx context.Context, sess *session.StoredSession, userPrompt string) (*RunResult, error) {
 	return e.RunWithReporter(ctx, sess, userPrompt, nil)
 }
 
@@ -327,7 +327,7 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.Session, userPrompt
 // reporter when one is provided. The engine does not write user-facing output
 // directly to the terminal; callers are responsible for presenting the
 // returned final message or reporter events.
-func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session, userPrompt string, reporter Reporter) (*RunResult, error) {
+func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.StoredSession, userPrompt string, reporter Reporter) (*RunResult, error) {
 	log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", sess.ID, e.workDir)
 	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.config.EnableThinking)
 
@@ -335,22 +335,22 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	if err != nil {
 		return nil, err
 	}
-	ctx = tools.WithRunContext(ctx, sess.ID, run.ID)
+	ctx = tools.WithRunContext(ctx, string(sess.ID), string(run.ID))
 	var runErr error
 	var finalResult *RunResult
 	telemetry := &telemetryRecorder{}
 	newRunResult := func(final string) *RunResult {
 		return &RunResult{
 			FinalMessage:      final,
-			SessionID:         sess.ID,
-			RunID:             run.ID,
+			SessionID:         string(sess.ID),
+			RunID:             string(run.ID),
 			MetricsPath:       run.MetricsPath(),
 			TracePath:         run.TracePath(),
 			TelemetryWarnings: telemetry.Snapshot(),
 		}
 	}
 	if reporter != nil {
-		reporter.OnRunStart(ctx, sess.ID, run.ID)
+		reporter.OnRunStart(ctx, string(sess.ID), string(run.ID))
 	}
 	defer func() {
 		if err := run.Finish(); err != nil {
@@ -362,7 +362,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			return
 		}
 		if runErr != nil {
-			reporter.OnRunError(ctx, sess.ID, run.ID, runErr)
+			reporter.OnRunError(ctx, string(sess.ID), string(run.ID), runErr)
 			return
 		}
 		if finalResult != nil {
@@ -374,8 +374,8 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 		telemetry.Record("trace", "append", err)
 	})
 	runSpanAttrs := map[string]any{
-		"session_id": sess.ID,
-		"run_id":     run.ID,
+		"session_id": string(sess.ID),
+		"run_id":     string(run.ID),
 		"source":     sess.Source,
 		"work_dir":   sess.WorkDir,
 	}
@@ -405,11 +405,11 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 	summaryWritten := false
 	defer func() {
 		if !summaryWritten {
-			telemetry.Record("metrics", "run_summary", recorder.Append(aggregator.Summary(sess.ID)))
+			telemetry.Record("metrics", "run_summary", recorder.Append(aggregator.Summary(string(sess.ID))))
 		}
 	}()
 
-	transcript := session.NewTranscript(sess)
+	transcript := session.NewTranscriptLog(sess)
 	messageLog := session.NewMessageLog(sess)
 	history, err := messageLog.LoadRecords()
 	if err != nil {
@@ -739,7 +739,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 				continue
 			}
 			log.Printf("[Engine] 模型不再需要调用工具，宣告任务完成！")
-			telemetry.Record("metrics", "run_summary", recorder.Append(aggregator.Summary(sess.ID)))
+			telemetry.Record("metrics", "run_summary", recorder.Append(aggregator.Summary(string(sess.ID))))
 			summaryWritten = true
 
 			finishTurn("ok", map[string]any{
@@ -792,7 +792,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 			telemetry.Record("metrics", "tool_call", recorder.Append(metrics.ToolCall{
 				Time:        time.Now(),
 				Type:        metrics.EventToolCall,
-				SessionID:   sess.ID,
+				SessionID:   string(sess.ID),
 				Turn:        turnCount,
 				ToolName:    item.Call.Name,
 				ToolCallID:  item.Call.ID,
@@ -834,7 +834,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.Session
 // so they remain eligible for persistence. This relies on tool call IDs
 // being unique per call — providers guarantee this within a single response.
 func (e *AgentEngine) processToolResults(
-	sess *session.Session,
+	sess *session.StoredSession,
 	contextHistory []schema.Message,
 	raw []indexedToolResult,
 ) []processedToolResult {
@@ -888,7 +888,7 @@ func truncateReporterOutput(s string, limit int) string {
 
 func (e *AgentEngine) callModel(
 	ctx context.Context,
-	sess *session.Session,
+	sess *session.StoredSession,
 	recorder *metrics.Recorder,
 	aggregator *metrics.Aggregator,
 	estimator metrics.TokenEstimator,
@@ -941,7 +941,7 @@ func (e *AgentEngine) callModel(
 	event := metrics.ModelCall{
 		Time:         time.Now(),
 		Type:         metrics.EventModelCall,
-		SessionID:    sess.ID,
+		SessionID:    string(sess.ID),
 		Turn:         turn,
 		Phase:        phase,
 		InputTokens:  inputTokens,

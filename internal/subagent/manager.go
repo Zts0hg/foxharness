@@ -142,8 +142,8 @@ type Manager struct {
 	maxTurns          int
 	permissions       *permission.Coordinator
 	parentEvidence    permission.EvidenceProvider
-	compactorFactory  func(*session.Session) (*compaction.Compactor, error)
-	createSession     func(session.CreateOptions) (*session.Session, error)
+	compactorFactory  func(*session.StoredSession) (*compaction.Compactor, error)
+	createSession     func(session.CreateOptions) (*session.StoredSession, error)
 	supervisorFactory func() childRunSupervisor
 }
 
@@ -223,7 +223,7 @@ func (m *Manager) PermissionEnforced() bool {
 // cross-session persistent memory index (read-only) so delegated tasks share the
 // project/user memory that top-level runs see. Subagents do not write or
 // extract memory; that remains the main agent's responsibility.
-func (m *Manager) buildComposer(sess *session.Session, snapshots ...*childToolSnapshot) *prompt.Composer {
+func (m *Manager) buildComposer(sess *session.StoredSession, snapshots ...*childToolSnapshot) *prompt.Composer {
 	store := automemory.NewStore(m.homeDir, m.workDir)
 	composer := prompt.NewComposer(m.workDir).WithReadOnlyMemory(sess.MemoryPath()).WithReadOnlyAutoMemory(store)
 	if len(snapshots) > 0 && snapshots[0] != nil {
@@ -232,11 +232,11 @@ func (m *Manager) buildComposer(sess *session.Session, snapshots ...*childToolSn
 	return composer
 }
 
-func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessions ...*session.Session) *childToolSnapshot {
+func (m *Manager) buildRegistry(readOnly bool, allowedTools []string, childSessions ...*session.StoredSession) *childToolSnapshot {
 	return m.buildRegistryWithSupervisor(readOnly, allowedTools, nil, childSessions...)
 }
 
-func (m *Manager) buildRegistryWithSupervisor(readOnly bool, allowedTools []string, supervisor tools.BashCommandRunner, childSessions ...*session.Session) *childToolSnapshot {
+func (m *Manager) buildRegistryWithSupervisor(readOnly bool, allowedTools []string, supervisor tools.BashCommandRunner, childSessions ...*session.StoredSession) *childToolSnapshot {
 	var evidenceProvider permission.EvidenceProvider
 	if len(childSessions) > 0 && childSessions[0] != nil {
 		childSession := childSessions[0]
@@ -303,14 +303,14 @@ func (m *Manager) Run(ctx context.Context, req Request) (outcome *Result, result
 
 	createSession := m.createSession
 	if createSession == nil {
-		createSession = session.NewManager(m.workDir).Create
+		createSession = session.NewFileStore(m.workDir).Create
 	}
 	sess, err := createSession(session.CreateOptions{
 		Source:          session.SOURCESubagent,
 		WorkDir:         m.workDir,
 		UserID:          "subagent-of-" + req.ParentSessionID,
-		ParentSessionID: req.ParentSessionID,
-		ParentRunID:     req.ParentRunID,
+		ParentSessionID: session.ID(req.ParentSessionID),
+		ParentRunID:     session.RunID(req.ParentRunID),
 		DelegationID:    req.DelegationID,
 		Agent:           string(agent.id),
 	})
@@ -318,7 +318,7 @@ func (m *Manager) Run(ctx context.Context, req Request) (outcome *Result, result
 	if err != nil {
 		return outcome, err
 	}
-	outcome.SessionID = sess.ID
+	outcome.SessionID = string(sess.ID)
 
 	supervisor := childRunSupervisor(tools.NewBashProcessSupervisor())
 	if m.supervisorFactory != nil {
@@ -390,7 +390,7 @@ Agent: %s
 	return outcome, err
 }
 
-func (m *Manager) childEvidenceProvider(childSession *session.Session, req Request, recorder *outcomeRecorder) permission.EvidenceProvider {
+func (m *Manager) childEvidenceProvider(childSession *session.StoredSession, req Request, recorder *outcomeRecorder) permission.EvidenceProvider {
 	return func(request permission.Request) permission.Evidence {
 		parent := permission.BuildEvidence(nil, nil, request)
 		if m.parentEvidence != nil {
@@ -401,7 +401,7 @@ func (m *Manager) childEvidenceProvider(childSession *session.Session, req Reque
 		evidence.Correlation = permission.EvidenceCorrelation{
 			ParentSessionID: req.ParentSessionID,
 			ParentRunID:     req.ParentRunID,
-			ChildSessionID:  childSession.ID,
+			ChildSessionID:  string(childSession.ID),
 			ChildRunID:      recorder.runID,
 			DelegationID:    req.DelegationID,
 		}
@@ -409,7 +409,7 @@ func (m *Manager) childEvidenceProvider(childSession *session.Session, req Reque
 	}
 }
 
-func (m *Manager) newCompactor(sess *session.Session) (*compaction.Compactor, error) {
+func (m *Manager) newCompactor(sess *session.StoredSession) (*compaction.Compactor, error) {
 	if m.compactorFactory != nil {
 		return m.compactorFactory(sess)
 	}

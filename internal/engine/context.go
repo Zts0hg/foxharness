@@ -11,7 +11,7 @@ import (
 
 func (e *AgentEngine) buildInitialContext(
 	ctx context.Context,
-	sess *session.Session,
+	sess *session.StoredSession,
 	systemPrompt string,
 	history []session.MessageRecord,
 	currentUser schema.Message,
