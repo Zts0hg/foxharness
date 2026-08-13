@@ -115,6 +115,28 @@ func TestDeprecatedSessionCompatibilityUsageMatchesCeiling(t *testing.T) {
 	}
 }
 
+func TestDeprecatedSessionCompatibilityUsageIgnoresConsumerOwnedStorePorts(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "internal", "client")
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	source := `package client
+import "github.com/Zts0hg/foxharness/internal/session"
+type store interface {
+	StartRun(*session.StoredSession, string) (*session.StoredRun, error)
+}
+func start(value store, record *session.StoredSession) {
+	_, _ = value.StartRun(record, "prompt")
+}`
+	if err := os.WriteFile(filepath.Join(path, "client.go"), []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := deprecatedSessionCompatibilityUsage(t, root); len(got) != 0 {
+		t.Fatalf("consumer-owned store port counted as deprecated record method: %v", got)
+	}
+}
+
 func TestMemoryStoreIsOnlyWorkingMemoryOwner(t *testing.T) {
 	root := moduleRoot(t)
 	if got := forbiddenWorkingMemoryOwnership(t, root); len(got) > 0 {
@@ -355,15 +377,19 @@ func deprecatedSessionCompatibilityUsage(t *testing.T, root string) []string {
 			return nil
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
-			selector, ok := node.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			if ident, ok := selector.X.(*ast.Ident); ok && aliases[ident.Name] && deprecatedQualified[selector.Sel.Name] {
-				counts[rel+":"+selector.Sel.Name]++
-			}
-			if selector.Sel.Name == "StartRun" || selector.Sel.Name == "Finish" {
-				counts[rel+":"+selector.Sel.Name]++
+			switch value := node.(type) {
+			case *ast.SelectorExpr:
+				if ident, ok := value.X.(*ast.Ident); ok && aliases[ident.Name] && deprecatedQualified[value.Sel.Name] {
+					counts[rel+":"+value.Sel.Name]++
+				}
+			case *ast.CallExpr:
+				selector, ok := value.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				if (selector.Sel.Name == "Finish" && len(value.Args) == 0) || (selector.Sel.Name == "StartRun" && len(value.Args) == 1) {
+					counts[rel+":"+selector.Sel.Name]++
+				}
 			}
 			return true
 		})
