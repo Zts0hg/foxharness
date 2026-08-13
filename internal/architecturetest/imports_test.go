@@ -138,6 +138,19 @@ func TestTargetAgentEngineHasNoProductionCallersBeforeProfileCutover(t *testing.
 	}
 }
 
+func TestRuntimeProfilesHaveNoProductionCallersBeforeProfileCutover(t *testing.T) {
+	root := moduleRoot(t)
+	var callers []string
+	for _, edge := range productionImportEdges(t, root) {
+		if edge.To == "internal/runtime" {
+			callers = append(callers, edge.From)
+		}
+	}
+	if len(callers) > 0 {
+		t.Fatalf("target runtime production callers before profile cutover:\n%s", strings.Join(callers, "\n"))
+	}
+}
+
 func moduleRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
