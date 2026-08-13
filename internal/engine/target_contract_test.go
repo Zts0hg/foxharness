@@ -173,6 +173,122 @@ func TestTargetConversationCannotMutatePendingToolCalls(t *testing.T) {
 	}
 }
 
+func TestTL006TargetEngineKeepsDistinctToolResultForms(t *testing.T) {
+	call := schema.ToolCall{ID: "call-large", Name: "large", Arguments: json.RawMessage(`{}`)}
+	invocations := 0
+	var secondContext RunContext
+	invoker := modelInvokerFunc(func(_ context.Context, runContext RunContext) (ModelResult, error) {
+		invocations++
+		if invocations == 1 {
+			return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{call}}, FinishReason: "tool_calls"}, nil
+		}
+		secondContext = cloneRunContext(runContext)
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}, FinishReason: "stop"}, nil
+	})
+	conversation := &targetTestConversation{}
+	executor := &distinctResultToolExecutor{}
+	var facts []Fact
+	eng := NewAgentEngine(invoker, executor, conversation, targetTestPolicy{}, observerFunc(func(_ context.Context, fact Fact) {
+		facts = append(facts, fact)
+	}))
+
+	if _, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 2}); err != nil {
+		t.Fatal(err)
+	}
+	var resultFact Fact
+	for _, fact := range facts {
+		if fact.Kind == FactToolResult {
+			resultFact = fact
+		}
+	}
+	if resultFact.Content != "reporter preview" || resultFact.FullContent != "full artifact" || resultFact.ArtifactPath != "/fixture/call-large.txt" {
+		t.Fatalf("tool result fact = %#v", resultFact)
+	}
+	if len(secondContext.Messages) == 0 || secondContext.Messages[len(secondContext.Messages)-1].Content != "model preview" {
+		t.Fatalf("second context = %#v, want model preview", secondContext.Messages)
+	}
+}
+
+func TestTL008TargetToolResultsPrecedeNextTurnInjections(t *testing.T) {
+	call := schema.ToolCall{ID: "call-observe", Name: "observe", Arguments: json.RawMessage(`{}`)}
+	invocations := 0
+	var secondContext RunContext
+	invoker := modelInvokerFunc(func(_ context.Context, runContext RunContext) (ModelResult, error) {
+		invocations++
+		if invocations == 1 {
+			return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{call}}, FinishReason: "tool_calls"}, nil
+		}
+		secondContext = cloneRunContext(runContext)
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}, FinishReason: "stop"}, nil
+	})
+	conversation := &injectionOrderingConversation{}
+	eng := NewAgentEngine(invoker, &recordingTargetToolExecutor{}, conversation, targetTestPolicy{}, nil)
+
+	if _, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if len(secondContext.Messages) != 5 {
+		t.Fatalf("second context = %#v, want tool call, result, then two injections", secondContext.Messages)
+	}
+	if secondContext.Messages[2].ToolCallID != call.ID || secondContext.Messages[2].Content != "ok" {
+		t.Fatalf("tool result = %#v", secondContext.Messages[2])
+	}
+	if secondContext.Messages[3].Content != "fixture attachment is ready" || secondContext.Messages[4].Content != "queued user context" {
+		t.Fatalf("post-tool injections = %#v", secondContext.Messages[3:])
+	}
+}
+
+func TestTL004TargetToolFailuresRemainCorrelatedAndContinue(t *testing.T) {
+	tests := []struct {
+		name       string
+		call       runtimecontract.ToolCall
+		behavior   *runtimecontract.ToolBehavior
+		wantOutput string
+	}{
+		{name: "unknown", call: runtimecontract.ToolCall{ID: "call-unknown", Name: "missing", Arguments: `{}`}, wantOutput: "Error: tool 'missing' does not exist in the system"},
+		{
+			name: "invalid arguments", call: runtimecontract.ToolCall{ID: "call-invalid", Name: "validate", Arguments: `{"actual":true}`},
+			behavior:   &runtimecontract.ToolBehavior{Call: runtimecontract.ToolCall{Name: "validate", Arguments: `{"expected":true}`}, Definition: contractToolDefinition("validate")},
+			wantOutput: `Error executing validate: invalid arguments: got {"actual":true}, want {"expected":true}`,
+		},
+		{
+			name: "business failure", call: runtimecontract.ToolCall{ID: "call-business", Name: "business", Arguments: `{}`},
+			behavior:   &runtimecontract.ToolBehavior{Call: runtimecontract.ToolCall{Name: "business", Arguments: `{}`}, Definition: contractToolDefinition("business"), Result: runtimecontract.ToolResult{Output: "business rejected", IsError: true}},
+			wantOutput: "business rejected",
+		},
+		{
+			name: "infrastructure failure", call: runtimecontract.ToolCall{ID: "call-backend", Name: "backend", Arguments: `{}`},
+			behavior:   &runtimecontract.ToolBehavior{Call: runtimecontract.ToolCall{Name: "backend", Arguments: `{}`}, Definition: contractToolDefinition("backend"), Result: runtimecontract.ToolResult{ErrorKind: "backend unavailable"}},
+			wantOutput: "Error executing backend: backend unavailable",
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			script := runtimecontract.Script{ModelSteps: []runtimecontract.ModelStep{
+				{Response: runtimecontract.ModelResponse{ToolCalls: []runtimecontract.ToolCall{testCase.call}, FinishReason: "tool_calls"}},
+				{Response: runtimecontract.ModelResponse{Content: "recovered", FinishReason: "stop"}},
+			}}
+			if testCase.behavior != nil {
+				script.Tools = []runtimecontract.ToolBehavior{*testCase.behavior}
+			}
+			observed, err := newTargetContractAdapter(t).Run(context.Background(), contractInput(3), script)
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if observed.Outcome.FinalMessage != "recovered" || len(observed.Facts) != 5 {
+				t.Fatalf("observed = %#v", observed)
+			}
+			result := observed.Facts[2]
+			if result.Kind != "tool_result" || result.CallID != testCase.call.ID || !result.IsError || result.Content != testCase.wantOutput {
+				t.Fatalf("tool result = %#v, want %q", result, testCase.wantOutput)
+			}
+			if got := observed.Requests[1].Messages[3]; got.ToolCallID != testCase.call.ID || got.Content != testCase.wantOutput {
+				t.Fatalf("follow-up result = %#v", got)
+			}
+		})
+	}
+}
+
 type targetContractAdapter struct {
 	t *testing.T
 }
@@ -440,6 +556,7 @@ func newTargetScriptedToolExecutor(
 			InputSchema: targetInputSchema(behavior.Definition.InputSchema),
 		})
 		executor.behaviors[behavior.Call.ID+"\x00"+behavior.Call.Name] = behavior
+		executor.behaviors["\x00"+behavior.Call.Name] = behavior
 	}
 	return executor
 }
@@ -449,7 +566,7 @@ func (e *targetScriptedToolExecutor) Snapshot(context.Context) (ToolSnapshot, er
 }
 
 func (e *targetScriptedToolExecutor) Execute(_ context.Context, _ ToolSnapshot, calls []schema.ToolCall) (ToolBatch, error) {
-	batch := ToolBatch{Results: make([]schema.ToolResult, 0, len(calls))}
+	batch := ToolBatch{Results: make([]ToolExecutionResult, 0, len(calls))}
 	turn := 0
 	if len(e.invoker.metrics) > 0 {
 		turn = e.invoker.metrics[len(e.invoker.metrics)-1].Turn
@@ -457,14 +574,32 @@ func (e *targetScriptedToolExecutor) Execute(_ context.Context, _ ToolSnapshot, 
 	for _, call := range calls {
 		behavior, ok := e.behaviors[call.ID+"\x00"+call.Name]
 		if !ok {
-			return ToolBatch{}, fmt.Errorf("target scripted tool behavior missing for %s/%s", call.ID, call.Name)
+			behavior, ok = e.behaviors["\x00"+call.Name]
 		}
-		content := behavior.Result.ModelContent
-		if content == "" {
-			content = behavior.Result.Output
+		content := ""
+		isError := false
+		switch {
+		case !ok:
+			content = fmt.Sprintf("Error: tool '%s' does not exist in the system", call.Name)
+			isError = true
+		case behavior.Call.Arguments != "" && string(call.Arguments) != behavior.Call.Arguments:
+			content = fmt.Sprintf("Error executing %s: invalid arguments: got %s, want %s", call.Name, call.Arguments, behavior.Call.Arguments)
+			isError = true
+		case behavior.Result.ErrorKind != "":
+			content = fmt.Sprintf("Error executing %s: %s", call.Name, behavior.Result.ErrorKind)
+			isError = true
+		default:
+			content = behavior.Result.ModelContent
+			if content == "" {
+				content = behavior.Result.Output
+			}
+			isError = behavior.Result.IsError
 		}
-		batch.Results = append(batch.Results, schema.ToolResult{ToolCallID: call.ID, Output: content, IsError: behavior.Result.IsError})
-		e.metrics = append(e.metrics, runtimecontract.Metric{Kind: "tool_call", Turn: turn, ToolName: call.Name, CallID: call.ID})
+		batch.Results = append(batch.Results, ToolExecutionResult{
+			CallID: call.ID, FullContent: behavior.Result.Output,
+			ModelContent: content, ObserverContent: content, IsError: isError,
+		})
+		e.metrics = append(e.metrics, runtimecontract.Metric{Kind: "tool_call", Turn: turn, ToolName: call.Name, CallID: call.ID, IsError: isError})
 	}
 	return batch, nil
 }
@@ -533,13 +668,58 @@ type recordingTargetToolExecutor struct {
 	calls []schema.ToolCall
 }
 
+type distinctResultToolExecutor struct{}
+
+func (*distinctResultToolExecutor) Snapshot(context.Context) (ToolSnapshot, error) {
+	return targetToolSnapshot{}, nil
+}
+
+func (*distinctResultToolExecutor) Execute(_ context.Context, _ ToolSnapshot, calls []schema.ToolCall) (ToolBatch, error) {
+	return ToolBatch{Results: []ToolExecutionResult{{
+		CallID: calls[0].ID, FullContent: "full artifact", ModelContent: "model preview",
+		ObserverContent: "reporter preview", ArtifactPath: "/fixture/call-large.txt",
+	}}}, nil
+}
+
+type injectionOrderingConversation struct {
+	messages      []schema.Message
+	toolCommitted bool
+	injected      bool
+}
+
+func (c *injectionOrderingConversation) Prepare(_ context.Context, input RunInput) (RunContext, error) {
+	if c.messages == nil {
+		c.messages = []schema.Message{{Role: schema.RoleUser, Content: input.Prompt}}
+	}
+	if c.toolCommitted && !c.injected {
+		c.messages = append(c.messages,
+			schema.Message{Role: schema.RoleUser, Content: "fixture attachment is ready"},
+			schema.Message{Role: schema.RoleUser, Content: "queued user context"},
+		)
+		c.injected = true
+	}
+	return RunContext{Messages: cloneMessages(c.messages)}, nil
+}
+
+func (c *injectionOrderingConversation) Apply(_ context.Context, changes []ConversationChange) error {
+	for _, change := range changes {
+		c.messages = append(c.messages, cloneMessage(change.Message))
+		if change.Message.ToolCallID != "" {
+			c.toolCommitted = true
+		}
+	}
+	return nil
+}
+
 func (*recordingTargetToolExecutor) Snapshot(context.Context) (ToolSnapshot, error) {
 	return targetToolSnapshot{}, nil
 }
 
 func (e *recordingTargetToolExecutor) Execute(_ context.Context, _ ToolSnapshot, calls []schema.ToolCall) (ToolBatch, error) {
 	e.calls = cloneToolCalls(calls)
-	return ToolBatch{Results: []schema.ToolResult{{ToolCallID: calls[0].ID, Output: "ok"}}}, nil
+	return ToolBatch{Results: []ToolExecutionResult{{
+		CallID: calls[0].ID, FullContent: "ok", ModelContent: "ok", ObserverContent: "ok",
+	}}}, nil
 }
 
 type targetTestPolicy struct{}

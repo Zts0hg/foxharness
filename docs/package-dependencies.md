@@ -29,6 +29,9 @@ flowchart TD
     RUNTIME --> PROMPT[internal/prompt]
     ENGINE --> SCHEMA[internal/schema]
 
+    TOOLEXEC[internal/toolexec] --> ENGINE
+	TOOLEXEC --> SCHEMA
+
     WIRE -. injects .-> PROVIDER[provider implementations]
     WIRE -. injects .-> TOOLS[tool implementations]
     WIRE -. injects .-> COMPACTION[compaction]
@@ -43,6 +46,7 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 |---|---|
 | `internal/schema` | Narrow model protocol values: messages, usage, tool definitions, calls, and results. It is not a general DTO or utility package. |
 | `internal/engine` | Infrastructure-independent run/turn transitions and consumer-owned model, tool, conversation, policy, and observer ports. |
+| `internal/toolexec` | Immutable resolved capability snapshots, parallel/exclusive batch scheduling, cancellation completion, and ordered structured tool results. It does not own catalogs, permissions, session persistence, or presentation. |
 | `internal/runtime` | Harness construction, immutable profile resolution, live session/run lifecycle, context-injection decisions, recoverable-state commit coordination, and child-run control. |
 | `internal/app` | User-entry commands, UI-neutral DTOs, runtime-notification mapping, and correlated interaction ports. |
 | `internal/tui` | Fox-specific Bubble Tea input, queue, overlay, and terminal presentation behavior. |
@@ -74,6 +78,8 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 The previous implementation is explicitly named `LegacyEngine`/`NewLegacyEngine`. Every production profile continues to use that compatibility path until its atomic cutover; only the target characterization adapter calls `NewAgentEngine`. An AST gate rejects any production reference to the target constructor before those cutovers. The old engine's concrete imports remain in the existing decreasing allowlist for removal at `M25`; M04 adds no import edge and does not change either allowlist.
 
 `M05` expands the target coordinator through the complete shared model-turn and streaming contracts. `ModelInvoker.StartRun` creates one `ModelRunInvoker` whose streaming/fallback state may be shared by thinking and action calls and later turns in that run, but cannot leak into another run. Model deltas return synchronously through a restricted emitter and are sequenced once by engine `Observer`; provider transports, retry/fallback selection, and response normalization remain outside engine. Engine owns thinking/action phase transitions, usage aggregation, tool-free and tool-continuation transitions, and the exact hard turn-limit boundary. Conversation receives defensive ordered proposals, including non-persisted thinking context, and cannot mutate pending model/tool state. Production profiles still use only `LegacyEngine`.
+
+`M06` introduces the focused `internal/toolexec` adapter. Composition supplies already constrained and alias-resolved `Capability` values, so one snapshot freezes each advertised definition, executable function, and parallel-safety decision together. Consecutive parallel-safe calls overlap; non-parallel calls form exclusive boundaries; every batch returns in model-call order; unknown, invalid, business, infrastructure, and cancellation outcomes remain structured and correlated. `ToolExecutionResult` keeps full artifact content, model preview, observer preview, and artifact path distinct. Engine commits model-visible results before preparing the next context and exposes only normalized observer forms. Session-message persistence, permission policy, catalogs, and artifact storage remain outside both engine and toolexec.
 
 ## Allowed Dependencies
 

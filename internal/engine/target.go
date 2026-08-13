@@ -76,9 +76,19 @@ type ToolSnapshot interface {
 	ToolDefinitions() []schema.ToolDefinition
 }
 
+/* ToolExecutionResult contains distinct full, model-visible, and observer result forms. */
+type ToolExecutionResult struct {
+	CallID          string
+	FullContent     string
+	ModelContent    string
+	ObserverContent string
+	ArtifactPath    string
+	IsError         bool
+}
+
 /* ToolBatch contains tool results in the same order as their corresponding calls. */
 type ToolBatch struct {
-	Results []schema.ToolResult
+	Results []ToolExecutionResult
 }
 
 /* ToolExecutor creates constrained snapshots and executes calls against the same snapshot. */
@@ -149,14 +159,16 @@ const (
 
 /* Fact is one typed synchronous observation emitted in canonical order. */
 type Fact struct {
-	Kind     FactKind
-	Sequence int
-	Turn     int
-	Phase    Phase
-	CallID   string
-	Name     string
-	Content  string
-	IsError  bool
+	Kind         FactKind
+	Sequence     int
+	Turn         int
+	Phase        Phase
+	CallID       string
+	Name         string
+	Content      string
+	FullContent  string
+	ArtifactPath string
+	IsError      bool
 }
 
 /* Observer synchronously receives each engine fact exactly once. */
@@ -334,19 +346,32 @@ func (e *AgentEngine) executeTools(
 	changes := make([]ConversationChange, 0, len(batch.Results))
 	for index, result := range batch.Results {
 		call := calls[index]
-		result.ToolCallID = call.ID
+		if result.CallID == "" {
+			result.CallID = call.ID
+		}
+		if result.CallID != call.ID {
+			return fmt.Errorf("tool result %d call ID = %q, want %q", index, result.CallID, call.ID)
+		}
+		observerContent := result.ObserverContent
+		if observerContent == "" {
+			observerContent = result.ModelContent
+		}
 		emit(Fact{
 			Kind: FactToolResult, CallID: call.ID, Name: call.Name,
-			Content: result.Output, IsError: result.IsError,
+			Content: observerContent, FullContent: result.FullContent,
+			ArtifactPath: result.ArtifactPath, IsError: result.IsError,
 		})
 		changes = append(changes, ConversationChange{
 			Kind: ConversationAppendMessage,
 			Message: schema.Message{
-				Role: schema.RoleUser, Content: result.Output, ToolCallID: call.ID,
+				Role: schema.RoleUser, Content: result.ModelContent, ToolCallID: call.ID,
 			},
 		})
 	}
-	return e.applyChanges(ctx, changes)
+	if err := e.applyChanges(ctx, changes); err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 func (e *AgentEngine) applyChanges(ctx context.Context, changes []ConversationChange) error {
