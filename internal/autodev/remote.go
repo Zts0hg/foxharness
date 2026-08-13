@@ -132,7 +132,7 @@ func (p *RemotePublisher) Publish(ctx context.Context, core CoreRunner, wt Workt
 				return PublishResult{Branch: wt.Branch, Issue: sc.Issue, PR: sc.PR}, err
 			}
 		}
-		if prChanged {
+		if prChanged || (stage == StagePR && sc.PR != 0 && previousPR == sc.PR) {
 			p.reporter.OnPR(ctx, sc.PR)
 		}
 	}
@@ -262,6 +262,7 @@ func (p *RemotePublisher) steps() []Stage {
 		})
 	}
 	if p.cfg.RemoteFlow.OpenPR {
+		resolve := p.resolvePR
 		steps = append(steps, Stage{
 			Name:    "pr",
 			Command: "codexspec:pr",
@@ -273,14 +274,11 @@ func (p *RemotePublisher) steps() []Stage {
 				}
 				return out
 			},
-			Skip: func(ctx context.Context, sc *StageContext) bool {
-				if sc.PR != 0 {
-					p.reporter.OnPR(ctx, sc.PR)
-					return true
-				}
-				return false
+			Preflight: func(ctx context.Context, sc *StageContext) (bool, error) {
+				ok, _, err := resolve(ctx, sc)
+				return ok, err
 			},
-			Verify: p.verifyPR(),
+			VerifyWithError: resolve,
 		})
 	}
 	return steps
@@ -428,38 +426,87 @@ func (p *RemotePublisher) resolveIssue(ctx context.Context, sc *StageContext) (b
 	}
 }
 
-// verifyPR queries gh for the branch's PR and enforces the Closes #N link
-// when configured (TC-012). Publish persists and reports the verified number.
+// PRIdentityConflictError reports ambiguous discovery or a recorded PR whose
+// immutable identity no longer matches the item publication contract.
+type PRIdentityConflictError struct{ Reason string }
+
+func (e *PRIdentityConflictError) Error() string {
+	return "GitHub pull request identity conflict: " + e.Reason
+}
+
+type pullRequestRecord struct {
+	Number      int    `json:"number"`
+	Body        string `json:"body"`
+	BaseRefName string `json:"baseRefName"`
+	HeadRefName string `json:"headRefName"`
+}
+
+// verifyPR adapts the error-capable resolver to the legacy Verify shape used
+// by focused tests.
 func (p *RemotePublisher) verifyPR() func(ctx context.Context, sc *StageContext) (bool, string) {
 	return func(ctx context.Context, sc *StageContext) (bool, string) {
-		result, runErr := p.exec.Run(ctx, sc.WorkDir, "gh", "pr", "view", sc.Branch, "--json", "number,body,baseRefName,headRefName")
+		ok, gap, err := p.resolvePR(ctx, sc)
+		if err != nil {
+			return false, err.Error()
+		}
+		return ok, gap
+	}
+}
+
+func (p *RemotePublisher) resolvePR(ctx context.Context, sc *StageContext) (bool, string, error) {
+	const fields = "number,body,baseRefName,headRefName"
+	recorded := sc.PR != 0
+	var pr pullRequestRecord
+	if recorded {
+		result, runErr := p.exec.Run(ctx, sc.WorkDir, "gh", "pr", "view", fmt.Sprint(sc.PR), "--json", fields)
 		out, err := strictCommandStdout(result, runErr)
 		if err != nil {
-			return false, fmt.Sprintf("no pull request exists for branch %s yet", sc.Branch)
+			return false, "", &PRIdentityConflictError{Reason: fmt.Sprintf("cannot verify recorded PR #%d: %v", sc.PR, err)}
 		}
-		var pr struct {
-			Number      int    `json:"number"`
-			Body        string `json:"body"`
-			BaseRefName string `json:"baseRefName"`
-			HeadRefName string `json:"headRefName"`
+		if err := json.Unmarshal([]byte(extractJSON(out)), &pr); err != nil || pr.Number != sc.PR {
+			return false, "", &PRIdentityConflictError{Reason: fmt.Sprintf("recorded PR #%d returned malformed or mismatched identity", sc.PR)}
 		}
-		if err := json.Unmarshal([]byte(extractJSON(out)), &pr); err != nil || pr.Number == 0 {
-			return false, fmt.Sprintf("cannot parse gh pr view output for branch %s", sc.Branch)
-		}
-		if pr.BaseRefName != sc.BaseBranch || pr.HeadRefName != sc.Branch {
-			return false, fmt.Sprintf(
-				"the pull request targets %s from %s; retarget it to %s from %s",
-				pr.BaseRefName, pr.HeadRefName, sc.BaseBranch, sc.Branch)
-		}
-		if p.cfg.RemoteFlow.LinkIssue && sc.Issue != 0 {
-			link := fmt.Sprintf("Closes #%d", sc.Issue)
-			if !strings.Contains(pr.Body, link) {
-				return false, fmt.Sprintf("the PR body does not contain %q; edit the PR body (gh pr edit %d --body ...) to include it", link, pr.Number)
+	} else {
+		result, runErr := p.exec.Run(ctx, sc.WorkDir, "gh", "pr", "list", "--head", sc.Branch, "--state", "all", "--json", fields)
+		out, err := strictCommandStdout(result, runErr)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return false, "", ctxErr
 			}
+			return false, "", fmt.Errorf("query pull requests for branch %s: %w", sc.Branch, err)
 		}
-		sc.PR = pr.Number
-		return true, ""
+		var matches []pullRequestRecord
+		if err := json.Unmarshal([]byte(extractJSONArray(out)), &matches); err != nil {
+			return false, "", fmt.Errorf("cannot parse pull requests for branch %s: %w", sc.Branch, err)
+		}
+		switch len(matches) {
+		case 0:
+			return false, fmt.Sprintf("no pull request exists for branch %s yet", sc.Branch), nil
+		case 1:
+			pr = matches[0]
+		default:
+			return false, "", &PRIdentityConflictError{Reason: fmt.Sprintf("branch %s matches %d pull requests", sc.Branch, len(matches))}
+		}
 	}
+	if pr.Number == 0 {
+		return false, "", &PRIdentityConflictError{Reason: fmt.Sprintf("branch %s resolved to zero PR identity", sc.Branch)}
+	}
+	if pr.BaseRefName != sc.BaseBranch || pr.HeadRefName != sc.Branch {
+		gap := fmt.Sprintf("the pull request targets %s from %s; retarget it to %s from %s",
+			pr.BaseRefName, pr.HeadRefName, sc.BaseBranch, sc.Branch)
+		if recorded {
+			return false, "", &PRIdentityConflictError{Reason: gap}
+		}
+		return false, gap, nil
+	}
+	if p.cfg.RemoteFlow.LinkIssue && sc.Issue != 0 {
+		link := fmt.Sprintf("Closes #%d", sc.Issue)
+		if !strings.Contains(pr.Body, link) {
+			return false, fmt.Sprintf("the PR body does not contain %q; edit the PR body (gh pr edit %d --body ...) to include it", link, pr.Number), nil
+		}
+	}
+	sc.PR = pr.Number
+	return true, "", nil
 }
 
 // extractJSONArray returns the first top-level [...] block in s so banners

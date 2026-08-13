@@ -133,9 +133,12 @@ func (g *remoteGH) Run(ctx context.Context, dir string, name string, args ...str
 			items += fmt.Sprintf(`{"number":%d,"body":%q,"state":"OPEN"}`, n, marker)
 		}
 		return stdoutResult(`[{"items":[` + items + `]}]`), nil
-	case len(args) >= 2 && args[0] == "pr" && args[1] == "view":
+	case len(args) >= 2 && args[0] == "pr" && (args[1] == "list" || args[1] == "view"):
 		if g.state.prNumber == 0 {
-			return stdoutResult("no pull requests found"), errors.New("exit status 1")
+			if args[1] == "list" {
+				return stdoutResult("[]"), nil
+			}
+			return stdoutResult("pull request not found"), errors.New("exit status 1")
 		}
 		base, head := g.state.prBase, g.state.prHead
 		if base == "" {
@@ -144,8 +147,12 @@ func (g *remoteGH) Run(ctx context.Context, dir string, name string, args ...str
 		if head == "" {
 			head = "auto/x"
 		}
-		return stdoutResult(fmt.Sprintf(`{"number":%d,"body":%q,"baseRefName":%q,"headRefName":%q}`,
-			g.state.prNumber, g.state.prBody, base, head)), nil
+		record := fmt.Sprintf(`{"number":%d,"body":%q,"baseRefName":%q,"headRefName":%q}`,
+			g.state.prNumber, g.state.prBody, base, head)
+		if args[1] == "list" {
+			return stdoutResult("[" + record + "]"), nil
+		}
+		return stdoutResult(record), nil
 	default:
 		g.t.Errorf("control plane ran a non-read-only gh command: %s", key)
 		return CommandResult{}, errors.New("forbidden")

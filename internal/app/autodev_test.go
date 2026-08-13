@@ -215,6 +215,33 @@ func TestCoreRunnerAdapterStagePromptUnknownCommand(t *testing.T) {
 	}
 }
 
+func TestCPAUT014CoreRunnerAdapterStagePromptBoundaryFallbacks(t *testing.T) {
+	t.Run("missing registry", func(t *testing.T) {
+		adapter := &coreRunnerAdapter{runner: &fakeRunnerAPI{}}
+		if _, err := adapter.StagePrompt(context.Background(), "codexspec:generate-spec", "artifact.md"); err == nil || !strings.Contains(err.Error(), "no slash registry") {
+			t.Fatalf("StagePrompt error = %v, want missing registry diagnostic", err)
+		}
+	})
+
+	t.Run("missing executor uses worktree-scoped default", func(t *testing.T) {
+		registry := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
+		registry.Register(&slash.Command{
+			Type:    slash.CommandPrompt,
+			Name:    "codexspec:generate-spec",
+			Source:  slash.SourceProject,
+			Content: "Generate from $ARGUMENTS",
+		})
+		adapter := &coreRunnerAdapter{runner: &fakeRunnerAPI{registry: registry, workDir: t.TempDir()}}
+		prompt, err := adapter.StagePrompt(context.Background(), "codexspec:generate-spec", "feature/requirements.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prompt != "Generate from feature/requirements.md" {
+			t.Fatalf("prompt = %q, want default executor argument substitution", prompt)
+		}
+	})
+}
+
 func TestCoreRunnerAdapterStagePromptHonorsContext(t *testing.T) {
 	registry := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
 	// The embedded command transforms its text so executed output ("OK")

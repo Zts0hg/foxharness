@@ -160,12 +160,30 @@ func (e *e2eExec) Run(ctx context.Context, dir string, name string, args ...stri
 		}
 		return stdoutResult(`[{"items":[]}]`), nil
 	case "pr":
-		branch := args[2]
-		if n, ok := w.prs[branch]; ok {
-			return stdoutResult(fmt.Sprintf(`{"number":%d,"body":%q,"baseRefName":"main","headRefName":%q}`,
-				n, w.prBodies[branch], branch)), nil
+		if args[1] == "list" {
+			branch := ""
+			for i, arg := range args {
+				if arg == "--head" && i+1 < len(args) {
+					branch = args[i+1]
+				}
+			}
+			if n, ok := w.prs[branch]; ok {
+				return stdoutResult(fmt.Sprintf(`[{"number":%d,"body":%q,"baseRefName":"main","headRefName":%q}]`,
+					n, w.prBodies[branch], branch)), nil
+			}
+			return stdoutResult("[]"), nil
 		}
-		return stdoutResult("no pull requests found"), errors.New("exit status 1")
+		number, err := strconv.Atoi(args[2])
+		if err != nil {
+			return CommandResult{}, err
+		}
+		for branch, n := range w.prs {
+			if n == number {
+				return stdoutResult(fmt.Sprintf(`{"number":%d,"body":%q,"baseRefName":"main","headRefName":%q}`,
+					n, w.prBodies[branch], branch)), nil
+			}
+		}
+		return stdoutResult("pull request not found"), errors.New("exit status 1")
 	}
 	return CommandResult{}, errors.New("unexpected gh args")
 }

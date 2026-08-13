@@ -200,12 +200,20 @@ func (g *orchestraGH) Run(ctx context.Context, dir string, name string, args ...
 		for _, n := range g.issues {
 			links = append(links, fmt.Sprintf("Closes #%d", n))
 		}
-		head := ""
-		if len(args) > 2 {
-			head = args[2]
+		head := "auto/unknown"
+		if args[1] == "list" {
+			for i, arg := range args {
+				if arg == "--head" && i+1 < len(args) {
+					head = args[i+1]
+				}
+			}
 		}
-		return stdoutResult(fmt.Sprintf(`{"number":%d,"body":%q,"baseRefName":"main","headRefName":%q}`,
-			1000+len(g.issues), strings.Join(links, "\n"), head)), nil
+		record := fmt.Sprintf(`{"number":%d,"body":%q,"baseRefName":"main","headRefName":%q}`,
+			1000+len(g.issues), strings.Join(links, "\n"), head)
+		if args[1] == "list" {
+			return stdoutResult("[" + record + "]"), nil
+		}
+		return stdoutResult(record), nil
 	}
 	return CommandResult{}, errors.New("unexpected gh args")
 }

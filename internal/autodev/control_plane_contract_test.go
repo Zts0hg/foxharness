@@ -459,3 +459,212 @@ func TestCPAUT025CorePanicRetainsResumableWorktreeAndClosesRunner(t *testing.T) 
 		t.Fatalf("core attempts = %+v, want one durable terminal panic outcome", item.CoreAttempts)
 	}
 }
+
+type collisionGit struct {
+	adds   int
+	probes int
+}
+
+func (g *collisionGit) Run(ctx context.Context, _ string, args ...string) (CommandResult, error) {
+	if err := ctx.Err(); err != nil {
+		return CommandResult{}, err
+	}
+	if len(args) >= 2 && args[0] == "worktree" && args[1] == "add" {
+		g.adds++
+		return CommandResult{Stderr: "branch exists", ExitCode: 128}, errors.New("exit status 128")
+	}
+	if len(args) >= 2 && args[0] == "rev-parse" && args[1] == "--verify" {
+		g.probes++
+		return stdoutResult("existing\n"), nil
+	}
+	return CommandResult{}, nil
+}
+
+func TestCPAUT009WorktreeCollisionSearchIsBoundedAndLockstep(t *testing.T) {
+	repoRoot := t.TempDir()
+	git := &collisionGit{}
+	manager := NewWorktreeManager(git, repoRoot, "../managed", "main", "origin")
+	_, err := manager.Create(context.Background(), LedgerItem{Slug: "bounded", Status: StatusPending})
+	if err == nil || !strings.Contains(err.Error(), "within 100 candidates") {
+		t.Fatalf("Create error = %v, want bounded collision exhaustion", err)
+	}
+	if git.adds != maxWorktreeCandidates || git.probes != maxWorktreeCandidates {
+		t.Fatalf("add/probe calls = %d/%d, want exactly %d lockstep candidates", git.adds, git.probes, maxWorktreeCandidates)
+	}
+}
+
+type pushGroundTruthGit struct {
+	local     CommandResult
+	localErr  error
+	remote    CommandResult
+	remoteErr error
+	calls     []string
+}
+
+func (g *pushGroundTruthGit) Run(_ context.Context, _ string, args ...string) (CommandResult, error) {
+	call := strings.Join(args, " ")
+	g.calls = append(g.calls, call)
+	if len(args) > 0 && args[0] == "rev-parse" {
+		return g.local, g.localErr
+	}
+	return g.remote, g.remoteErr
+}
+
+func TestCPAUT020PushGroundTruthMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		git       pushGroundTruthGit
+		wantOK    bool
+		wantGap   string
+		wantCalls int
+	}{
+		{name: "exact tip", git: pushGroundTruthGit{local: stdoutResult("abc\n"), remote: stdoutResult("abc\trefs/heads/auto/x\n")}, wantOK: true, wantCalls: 2},
+		{name: "missing local head", git: pushGroundTruthGit{localErr: errors.New("missing HEAD")}, wantGap: "cannot resolve local HEAD", wantCalls: 1},
+		{name: "missing remote branch", git: pushGroundTruthGit{local: stdoutResult("abc\n")}, wantGap: "does not match local HEAD", wantCalls: 2},
+		{name: "divergent remote tip", git: pushGroundTruthGit{local: stdoutResult("abc\n"), remote: stdoutResult("def\trefs/heads/auto/x\n")}, wantGap: "does not match local HEAD", wantCalls: 2},
+		{name: "remote auth failure", git: pushGroundTruthGit{local: stdoutResult("abc\n"), remote: CommandResult{Stderr: "auth failed"}, remoteErr: errors.New("exit status 128")}, wantGap: "cannot query remote origin", wantCalls: 2},
+		{name: "overflowed remote query", git: pushGroundTruthGit{local: stdoutResult("abc\n"), remote: CommandResult{Stdout: "abc", StdoutOverflow: true}}, wantGap: "cannot query remote origin", wantCalls: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := tc.git
+			publisher := NewRemotePublisher(nil, &git, nil, nil, remoteConfig())
+			ok, gap := publisher.verifyPushed(context.Background(), &StageContext{WorkDir: "/wt", Remote: "origin", Branch: "auto/x"})
+			if ok != tc.wantOK || (tc.wantGap != "" && !strings.Contains(gap, tc.wantGap)) {
+				t.Fatalf("verifyPushed = %v, %q, want %v and gap containing %q", ok, gap, tc.wantOK, tc.wantGap)
+			}
+			if len(git.calls) != tc.wantCalls {
+				t.Fatalf("git calls = %v, want %d", git.calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+type prGroundTruthExec struct {
+	result CommandResult
+	err    error
+	calls  []string
+}
+
+func (e *prGroundTruthExec) Run(_ context.Context, _ string, name string, args ...string) (CommandResult, error) {
+	e.calls = append(e.calls, name+" "+strings.Join(args, " "))
+	return e.result, e.err
+}
+
+func TestCPAUT022PullRequestGroundTruthMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		result  CommandResult
+		err     error
+		link    bool
+		issue   int
+		wantOK  bool
+		wantGap string
+	}{
+		{name: "missing", result: stdoutResult(`[]`), wantGap: "no pull request"},
+		{name: "malformed", result: stdoutResult("not-json"), wantGap: "cannot parse"},
+		{name: "zero identity", result: stdoutResult(`[{"number":0,"baseRefName":"main","headRefName":"auto/x"}]`), wantGap: "zero PR identity"},
+		{name: "wrong base", result: stdoutResult(`[{"number":7,"baseRefName":"release","headRefName":"auto/x"}]`), wantGap: "retarget"},
+		{name: "wrong head", result: stdoutResult(`[{"number":7,"baseRefName":"main","headRefName":"other"}]`), wantGap: "retarget"},
+		{name: "missing exact link", result: stdoutResult(`[{"number":7,"body":"Related #4","baseRefName":"main","headRefName":"auto/x"}]`), link: true, issue: 4, wantGap: "Closes #4"},
+		{name: "link disabled", result: stdoutResult(`[{"number":7,"body":"","baseRefName":"main","headRefName":"auto/x"}]`), issue: 4, wantOK: true},
+		{name: "exact", result: stdoutResult(`[{"number":7,"body":"Closes #4","baseRefName":"main","headRefName":"auto/x"}]`), link: true, issue: 4, wantOK: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := &prGroundTruthExec{result: tc.result, err: tc.err}
+			cfg := remoteConfig()
+			cfg.RemoteFlow.LinkIssue = tc.link
+			publisher := NewRemotePublisher(nil, nil, exec, nil, cfg)
+			sc := &StageContext{WorkDir: "/wt", BaseBranch: "main", Branch: "auto/x", Issue: tc.issue}
+			ok, gap := publisher.verifyPR()(context.Background(), sc)
+			if ok != tc.wantOK || (tc.wantGap != "" && !strings.Contains(gap, tc.wantGap)) {
+				t.Fatalf("verifyPR = %v, %q, want %v and gap containing %q", ok, gap, tc.wantOK, tc.wantGap)
+			}
+			if tc.wantOK && sc.PR != 7 {
+				t.Fatalf("verified PR = %d, want 7", sc.PR)
+			}
+			if len(exec.calls) != 1 || !strings.Contains(exec.calls[0], "number,body,baseRefName,headRefName") {
+				t.Fatalf("gh calls = %v, want one complete read-only PR query", exec.calls)
+			}
+		})
+	}
+}
+
+func TestCPAUT022RecordedAndDuplicatePullRequestsRequireIdentityResolution(t *testing.T) {
+	cfg := remoteConfig()
+	exec := &prGroundTruthExec{result: stdoutResult(`[{"number":7,"body":"Closes #4","baseRefName":"main","headRefName":"auto/x"},{"number":8,"body":"Closes #4","baseRefName":"main","headRefName":"auto/x"}]`)}
+	publisher := NewRemotePublisher(NewStageMachine(&reviewingEngineer{}, NewTerminalReporter(io.Discard)), nil, exec, NewTerminalReporter(io.Discard), cfg)
+	steps := publisher.steps()
+	prStage := steps[len(steps)-1]
+	if prStage.Name != string(StagePR) || prStage.Preflight == nil || prStage.VerifyWithError == nil {
+		t.Fatalf("PR stage = %+v, want error-capable identity preflight and verifier", prStage)
+	}
+
+	sc := &StageContext{WorkDir: "/wt", BaseBranch: "main", Branch: "auto/x", Issue: 4}
+	if ok, _, err := prStage.VerifyWithError(context.Background(), sc); ok || err == nil {
+		t.Fatalf("duplicate PR resolution = %v, %v, want identity conflict", ok, err)
+	}
+
+	exec.result = stdoutResult(`{"number":9,"body":"Closes #4","baseRefName":"release","headRefName":"auto/x"}`)
+	sc.PR = 9
+	if skip, err := prStage.Preflight(context.Background(), sc); skip || err == nil {
+		t.Fatalf("recorded wrong-target PR preflight = %v, %v, want fail-closed revalidation", skip, err)
+	}
+	if len(exec.calls) != 2 || !strings.Contains(exec.calls[0], "pr list") || !strings.Contains(exec.calls[1], "pr view 9") {
+		t.Fatalf("gh calls = %v, want complete head search then recorded-number read", exec.calls)
+	}
+}
+
+type cleanupFailureGit struct{ delegate *orchestraGit }
+
+func (g *cleanupFailureGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
+	if len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
+		g.delegate.mu.Lock()
+		g.delegate.calls = append(g.delegate.calls, strings.Join(args, " "))
+		g.delegate.mu.Unlock()
+		return CommandResult{Stderr: "cleanup failed", ExitCode: 1}, errors.New("exit status 1")
+	}
+	return g.delegate.Run(ctx, dir, args...)
+}
+
+type infoRecorder struct {
+	*eventRecorder
+	infos []string
+}
+
+func (r *infoRecorder) OnInfo(_ context.Context, message string) {
+	r.infos = append(r.infos, message)
+}
+
+func TestCPAUT025CleanupFailureIsVisibleAndNonFatalAfterDone(t *testing.T) {
+	repoRoot := t.TempDir()
+	deps, events, _, git, _ := testDeps(t, repoRoot, `## [fix] Cleanup item
+
+**ID**: cleanup-item
+**Description**: keep inspection worktree on cleanup failure
+`)
+	reporter := &infoRecorder{eventRecorder: events}
+	deps.Reporter = reporter
+	deps.Git = &cleanupFailureGit{delegate: git}
+
+	if err := New(deps).Run(context.Background()); err != nil {
+		t.Fatalf("Run returned cleanup as fatal: %v", err)
+	}
+	ledger, err := LoadLedger(filepath.Join(repoRoot, ".foxharness", "autodev-state.json"), newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, ok := ledger.Get("cleanup-item")
+	if !ok || item.Status != StatusDone || item.Issue == 0 || item.PR == 0 {
+		t.Fatalf("done ledger item = %+v (present %t), want publication persisted before cleanup", item, ok)
+	}
+	if got := events.list(); len(got) == 0 || got[len(got)-1] != "done:cleanup-item" {
+		t.Fatalf("events = %v, want item-done before non-fatal cleanup warning", got)
+	}
+	warningFound := false
+	for _, info := range reporter.infos {
+		warningFound = warningFound || strings.Contains(info, "failed to remove worktree")
+	}
+	if !warningFound {
+		t.Fatalf("info events = %v, want visible cleanup warning", reporter.infos)
+	}
+}
