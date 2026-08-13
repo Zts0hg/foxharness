@@ -2,6 +2,8 @@ package autodev
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -514,6 +516,221 @@ func TestSaveIsAtomicAndLeavesNoTempFiles(t *testing.T) {
 
 	if _, err := LoadLedger(path, newTestClock()); err != nil {
 		t.Fatalf("reload after Save returned error: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("ledger permissions = %o, want 600", got)
+	}
+}
+
+type scriptedLedgerTempFile struct {
+	events     *[]string
+	shortWrite bool
+	writeErr   error
+	syncErr    error
+	closeErr   error
+}
+
+func (f *scriptedLedgerTempFile) Name() string { return "/fixture/ledger.tmp" }
+
+func (f *scriptedLedgerTempFile) Write(p []byte) (int, error) {
+	*f.events = append(*f.events, "write")
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	if f.shortWrite {
+		return len(p) - 1, nil
+	}
+	return len(p), nil
+}
+
+func (f *scriptedLedgerTempFile) Sync() error {
+	*f.events = append(*f.events, "sync-file")
+	return f.syncErr
+}
+
+func (f *scriptedLedgerTempFile) Close() error {
+	*f.events = append(*f.events, "close-file")
+	return f.closeErr
+}
+
+type scriptedLedgerDirFile struct {
+	events   *[]string
+	syncErr  error
+	closeErr error
+}
+
+func (f *scriptedLedgerDirFile) Sync() error {
+	*f.events = append(*f.events, "sync-dir")
+	return f.syncErr
+}
+
+func (f *scriptedLedgerDirFile) Close() error {
+	*f.events = append(*f.events, "close-dir")
+	return f.closeErr
+}
+
+func TestCPAUT006LedgerPersistenceFailureMatrix(t *testing.T) {
+	type failureCase struct {
+		name          string
+		stage         string
+		want          string
+		wantCommitted bool
+		wantCleanup   bool
+	}
+	for _, tc := range []failureCase{
+		{name: "directory", stage: "mkdir", want: "create ledger dir"},
+		{name: "encode", stage: "encode", want: "encode ledger"},
+		{name: "create", stage: "create", want: "create ledger temp file"},
+		{name: "write", stage: "write", want: "write ledger", wantCleanup: true},
+		{name: "short write", stage: "short-write", want: "write ledger", wantCleanup: true},
+		{name: "file sync", stage: "sync-file", want: "flush ledger", wantCleanup: true},
+		{name: "file close", stage: "close-file", want: "close ledger temp file", wantCleanup: true},
+		{name: "rename", stage: "rename", want: "commit ledger", wantCleanup: true},
+		{name: "directory open", stage: "open-dir", want: "open ledger dir for flush", wantCommitted: true},
+		{name: "directory sync", stage: "sync-dir", want: "flush ledger dir", wantCommitted: true},
+		{name: "directory close", stage: "close-dir", want: "close ledger dir after flush", wantCommitted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			injected := errors.New("injected " + tc.stage + " failure")
+			expected := injected
+			if tc.stage == "short-write" {
+				expected = io.ErrShortWrite
+			}
+			var events []string
+			temp := &scriptedLedgerTempFile{events: &events}
+			dir := &scriptedLedgerDirFile{events: &events}
+			ops := ledgerPersistenceOps{
+				mkdirAll: func(string, os.FileMode) error {
+					events = append(events, "mkdir")
+					if tc.stage == "mkdir" {
+						return injected
+					}
+					return nil
+				},
+				encode: func(ledgerFile) ([]byte, error) {
+					events = append(events, "encode")
+					if tc.stage == "encode" {
+						return nil, injected
+					}
+					return []byte(`{"version":3,"items":[]}`), nil
+				},
+				createTemp: func(string, string) (ledgerTempFile, error) {
+					events = append(events, "create")
+					if tc.stage == "create" {
+						return nil, injected
+					}
+					return temp, nil
+				},
+				rename: func(string, string) error {
+					events = append(events, "rename")
+					if tc.stage == "rename" {
+						return injected
+					}
+					return nil
+				},
+				remove: func(string) error {
+					events = append(events, "remove")
+					return nil
+				},
+				openDir: func(string) (ledgerDirFile, error) {
+					events = append(events, "open-dir")
+					if tc.stage == "open-dir" {
+						return nil, injected
+					}
+					return dir, nil
+				},
+				syncDir: true,
+			}
+			switch tc.stage {
+			case "write":
+				temp.writeErr = injected
+			case "short-write":
+				temp.shortWrite = true
+			case "sync-file":
+				temp.syncErr = injected
+			case "close-file":
+				temp.closeErr = injected
+			case "sync-dir":
+				dir.syncErr = injected
+			case "close-dir":
+				dir.closeErr = injected
+			}
+
+			led, err := LoadLedger(filepath.Join(t.TempDir(), "autodev-state.json"), newTestClock())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := led.Seed([]Item{{Title: "Durable transition", Priority: PriorityHigh}}); err != nil {
+				t.Fatal(err)
+			}
+			led.persistence = ops
+			err = led.Commit("durable-transition", func(item *LedgerItem) {
+				item.Status = StatusInProgress
+			})
+			if !errors.Is(err, expected) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Commit error = %v, want injected error classified as %q", err, tc.want)
+			}
+			item, ok := led.Get("durable-transition")
+			if !ok {
+				t.Fatal("ledger item disappeared")
+			}
+			if gotCommitted := item.Status == StatusInProgress; gotCommitted != tc.wantCommitted {
+				t.Fatalf("in-memory committed = %t, want %t after %s; events=%v", gotCommitted, tc.wantCommitted, tc.stage, events)
+			}
+			gotCleanup := false
+			for _, event := range events {
+				gotCleanup = gotCleanup || event == "remove"
+			}
+			if gotCleanup != tc.wantCleanup {
+				t.Fatalf("temp cleanup = %t, want %t after %s; events=%v", gotCleanup, tc.wantCleanup, tc.stage, events)
+			}
+		})
+	}
+}
+
+func TestCPAUT006LedgerReportsTempCloseAndCleanupFailures(t *testing.T) {
+	writeErr := errors.New("injected write failure")
+	closeErr := errors.New("injected close failure")
+	removeErr := errors.New("injected cleanup failure")
+	var events []string
+	temp := &scriptedLedgerTempFile{events: &events, writeErr: writeErr, closeErr: closeErr}
+	led, err := LoadLedger(filepath.Join(t.TempDir(), "autodev-state.json"), newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Seed([]Item{{Title: "Cleanup evidence", Priority: PriorityHigh}}); err != nil {
+		t.Fatal(err)
+	}
+	led.persistence = ledgerPersistenceOps{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		encode:   func(ledgerFile) ([]byte, error) { return []byte(`{}`), nil },
+		createTemp: func(string, string) (ledgerTempFile, error) {
+			return temp, nil
+		},
+		rename: func(string, string) error { return nil },
+		remove: func(string) error {
+			events = append(events, "remove")
+			return removeErr
+		},
+		openDir: func(string) (ledgerDirFile, error) {
+			return &scriptedLedgerDirFile{events: &events}, nil
+		},
+		syncDir: true,
+	}
+	err = led.Commit("cleanup-evidence", func(item *LedgerItem) {
+		item.Status = StatusInProgress
+	})
+	for _, want := range []error{writeErr, closeErr, removeErr} {
+		if !errors.Is(err, want) {
+			t.Errorf("Commit error = %v, want joined %v", err, want)
+		}
+	}
+	if item, _ := led.Get("cleanup-evidence"); item.Status != StatusPending {
+		t.Fatalf("item status = %s, want pending after pre-commit cleanup failure", item.Status)
 	}
 }
 

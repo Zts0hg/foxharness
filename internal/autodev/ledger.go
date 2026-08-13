@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -99,9 +100,48 @@ const (
 // backlog, never lets backlog status override recorded progress, and
 // selects pending work by priority (REQ-021/022/028).
 type Ledger struct {
-	path  string
-	clock Clock
-	items []*LedgerItem
+	path        string
+	clock       Clock
+	items       []*LedgerItem
+	persistence ledgerPersistenceOps
+}
+
+type ledgerTempFile interface {
+	Name() string
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+type ledgerDirFile interface {
+	Sync() error
+	Close() error
+}
+
+type ledgerPersistenceOps struct {
+	mkdirAll   func(string, os.FileMode) error
+	encode     func(ledgerFile) ([]byte, error)
+	createTemp func(string, string) (ledgerTempFile, error)
+	rename     func(string, string) error
+	remove     func(string) error
+	openDir    func(string) (ledgerDirFile, error)
+	syncDir    bool
+}
+
+func defaultLedgerPersistenceOps() ledgerPersistenceOps {
+	return ledgerPersistenceOps{
+		mkdirAll: os.MkdirAll,
+		encode: func(file ledgerFile) ([]byte, error) {
+			return json.MarshalIndent(file, "", "  ")
+		},
+		createTemp: func(dir, pattern string) (ledgerTempFile, error) {
+			return os.CreateTemp(dir, pattern)
+		},
+		rename:  os.Rename,
+		remove:  os.Remove,
+		openDir: func(path string) (ledgerDirFile, error) { return os.Open(path) },
+		syncDir: runtime.GOOS != "windows",
+	}
 }
 
 // ledgerFile is the persisted JSON form.
@@ -164,7 +204,7 @@ func LoadLedger(path string, clock Clock) (*Ledger, error) {
 	if clock == nil {
 		clock = SystemClock{}
 	}
-	led := &Ledger{path: path, clock: clock}
+	led := &Ledger{path: path, clock: clock, persistence: defaultLedgerPersistenceOps()}
 
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -923,46 +963,52 @@ func (l *Ledger) persistItems(items []*LedgerItem) (bool, error) {
 	if err := validateLedgerItems(items, ledgerSchemaVersion); err != nil {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
+	ops := l.persistence
+	if ops.mkdirAll == nil {
+		ops = defaultLedgerPersistenceOps()
+	}
+	if err := ops.mkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return false, fmt.Errorf("create ledger dir: %w", err)
 	}
-	data, err := json.MarshalIndent(ledgerFile{Version: ledgerSchemaVersion, Items: items}, "", "  ")
+	data, err := ops.encode(ledgerFile{Version: ledgerSchemaVersion, Items: items})
 	if err != nil {
 		return false, fmt.Errorf("encode ledger: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(l.path), filepath.Base(l.path)+".tmp-*")
+	tmp, err := ops.createTemp(filepath.Dir(l.path), filepath.Base(l.path)+".tmp-*")
 	if err != nil {
 		return false, fmt.Errorf("create ledger temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return false, fmt.Errorf("write ledger: %w", err)
+	payload := append(data, '\n')
+	if written, err := tmp.Write(payload); err != nil || written != len(payload) {
+		if err == nil {
+			err = io.ErrShortWrite
+		}
+		cleanupErr := errors.Join(tmp.Close(), ops.remove(tmpPath))
+		return false, fmt.Errorf("write ledger: %w", errors.Join(err, cleanupErr))
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return false, fmt.Errorf("flush ledger: %w", err)
+		cleanupErr := errors.Join(tmp.Close(), ops.remove(tmpPath))
+		return false, fmt.Errorf("flush ledger: %w", errors.Join(err, cleanupErr))
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return false, fmt.Errorf("close ledger temp file: %w", err)
+		return false, fmt.Errorf("close ledger temp file: %w", errors.Join(err, ops.remove(tmpPath)))
 	}
-	if err := os.Rename(tmpPath, l.path); err != nil {
-		os.Remove(tmpPath)
-		return false, fmt.Errorf("commit ledger: %w", err)
+	if err := ops.rename(tmpPath, l.path); err != nil {
+		return false, fmt.Errorf("commit ledger: %w", errors.Join(err, ops.remove(tmpPath)))
 	}
-	if runtime.GOOS == "windows" {
+	if !ops.syncDir {
 		return true, nil
 	}
-	dir, err := os.Open(filepath.Dir(l.path))
+	dir, err := ops.openDir(filepath.Dir(l.path))
 	if err != nil {
 		return true, fmt.Errorf("open ledger dir for flush: %w", err)
 	}
-	defer dir.Close()
 	if err := dir.Sync(); err != nil {
-		return true, fmt.Errorf("flush ledger dir: %w", err)
+		return true, fmt.Errorf("flush ledger dir: %w", errors.Join(err, dir.Close()))
+	}
+	if err := dir.Close(); err != nil {
+		return true, fmt.Errorf("close ledger dir after flush: %w", err)
 	}
 	return true, nil
 }
