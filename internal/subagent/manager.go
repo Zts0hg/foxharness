@@ -345,7 +345,7 @@ func (m *Manager) Run(ctx context.Context, req Request) (outcome *Result, result
 	evidenceProvider := m.childEvidenceProvider(sess, req, recorder)
 	registry := m.buildRegistryWithEvidence(req.ReadOnly, narrowAgentTools(req.AllowedTools, agent), supervisor, evidenceProvider)
 	composer := m.buildComposer(sess, registry)
-	eng := engine.NewAgentEngine(
+	eng := engine.NewLegacyEngine(
 		m.provider,
 		registry,
 		m.workDir,

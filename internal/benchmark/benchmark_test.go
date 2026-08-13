@@ -149,7 +149,7 @@ func TestRunCaseIncludesRuntimeFidelityMetadata(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		eng := engine.NewAgentEngine(benchmarkFinalProvider{}, tools.NewRegistry(), workDir, benchmarkComposer{}, engine.Config{MaxTurns: 1})
+		eng := engine.NewLegacyEngine(benchmarkFinalProvider{}, tools.NewRegistry(), workDir, benchmarkComposer{}, engine.Config{MaxTurns: 1})
 		return &Harness{
 			Engine:  eng,
 			Session: sess,

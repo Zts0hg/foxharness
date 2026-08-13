@@ -173,7 +173,7 @@ func TestEngineUsesGenerateOptionsForEffortOverride(t *testing.T) {
 	}
 
 	p := &optionCapturingProvider{}
-	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1, EffortOverride: "high"})
+	eng := NewLegacyEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1, EffortOverride: "high"})
 	if _, err := eng.RunWithReporter(context.Background(), sess, "test", nil); err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
 	}
@@ -194,7 +194,7 @@ func TestEngineUsesDefaultGenerateWithoutEffortOverride(t *testing.T) {
 	}
 
 	p := &optionCapturingProvider{}
-	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	eng := NewLegacyEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
 	if _, err := eng.RunWithReporter(context.Background(), sess, "test", nil); err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
 	}
@@ -216,7 +216,7 @@ func TestEngineStreamsModelDeltasWhenProviderSupportsStreaming(t *testing.T) {
 
 	p := &streamingTestProvider{deltas: []string{"hello ", "world"}}
 	reporter := &deltaRecordingReporter{}
-	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1, EffortOverride: "high"})
+	eng := NewLegacyEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1, EffortOverride: "high"})
 	result, err := eng.RunWithReporter(context.Background(), sess, "test", reporter)
 	if err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
@@ -245,7 +245,7 @@ func TestEngineFallsBackWhenStreamingUnsupportedBeforeDelta(t *testing.T) {
 
 	p := &streamingTestProvider{streamErr: errors.New("unsupported stream_options parameter")}
 	reporter := &deltaRecordingReporter{}
-	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	eng := NewLegacyEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
 	result, err := eng.RunWithReporter(context.Background(), sess, "test", reporter)
 	if err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
@@ -271,7 +271,7 @@ func TestEngineFallsBackWhenStreamingReturnsEmptyStreamBeforeDelta(t *testing.T)
 
 	p := &streamingTestProvider{streamErr: provider.ErrEmptyStream}
 	reporter := &deltaRecordingReporter{}
-	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	eng := NewLegacyEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
 	result, err := eng.RunWithReporter(context.Background(), sess, "test", reporter)
 	if err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
@@ -312,7 +312,7 @@ func TestEngineDisablesStreamingAfterEmptyStreamFallback(t *testing.T) {
 		},
 	}
 	reporter := &deltaRecordingReporter{}
-	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
+	eng := NewLegacyEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
 	result, err := eng.RunWithReporter(context.Background(), sess, "test", reporter)
 	if err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
@@ -350,7 +350,7 @@ func TestEngineDisablesStreamingAfterUnsupportedFallback(t *testing.T) {
 		},
 	}
 	reporter := &deltaRecordingReporter{}
-	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
+	eng := NewLegacyEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
 	result, err := eng.RunWithReporter(context.Background(), sess, "test", reporter)
 	if err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
@@ -373,7 +373,7 @@ func TestEngineDoesNotFallbackWhenStreamingFailsAfterDelta(t *testing.T) {
 
 	p := &streamingTestProvider{deltas: []string{"partial"}, streamErr: errors.New("unsupported stream_options parameter")}
 	reporter := &deltaRecordingReporter{}
-	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	eng := NewLegacyEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
 	_, err = eng.RunWithReporter(context.Background(), sess, "test", reporter)
 	if err == nil {
 		t.Fatalf("RunWithReporter() error = nil, want stream error")
@@ -396,7 +396,7 @@ func TestEngineFallsBackWhenStreamingFailsWithRetryableStartError(t *testing.T) 
 
 	p := &streamingTestProvider{streamErr: statusCodeError{StatusCode: http.StatusTooManyRequests, message: "rate limited"}}
 	reporter := &deltaRecordingReporter{}
-	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	eng := NewLegacyEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
 	result, err := eng.RunWithReporter(context.Background(), sess, "test", reporter)
 	if err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
@@ -432,7 +432,7 @@ func TestEngineBeginsRegistryTurnBeforeToolDiscovery(t *testing.T) {
 		}},
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
 	}}
-	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
+	eng := NewLegacyEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
 
 	if _, err := eng.RunWithReporter(context.Background(), sess, "test", nil); err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
@@ -467,7 +467,7 @@ func TestEngineMakesStructuredToolFailuresVisibleToRecoveryMetricsAndTracing(t *
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
 	}}
 	var observed schema.ToolResult
-	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{
+	eng := NewLegacyEngine(p, registry, workDir, staticComposer{}, Config{
 		MaxTurns: 3,
 		OnToolCalled: func(call schema.ToolCall, result schema.ToolResult) {
 			if call.ID == "call-fail" {
@@ -524,7 +524,7 @@ func TestRunWithReporterSurfacesTranscriptWriteWarnings(t *testing.T) {
 	prov := &sequencedProvider{responses: []*provider.GenerateResponse{{
 		Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"},
 	}}}
-	eng := NewAgentEngine(prov, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	eng := NewLegacyEngine(prov, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
 
 	result, err := eng.RunWithReporter(context.Background(), sess, "hello", nil)
 	if err != nil {
@@ -552,7 +552,7 @@ func TestRunWithReporterSurfacesMetricsWriteWarnings(t *testing.T) {
 	prov := &mutatingFinalProvider{mutate: func() {
 		replaceCurrentRunFileWithDirectory(t, sess, "metrics.jsonl")
 	}}
-	eng := NewAgentEngine(prov, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	eng := NewLegacyEngine(prov, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
 
 	result, err := eng.RunWithReporter(context.Background(), sess, "hello", nil)
 	if err != nil {
@@ -580,7 +580,7 @@ func TestRunWithReporterSurfacesTraceWriteWarnings(t *testing.T) {
 	prov := &mutatingFinalProvider{mutate: func() {
 		replaceCurrentRunFileWithDirectory(t, sess, "trace.jsonl")
 	}}
-	eng := NewAgentEngine(prov, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
+	eng := NewLegacyEngine(prov, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 1})
 
 	result, err := eng.RunWithReporter(context.Background(), sess, "hello", nil)
 	if err != nil {
@@ -649,7 +649,7 @@ func TestEngineCompletionGateInjectsReminderThenAllowsCompletion(t *testing.T) {
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
 	}}
 	gateCalls := 0
-	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{
+	eng := NewLegacyEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{
 		MaxTurns: 3,
 		CompletionGate: func() string {
 			gateCalls++
@@ -684,7 +684,7 @@ func TestEngineCompletionGateFailsAfterRepeatedUnsatisfiedFinal(t *testing.T) {
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "premature"}},
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "still premature"}},
 	}}
-	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{
+	eng := NewLegacyEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{
 		MaxTurns:       3,
 		CompletionGate: func() string { return "update_todo is still required" },
 	})
@@ -717,7 +717,7 @@ func TestEngineCompletionGateGrantsRetryWhenReminderChanges(t *testing.T) {
 		"",
 	}
 	gateCalls := 0
-	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{
+	eng := NewLegacyEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{
 		MaxTurns: 4,
 		CompletionGate: func() string {
 			reminder := reminders[gateCalls]
@@ -786,7 +786,7 @@ func TestCallModelUsesGenerateResponse(t *testing.T) {
 	p := &usageReportingProvider{
 		usage: schema.Usage{InputTokens: 1234, OutputTokens: 56},
 	}
-	eng := NewAgentEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 2})
+	eng := NewLegacyEngine(p, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 2})
 
 	result, err := eng.RunWithReporter(context.Background(), sess, "hello", nil)
 	if err != nil {
@@ -845,7 +845,7 @@ func TestEngineRequiresTodoUpdateBeforeFinalResponse(t *testing.T) {
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
 	}}
 
-	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 5})
+	eng := NewLegacyEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 5})
 	result, err := eng.RunWithReporter(context.Background(), sess, "finish report", nil)
 	if err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
@@ -901,7 +901,7 @@ func TestEngine_FullCompactionFlow(t *testing.T) {
 	}
 	p := &sequencedProvider{responses: responses}
 
-	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 5})
+	eng := NewLegacyEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 5})
 
 	compCfg := compaction.DefaultCompactionConfig()
 	compCfg.Model = "test-model"
@@ -987,7 +987,7 @@ func TestEngine_ToolResultsUseInjectedFileSystem(t *testing.T) {
 	}}
 
 	fs := newInMemoryFS()
-	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 4})
+	eng := NewLegacyEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 4})
 	eng.WithFileSystem(fs)
 
 	if _, err := eng.RunWithReporter(context.Background(), sess, "go", nil); err != nil {
@@ -1034,7 +1034,7 @@ func TestEngine_ToolResultPersistence(t *testing.T) {
 	}
 	p := &sequencedProvider{responses: responses}
 
-	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 4})
+	eng := NewLegacyEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 4})
 
 	if _, err := eng.RunWithReporter(context.Background(), sess, "fetch big", nil); err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
@@ -1102,7 +1102,7 @@ func TestEngine_ReadFileLargeResultUsesUnifiedPersistence(t *testing.T) {
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
 	}}
 
-	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 4})
+	eng := NewLegacyEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 4})
 	if _, err := eng.RunWithReporter(context.Background(), sess, "read large", nil); err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
 	}
@@ -1148,7 +1148,7 @@ func TestRun_BlocksWhenContextExceedsBlockingThreshold(t *testing.T) {
 
 	prov := &usageReportingProvider{content: "done"}
 	reg := tools.NewRegistry()
-	eng := NewAgentEngine(prov, reg, workDir, staticComposer{}, DefaultConfig())
+	eng := NewLegacyEngine(prov, reg, workDir, staticComposer{}, DefaultConfig())
 
 	cfg := compaction.DefaultCompactionConfig()
 	cfg.Model = "test"
@@ -1188,7 +1188,7 @@ func TestRun_ReportsContextEstimate(t *testing.T) {
 		gotWindow = contextWindow
 	}
 
-	eng := NewAgentEngine(prov, reg, workDir, staticComposer{}, cfg)
+	eng := NewLegacyEngine(prov, reg, workDir, staticComposer{}, cfg)
 	compCfg := compaction.DefaultCompactionConfig()
 	compCfg.Model = "test"
 	compCfg.ContextWindow = 200000

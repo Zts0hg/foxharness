@@ -25,7 +25,7 @@ type HarnessFactory func(ctx context.Context, workDir string, c *Case) (*Harness
 // Harness contains the engine/session pair used by a benchmark run and the
 // runtime fidelity metadata that will be copied into the benchmark result.
 type Harness struct {
-	Engine          *engine.AgentEngine
+	Engine          *engine.LegacyEngine
 	Session         *session.StoredSession
 	RuntimeFidelity RuntimeFidelity
 }

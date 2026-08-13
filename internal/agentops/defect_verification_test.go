@@ -302,7 +302,7 @@ func TestDVAOP004OneProviderSnapshotConfiguresEngineCompactorAndChild(t *testing
 	for _, required := range []string{
 		"taskProvider := snapshotTaskProvider(r.provider)",
 		"r.buildRegistry(task, sess, taskProvider.provider)",
-		"engine.NewAgentEngine(\n\t\ttaskProvider.provider,",
+		"engine.NewLegacyEngine(\n\t\ttaskProvider.provider,",
 		"compaction.NewCompactor(taskProvider.provider, compCfg)",
 	} {
 		if !strings.Contains(string(source), required) {

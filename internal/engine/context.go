@@ -9,7 +9,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/session"
 )
 
-func (e *AgentEngine) buildInitialContext(
+func (e *LegacyEngine) buildInitialContext(
 	ctx context.Context,
 	sess *session.StoredSession,
 	systemPrompt string,

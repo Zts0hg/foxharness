@@ -156,7 +156,7 @@ func TestCurrentProductionStreamingFailureDoesNotLeakAcrossRuns(t *testing.T) {
 		},
 		model: "scripted-model", protocol: "scripted", streaming: true,
 	}
-	eng := NewAgentEngine(provider, tools.NewRegistry(), workDir, currentContractPromptComposer{}, Config{MaxTurns: 1})
+	eng := NewLegacyEngine(provider, tools.NewRegistry(), workDir, currentContractPromptComposer{}, Config{MaxTurns: 1})
 	firstReporter := &currentContractStreamingReporter{currentContractReporter: &currentContractReporter{}}
 	if _, err := eng.RunWithReporter(context.Background(), sess, "first", firstReporter); err == nil || !strings.Contains(err.Error(), "stream interrupted") {
 		t.Fatalf("first run error = %v", err)

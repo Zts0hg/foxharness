@@ -468,7 +468,7 @@ func (p *cancellationContractProvider) Generate(ctx context.Context, _ []schema.
 	return nil, ctx.Err()
 }
 
-func newToolContractEngine(t *testing.T, p provider.LLMProvider, registry tools.Registry, config Config) (*AgentEngine, *session.Session) {
+func newToolContractEngine(t *testing.T, p provider.LLMProvider, registry tools.Registry, config Config) (*LegacyEngine, *session.Session) {
 	t.Helper()
 	workDir := t.TempDir()
 	manager := session.NewManagerWithHome(workDir, t.TempDir())
@@ -476,10 +476,10 @@ func newToolContractEngine(t *testing.T, p provider.LLMProvider, registry tools.
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	return NewAgentEngine(p, registry, workDir, staticComposer{}, config), sess
+	return NewLegacyEngine(p, registry, workDir, staticComposer{}, config), sess
 }
 
-func runToolContractAsync(engine *AgentEngine, sess *session.Session, reporter Reporter) <-chan error {
+func runToolContractAsync(engine *LegacyEngine, sess *session.Session, reporter Reporter) <-chan error {
 	done := make(chan error, 1)
 	go func() {
 		_, err := engine.RunWithReporter(context.Background(), sess, "tool contract", reporter)

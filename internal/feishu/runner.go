@@ -178,7 +178,7 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	}
 	compCfg := compaction.DefaultCompactionConfig()
 	providerMetadata.apply(&engineConfig, &compCfg)
-	eng := engine.NewAgentEngine(
+	eng := engine.NewLegacyEngine(
 		r.provider,
 		registry,
 		r.workDir,

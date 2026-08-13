@@ -125,6 +125,14 @@ func TestMemoryStoreIsOnlyWorkingMemoryOwner(t *testing.T) {
 	}
 }
 
+func TestTargetAgentEngineHasNoProductionCallersBeforeProfileCutover(t *testing.T) {
+	root := moduleRoot(t)
+	callers := productionSelectorReferences(t, root, modulePath+"/internal/engine", "NewAgentEngine")
+	if len(callers) > 0 {
+		t.Fatalf("target AgentEngine production callers before profile cutover:\n%s", strings.Join(callers, "\n"))
+	}
+}
+
 func moduleRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
@@ -200,6 +208,76 @@ func productionImportEdges(t *testing.T, root string) []importEdge {
 		return result[i].From < result[j].From
 	})
 	return result
+}
+
+func productionSelectorReferences(t *testing.T, root, importPath, selectorName string) []string {
+	t.Helper()
+	var callers []string
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if oneOf(entry.Name(), ".git", "vendor", "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		aliases := make(map[string]bool)
+		dotImported := false
+		for _, spec := range file.Imports {
+			value, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return fmt.Errorf("unquote import in %s: %w", path, err)
+			}
+			if value != importPath {
+				continue
+			}
+			alias := filepath.Base(importPath)
+			if spec.Name != nil {
+				alias = spec.Name.Name
+			}
+			if alias == "." {
+				dotImported = true
+			} else if alias != "_" {
+				aliases[alias] = true
+			}
+		}
+		if len(aliases) == 0 && !dotImported {
+			return nil
+		}
+		found := false
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch value := node.(type) {
+			case *ast.SelectorExpr:
+				identifier, ok := value.X.(*ast.Ident)
+				found = found || (ok && aliases[identifier.Name] && value.Sel.Name == selectorName)
+			case *ast.Ident:
+				found = found || (dotImported && value.Name == selectorName)
+			}
+			return !found
+		})
+		if found {
+			rel, err := filepath.Rel(root, path)
+			if err == nil {
+				callers = append(callers, filepath.ToSlash(rel))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan production selector callers: %v", err)
+	}
+	sort.Strings(callers)
+	return callers
 }
 
 func deprecatedSessionCompatibilityUsage(t *testing.T, root string) []string {

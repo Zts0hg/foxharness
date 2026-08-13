@@ -94,7 +94,7 @@ func TestPolicyFailedTodoUpdateCannotSatisfyCompletionGate(t *testing.T) {
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "still premature"}},
 	}}
 	reporter := &currentContractReporter{}
-	engine := NewAgentEngine(modelProvider, registry, workDir, staticComposer{}, Config{MaxTurns: 4})
+	engine := NewLegacyEngine(modelProvider, registry, workDir, staticComposer{}, Config{MaxTurns: 4})
 	result, runErr := engine.RunWithReporter(context.Background(), sess, "finish", reporter)
 	if runErr == nil || !strings.Contains(runErr.Error(), "TODO.md still has incomplete checklist items after TODO completion reminder") {
 		t.Fatalf("RunWithReporter() result/error = %#v, %v", result, runErr)

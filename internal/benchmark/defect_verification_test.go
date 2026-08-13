@@ -799,7 +799,7 @@ func benchmarkHarnessFactory(t *testing.T, spec BenchmarkRuntimeSpec, composer e
 		if err != nil {
 			return nil, err
 		}
-		eng := engine.NewAgentEngine(benchmarkFinalProvider{}, tools.NewRegistry(), workDir, composer, engine.Config{
+		eng := engine.NewLegacyEngine(benchmarkFinalProvider{}, tools.NewRegistry(), workDir, composer, engine.Config{
 			MaxTurns:         spec.MaxTurns,
 			ProviderProtocol: spec.ProviderProtocol,
 			Model:            spec.Model,

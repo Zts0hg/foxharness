@@ -67,7 +67,7 @@ func TestRunWithZeroMaxTurnsIsUnlimited(t *testing.T) {
 	}
 
 	provider := &loopingProvider{finalAfter: 22}
-	eng := NewAgentEngine(
+	eng := NewLegacyEngine(
 		provider,
 		tools.NewRegistry(),
 		workDir,
@@ -99,7 +99,7 @@ func TestRunWithPositiveMaxTurnsStillLimits(t *testing.T) {
 	}
 
 	provider := &loopingProvider{finalAfter: 4}
-	eng := NewAgentEngine(
+	eng := NewLegacyEngine(
 		provider,
 		tools.NewRegistry(),
 		workDir,
@@ -153,7 +153,7 @@ func TestEngineMakeSnapshotOnUserMessage(t *testing.T) {
 
 	cp := &snapshotRecorder{}
 	var currentMessageID string
-	eng := NewAgentEngine(
+	eng := NewLegacyEngine(
 		&finalProvider{},
 		tools.NewRegistry(),
 		workDir,
@@ -186,7 +186,7 @@ func TestModelCallTraceRecordsProviderAndModel(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	eng := NewAgentEngine(
+	eng := NewLegacyEngine(
 		&finalProvider{},
 		tools.NewRegistry(),
 		workDir,
@@ -295,7 +295,7 @@ func TestDetailedReporterReceivesToolCallIDs(t *testing.T) {
 		}}}},
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
 	}}
-	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
+	eng := NewLegacyEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
 	reporter := &detailedRecordingReporter{}
 
 	if _, err := eng.RunWithReporter(context.Background(), sess, "hello", reporter); err != nil {
@@ -339,7 +339,7 @@ func TestReporterReceivesStructuredToolFailureFlag(t *testing.T) {
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
 	}}
 	reporter := &recordingReporter{}
-	eng := NewAgentEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
+	eng := NewLegacyEngine(p, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
 
 	if _, err := eng.RunWithReporter(context.Background(), sess, "hello", reporter); err != nil {
 		t.Fatalf("RunWithReporter() error = %v", err)
@@ -360,7 +360,7 @@ func TestRunWithReporterEmitsLifecycleAndPersistsMessages(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	eng := NewAgentEngine(
+	eng := NewLegacyEngine(
 		&finalProvider{},
 		tools.NewRegistry(),
 		workDir,
@@ -423,7 +423,7 @@ func TestRunWithoutReporterDoesNotWriteStdout(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	eng := NewAgentEngine(
+	eng := NewLegacyEngine(
 		&finalProvider{},
 		tools.NewRegistry(),
 		workDir,

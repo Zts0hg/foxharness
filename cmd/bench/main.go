@@ -142,7 +142,7 @@ func resultExitCode(results []*benchmark.Result, infrastructureFailed bool) int 
 	return 0
 }
 
-// buildHarness creates an AgentEngine and Session for a benchmark run.
+// buildHarness creates an LegacyEngine and Session for a benchmark run.
 // It sets up the LLM provider, tool registry, memory store, and session
 // manager configured for the given benchmark case.
 func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benchmark.Harness, error) {
@@ -177,7 +177,7 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 	}
 	runtimeSpec := benchmark.NewRuntimeSpec(llmConfig.Protocol, llmConfig.Model, c.MaxTurns, toolNames)
 
-	eng := engine.NewAgentEngine(
+	eng := engine.NewLegacyEngine(
 		llmProvider,
 		registry,
 		workDir,

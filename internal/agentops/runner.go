@@ -274,7 +274,7 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 	compCfg := compaction.DefaultCompactionConfig()
 	taskProvider.apply(&engineConfig, &compCfg)
 
-	eng := engine.NewAgentEngine(
+	eng := engine.NewLegacyEngine(
 		taskProvider.provider,
 		registry,
 		r.workDir,

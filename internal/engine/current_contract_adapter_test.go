@@ -143,7 +143,7 @@ func (a *currentProductionContractAdapter) Run(
 	config.Model = input.Model
 	config.ProviderProtocol = input.Provider
 	config.EffortOverride = input.Effort
-	current := NewAgentEngine(scripted, registry, workDir, currentContractPromptComposer{}, config)
+	current := NewLegacyEngine(scripted, registry, workDir, currentContractPromptComposer{}, config)
 	result, runErr := current.RunWithReporter(ctx, sess, input.Prompt, runReporter)
 
 	observed := runtimecontract.Observed{Requests: scripted.requests, Facts: reporter.facts}

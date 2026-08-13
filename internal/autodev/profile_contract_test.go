@@ -127,7 +127,7 @@ func TestPFAUT016ControlClientDoesNotConstructEngineProviderOrPresentation(t *te
 			t.Fatal(err)
 		}
 		source := string(data)
-		for _, forbidden := range []string{"\"github.com/Zts0hg/foxharness/internal/app\"", "\"github.com/Zts0hg/foxharness/internal/tui\"", "\"github.com/Zts0hg/foxharness/cmd/fox\"", "provider.NewProvider", "engine.NewAgentEngine", "fmt.Print", "os.Stdout"} {
+		for _, forbidden := range []string{"\"github.com/Zts0hg/foxharness/internal/app\"", "\"github.com/Zts0hg/foxharness/internal/tui\"", "\"github.com/Zts0hg/foxharness/cmd/fox\"", "provider.NewProvider", "engine.NewLegacyEngine", "fmt.Print", "os.Stdout"} {
 			if strings.Contains(source, forbidden) {
 				t.Fatalf("Autodev control client %s contains runtime/presentation construction token %q", entry.Name(), forbidden)
 			}

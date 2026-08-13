@@ -21,7 +21,7 @@ import (
 func TestContextInitialProjectionFreshUncompactedAndResumed(t *testing.T) {
 	t.Run("fresh", func(t *testing.T) {
 		sess := newContextContractSession(t)
-		engine := &AgentEngine{compactor: newContextContractCompactor(t, &summaryProvider{}, 100_000, 2)}
+		engine := &LegacyEngine{compactor: newContextContractCompactor(t, &summaryProvider{}, 100_000, 2)}
 		got, compacted, err := engine.buildInitialContext(context.Background(), sess, "system", nil, schema.Message{Role: schema.RoleUser, Content: "current"})
 		if err != nil || compacted {
 			t.Fatalf("buildInitialContext() compacted/error = %v, %v", compacted, err)
@@ -35,7 +35,7 @@ func TestContextInitialProjectionFreshUncompactedAndResumed(t *testing.T) {
 			{Seq: 0, Message: schema.Message{Role: schema.RoleUser, Content: "earlier user"}},
 			{Seq: 1, Message: schema.Message{Role: schema.RoleAssistant, Content: "earlier assistant"}},
 		}
-		engine := &AgentEngine{compactor: newContextContractCompactor(t, &summaryProvider{}, 100_000, 2)}
+		engine := &LegacyEngine{compactor: newContextContractCompactor(t, &summaryProvider{}, 100_000, 2)}
 		got, compacted, err := engine.buildInitialContext(context.Background(), sess, "system", records, schema.Message{Role: schema.RoleUser, Content: "current"})
 		if err != nil || compacted {
 			t.Fatalf("buildInitialContext() compacted/error = %v, %v", compacted, err)
@@ -49,7 +49,7 @@ func TestContextInitialProjectionFreshUncompactedAndResumed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadRecords() error = %v", err)
 		}
-		engine := &AgentEngine{compactor: newContextContractCompactor(t, &summaryProvider{}, 100_000, 2)}
+		engine := &LegacyEngine{compactor: newContextContractCompactor(t, &summaryProvider{}, 100_000, 2)}
 		got, compacted, err := engine.buildInitialContext(context.Background(), sess, "system", records, schema.Message{Role: schema.RoleUser, Content: "resume now"})
 		if err != nil || compacted {
 			t.Fatalf("buildInitialContext() compacted/error = %v, %v", compacted, err)
@@ -71,7 +71,7 @@ func TestInitialHistoryCompactionPersistsWithoutDuplicationAfterReopen(t *testin
 		records = append(records, session.MessageRecord{Seq: seq, Message: schema.Message{Role: schema.RoleUser, Content: strings.Repeat(string(rune('a'+seq)), 40)}})
 	}
 	provider := &summaryProvider{}
-	firstEngine := &AgentEngine{compactor: newContextContractCompactor(t, provider, 250, 2)}
+	firstEngine := &LegacyEngine{compactor: newContextContractCompactor(t, provider, 250, 2)}
 	current := schema.Message{Role: schema.RoleUser, Content: "current"}
 	first, compacted, err := firstEngine.buildInitialContext(context.Background(), sess, "system", records, current)
 	if err != nil || !compacted {
@@ -85,7 +85,7 @@ func TestInitialHistoryCompactionPersistsWithoutDuplicationAfterReopen(t *testin
 		t.Fatalf("compact state = %#v", state)
 	}
 
-	secondEngine := &AgentEngine{compactor: newContextContractCompactor(t, provider, 250, 2)}
+	secondEngine := &LegacyEngine{compactor: newContextContractCompactor(t, provider, 250, 2)}
 	second, compactedAgain, err := secondEngine.buildInitialContext(context.Background(), sess, "system", records, current)
 	if err != nil || compactedAgain {
 		t.Fatalf("reopened build compacted/error = %v, %v", compactedAgain, err)
@@ -131,7 +131,7 @@ func TestPreTurnCompactionUsesTheResolvedRequestToolSnapshot(t *testing.T) {
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}},
 	}}
 	reporter := &currentContractReporter{}
-	engine := NewAgentEngine(modelProvider, registry, sess.WorkDir, staticComposer{}, Config{MaxTurns: 1})
+	engine := NewLegacyEngine(modelProvider, registry, sess.WorkDir, staticComposer{}, Config{MaxTurns: 1})
 	engine.WithCompactor(newContextContractCompactor(t, modelProvider, 1_000, 1))
 
 	if _, err := engine.RunWithReporter(context.Background(), sess, "current", reporter); err != nil {
@@ -175,7 +175,7 @@ func TestReactiveCompactionRetriesOnceWithConsistentProjection(t *testing.T) {
 			}
 			modelProvider := &reactiveContextProvider{retryError: testCase.retryError}
 			reporter := &currentContractReporter{}
-			engine := NewAgentEngine(modelProvider, tools.NewRegistry(), sess.WorkDir, staticComposer{}, Config{MaxTurns: 1})
+			engine := NewLegacyEngine(modelProvider, tools.NewRegistry(), sess.WorkDir, staticComposer{}, Config{MaxTurns: 1})
 			engine.WithCompactor(newContextContractCompactor(t, modelProvider, 100_000, 8))
 
 			result, err := engine.RunWithReporter(context.Background(), sess, "current", reporter)
@@ -214,7 +214,7 @@ func TestContextBlockingDecisionIncludesTheSameToolSnapshot(t *testing.T) {
 	baseRegistry.Register(&contextDefinitionTool{definition: definition})
 	registry := &countingContextRegistry{Registry: baseRegistry}
 	modelProvider := &countingFinalContextProvider{}
-	engine := NewAgentEngine(modelProvider, registry, sess.WorkDir, staticComposer{}, Config{MaxTurns: 1})
+	engine := NewLegacyEngine(modelProvider, registry, sess.WorkDir, staticComposer{}, Config{MaxTurns: 1})
 	config := compaction.DefaultCompactionConfig()
 	config.Model = "context-contract"
 	config.ContextWindow = 25_000

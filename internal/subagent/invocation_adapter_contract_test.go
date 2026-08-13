@@ -117,7 +117,7 @@ func TestIACHD004DelegateCarriesParentRunAndToolCallLineage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent := engine.NewAgentEngine(
+	parent := engine.NewLegacyEngine(
 		&delegateOnceProvider{},
 		registry,
 		workDir,

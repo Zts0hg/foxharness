@@ -32,7 +32,7 @@ func TestRunLifecycleSuccessIsOrderedFinishedAndReportedOnce(t *testing.T) {
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "lifecycle complete"}, Usage: schema.Usage{InputTokens: 7, OutputTokens: 3}},
 	}}
 	reporter := &recordingReporter{}
-	eng := NewAgentEngine(modelProvider, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
+	eng := NewLegacyEngine(modelProvider, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
 
 	result, err := eng.RunWithReporter(context.Background(), sess, "run lifecycle", reporter)
 	if err != nil {
@@ -169,7 +169,7 @@ func TestRunLifecycleFailuresFinishAndReportCurrentOutcome(t *testing.T) {
 				registry = testCase.registry(sess)
 			}
 			reporter := &recordingReporter{}
-			eng := NewAgentEngine(testCase.provider(sess), registry, workDir, testCase.composer(sess), Config{MaxTurns: 2})
+			eng := NewLegacyEngine(testCase.provider(sess), registry, workDir, testCase.composer(sess), Config{MaxTurns: 2})
 			result, runErr := eng.RunWithReporter(context.Background(), sess, "fail lifecycle", reporter)
 			if runErr == nil || !strings.Contains(runErr.Error(), testCase.wantError) {
 				t.Fatalf("RunWithReporter() result/error = %#v, %v; want %q", result, runErr, testCase.wantError)
@@ -202,7 +202,7 @@ func TestToolResultArtifactPersistenceFailureKeepsCurrentNonFatalFallback(t *tes
 		{Message: &schema.Message{Role: schema.RoleAssistant, Content: "continued after artifact failure"}},
 	}}
 	reporter := &recordingReporter{}
-	eng := NewAgentEngine(modelProvider, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
+	eng := NewLegacyEngine(modelProvider, registry, workDir, staticComposer{}, Config{MaxTurns: 3})
 	eng.WithFileSystem(lifecycleFailingFileSystem{})
 
 	result, err := eng.RunWithReporter(context.Background(), sess, "persist large result", reporter)
@@ -229,7 +229,7 @@ func TestCancellationDuringModelStreamingStopsObservationAndFinishesRun(t *testi
 	sess := newLifecycleSession(t, workDir)
 	modelProvider := &lifecycleBlockingStreamProvider{entered: make(chan struct{}), stopped: make(chan struct{})}
 	reporter := &deltaRecordingReporter{}
-	eng := NewAgentEngine(modelProvider, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 2})
+	eng := NewLegacyEngine(modelProvider, tools.NewRegistry(), workDir, staticComposer{}, Config{MaxTurns: 2})
 	ctx, cancel := context.WithCancel(context.Background())
 	type outcome struct {
 		result *RunResult

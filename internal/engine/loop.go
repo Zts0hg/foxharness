@@ -7,7 +7,7 @@
 // compaction, error recovery, and system reminders.
 //
 // Key Components:
-//   - AgentEngine: Main execution engine managing turns and context
+//   - LegacyEngine: Main execution engine managing turns and context
 //   - Config: Engine configuration for thinking mode and turn limits
 //   - PromptComposer: Interface for composing system prompts
 //
@@ -73,7 +73,7 @@ type TelemetryWarning struct {
 	Error     string
 }
 
-// AgentEngine manages the main agent execution loop with turn-based reasoning.
+// LegacyEngine manages the main agent execution loop with turn-based reasoning.
 // It orchestrates the flow between the LLM provider, tool registry, and
 // supporting systems (compaction, recovery, reminders, tracing, metrics).
 //
@@ -85,7 +85,7 @@ type TelemetryWarning struct {
 // Each turn can optionally include a Thinking phase (for planning) followed
 // by an Action phase where tools may be invoked. Tool calls are executed
 // with parallelization support for tools marked as parallel-safe.
-type AgentEngine struct {
+type LegacyEngine struct {
 	// provider is the LLM provider for generating responses.
 	provider provider.LLMProvider
 	// registry manages available tools and executes tool calls.
@@ -157,7 +157,7 @@ func (r *telemetryRecorder) Snapshot() []TelemetryWarning {
 	return append([]TelemetryWarning(nil), r.warnings...)
 }
 
-// NewAgentEngine creates a new AgentEngine with the provided configuration.
+// NewLegacyEngine creates a new LegacyEngine with the provided configuration.
 //
 // The p parameter is the LLM provider for generating responses.
 // The r parameter is the tool registry for managing and executing tools.
@@ -165,14 +165,14 @@ func (r *telemetryRecorder) Snapshot() []TelemetryWarning {
 // The composer parameter creates system prompts from user input.
 // The config parameter controls engine behavior; if MaxTurns is <= 0, there is no turn limit.
 //
-// Returns a configured AgentEngine ready to run agent sessions.
-func NewAgentEngine(
+// Returns a configured LegacyEngine ready to run agent sessions.
+func NewLegacyEngine(
 	p provider.LLMProvider,
 	r tools.Registry,
 	workDir string,
 	composer PromptComposer,
 	config Config,
-) *AgentEngine {
+) *LegacyEngine {
 	if metadata, ok := p.(providerMetadata); ok {
 		if config.ProviderProtocol == "" {
 			config.ProviderProtocol = metadata.ProviderProtocol()
@@ -182,7 +182,7 @@ func NewAgentEngine(
 		}
 	}
 
-	return &AgentEngine{
+	return &LegacyEngine{
 		provider: p,
 		registry: r,
 		workDir:  workDir,
@@ -198,7 +198,7 @@ func NewAgentEngine(
 // The compactor is invoked at the start of each turn to potentially
 // compress the conversation history when approaching token limits.
 // If c is nil, no compaction is performed.
-func (e *AgentEngine) WithCompactor(c *compaction.Compactor) {
+func (e *LegacyEngine) WithCompactor(c *compaction.Compactor) {
 	e.compactor = c
 }
 
@@ -206,13 +206,13 @@ func (e *AgentEngine) WithCompactor(c *compaction.Compactor) {
 // The default (toolresult.OSFileSystem) writes to the session directory;
 // tests can inject an in-memory implementation to avoid disk I/O. Passing
 // nil leaves the existing FileSystem unchanged.
-func (e *AgentEngine) WithFileSystem(fs toolresult.FileSystem) {
+func (e *LegacyEngine) WithFileSystem(fs toolresult.FileSystem) {
 	if fs != nil {
 		e.fs = fs
 	}
 }
 
-func (e *AgentEngine) executeToolCalls(ctx context.Context, tracer *tracing.Tracer, parentSpanID string, calls []schema.ToolCall) []indexedToolResult {
+func (e *LegacyEngine) executeToolCalls(ctx context.Context, tracer *tracing.Tracer, parentSpanID string, calls []schema.ToolCall) []indexedToolResult {
 	results := make([]indexedToolResult, len(calls))
 
 	flushParallelBatch := func(batch []int) {
@@ -319,7 +319,7 @@ func (e *AgentEngine) executeToolCalls(ctx context.Context, tracer *tracing.Trac
 //
 // Returns a RunResult containing the final agent message and session ID,
 // or an error if the run fails catastrophically.
-func (e *AgentEngine) Run(ctx context.Context, sess *session.StoredSession, userPrompt string) (*RunResult, error) {
+func (e *LegacyEngine) Run(ctx context.Context, sess *session.StoredSession, userPrompt string) (*RunResult, error) {
 	return e.RunWithReporter(ctx, sess, userPrompt, nil)
 }
 
@@ -327,7 +327,7 @@ func (e *AgentEngine) Run(ctx context.Context, sess *session.StoredSession, user
 // reporter when one is provided. The engine does not write user-facing output
 // directly to the terminal; callers are responsible for presenting the
 // returned final message or reporter events.
-func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.StoredSession, userPrompt string, reporter Reporter) (*RunResult, error) {
+func (e *LegacyEngine) RunWithReporter(ctx context.Context, sess *session.StoredSession, userPrompt string, reporter Reporter) (*RunResult, error) {
 	log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", sess.ID, e.workDir)
 	log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", e.config.EnableThinking)
 
@@ -833,7 +833,7 @@ func (e *AgentEngine) RunWithReporter(ctx context.Context, sess *session.StoredS
 // consistent. The current turn's new results are not yet in contextHistory,
 // so they remain eligible for persistence. This relies on tool call IDs
 // being unique per call — providers guarantee this within a single response.
-func (e *AgentEngine) processToolResults(
+func (e *LegacyEngine) processToolResults(
 	sess *session.StoredSession,
 	contextHistory []schema.Message,
 	raw []indexedToolResult,
@@ -886,7 +886,7 @@ func truncateReporterOutput(s string, limit int) string {
 	return fmt.Sprintf("%s\n... (已截断，原始输出约 %d 字节)", string(runes[:limit]), len(s))
 }
 
-func (e *AgentEngine) callModel(
+func (e *LegacyEngine) callModel(
 	ctx context.Context,
 	sess *session.StoredSession,
 	recorder *metrics.Recorder,
@@ -976,7 +976,7 @@ func (e *AgentEngine) callModel(
 	return message, nil
 }
 
-func (e *AgentEngine) generate(ctx context.Context, messages []schema.Message, tools []schema.ToolDefinition, reporter Reporter) (*provider.GenerateResponse, error) {
+func (e *LegacyEngine) generate(ctx context.Context, messages []schema.Message, tools []schema.ToolDefinition, reporter Reporter) (*provider.GenerateResponse, error) {
 	effort := strings.TrimSpace(e.config.EffortOverride)
 	options := provider.GenerateOptions{Effort: effort}
 	if deltaReporter, ok := reporter.(MessageDeltaReporter); ok && !e.isStreamingDisabled() {
@@ -1008,19 +1008,19 @@ func (e *AgentEngine) generate(ctx context.Context, messages []schema.Message, t
 	return e.generateWithoutStreaming(ctx, messages, tools, options)
 }
 
-func (e *AgentEngine) isStreamingDisabled() bool {
+func (e *LegacyEngine) isStreamingDisabled() bool {
 	e.streamingMu.RLock()
 	defer e.streamingMu.RUnlock()
 	return e.streamingDisabled
 }
 
-func (e *AgentEngine) disableStreaming() {
+func (e *LegacyEngine) disableStreaming() {
 	e.streamingMu.Lock()
 	defer e.streamingMu.Unlock()
 	e.streamingDisabled = true
 }
 
-func (e *AgentEngine) generateWithoutStreaming(ctx context.Context, messages []schema.Message, tools []schema.ToolDefinition, options provider.GenerateOptions) (*provider.GenerateResponse, error) {
+func (e *LegacyEngine) generateWithoutStreaming(ctx context.Context, messages []schema.Message, tools []schema.ToolDefinition, options provider.GenerateOptions) (*provider.GenerateResponse, error) {
 	effort := strings.TrimSpace(options.Effort)
 	if effort == "" {
 		return e.provider.Generate(ctx, messages, tools)

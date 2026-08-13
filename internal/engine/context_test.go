@@ -56,7 +56,7 @@ func TestBuildInitialContextPersistsCompactState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCompactor() error = %v", err)
 	}
-	eng := &AgentEngine{compactor: compactor}
+	eng := &LegacyEngine{compactor: compactor}
 
 	current := schema.Message{Role: schema.RoleUser, Content: "current"}
 	projected, compacted, err := eng.buildInitialContext(context.Background(), sess, "system", records, current)

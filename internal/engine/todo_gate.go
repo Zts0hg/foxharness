@@ -9,7 +9,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/session"
 )
 
-func (e *AgentEngine) todoCompletionReminder(sess *session.StoredSession) string {
+func (e *LegacyEngine) todoCompletionReminder(sess *session.StoredSession) string {
 	if sess == nil || !e.hasTool("update_todo") {
 		return ""
 	}
@@ -31,7 +31,7 @@ func (e *AgentEngine) todoCompletionReminder(sess *session.StoredSession) string
 	return b.String()
 }
 
-func (e *AgentEngine) hasTool(name string) bool {
+func (e *LegacyEngine) hasTool(name string) bool {
 	for _, def := range e.registry.GetAvailableTools() {
 		if def.Name == name {
 			return true

@@ -175,7 +175,7 @@ func TestPFBEN008And009ContextIsFixtureAndSessionLocal(t *testing.T) {
 func TestPFBEN012And016HeadlessControlPlaneOwnership(t *testing.T) {
 	for _, name := range []string{"runner.go", "runtime_spec.go", "case.go", "validate.go", "report.go"} {
 		source := readBenchmarkSource(t, name)
-		for _, forbidden := range []string{"internal/app", "internal/tui", "cmd/fox", "engine.NewAgentEngine"} {
+		for _, forbidden := range []string{"internal/app", "internal/tui", "cmd/fox", "engine.NewLegacyEngine"} {
 			if strings.Contains(source, forbidden) {
 				t.Fatalf("benchmark control file %s contains adapter/construction token %q", name, forbidden)
 			}
@@ -248,7 +248,7 @@ func benchmarkProfileHarnessWithHome(workDir, home string, c *Case, model provid
 	spec := NewRuntimeSpec("scripted", "fixture-model", c.MaxTurns, []string{"read_file", "write_file", "bash", "edit_file", "read_todo", "update_todo"})
 	registry := benchmarkProfileRegistry(workDir, sess)
 	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
-	eng := engine.NewAgentEngine(model, registry, workDir, composer, engine.Config{MaxTurns: spec.MaxTurns, ProviderProtocol: spec.ProviderProtocol, Model: spec.Model})
+	eng := engine.NewLegacyEngine(model, registry, workDir, composer, engine.Config{MaxTurns: spec.MaxTurns, ProviderProtocol: spec.ProviderProtocol, Model: spec.Model})
 	return &Harness{Engine: eng, Session: sess, RuntimeFidelity: spec.Fidelity()}, nil
 }
 

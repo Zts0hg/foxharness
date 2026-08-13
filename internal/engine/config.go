@@ -5,7 +5,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
-// Config controls the behavior of the AgentEngine.
+// Config controls the behavior of the LegacyEngine.
 // It provides options for enabling the Thinking phase and setting
 // turn limits for agent execution.
 type Config struct {

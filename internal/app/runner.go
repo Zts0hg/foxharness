@@ -545,7 +545,7 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 		completionGate = planRun.completionReminder
 	}
 
-	eng := engine.NewAgentEngine(
+	eng := engine.NewLegacyEngine(
 		llmProvider,
 		toolRegistry,
 		r.workDir,

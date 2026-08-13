@@ -69,6 +69,10 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 
 `M03` makes `internal/memory.Store` the only implementation owner for session `working_memory.md`, `PLAN.md`, and `TODO.md` behavior. `internal/session` no longer defines a working-memory type, template, load, append, or replace implementation. To preserve the existing guarantee that a newly returned stored session already has its scratchpad, `FileStore.Create` temporarily delegates only scratchpad initialization to `memory.Store`; runtime session creation removes this compatibility edge at `M10`. App, benchmark, and AgentOps use `Store.WorkingMemoryPath` directly. Feishu and the old ChildRun assembly retain exactly two deprecated `StoredSession.MemoryPath` calls because their current package boundaries forbid importing the memory mechanism; an automated decreasing ceiling prevents any new use, and the ChildRun (`M15`) and Feishu (`M19`) profile cutovers remove them.
 
+`M04` establishes the target `AgentEngine` and its consumer-owned `ModelInvoker`, `ToolExecutor`, `Conversation`, `TurnPolicy`, and `Observer` ports. `RunInput`, immutable per-invocation `RunContext`, and runtime-neutral `RunOutcome` keep session identity, persistence, artifacts, and telemetry outside the target coordinator. A concrete `ToolSnapshot` remains owned by its executor, exposes only cloned model-visible definitions to engine, and is passed back unchanged for later execution. Engine facts use one synchronous sequence assigned per run, and the target engine retains only immutable collaborators.
+
+The previous implementation is explicitly named `LegacyEngine`/`NewLegacyEngine`. Every production profile continues to use that compatibility path until its atomic cutover; only the target characterization adapter calls `NewAgentEngine`. An AST gate rejects any production reference to the target constructor before those cutovers. The old engine's concrete imports remain in the existing decreasing allowlist for removal at `M25`; M04 adds no import edge and does not change either allowlist.
+
 ## Allowed Dependencies
 
 | Importer | Allowed target architecture dependencies |
