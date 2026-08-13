@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Zts0hg/foxharness/internal/memory"
 )
 
 // Source identifies where a session request originated.
@@ -73,6 +75,7 @@ type StoredSession struct {
 type Session = StoredSession
 
 // MemoryPath returns the path to the working memory file for this session.
+// Deprecated: use memory.Store.WorkingMemoryPath for active behavior.
 func (s *StoredSession) MemoryPath() string {
 	return filepath.Join(s.RootDir, "working_memory.md")
 }
@@ -264,7 +267,7 @@ func (m *FileStore) Create(opts CreateOptions) (*StoredSession, error) {
 	if err := writeJSON(filepath.Join(root, "session.json"), s); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(s.MemoryPath(), []byte(initialWorkingMemory()), 0644); err != nil {
+	if err := memory.NewSessionStore(workDir, root).EnsureWorkingMemory(); err != nil {
 		return nil, fmt.Errorf("初始化 Working Memory 失败: %w", err)
 	}
 	if err := os.WriteFile(s.MessagesPath(), nil, 0644); err != nil {

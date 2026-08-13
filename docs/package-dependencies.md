@@ -67,6 +67,8 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 
 `FileStore` is the new-code boundary for file-backed create, lookup, run-start, and run-finish mechanics. The final stored-record contract contains data and derived artifact paths only. Until the runtime cutover, `StoredSession.StartRun` and `StoredRun.Finish` are the two explicitly allowlisted compatibility exceptions required by the current engine; no new caller may use them. `M10` introduces `runtime.AgentSession` and the consumer-owned `runtime.SessionStore` and makes runtime the sole live recoverable-state owner; `M11` moves context, compaction, resume, and rewind coordination to its single commit path. `M26` deletes the aliases and compatibility methods. `internal/session` must never import `internal/runtime`.
 
+`M03` makes `internal/memory.Store` the only implementation owner for session `working_memory.md`, `PLAN.md`, and `TODO.md` behavior. `internal/session` no longer defines a working-memory type, template, load, append, or replace implementation. To preserve the existing guarantee that a newly returned stored session already has its scratchpad, `FileStore.Create` temporarily delegates only scratchpad initialization to `memory.Store`; runtime session creation removes this compatibility edge at `M10`. App, benchmark, and AgentOps use `Store.WorkingMemoryPath` directly. Feishu and the old ChildRun assembly retain exactly two deprecated `StoredSession.MemoryPath` calls because their current package boundaries forbid importing the memory mechanism; an automated decreasing ceiling prevents any new use, and the ChildRun (`M15`) and Feishu (`M19`) profile cutovers remove them.
+
 ## Allowed Dependencies
 
 | Importer | Allowed target architecture dependencies |

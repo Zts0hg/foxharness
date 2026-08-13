@@ -156,11 +156,11 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 		return nil, err
 	}
 
-	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
 	store := memory.NewSessionStore(workDir, sess.RootDir)
 	if err := store.EnsureFiles(); err != nil {
 		return nil, err
 	}
+	composer := prompt.NewComposer(workDir).WithMemory(store.WorkingMemoryPath())
 	homeDir, _ := os.UserHomeDir()
 	llmConfig, err := resolveBenchmarkLLMConfig(homeDir, os.Getenv)
 	if err != nil {

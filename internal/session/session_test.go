@@ -60,6 +60,23 @@ func TestSessionRunAndMessageLog(t *testing.T) {
 	}
 }
 
+func TestFileStoreCreatePreservesWorkingMemoryInitialization(t *testing.T) {
+	workDir := t.TempDir()
+	store := NewFileStoreWithHome(workDir, t.TempDir())
+	storedSession, err := store.Create(CreateOptions{Source: SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	data, err := os.ReadFile(storedSession.MemoryPath())
+	if err != nil {
+		t.Fatalf("ReadFile(working_memory.md) error = %v", err)
+	}
+	want := "# Working Memory\n\n## Goal\n\nNot recorded.\n\n## Known Facts\n\nNot recorded.\n\n## Current Plan\n\nNot recorded.\n\n## Next Step\n\nNot recorded.\n"
+	if string(data) != want {
+		t.Fatalf("working_memory.md = %q, want %q", data, want)
+	}
+}
+
 func TestMessageLogNormalizesEmptyToolCallArguments(t *testing.T) {
 	workDir := t.TempDir()
 	manager := NewManagerWithHome(workDir, t.TempDir())

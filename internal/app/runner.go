@@ -472,7 +472,7 @@ func (r *AgentRunner) runInternal(ctx context.Context, userPrompt string, displa
 	composer := prompt.NewComposer(r.workDir).
 		WithCollaborationMode(collaborationMode).
 		WithInteractiveAsk(interactiveAsk).
-		WithMemory(sess.MemoryPath())
+		WithMemory(store.WorkingMemoryPath())
 	if autoMem != nil {
 		composer = composer.WithAutoMemory(autoMem)
 	}

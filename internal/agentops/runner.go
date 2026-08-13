@@ -329,7 +329,8 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 // buildComposer assembles the system-prompt composer for a task, injecting the
 // cross-session persistent memory index when a store is available (REQ-006).
 func (r *Runner) buildComposer(sess *session.StoredSession, store *automemory.Store) *prompt.Composer {
-	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
+	workingMemory := memory.NewSessionStore(r.workDir, sess.RootDir)
+	composer := prompt.NewComposer(r.workDir).WithMemory(workingMemory.WorkingMemoryPath())
 	if store != nil {
 		composer = composer.WithAutoMemory(store)
 	}

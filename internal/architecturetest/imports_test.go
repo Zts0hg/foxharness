@@ -110,6 +110,21 @@ func TestDeprecatedSessionCompatibilityUsageMatchesCeiling(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreIsOnlyWorkingMemoryOwner(t *testing.T) {
+	root := moduleRoot(t)
+	if got := forbiddenWorkingMemoryOwnership(t, root); len(got) > 0 {
+		t.Fatalf("working-memory ownership escaped internal/memory:\n%s", strings.Join(got, "\n"))
+	}
+	got := workingMemoryPathCompatibilityUsage(t, root)
+	want := []string{
+		"internal/feishu/runner.go:MemoryPath=1",
+		"internal/subagent/manager.go:MemoryPath=1",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("persistence working-memory path usage = %v, want exact decreasing ceiling %v", got, want)
+	}
+}
+
 func moduleRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
@@ -262,6 +277,102 @@ func deprecatedSessionCompatibilityUsage(t *testing.T, root string) []string {
 		t.Fatalf("scan deprecated session compatibility usage: %v", err)
 	}
 
+	keys := make([]string, 0, len(counts))
+	for key, count := range counts {
+		keys = append(keys, fmt.Sprintf("%s=%d", key, count))
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func forbiddenWorkingMemoryOwnership(t *testing.T, root string) []string {
+	t.Helper()
+	var violations []string
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if oneOf(entry.Name(), ".git", "vendor", "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch value := node.(type) {
+			case *ast.TypeSpec:
+				if strings.HasPrefix(rel, "internal/session/") && value.Name.Name == "WorkingMemory" {
+					violations = append(violations, rel+": declares WorkingMemory")
+				}
+			case *ast.FuncDecl:
+				if strings.HasPrefix(rel, "internal/session/") && oneOf(value.Name.Name, "NewMemory", "initialWorkingMemory") {
+					violations = append(violations, rel+": declares "+value.Name.Name)
+				}
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan working-memory ownership: %v", err)
+	}
+	sort.Strings(violations)
+	return violations
+}
+
+func workingMemoryPathCompatibilityUsage(t *testing.T, root string) []string {
+	t.Helper()
+	counts := make(map[string]int)
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if oneOf(entry.Name(), ".git", "vendor", "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if strings.HasPrefix(rel, "internal/session/") || strings.HasPrefix(rel, "internal/memory/") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "MemoryPath" {
+				counts[rel+":MemoryPath"]++
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan persistence working-memory path usage: %v", err)
+	}
 	keys := make([]string, 0, len(counts))
 	for key, count := range counts {
 		keys = append(keys, fmt.Sprintf("%s=%d", key, count))
