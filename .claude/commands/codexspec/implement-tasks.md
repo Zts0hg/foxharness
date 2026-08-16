@@ -37,6 +37,7 @@ Read:
 
 - `requirements.md`
 - `spec.md`
+- `design.md`
 - `plan.md`
 - `tasks.md`
 - `.codexspec/memory/constitution.md` when present
@@ -46,8 +47,11 @@ Authority order:
 1. Confirmed entries in `requirements.md`
 2. `spec.md`
 3. Constitution and verified repository facts
-4. Approved `plan.md`
-5. `tasks.md`
+4. `design.md`
+5. Approved `plan.md`
+6. `tasks.md`
+
+A legacy feature may have no `design.md`; when it is absent, proceed with `plan.md` as the design-and-plan authority.
 
 When `requirements.md` is absent, use legacy spec-only mode. Treat `spec.md` as
 the temporary highest feature authority and state that fidelity to the original
@@ -90,6 +94,7 @@ For **each task**, determine the workflow based on task type:
 3. **Verify - Run Tests**
    - Execute all relevant tests
    - Ensure new tests pass and no existing tests break
+   - If a test stays red across several green attempts, a fix reddens a previously-passing test, or you catch yourself guessing: stop patching and follow **Systematic Debugging Escalation** (below)
 
 4. **Review & Refactor**
    - Check for bugs, edge cases, security issues
@@ -212,13 +217,28 @@ non-PASS and cannot be declared successful by the implementer.
 If verification requires a new product or architecture decision, stop and
 request that decision. Do not invent intent or weaken the requirement.
 
+#### 7.3a Scenario Coverage Self-Check
+
+Independently of the reviewer — do not extend or rely on `review-code` for this —
+verify that every test scenario enumerated in `tasks.md` maps to at least one
+implemented test that genuinely exercises and asserts it. A scenario with no
+covering test, or covered only by a hollow or non-asserting test (the test must
+assert the scenario's expected outcome), is a blocking scenario-coverage gap.
+
+Treat each gap as a verified obligation and repair it via 7.4 (red-green: add the
+covering test, observe it fail for the missing behavior, then make it pass), then
+re-verify and re-review per 7.5. This check is owned by this implementer; it adds
+no command and does not modify `review-code`.
+
 #### 7.4 Apply Test-Safe Repairs
 
 Apply only verified repairs:
 
 - For a functional defect, first add a reproducing regression test and observe
   the expected failure. Then use red-green-refactor until the defect is fixed
-  while existing behavior remains green.
+  while existing behavior remains green. When such a repair is non-trivial — the
+  cause is not a mechanical local edit but must be traced across call chains,
+  state, or data flow — follow **Systematic Debugging Escalation** (below).
 - For documentation and non-code configuration defects, use the applicable
   deterministic checks before and after the repair. Do not manufacture a code
   test when the binding contract is non-code.
@@ -260,8 +280,8 @@ or cleared by an audit score.
 
 Success requires a final valid `PASS` envelope from a fresh complete-feature
 review, with complete requirements and verification, isolated required reviewer
-topology, zero P0-P3 counts, no blocking coverage gaps, and a still-green
-baseline.
+topology, zero P0-P3 counts, no blocking coverage gaps, no uncovered enumerated
+test scenario from `tasks.md` (per 7.3a), and a still-green baseline.
 
 Any `FAIL`, persistent `INCONCLUSIVE`, unresolved verified defect, repeated
 refuted finding, decision requirement, or no-progress guard is blocking. Preserve
@@ -279,3 +299,32 @@ or a commit.
 - Commits remain outside verdict logic. If the surrounding workflow calls for
   a commit, create it only after the applicable checks are green; a commit must
   never alter, replace, or imply the review verdict.
+
+## Systematic Debugging Escalation
+
+When a fix is not converging, escalate into the systematic root-cause discipline instead of continuing to patch. This is a reference, not a duplicate: the discipline lives once in `/codexspec:debug`.
+
+**Trip conditions** (either one):
+
+- **(a) During the TDD Verify/green loop (§3)**: the same test stays red after several green attempts, a fix reddens a previously-passing test, or you notice guess-and-check behavior.
+- **(b) During a test-safe repair (§7.4)**: you are fixing a **functional/correctness (or robustness) defect** whose fix is **non-trivial** — it requires tracing across call chains, state, or data flow, not a mechanical local edit. This trip does NOT apply to idiomatic-clarity, architecture, constitution-alignment, style, or trivial mechanical fixes.
+
+**Escalation**:
+
+```text
+Invoke /codexspec:debug
+```
+
+Apply its root-cause discipline to the failing test (trip a) or the defect under repair (trip b). The escalation is **non-gating and low-ceremony**: it produces no PASS/FAIL, emits no mandatory notice line, and does not interrupt the user.
+
+**Resume**: once `debug` has reached the root cause and applied a verified fix, **return here and continue** the task or repair exactly where you left off — re-establish the green baseline and proceed. There is no runtime stack; resuming is your responsibility, not the engine's.
+
+## Automatic Distillation
+
+Read `workflow.auto_distill` from `.codexspec/config.yml` (**default `true`** — enabled unless explicitly set to the literal `false`; absent or any non-`false` value means enabled).
+
+When `workflow.auto_distill` is enabled (not the literal `false`) AND this command reported success (§7.6), invoke `/codexspec:distill` exactly once on this session's interaction, then end.
+
+- distill is non-blocking and non-interactive: it never prompts, never changes this command's verdict or report, and early-exits when there is nothing reusable to capture.
+- distill only writes `candidate`/`vetted` records to `.codexspec/profile/`; it MUST NOT modify `requirements.md`, `spec.md`, `plan.md`, or `tasks.md`.
+- Do not invoke distill when `auto_distill` is disabled or when this command did not report success.

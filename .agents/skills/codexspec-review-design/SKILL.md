@@ -1,9 +1,9 @@
 ---
-name: codexspec:review-plan
-description: "审查计划的忠实度、可行性与实现就绪度"
+name: codexspec:review-design
+description: Review design fidelity, feasibility, and planning readiness
 ---
 
-# Plan Reviewer
+# Design Reviewer
 
 ## Language Preference
 
@@ -16,46 +16,44 @@ Converse in the interaction language and author artifacts in the document langua
 
 ## User Input
 
-`the text after the $codexspec:review-plan skill mention`
+`the text after the $codexspec:review-design skill mention`
 
 ## Review Authority
 
 Resolve by explicit path, then current branch; never silently select the latest feature.
 
-Read `requirements.md`, `spec.md`, `design.md`, `plan.md`, the constitution, and only the repository files necessary to verify plan claims.
+Read `requirements.md`, `spec.md`, `design.md`, the constitution, and only the repository files necessary to verify design claims.
 
-If `requirements.md` is absent, use legacy spec-only mode and disclose that original-discussion fidelity cannot be verified. A legacy feature may also have no `design.md`; when it is absent, review the plan against the spec directly.
+If `requirements.md` is absent, use legacy spec-only mode and disclose that original-discussion fidelity cannot be verified.
 
 Authority order:
 
 1. Confirmed requirements
 2. Specification
 3. Constitution and verified repository facts
-4. `design.md`
-5. Plan-level technical decisions
-6. Applicable best practices
+4. Design-level technical decisions
+5. Applicable best practices
 
 ## Review Passes
 
 ### 1. Fidelity and Coverage
 
-- Verify every `REQ`/`NFR` has plan coverage.
-- Verify the plan covers the confirmed `design.md` components (which cover the requirements) and does not restate or re-architect the design — architecture/interface/data-model decisions belong to `design.md`, not the plan.
-- Verify each plan component or phase carries `Covers: REQ-xxx; Design: <design component>` (or `Covers: REQ-xxx` for a legacy feature with no `design.md`).
-- Detect omitted behavior, semantic changes, scope expansion, and plan decisions that override confirmed trade-offs or the confirmed design.
-- Verify plan-level assumptions remain labeled and do not become product requirements.
+- Verify every `REQ`/`NFR` has design coverage.
+- Verify each component, interface, data change, and design decision has `Covers:`.
+- Detect omitted behavior, semantic changes, scope expansion, and design decisions that override confirmed trade-offs.
+- Verify design-level assumptions remain labeled and do not become product requirements.
 
 ### 2. Feasibility and Internal Quality
 
 Report evidence-backed defects such as:
 
 - Referencing nonexistent modules, APIs, paths, or capabilities
-- Contradictory component responsibilities or dependencies
-- Missing implementation decisions that genuinely block task generation
-- Invalid ordering, migration, compatibility, security, or data assumptions
+- Contradictory component responsibilities or interfaces
+- Missing design decisions that genuinely block planning
+- Invalid data, compatibility, security, or interface assumptions
 - Complexity that creates concrete risk without serving a confirmed requirement
 
-Architecture diagrams, dependency graphs, explicit versions, design patterns, scalability sections, deployment plans, and observability are required only when the feature or repository context makes them necessary.
+Data models, API contracts, sequence diagrams, cross-cutting design sections, and explicit interfaces are required only when the feature or repository context makes them necessary.
 
 ### 3. Advisories
 
@@ -73,7 +71,7 @@ Every defect must include:
 - **Impact**
 - **Remediation**
 
-Merge findings with the same root cause. Do not deduct the same root cause under alignment, architecture, and phase planning separately.
+Merge findings with the same root cause. Do not deduct the same root cause under alignment, architecture, and decision-record planning separately.
 
 Reject findings that are only stylistic preference, generic best practice without applicability, or a demand to replace a confirmed trade-off.
 
@@ -104,19 +102,19 @@ Advisory does not affect the score. There are no fixed deductions for omitted te
 
 ## Report
 
-Save `<feature-dir>/review-plan.md`:
+Save `<feature-dir>/review-design.md`:
 
 ```markdown
-# Plan Review Report
+# Design Review Report
 
 ## Summary
 - **Overall Status**: PASS / PASS_WITH_WARNINGS / NEEDS_REVISION / BLOCKED
 - **Compatibility Score**: X/100
 - **Authority Mode**: Requirements-first / Legacy spec-only
-- **Readiness**: Ready for Tasks / Revision Required
+- **Readiness**: Ready for Planning / Revision Required
 
 ## Requirement Coverage
-| Requirement | Plan Reference | Result |
+| Requirement | Design Reference | Result |
 
 ## Verified Defects
 ### Critical

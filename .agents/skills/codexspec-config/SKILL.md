@@ -67,7 +67,7 @@ To create a new configuration, run `$codexspec:config` without arguments.
 
 ### Step 3: Interactive Mode (Configuration Exists)
 
-If configuration exists and no `--view` flag, present the management menu using `AskUserQuestion`:
+If configuration exists and no `--view` flag, present the management menu using the host agent's structured-question tool (e.g., `AskUserQuestion` or `request_user_input`):
 
 ```json
 {
@@ -83,6 +83,8 @@ If configuration exists and no `--view` flag, present the management menu using 
   }]
 }
 ```
+
+> **Note**: The field schema above follows the `AskUserQuestion` convention. Under `request_user_input`, each question additionally requires an `id` (snake_case) and accepts 2–3 options — follow the host tool's actual schema rather than copying this example verbatim.
 
 Then handle each option:
 
@@ -104,6 +106,8 @@ Display the configuration as in Step 2, then exit.
       {"label": "Document language", "description": "Language for generated artifact files (requirements/spec/plan/tasks) (currently: {current value})"},
       {"label": "Output language (legacy)", "description": "Fallback language used when interaction/document are not set (currently: {current value})"},
       {"label": "Commit language", "description": "Language for commit messages (currently: {current value})"},
+      {"label": "Auto-next chain", "description": "Auto-advance the SDD pipeline once a stage passes (workflow.auto_next) (currently: {current value})"},
+      {"label": "Auto-distill", "description": "Run $codexspec:distill on completion of wrap-up commands to capture reusable knowledge (workflow.auto_distill) (currently: {current value})"},
       {"label": "Back", "description": "Return to main menu"}
     ]
   }]
@@ -127,9 +131,55 @@ Display the configuration as in Step 2, then exit.
 }
 ```
 
-3. Update the configuration file with the new value
-4. Display the updated configuration
-5. Exit
+3. For "Auto-next chain", ask whether to enable or disable:
+
+```json
+{
+  "questions": [{
+    "question": "Set workflow.auto_next:",
+    "header": "Auto-next",
+    "options": [
+      {"label": "Enable", "description": "Auto-advance the SDD pipeline once a stage passes"},
+      {"label": "Disable", "description": "Do not auto-advance; advance to the next command manually"},
+      {"label": "Back", "description": "Return without changing"}
+    ]
+  }]
+}
+```
+
+   Then read `.codexspec/config.yml`. The current value is enabled only when
+   `workflow.auto_next` is the literal `true`; an absent key/section, `false`,
+   or any other value is disabled. Write `workflow.auto_next` as an unquoted
+   `true`/`false` (update the value in place when the key exists; otherwise add
+   a `workflow:` section with `auto_next: <bool>`), preserving every other
+   line and comment.
+
+3b. For "Auto-distill", ask whether to enable or disable:
+
+```json
+{
+  "questions": [{
+    "question": "Set workflow.auto_distill:",
+    "header": "Auto-distill",
+    "options": [
+      {"label": "Enable", "description": "Run $codexspec:distill on completion of wrap-up commands"},
+      {"label": "Disable", "description": "Do not auto-distill; run $codexspec:distill manually"},
+      {"label": "Back", "description": "Return without changing"}
+    ]
+  }]
+}
+```
+
+   Then read `.codexspec/config.yml`. `auto_distill` is enabled by default; the
+   current value is disabled only when `workflow.auto_distill` is the literal
+   `false` (an absent key/section, `true`, or any other value is enabled). Write
+   `workflow.auto_distill` as an unquoted `true`/`false` (update the value in place
+   when the key exists; otherwise add `auto_distill: <bool>` under the `workflow:`
+   section, creating that section if absent), preserving every other line and comment.
+
+4. Update the configuration file with the new value
+5. Display the updated configuration
+6. Exit
 
 #### Option: Reset to defaults
 
