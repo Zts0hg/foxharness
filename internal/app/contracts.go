@@ -27,6 +27,13 @@ type Warning struct {
 	Error     string
 }
 
+/* SessionInfo is the presentation-safe identity and artifact location of one selected session. */
+type SessionInfo struct {
+	ID             string
+	Directory      string
+	TranscriptPath string
+}
+
 /* RunOutcome is the UI-neutral terminal projection of one runtime run. */
 type RunOutcome struct {
 	SessionID        string
@@ -39,13 +46,15 @@ type RunOutcome struct {
 	Partial          bool
 	ErrorKind        string
 	Error            string
+	MetricsPath      string
+	TracePath        string
 	ArtifactPaths    []string
 	Warnings         []Warning
 }
 
 /* RunUseCase submits one command and synchronously returns its terminal projection. */
 type RunUseCase interface {
-	Run(context.Context, RunCommand, NotificationSink) (RunOutcome, error)
+	Run(context.Context, RunCommand, NotificationSink) (*RunOutcome, error)
 }
 
 /* NotificationSink synchronously consumes ordered application notifications. */

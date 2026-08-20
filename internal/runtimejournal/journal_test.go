@@ -1,0 +1,226 @@
+package runtimejournal
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+
+	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/metrics"
+	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
+	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/tracing"
+)
+
+func TestJournalPreservesRunArtifactsAcrossRuntimeFactsAndMechanisms(t *testing.T) {
+	root := t.TempDir()
+	runRoot := filepath.Join(root, "runs", "run-1")
+	if err := os.MkdirAll(runRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	assembly := foxruntime.RunAssembly{
+		Session: foxruntime.AgentSessionSnapshot{ID: "session-1", Source: session.SOURCECLI, WorkDir: "/workspace", RootDir: root},
+		Run:     foxruntime.RunScopeSnapshot{RunID: "run-1", RootDir: runRoot, Model: "model-a"},
+		Spec:    foxruntime.RunSnapshot{Prompt: "model prompt", DisplayPrompt: "display prompt", ProviderProtocol: "openai"},
+	}
+	journal, err := New(assembly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := journal.RecordArtifact(ctx, runtimeFact(assembly, engine.Fact{Kind: engine.FactRunStarted, Sequence: 1})); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTelemetry(ctx, runtimeFact(assembly, engine.Fact{Kind: engine.FactRunStarted, Sequence: 1})); err != nil {
+		t.Fatal(err)
+	}
+
+	modelRun, err := journal.WrapModel(staticModel{}).StartRun(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelResult, err := modelRun.Invoke(ctx, engine.RunContext{
+		Turn: 1, Phase: engine.PhaseAction, Model: "model-a", Provider: "openai",
+		Messages:        []schema.Message{{Role: schema.RoleUser, Content: "task"}},
+		ToolDefinitions: []schema.ToolDefinition{{Name: "read_file"}},
+	}, nil)
+	if err != nil || modelResult.Message.Content != "done" {
+		t.Fatalf("model = %#v/%v", modelResult, err)
+	}
+	toolCallFact := runtimeFact(assembly, engine.Fact{Kind: engine.FactToolCall, Sequence: 2, Turn: 1, CallID: "call-1", Name: "read_file"})
+	if err := journal.RecordTelemetry(ctx, toolCallFact); err != nil {
+		t.Fatal(err)
+	}
+
+	tools := journal.WrapTools(staticTools{})
+	snapshot, err := tools.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := tools.Execute(ctx, snapshot, []schema.ToolCall{{ID: "call-1", Name: "read_file"}})
+	if err != nil || len(batch.Results) != 1 || batch.Results[0].FullContent != "tool output" {
+		t.Fatalf("tools = %#v/%v", batch, err)
+	}
+	toolResultFact := runtimeFact(assembly, engine.Fact{Kind: engine.FactToolResult, Sequence: 3, Turn: 1, CallID: "call-1", Name: "read_file", Content: "tool output"})
+	if err := journal.RecordTelemetry(ctx, toolResultFact); err != nil {
+		t.Fatal(err)
+	}
+
+	completed := runtimeFact(assembly, engine.Fact{Kind: engine.FactRunCompleted, Sequence: 4, Content: "done"})
+	if err := journal.RecordArtifact(ctx, completed); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTelemetry(ctx, completed); err != nil {
+		t.Fatal(err)
+	}
+
+	transcript := readJSONLines[session.TranscriptEvent](t, filepath.Join(root, "transcript.jsonl"))
+	if len(transcript) != 1 || transcript[0].Type != "user_prompt" || transcript[0].RunID != "run-1" {
+		t.Fatalf("transcript = %#v", transcript)
+	}
+	payload, _ := transcript[0].Payload.(map[string]any)
+	if payload["prompt"] != "display prompt" || payload["model_prompt"] != "model prompt" {
+		t.Fatalf("prompt payload = %#v", payload)
+	}
+
+	metricEvents := readUntypedJSONLines(t, filepath.Join(runRoot, "metrics.jsonl"))
+	if got, want := eventTypes(metricEvents), []string{"model_call", "tool_call", "run_summary"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("metric event types = %#v, want %#v", got, want)
+	}
+	if metricEvents[0]["turn"] != float64(1) || metricEvents[0]["phase"] != "action" || metricEvents[0]["model"] != nil || metricEvents[1]["turn"] != float64(1) || metricEvents[1]["tool_call_id"] != "call-1" {
+		t.Fatalf("metric events = %#v", metricEvents)
+	}
+	if metricEvents[2]["total_model_calls"] != float64(1) || metricEvents[2]["total_tool_calls"] != float64(1) {
+		t.Fatalf("run summary = %#v", metricEvents[2])
+	}
+
+	traceEvents := readJSONLines[tracing.SpanEvent](t, filepath.Join(runRoot, "trace.jsonl"))
+	var names []string
+	for _, event := range traceEvents {
+		if event.Type == tracing.EventSpanStart {
+			names = append(names, event.Name)
+		}
+	}
+	if want := []string{"run", "turn", "model_call", "tool_call"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("span names = %#v, want %#v", names, want)
+	}
+}
+
+func TestJournalRecordsCompactionTranscriptScope(t *testing.T) {
+	root := t.TempDir()
+	runRoot := filepath.Join(root, "runs", "run-1")
+	if err := os.MkdirAll(runRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	assembly := foxruntime.RunAssembly{
+		Session: foxruntime.AgentSessionSnapshot{ID: "session-1", RootDir: root},
+		Run:     foxruntime.RunScopeSnapshot{RunID: "run-1", RootDir: runRoot},
+		Spec:    foxruntime.RunSnapshot{Prompt: "task"},
+	}
+	journal, _ := New(assembly)
+	for sequence, scope := range []string{"session_history", "turn_context", "reactive"} {
+		fact := engine.Fact{Kind: engine.FactContextCompacted, Sequence: sequence + 1, Turn: sequence, Name: scope}
+		if err := journal.RecordArtifact(context.Background(), runtimeFact(assembly, fact)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events := readJSONLines[session.TranscriptEvent](t, filepath.Join(root, "transcript.jsonl"))
+	if len(events) != 3 {
+		t.Fatalf("transcript events = %#v", events)
+	}
+	for index, event := range events {
+		payload := event.Payload.(map[string]any)
+		if event.Type != "context_compacted" {
+			t.Fatalf("event %d = %#v", index, event)
+		}
+		switch index {
+		case 0:
+			if !reflect.DeepEqual(payload, map[string]any{"scope": "session_history"}) {
+				t.Fatalf("initial compaction payload = %#v", payload)
+			}
+		case 1:
+			if !reflect.DeepEqual(payload, map[string]any{"turn": float64(1)}) {
+				t.Fatalf("turn compaction payload = %#v", payload)
+			}
+		case 2:
+			if !reflect.DeepEqual(payload, map[string]any{"turn": float64(2), "source": "reactive"}) {
+				t.Fatalf("reactive compaction payload = %#v", payload)
+			}
+		}
+	}
+}
+
+func runtimeFact(assembly foxruntime.RunAssembly, fact engine.Fact) foxruntime.RuntimeFact {
+	return foxruntime.RuntimeFact{SessionID: assembly.Session.ID, RunID: assembly.Run.RunID, Fact: fact}
+}
+
+type staticModel struct{}
+
+func (staticModel) StartRun(context.Context) (engine.ModelRunInvoker, error) {
+	return staticModelRun{}, nil
+}
+
+type staticModelRun struct{}
+
+func (staticModelRun) Invoke(context.Context, engine.RunContext, engine.ModelFactEmitter) (engine.ModelResult, error) {
+	return engine.ModelResult{
+		Message: schema.Message{Role: schema.RoleAssistant, Content: "done", ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file"}}}, FinishReason: "tool_calls",
+		Usage: schema.Usage{InputTokens: 7, OutputTokens: 3},
+	}, nil
+}
+
+type staticTools struct{}
+
+func (staticTools) Snapshot(context.Context) (engine.ToolSnapshot, error) {
+	return staticToolSnapshot{}, nil
+}
+func (staticTools) Execute(context.Context, engine.ToolSnapshot, []schema.ToolCall) (engine.ToolBatch, error) {
+	return engine.ToolBatch{Results: []engine.ToolExecutionResult{{CallID: "call-1", FullContent: "tool output", ModelContent: "tool output"}}}, nil
+}
+
+type staticToolSnapshot struct{}
+
+func (staticToolSnapshot) ToolDefinitions() []schema.ToolDefinition {
+	return []schema.ToolDefinition{{Name: "read_file"}}
+}
+
+func readJSONLines[T any](t *testing.T, path string) []T {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	var result []T
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var item T
+		if err := json.Unmarshal(scanner.Bytes(), &item); err != nil {
+			t.Fatal(err)
+		}
+		result = append(result, item)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func readUntypedJSONLines(t *testing.T, path string) []map[string]any {
+	return readJSONLines[map[string]any](t, path)
+}
+
+func eventTypes(events []map[string]any) []string {
+	result := make([]string, len(events))
+	for index, event := range events {
+		result[index], _ = event["type"].(string)
+	}
+	return result
+}
+
+var _ = metrics.EventRunSummary

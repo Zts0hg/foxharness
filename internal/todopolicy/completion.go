@@ -1,23 +1,21 @@
-package engine
+package todopolicy
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/Zts0hg/foxharness/internal/session"
 )
 
-func (e *LegacyEngine) todoCompletionReminder(sess *session.StoredSession) string {
-	if sess == nil || !e.hasTool("update_todo") {
+/* CompletionReminder returns the current incomplete checklist gate when update_todo is available. */
+func CompletionReminder(sessionRoot string, updateAvailable bool) string {
+	if !updateAvailable {
 		return ""
 	}
-	data, err := os.ReadFile(filepath.Join(sess.RootDir, "TODO.md"))
+	data, err := os.ReadFile(filepath.Join(sessionRoot, "TODO.md"))
 	if err != nil {
 		return ""
 	}
-	items := incompleteTodoItems(string(data))
+	items := incompleteItems(string(data))
 	if len(items) == 0 {
 		return ""
 	}
@@ -31,16 +29,7 @@ func (e *LegacyEngine) todoCompletionReminder(sess *session.StoredSession) strin
 	return builder.String()
 }
 
-func (e *LegacyEngine) hasTool(name string) bool {
-	for _, def := range e.registry.GetAvailableTools() {
-		if def.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-func incompleteTodoItems(content string) []string {
+func incompleteItems(content string) []string {
 	var items []string
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -54,8 +43,4 @@ func incompleteTodoItems(content string) []string {
 		items = append(items, item)
 	}
 	return items
-}
-
-func todoCompletionReminderMessage(reminder string) string {
-	return fmt.Sprintf("[Runtime System Reminder]\n\n%s", reminder)
 }

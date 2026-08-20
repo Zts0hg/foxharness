@@ -39,6 +39,8 @@ flowchart TD
     TOOLRUNTIME[internal/toolruntime] --> TOOLEXEC
     TOOLRUNTIME --> ENGINE
     TOOLRUNTIME --> TOOLRESULT[internal/toolresult]
+    REGISTRYEXEC[internal/registryexec] --> TOOLEXEC
+    REGISTRYEXEC --> TOOLS
     TOOLS[internal/tools] --> TOOLPROTOCOL[internal/toolprotocol]
     SUB --> TOOLPROTOCOL
     MODELINVOKE[internal/modelinvoke] --> ENGINE
@@ -49,12 +51,19 @@ flowchart TD
     TURNPOLICY --> SCHEMA
     TURNPOLICY --> RECOVERY[internal/recovery]
     TURNPOLICY --> REMINDER[internal/reminder]
+    RUNTIMEJOURNAL[internal/runtimejournal] --> RUNTIME
+    RUNTIMEJOURNAL --> SESSION
+    RUNTIMEJOURNAL --> TELEMETRY
+    TODOPOLICY[internal/todopolicy] --> TODOFILE[session TODO state]
 
     WIRE -. injects .-> PROVIDER
     WIRE -. injects .-> TOOLS[tool implementations]
     WIRE -. injects .-> TURNPOLICY
     WIRE -. injects .-> COMPACTION
     WIRE -. injects .-> TELEMETRY[metrics and tracing]
+    FOX -. composition .-> RUNTIME
+    FOX -. composition .-> REGISTRYEXEC
+    FOX -. composition .-> RUNTIMEJOURNAL
 ```
 
 The diagram is a directed acyclic graph, not a rule that every execution path must pass through every package. Benchmark, child invocation, and Autodev are runtime control clients rather than user-presentation clients.
@@ -67,10 +76,13 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 | `internal/engine` | Infrastructure-independent run/turn transitions and consumer-owned model, tool, conversation, policy, and observer ports. |
 | `internal/toolexec` | Immutable resolved capability snapshots, parallel/exclusive batch scheduling, cancellation completion, and ordered structured tool results. It does not own catalogs, permissions, session persistence, or presentation. |
 | `internal/toolruntime` | Run-local composition of constrained tool execution with the compatibility-preserving full, model-preview, observer-preview, and persisted-artifact result forms. It does not discover tools, decide permissions, or commit conversation state. |
+| `internal/registryexec` | Adaptation of an existing concrete tool registry into an immutable runtime-constrained capability list, including optional run-context and completed-result hooks. It does not select a profile or concrete tool set. |
 | `internal/toolprotocol` | Narrow tool-invocation lineage, effective-capability snapshot, and structured execution-result values shared without importing the concrete tool registry. |
 | `internal/modelinvoke` | Provider transport adaptation, response/error normalization, invocation options, and per-run model-call lifecycle hooks for `engine.ModelInvoker`. It does not own turns, context, or provider configuration. |
 | `internal/runtimecompaction` | Translation of concrete compaction mechanics into runtime-owned durable-state and run-local projection proposals plus blocking-budget decisions. It never commits compact state. |
+| `internal/runtimejournal` | Run-scoped compatibility persistence for non-authoritative transcript, metrics, and tracing artifacts around runtime facts and model/tool mechanisms. It never owns conversation recovery or terminal outcome policy. |
 | `internal/turnpolicy` | Immutable factories for run-scoped recovery, reminder, completion, and TODO decisions. Runtime supplies already-bound queries; this package does not read persistence, select tools, emit telemetry, or own conversation state. |
+| `internal/todopolicy` | Pure derivation of the TODO completion reminder from an already-selected session root and effective update capability. |
 | `internal/runtime` | Harness construction, immutable profile resolution, live session/run lifecycle, context-injection decisions, recoverable-state commit coordination, and child-run control. |
 | `internal/app` | User-entry commands, UI-neutral DTOs, runtime-notification mapping, and correlated interaction ports. |
 | `internal/tui` | Fox-specific Bubble Tea input, queue, overlay, and terminal presentation behavior. |
@@ -151,6 +163,14 @@ Child prompt construction remains a pure use of `internal/prompt` over already r
 Permission approval, user questions, and Formal Plan review are three explicit blocking request/response ports rather than a generic event bus. Every request carries an application-owned interaction, session, run, and tool-call correlation; every response returns the interaction ID; cancellation and deadlines travel through `context.Context`. Question IDs supplement the existing question-text compatibility key so later adapters can reject stale or duplicate responses. Codex's request/turn/call/question identities and Claude Code's request/tool-use deduplication validate this correlation boundary, but Fox does not adopt their RPC, stream, or transport protocols.
 
 The unmigrated `AgentRunner`, `RunCLI`, `RunTUI`, Autodev adapter, and plan lifecycle remain a closed compatibility facade until `M24`. An exact AST gate fixes their current concrete imports to `autodev.go`, `cli.go`, `plan_lifecycle.go`, `runner.go`, and `tui.go`; no new application file may add a concrete subsystem dependency. Application contracts and mapping cannot construct or drive runtime, engine, persistence, tools, or presentation. M16 adds the already-authorized `internal/app -> internal/runtime` mapping edge, performs no profile cutover, and leaves the 59-entry decreasing allowlist unchanged.
+
+`M17` atomically cuts over the production `CLIExec` path. `cmd/fox` selects and constructs the concrete CLI profile, `app.RuntimeApplication` maps the typed command, notifications, lifecycle hooks, and result, and `internal/cli.Run` owns only the exact final-output labels, logging, and result-before-drain order. `internal/cli` imports only `internal/app`; it cannot construct runtime, persistence, providers, tools, checkpoints, memory, compaction, or telemetry. An AST gate rejects any return to `app.RunCLI`, `app.NewAgentRunner`, or direct engine assembly in the print entry.
+
+The CLI composition root preserves explicit, latest-CLI, and fresh session selection; working memory and automemory; per-message state history and checkpoints; default collaboration; skill discovery and activation reminders; the eight-tool ceiling; automatic compaction; one synchronous run; and tracked extraction joined after presentation. It opens the selected persisted record as the sole live `runtime.AgentSession`, and all model, tool, conversation, policy, and journal collaborators are supplied through `RuntimeHarness`. `runtimejournal` retains the existing transcript, metrics, and trace locations and formats as best-effort artifacts, while authoritative messages and run completion remain runtime-owned.
+
+`registryexec` replaces the former duplicate benchmark and child registry adapters and is also used by CLI composition. It intersects advertised and executable names with the immutable runtime ceiling, retains concrete parallel-safety decisions, propagates exact run/tool-call lineage, and maps completed concrete results once. `todopolicy` supplies the target TODO completion query without making `turnpolicy` or engine read persistence. The legacy engine retains its temporary private equivalent because target engine imports remain schema-only until `M25`.
+
+`app.RunCLI` and its old presentation tests remain as an inactive compatibility facade solely for differential evidence and scheduled deletion at `M24`; no production entry calls it after M17. The M17 cutover introduces no forbidden dependency and therefore leaves the 59-entry decreasing allowlist unchanged.
 
 ## Allowed Dependencies
 

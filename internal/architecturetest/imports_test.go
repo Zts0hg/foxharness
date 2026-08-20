@@ -137,6 +137,28 @@ func start(value store, record *session.StoredSession) {
 	}
 }
 
+func TestDeprecatedSessionCompatibilityUsageIgnoresNestedModelStartRun(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "internal", "client")
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	source := `package client
+import (
+    "context"
+    "github.com/Zts0hg/foxharness/internal/session"
+)
+type model interface { StartRun(context.Context) error }
+type wrapper struct { base model; record *session.StoredSession }
+func start(value wrapper, ctx context.Context) { _ = value.base.StartRun(ctx) }`
+	if err := os.WriteFile(filepath.Join(path, "client.go"), []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := deprecatedSessionCompatibilityUsage(t, root); len(got) != 0 {
+		t.Fatalf("nested model StartRun counted as deprecated session method: %v", got)
+	}
+}
+
 func TestMemoryStoreIsOnlyWorkingMemoryOwner(t *testing.T) {
 	root := moduleRoot(t)
 	if got := forbiddenWorkingMemoryOwnership(t, root); len(got) > 0 {
@@ -166,7 +188,7 @@ func TestOnlyAuthorizedRuntimeClientsHaveProductionImports(t *testing.T) {
 			callers = append(callers, edge.From)
 		}
 	}
-	want := []string{"cmd/bench", "internal/app", "internal/benchmark", "internal/childruntime", "internal/runtimecompaction"}
+	want := []string{"cmd/bench", "cmd/fox", "internal/app", "internal/benchmark", "internal/childruntime", "internal/runtimecompaction", "internal/runtimejournal"}
 	if fmt.Sprint(callers) != fmt.Sprint(want) {
 		t.Fatalf("target runtime production callers = %v, want authorized clients %v", callers, want)
 	}
@@ -384,6 +406,9 @@ func deprecatedSessionCompatibilityUsage(t *testing.T, root string) []string {
 			case *ast.CallExpr:
 				selector, ok := value.Fun.(*ast.SelectorExpr)
 				if !ok {
+					return true
+				}
+				if _, directReceiver := selector.X.(*ast.Ident); !directReceiver {
 					return true
 				}
 				if (selector.Sel.Name == "Finish" && len(value.Args) == 0) || (selector.Sel.Name == "StartRun" && len(value.Args) == 1) {

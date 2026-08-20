@@ -251,20 +251,7 @@ func (r *AgentRunner) recordSkillActivation(cmd *slash.Command) {
 }
 
 func formatActivationReminder(cmd *slash.Command) string {
-	out := "A new skill became available for the rest of this session: `" + cmd.Name + "`"
-	if cmd.Description != "" {
-		out += "\n  Description: " + cmd.Description
-	}
-	if cmd.Frontmatter.WhenToUse != "" {
-		out += "\n  When to use: " + cmd.Frontmatter.WhenToUse
-	}
-	if cmd.Frontmatter.ArgumentHint != "" {
-		out += "\n  Arguments: " + cmd.Frontmatter.ArgumentHint
-	} else if cmd.Frontmatter.Arguments != "" {
-		out += "\n  Arguments: " + cmd.Frontmatter.Arguments
-	}
-	out += "\nInvoke it via the `skill` tool with name=\"" + cmd.Name + "\"."
-	return out
+	return skilltool.FormatActivationReminder(cmd)
 }
 
 // drainPendingActivations returns and clears any activation notices

@@ -92,9 +92,9 @@ func TestApplicationRuntimeMappingPreservesAbsentCollectionsAndSink(t *testing.T
 	}
 }
 
-type runUseCaseFunc func(context.Context, RunCommand, NotificationSink) (RunOutcome, error)
+type runUseCaseFunc func(context.Context, RunCommand, NotificationSink) (*RunOutcome, error)
 
-func (f runUseCaseFunc) Run(ctx context.Context, command RunCommand, sink NotificationSink) (RunOutcome, error) {
+func (f runUseCaseFunc) Run(ctx context.Context, command RunCommand, sink NotificationSink) (*RunOutcome, error) {
 	return f(ctx, command, sink)
 }
 
@@ -104,11 +104,11 @@ func TestRunUseCaseUsesOnlyApplicationCommandOutcomeAndNotifications(t *testing.
 		Prompt: "inspect", DisplayPrompt: "Inspect", AllowedTools: []string{"read_file"},
 		CollaborationMode: "default", Model: "model", Effort: "high",
 	}
-	useCase := runUseCaseFunc(func(_ context.Context, got RunCommand, _ NotificationSink) (RunOutcome, error) {
+	useCase := runUseCaseFunc(func(_ context.Context, got RunCommand, _ NotificationSink) (*RunOutcome, error) {
 		if !reflect.DeepEqual(got, command) {
 			t.Fatalf("command = %#v, want %#v", got, command)
 		}
-		return RunOutcome{SessionID: "session-1", RunID: "run-1", FinalMessage: "done"}, nil
+		return &RunOutcome{SessionID: "session-1", RunID: "run-1", FinalMessage: "done"}, nil
 	})
 
 	result, err := useCase.Run(context.Background(), command, &recordingNotificationSink{})

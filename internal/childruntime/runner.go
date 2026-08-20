@@ -19,12 +19,12 @@ import (
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/prompt"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/registryexec"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 	"github.com/Zts0hg/foxharness/internal/runtimecompaction"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/subagent"
-	"github.com/Zts0hg/foxharness/internal/toolexec"
 	"github.com/Zts0hg/foxharness/internal/toolresult"
 	"github.com/Zts0hg/foxharness/internal/toolruntime"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -146,7 +146,7 @@ func (r *Runner) Run(ctx context.Context, request subagent.Request) (*subagent.R
 				return nil, err
 			}
 			return toolruntime.New(
-				capabilities(registry, assembly.AllowedTools), toolresult.OSFileSystem{},
+				registryexec.Capabilities(registry, assembly.AllowedTools, nil), toolresult.OSFileSystem{},
 				filepath.Join(assembly.Session.RootDir, "tool-results"),
 			), nil
 		},
@@ -251,31 +251,6 @@ func (r *Runner) buildRegistry(store *session.FileStore, assembly foxruntime.Run
 		return nil, errors.New("child runtime permission scope is required")
 	}
 	return permission.DecorateRegistry(registry, scope.coordinator, scope.evidenceProvider(store, assembly)), nil
-}
-
-func capabilities(registry tools.Registry, allowed []string) []toolexec.Capability {
-	allowedSet := make(map[string]struct{}, len(allowed))
-	for _, name := range allowed {
-		allowedSet[name] = struct{}{}
-	}
-	var result []toolexec.Capability
-	for _, definition := range registry.GetAvailableTools() {
-		if _, ok := allowedSet[definition.Name]; !ok {
-			continue
-		}
-		definition := definition
-		result = append(result, toolexec.Capability{
-			Definition: definition, ParallelSafe: registry.IsParallelSafe(definition.Name),
-			Execute: func(ctx context.Context, call schema.ToolCall) engine.ToolExecutionResult {
-				executed := registry.Execute(ctx, call)
-				return engine.ToolExecutionResult{
-					CallID: executed.ToolCallID, FullContent: executed.Output,
-					ModelContent: executed.Output, ObserverContent: executed.Output, IsError: executed.IsError,
-				}
-			},
-		})
-	}
-	return result
 }
 
 type permissionScope struct {

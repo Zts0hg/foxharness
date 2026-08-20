@@ -34,10 +34,10 @@ import (
 	"github.com/Zts0hg/foxharness/internal/modelinvoke"
 	"github.com/Zts0hg/foxharness/internal/prompt"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/registryexec"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 	"github.com/Zts0hg/foxharness/internal/runtimecompaction"
 	"github.com/Zts0hg/foxharness/internal/session"
-	"github.com/Zts0hg/foxharness/internal/toolexec"
 	"github.com/Zts0hg/foxharness/internal/toolresult"
 	"github.com/Zts0hg/foxharness/internal/toolruntime"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -168,7 +168,7 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 		NewTools: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {
 			registry := buildBenchmarkRegistry(workDir, &session.StoredSession{RootDir: assembly.Session.RootDir})
 			return toolruntime.New(
-				benchmarkCapabilities(registry, assembly.AllowedTools),
+				registryexec.Capabilities(registry, assembly.AllowedTools, nil),
 				toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results"),
 			), nil
 		},
@@ -244,31 +244,6 @@ func (c benchmarkPromptCollector) Collect(_ context.Context, request foxruntime.
 		return nil, fmt.Errorf("组装系统提示词失败: %w", err)
 	}
 	return []prompt.Fragment{prompt.Text(text)}, nil
-}
-
-func benchmarkCapabilities(registry tools.Registry, allowedTools []string) []toolexec.Capability {
-	allowed := make(map[string]struct{}, len(allowedTools))
-	for _, name := range allowedTools {
-		allowed[name] = struct{}{}
-	}
-	capabilities := make([]toolexec.Capability, 0, len(allowedTools))
-	for _, definition := range registry.GetAvailableTools() {
-		if _, ok := allowed[definition.Name]; !ok {
-			continue
-		}
-		definition := definition
-		capabilities = append(capabilities, toolexec.Capability{
-			Definition: definition, ParallelSafe: registry.IsParallelSafe(definition.Name),
-			Execute: func(ctx context.Context, call engine.ToolCall) engine.ToolExecutionResult {
-				result := registry.Execute(ctx, call)
-				return engine.ToolExecutionResult{
-					CallID: result.ToolCallID, FullContent: result.Output,
-					ModelContent: result.Output, ObserverContent: result.Output, IsError: result.IsError,
-				}
-			},
-		})
-	}
-	return capabilities
 }
 
 func buildBenchmarkRegistry(workDir string, sess *session.StoredSession) tools.Registry {

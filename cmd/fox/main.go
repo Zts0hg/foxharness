@@ -43,6 +43,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/childruntime"
+	"github.com/Zts0hg/foxharness/internal/cli"
 	"github.com/Zts0hg/foxharness/internal/configcmd"
 	"github.com/Zts0hg/foxharness/internal/effort"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
@@ -150,7 +151,14 @@ func main() {
 	}
 
 	cfg.Prompt = prompt
-	if err := app.RunCLI(context.Background(), cfg); err != nil {
+	if err := cli.Run(context.Background(), cli.Config{
+		Prompt: cfg.Prompt,
+		Initialize: func(ctx context.Context) (cli.Application, error) {
+			return newCLIApplication(ctx, cfg)
+		},
+		Stdout: os.Stdout,
+		Logger: log.Default(),
+	}); err != nil {
 		exitWithError(err)
 	}
 }
