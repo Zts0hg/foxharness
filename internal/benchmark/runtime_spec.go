@@ -1,6 +1,11 @@
 package benchmark
 
-import "slices"
+import (
+	"fmt"
+	"slices"
+
+	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
+)
 
 // BenchmarkRuntimeSpec is the immutable resolved construction input for one benchmark runtime.
 type BenchmarkRuntimeSpec struct {
@@ -16,20 +21,47 @@ type BenchmarkRuntimeSpec struct {
 	InteractionPolicy string   `json:"interaction_policy"`
 }
 
-// NewRuntimeSpec resolves the current benchmark-only runtime construction DTO.
-func NewRuntimeSpec(protocol, model string, maxTurns int, tools []string) BenchmarkRuntimeSpec {
-	return BenchmarkRuntimeSpec{
-		ProviderProtocol:  protocol,
-		Model:             model,
-		MaxTurns:          maxTurns,
-		ToolSurface:       slices.Clone(tools),
-		PromptPolicy:      "base_project_session_memory",
-		MemoryPolicy:      "session_only",
-		CompactionPolicy:  "automatic_selected_model",
-		PermissionPolicy:  "none",
-		ObservationPolicy: "structured_result",
-		InteractionPolicy: "headless",
+/* ResolveRuntimeSpec derives benchmark fidelity from the authoritative runtime profile and resolved run. */
+func ResolveRuntimeSpec(runSpec foxruntime.RunSpec) (BenchmarkRuntimeSpec, error) {
+	profile, err := foxruntime.ResolveProfile(foxruntime.BenchmarkEval)
+	if err != nil {
+		return BenchmarkRuntimeSpec{}, err
 	}
+	resolved, err := profile.Resolve(runSpec)
+	if err != nil {
+		return BenchmarkRuntimeSpec{}, err
+	}
+	profileSnapshot := profile.Snapshot()
+	runSnapshot := resolved.Snapshot()
+	if profileSnapshot.Name != foxruntime.BenchmarkEval || runSnapshot.Profile != foxruntime.BenchmarkEval {
+		return BenchmarkRuntimeSpec{}, fmt.Errorf("benchmark runtime resolved unexpected profile %q", runSnapshot.Profile)
+	}
+
+	interactionPolicy := "interactive"
+	if profileSnapshot.QuestionPort == "" && !profileSnapshot.PlanReview && profileSnapshot.PermissionPolicy == "none" {
+		interactionPolicy = "headless"
+	}
+	observationPolicy := profileSnapshot.ObservationPolicy
+	if observationPolicy == "structured_evaluation" {
+		observationPolicy = "structured_result"
+	}
+	compactionPolicy := profileSnapshot.CompactionPolicy
+	if compactionPolicy == "automatic" && runSnapshot.Model != "" {
+		compactionPolicy = "automatic_selected_model"
+	}
+
+	return BenchmarkRuntimeSpec{
+		ProviderProtocol:  runSnapshot.ProviderProtocol,
+		Model:             runSnapshot.Model,
+		MaxTurns:          runSnapshot.MaxTurns,
+		ToolSurface:       resolved.AllowedTools(),
+		PromptPolicy:      "base_project_session_memory",
+		MemoryPolicy:      profileSnapshot.MemoryPolicy,
+		CompactionPolicy:  compactionPolicy,
+		PermissionPolicy:  profileSnapshot.PermissionPolicy,
+		ObservationPolicy: observationPolicy,
+		InteractionPolicy: interactionPolicy,
+	}, nil
 }
 
 // Fidelity derives machine-readable and human-readable fidelity from one spec.

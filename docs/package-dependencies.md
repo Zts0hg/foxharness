@@ -18,6 +18,8 @@ flowchart TD
     APP --> RUNTIME[internal/runtime]
 
     BEN[internal/benchmark] --> RUNTIME
+    BENCHCMD[cmd/bench] --> BEN
+    BENCHCMD --> RUNTIME
     AUT[internal/autodev] --> RUNTIME
 
     SUB[internal/subagent] --> RUNNER[subagent.Runner]
@@ -31,15 +33,22 @@ flowchart TD
 
     TOOLEXEC[internal/toolexec] --> ENGINE
     TOOLEXEC --> SCHEMA
+    TOOLRUNTIME[internal/toolruntime] --> TOOLEXEC
+    TOOLRUNTIME --> ENGINE
+    TOOLRUNTIME --> TOOLRESULT[internal/toolresult]
+    MODELINVOKE[internal/modelinvoke] --> ENGINE
+    MODELINVOKE --> PROVIDER[internal/provider]
+    RUNTIMECOMPACT[internal/runtimecompaction] --> RUNTIME
+    RUNTIMECOMPACT --> COMPACTION[internal/compaction]
     TURNPOLICY[internal/turnpolicy] --> ENGINE
     TURNPOLICY --> SCHEMA
     TURNPOLICY --> RECOVERY[internal/recovery]
     TURNPOLICY --> REMINDER[internal/reminder]
 
-    WIRE -. injects .-> PROVIDER[provider implementations]
+    WIRE -. injects .-> PROVIDER
     WIRE -. injects .-> TOOLS[tool implementations]
     WIRE -. injects .-> TURNPOLICY
-    WIRE -. injects .-> COMPACTION[compaction]
+    WIRE -. injects .-> COMPACTION
     WIRE -. injects .-> TELEMETRY[metrics and tracing]
 ```
 
@@ -52,6 +61,9 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 | `internal/schema` | Narrow model protocol values: messages, usage, tool definitions, calls, and results. It is not a general DTO or utility package. |
 | `internal/engine` | Infrastructure-independent run/turn transitions and consumer-owned model, tool, conversation, policy, and observer ports. |
 | `internal/toolexec` | Immutable resolved capability snapshots, parallel/exclusive batch scheduling, cancellation completion, and ordered structured tool results. It does not own catalogs, permissions, session persistence, or presentation. |
+| `internal/toolruntime` | Run-local composition of constrained tool execution with the compatibility-preserving full, model-preview, observer-preview, and persisted-artifact result forms. It does not discover tools, decide permissions, or commit conversation state. |
+| `internal/modelinvoke` | Provider transport adaptation, response/error normalization, invocation options, and per-run model-call lifecycle hooks for `engine.ModelInvoker`. It does not own turns, context, or provider configuration. |
+| `internal/runtimecompaction` | Translation of concrete compaction mechanics into runtime-owned durable-state and run-local projection proposals plus blocking-budget decisions. It never commits compact state. |
 | `internal/turnpolicy` | Immutable factories for run-scoped recovery, reminder, completion, and TODO decisions. Runtime supplies already-bound queries; this package does not read persistence, select tools, emit telemetry, or own conversation state. |
 | `internal/runtime` | Harness construction, immutable profile resolution, live session/run lifecycle, context-injection decisions, recoverable-state commit coordination, and child-run control. |
 | `internal/app` | User-entry commands, UI-neutral DTOs, runtime-notification mapping, and correlated interaction ports. |
@@ -110,6 +122,12 @@ Profile-wide limiters are shared by all sessions created from one harness and en
 `M13` establishes `runtime.ChildRunner` as the sole target child-execution capability. A runner freezes its parent session/run lineage, provider/model/workspace values, permission authority, capability ceiling, cancellation context, and delegation ceiling. Every accepted request creates one fresh `ChildRun` session, persists parent session/run plus delegation and agent identity, intersects parent, selected-agent, caller, read-only, and child-profile tool ceilings, and drives exactly one synchronous child through `AgentSession.Run`. Profiles with no delegation authority and every depth-two request reject before session or capacity allocation.
 
 Interactive and remote parent policies must provide a runtime-owned `PermissionScope`; the child scope is derived only after child session and run identities exist and receives the complete frozen lineage and effective tools. Profiles whose confirmed permission policy is `none` or non-interactive full access do not gain a synthetic coordinator. Missing required coordination and nil or failed derivation fail before model/tool construction. The derived scope is supplied to all child factories through the same `RunAssembly` used for model, tools, policy, context, artifacts, and telemetry.
+
+`M14` atomically moves `BenchmarkEval` and `cmd/bench` to the target runtime. `internal/benchmark` now owns only fixture materialization, case snapshots, validation, aggregation, provenance, report formatting, and the privileged runtime control call; it imports `internal/runtime` but no concrete engine, provider, session, or tool implementation. `cmd/bench` is the composition root that resolves settings, creates the concrete provider and compactor, maps the temporary legacy prompt-discovery facade to runtime fragments, constrains the six benchmark tools, creates a fresh CLI-source `AgentSession`, and invokes benchmark control. Runtime fidelity is derived from the resolved `BenchmarkEval` profile and the same `RunSpec` used for execution.
+
+Three focused mechanism packages avoid both legacy import cycles and a generic infrastructure layer. `modelinvoke` normalizes provider responses, prompt-too-long errors, effort, usage-bearing assistant messages, and successful-call compactor recovery. `runtimecompaction` preserves durable initial-history and run-local proactive/reactive compaction proposals while runtime remains the sole commit authority. `toolruntime` composes `toolexec` with the existing absolute output cap, persistence threshold, per-turn budget, model preview, observer preview, and artifact path. Each package implements one already confirmed consumer contract and is reusable by later profile cutovers; none selects profiles or assembles a runtime.
+
+Every benchmark repeat now executes through exactly one production path: `benchmark.Runner -> runtime.AgentSession.Run -> runtime.AgentEngine`. The runner uses the immutable case prompt, retains session/run identity and stable report errors, retries hidden finish persistence, closes the live session under a fresh bounded cleanup context, and only then performs evaluation. The old `LegacyEngine` benchmark composition remains reachable solely from the test-only differential adapter, where the current and target paths prove exact prompt, final result, usage-bearing persisted messages, and session-local identity behavior. The two M14 allowlist rows are removed, reducing the migration ledger from 68 to 66 entries without changing the immutable baseline ceiling.
 
 Parent-scope and invocation cancellation are combined for the child. Runtime panic recovery durably finishes an established run, and ChildRunner then synchronously drains its injected process/permission cleanup, retries any hidden recoverable finish, and closes the child session before returning one typed outcome. Cleanup, close, and panic failures update both the outer child status and nested runtime outcome. Success, start failure, rejection, cancellation, exhaustion, runtime failure, panic, and cleanup failure preserve invocation and lineage correlation. Parent-visible reports come only from the latest complete assistant message emitted after authoritative persistence; streamed, tool-only, stale, and failed-to-commit text cannot become a report, while a previously committed assistant message remains an explicitly failed or exhausted partial result.
 

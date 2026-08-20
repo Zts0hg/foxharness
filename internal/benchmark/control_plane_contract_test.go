@@ -136,7 +136,6 @@ func TestEVBEN004HarnessFactoryOrderAndStructuralFailures(t *testing.T) {
 		mutate func(*Harness) *Harness
 	}{
 		{name: "nil harness", mutate: func(*Harness) *Harness { return nil }},
-		{name: "missing engine", mutate: func(h *Harness) *Harness { h.Engine = nil; return h }},
 		{name: "missing session", mutate: func(h *Harness) *Harness { h.Session = nil; return h }},
 	}
 	for _, test := range tests {

@@ -10,9 +10,8 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 	"github.com/Zts0hg/foxharness/internal/schema"
-	"github.com/Zts0hg/foxharness/internal/session"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 type benchmarkFinalProvider struct{}
@@ -144,21 +143,18 @@ func TestWriteJSONRejectsMissingOrUnsupportedSchemaVersion(t *testing.T) {
 func TestRunCaseIncludesRuntimeFidelityMetadata(t *testing.T) {
 	fixture := t.TempDir()
 	runner := NewRunner(func(ctx context.Context, workDir string, c *Case) (*Harness, error) {
-		manager := session.NewManagerWithHome(workDir, t.TempDir())
-		sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+		spec := NewRuntimeSpec("test", "model", 1, nil)
+		harness, err := newTargetBenchmarkHarness(ctx, workDir, t.TempDir(), spec, benchmarkFinalProvider{},
+			func(foxruntime.RunAssembly) engine.PromptComposer { return benchmarkComposer{} }, nil)
 		if err != nil {
 			return nil, err
 		}
-		eng := engine.NewLegacyEngine(benchmarkFinalProvider{}, tools.NewRegistry(), workDir, benchmarkComposer{}, engine.Config{MaxTurns: 1})
-		return &Harness{
-			Engine:  eng,
-			Session: sess,
-			RuntimeFidelity: RuntimeFidelity{
-				SharedInvariants:       []string{"canonical tools"},
-				IntentionalDifferences: []string{"no interactive approval"},
-				Warning:                "benchmark runtime differs from product runtime",
-			},
-		}, nil
+		harness.RuntimeFidelity = RuntimeFidelity{
+			SharedInvariants:       []string{"canonical tools"},
+			IntentionalDifferences: []string{"no interactive approval"},
+			Warning:                "benchmark runtime differs from product runtime",
+		}
+		return harness, nil
 	})
 
 	result, err := runner.RunCase(context.Background(), &Case{

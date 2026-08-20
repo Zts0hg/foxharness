@@ -47,7 +47,7 @@ func TestDVBEN003CompositionUsesResolvedRuntimeSpec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"benchmark.NewRuntimeSpec", "RuntimeFidelity: runtimeSpec.Fidelity()"} {
+	for _, required := range []string{"benchmark.ResolveRuntimeSpec", "RuntimeFidelity: runtimeSpec.Fidelity()"} {
 		if !strings.Contains(string(source), required) {
 			t.Fatalf("resolved runtime composition %q missing", required)
 		}

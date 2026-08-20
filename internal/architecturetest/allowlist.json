@@ -32,8 +32,6 @@
     {"from":"internal/app","to":"internal/tui","remove_by":"M24"},
     {"from":"internal/autodev","to":"internal/engine","remove_by":"M18"},
     {"from":"internal/autodev","to":"internal/tools","remove_by":"M18"},
-    {"from":"internal/benchmark","to":"internal/engine","remove_by":"M14"},
-    {"from":"internal/benchmark","to":"internal/session","remove_by":"M14"},
     {"from":"internal/engine","to":"internal/checkpoint","remove_by":"M25"},
     {"from":"internal/engine","to":"internal/compaction","remove_by":"M25"},
     {"from":"internal/engine","to":"internal/metrics","remove_by":"M25"},

@@ -13,6 +13,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -27,7 +28,7 @@ func TestPFBEN001CurrentProfileSnapshotIsImmutableAndFlat(t *testing.T) {
 
 	want := BenchmarkRuntimeSpec{
 		ProviderProtocol: "openai", Model: "fixture-model", MaxTurns: 12,
-		ToolSurface:  []string{"read_file", "write_file", "bash", "edit_file", "read_todo", "update_todo"},
+		ToolSurface:  []string{"bash", "edit_file", "read_file", "read_todo", "update_todo", "write_file"},
 		PromptPolicy: "base_project_session_memory", MemoryPolicy: "session_only",
 		CompactionPolicy: "automatic_selected_model", PermissionPolicy: "none",
 		ObservationPolicy: "structured_result", InteractionPolicy: "headless",
@@ -35,7 +36,7 @@ func TestPFBEN001CurrentProfileSnapshotIsImmutableAndFlat(t *testing.T) {
 	if !reflect.DeepEqual(spec, want) {
 		t.Fatalf("benchmark profile = %#v, want %#v", spec, want)
 	}
-	if spec.ToolSurface[0] != "read_file" {
+	if spec.ToolSurface[0] != "bash" {
 		t.Fatalf("fidelity consumer mutated runtime spec: %#v", spec.ToolSurface)
 	}
 	filtered := tools.NewFilteredRegistry(benchmarkProfileRegistry(t.TempDir(), &session.Session{RootDir: t.TempDir()}), []string{"read_file", "delegate_task"})
@@ -237,19 +238,19 @@ func benchmarkProfileHarness(t *testing.T, workDir string, c *Case, model provid
 }
 
 func benchmarkProfileHarnessWithHome(workDir, home string, c *Case, model provider.LLMProvider) (*Harness, error) {
-	manager := session.NewManagerWithHome(workDir, home)
-	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
-	if err != nil {
-		return nil, err
-	}
-	if err := memory.NewSessionStore(workDir, sess.RootDir).EnsureFiles(); err != nil {
-		return nil, err
-	}
 	spec := NewRuntimeSpec("scripted", "fixture-model", c.MaxTurns, []string{"read_file", "write_file", "bash", "edit_file", "read_todo", "update_todo"})
-	registry := benchmarkProfileRegistry(workDir, sess)
-	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
-	eng := engine.NewLegacyEngine(model, registry, workDir, composer, engine.Config{MaxTurns: spec.MaxTurns, ProviderProtocol: spec.ProviderProtocol, Model: spec.Model})
-	return &Harness{Engine: eng, Session: sess, RuntimeFidelity: spec.Fidelity()}, nil
+	return newTargetBenchmarkHarness(context.Background(), workDir, home, spec, model,
+		func(assembly foxruntime.RunAssembly) engine.PromptComposer {
+			store := memory.NewSessionStore(workDir, assembly.Session.RootDir)
+			if err := store.EnsureFiles(); err != nil {
+				return benchmarkCauseComposer{cause: err}
+			}
+			return prompt.NewComposer(workDir).WithMemory(store.WorkingMemoryPath())
+		},
+		func(assembly foxruntime.RunAssembly) tools.Registry {
+			return benchmarkProfileRegistry(workDir, &session.Session{RootDir: assembly.Session.RootDir})
+		},
+	)
 }
 
 func benchmarkProfileRegistry(workDir string, sess *session.Session) tools.Registry {

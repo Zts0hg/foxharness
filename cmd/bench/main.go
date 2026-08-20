@@ -18,19 +18,30 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/benchmark"
 	"github.com/Zts0hg/foxharness/internal/compaction"
-	prompt "github.com/Zts0hg/foxharness/internal/context"
+	legacycontext "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/memory"
+	"github.com/Zts0hg/foxharness/internal/modelinvoke"
+	"github.com/Zts0hg/foxharness/internal/prompt"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
+	"github.com/Zts0hg/foxharness/internal/runtimecompaction"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/toolexec"
+	"github.com/Zts0hg/foxharness/internal/toolresult"
+	"github.com/Zts0hg/foxharness/internal/toolruntime"
 	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/turnpolicy"
 )
 
 func main() {
@@ -142,67 +153,122 @@ func resultExitCode(results []*benchmark.Result, infrastructureFailed bool) int 
 	return 0
 }
 
-// buildHarness creates an LegacyEngine and Session for a benchmark run.
-// It sets up the LLM provider, tool registry, memory store, and session
-// manager configured for the given benchmark case.
+/* buildHarness composes one isolated BenchmarkEval runtime session. */
 func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benchmark.Harness, error) {
-	_ = ctx
-	manager := session.NewFileStore(workDir)
-	sess, err := manager.Create(session.CreateOptions{
-		Source:  session.SOURCECLI,
-		WorkDir: workDir,
-	})
+	store := session.NewFileStore(workDir)
+	var llmProvider provider.LLMProvider
+	var compactor *compaction.Compactor
+	dependencies := foxruntime.HarnessDependencies{
+		InitializeSession: func(_ context.Context, snapshot foxruntime.AgentSessionSnapshot) error {
+			return memory.NewSessionStore(workDir, snapshot.RootDir).EnsureFiles()
+		},
+		NewModel: func(context.Context, foxruntime.RunAssembly) (engine.ModelInvoker, error) {
+			return modelinvoke.New(llmProvider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker}), nil
+		},
+		NewTools: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {
+			registry := buildBenchmarkRegistry(workDir, &session.StoredSession{RootDir: assembly.Session.RootDir})
+			return toolruntime.New(
+				benchmarkCapabilities(registry, assembly.AllowedTools),
+				toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results"),
+			), nil
+		},
+		NewPolicy: func(context.Context, foxruntime.RunAssembly) (engine.TurnPolicy, error) {
+			return turnpolicy.New(turnpolicy.Config{}), nil
+		},
+		NewContext: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.ContextCollector, foxruntime.ContextCompactor, error) {
+			workingMemory := memory.NewSessionStore(workDir, assembly.Session.RootDir).WorkingMemoryPath()
+			collector := benchmarkPromptCollector{composer: legacycontext.NewComposer(workDir).WithMemory(workingMemory)}
+			return collector, runtimecompaction.New(compactor), nil
+		},
+	}
+	runtimeHarness, err := foxruntime.NewRuntimeHarness(store, dependencies)
 	if err != nil {
 		return nil, err
 	}
-
-	store := memory.NewSessionStore(workDir, sess.RootDir)
-	if err := store.EnsureFiles(); err != nil {
+	agentSession, err := runtimeHarness.CreateSession(ctx, foxruntime.BenchmarkEval, foxruntime.SessionOptions{WorkDir: workDir})
+	if err != nil {
 		return nil, err
 	}
-	composer := prompt.NewComposer(workDir).WithMemory(store.WorkingMemoryPath())
+	failed := true
+	defer func() {
+		if failed {
+			_ = agentSession.Close(context.Background())
+		}
+	}()
+
 	homeDir, _ := os.UserHomeDir()
 	llmConfig, err := resolveBenchmarkLLMConfig(homeDir, os.Getenv)
 	if err != nil {
 		return nil, err
 	}
-	llmProvider, err := provider.NewProvider(llmConfig)
+	llmProvider, err = provider.NewProvider(llmConfig)
 	if err != nil {
 		return nil, err
 	}
-	registry := buildBenchmarkRegistry(workDir, sess)
-	toolNames := make([]string, 0)
-	for _, definition := range registry.GetAvailableTools() {
-		toolNames = append(toolNames, definition.Name)
+	maxTurns := c.MaxTurns
+	runSpec := foxruntime.RunSpec{
+		Prompt: c.Prompt, ProviderProtocol: llmConfig.Protocol, Model: llmConfig.Model,
+		WorkDir: workDir, BenchmarkCase: c.ID, MaxTurns: &maxTurns,
 	}
-	runtimeSpec := benchmark.NewRuntimeSpec(llmConfig.Protocol, llmConfig.Model, c.MaxTurns, toolNames)
-
-	eng := engine.NewLegacyEngine(
-		llmProvider,
-		registry,
-		workDir,
-		composer,
-		engine.Config{
-			MaxTurns:         runtimeSpec.MaxTurns,
-			ProviderProtocol: runtimeSpec.ProviderProtocol,
-			Model:            runtimeSpec.Model,
-		},
-	)
+	if c.TimeoutSeconds > 0 {
+		taskTimeout := time.Duration(c.TimeoutSeconds) * time.Second
+		runSpec.TaskTimeout = &taskTimeout
+	}
+	runtimeSpec, err := benchmark.ResolveRuntimeSpec(runSpec)
+	if err != nil {
+		return nil, err
+	}
 	compCfg := compaction.DefaultCompactionConfig()
 	compCfg.Model = runtimeSpec.Model
-	compCfg.SessionDir = sess.RootDir
-	compCfg.TranscriptPath = sess.TranscriptPath()
-	compactor, err := compaction.NewCompactor(llmProvider, compCfg)
+	compCfg.SessionDir = agentSession.Snapshot().RootDir
+	compCfg.TranscriptPath = filepath.Join(agentSession.Snapshot().RootDir, "transcript.jsonl")
+	compactor, err = compaction.NewCompactor(llmProvider, compCfg)
 	if err != nil {
 		return nil, err
 	}
-	eng.WithCompactor(compactor)
-
+	failed = false
 	return &benchmark.Harness{
-		Engine:          eng,
-		Session:         sess,
+		Session:         agentSession,
+		RunSpec:         runSpec,
 		RuntimeFidelity: runtimeSpec.Fidelity(),
 	}, nil
+}
+
+type benchmarkPromptCollector struct {
+	composer engine.PromptComposer
+}
+
+func (c benchmarkPromptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {
+	text, err := c.composer.Compose(request.Prompt)
+	if err != nil {
+		return nil, fmt.Errorf("组装系统提示词失败: %w", err)
+	}
+	return []prompt.Fragment{prompt.Text(text)}, nil
+}
+
+func benchmarkCapabilities(registry tools.Registry, allowedTools []string) []toolexec.Capability {
+	allowed := make(map[string]struct{}, len(allowedTools))
+	for _, name := range allowedTools {
+		allowed[name] = struct{}{}
+	}
+	capabilities := make([]toolexec.Capability, 0, len(allowedTools))
+	for _, definition := range registry.GetAvailableTools() {
+		if _, ok := allowed[definition.Name]; !ok {
+			continue
+		}
+		definition := definition
+		capabilities = append(capabilities, toolexec.Capability{
+			Definition: definition, ParallelSafe: registry.IsParallelSafe(definition.Name),
+			Execute: func(ctx context.Context, call engine.ToolCall) engine.ToolExecutionResult {
+				result := registry.Execute(ctx, call)
+				return engine.ToolExecutionResult{
+					CallID: result.ToolCallID, FullContent: result.Output,
+					ModelContent: result.Output, ObserverContent: result.Output, IsError: result.IsError,
+				}
+			},
+		})
+	}
+	return capabilities
 }
 
 func buildBenchmarkRegistry(workDir string, sess *session.StoredSession) tools.Registry {

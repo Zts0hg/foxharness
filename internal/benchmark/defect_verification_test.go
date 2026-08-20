@@ -14,8 +14,7 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/session"
-	"github.com/Zts0hg/foxharness/internal/tools"
+	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 )
 
 func TestDVBEN001CaseDeadlineCoversFactoryAndStopsUnstartedValidations(t *testing.T) {
@@ -793,18 +792,10 @@ func (composer benchmarkCauseComposer) Compose(string) (string, error) {
 
 func benchmarkHarnessFactory(t *testing.T, spec BenchmarkRuntimeSpec, composer engine.PromptComposer) HarnessFactory {
 	t.Helper()
-	return func(_ context.Context, workDir string, _ *Case) (*Harness, error) {
-		manager := session.NewManagerWithHome(workDir, t.TempDir())
-		sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
-		if err != nil {
-			return nil, err
-		}
-		eng := engine.NewLegacyEngine(benchmarkFinalProvider{}, tools.NewRegistry(), workDir, composer, engine.Config{
-			MaxTurns:         spec.MaxTurns,
-			ProviderProtocol: spec.ProviderProtocol,
-			Model:            spec.Model,
-		})
-		return &Harness{Engine: eng, Session: sess, RuntimeFidelity: spec.Fidelity()}, nil
+	home := t.TempDir()
+	return func(ctx context.Context, workDir string, _ *Case) (*Harness, error) {
+		return newTargetBenchmarkHarness(ctx, workDir, home, spec, benchmarkFinalProvider{},
+			func(foxruntime.RunAssembly) engine.PromptComposer { return composer }, nil)
 	}
 }
 

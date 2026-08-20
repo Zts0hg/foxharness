@@ -12,21 +12,19 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/session"
+	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 )
 
-// HarnessFactory creates a benchmark harness for a case, allowing callers to
-// customize engine configuration per case.
+/* HarnessFactory creates a benchmark runtime harness for one immutable case. */
 type HarnessFactory func(ctx context.Context, workDir string, c *Case) (*Harness, error)
 
-// Harness contains the engine/session pair used by a benchmark run and the
-// runtime fidelity metadata that will be copied into the benchmark result.
+/* Harness contains one runtime-owned session and its immutable benchmark run input. */
 type Harness struct {
-	Engine          *engine.LegacyEngine
-	Session         *session.StoredSession
+	Session         *foxruntime.AgentSession
+	RunSpec         foxruntime.RunSpec
 	RuntimeFidelity RuntimeFidelity
 }
 
@@ -44,7 +42,7 @@ const (
 	defaultCleanupTimeout = 30 * time.Second
 )
 
-// NewRunner creates a Runner that delegates engine creation to the given factory.
+/* NewRunner creates a Runner that delegates runtime composition to the given factory. */
 func NewRunner(factory HarnessFactory) *Runner {
 	return &Runner{factory: factory}
 }
@@ -113,7 +111,7 @@ type RuntimeFidelity struct {
 }
 
 // RunCase copies the case fixture into a temporary workspace, runs the agent
-// engine via the configured factory, and validates the results. It returns a
+// runtime via the configured factory, and validates the results. It returns a
 // Result regardless of whether the engine run itself errored; the Success
 // field reflects both engine completion and validation outcomes.
 func (r *Runner) RunCase(ctx context.Context, c *Case) (*Result, error) {
@@ -195,27 +193,28 @@ func (r *Runner) RunRepeat(ctx context.Context, c *Case, repeatIndex int) (retur
 		}
 		return infrastructureFailure(result, fmt.Errorf("创建 Harness 失败: %w", err))
 	}
-	if harness == nil || harness.Engine == nil || harness.Session == nil {
-		return infrastructureFailure(result, fmt.Errorf("创建 Harness 失败: harness missing engine or session"))
+	if harness == nil || harness.Session == nil {
+		return infrastructureFailure(result, fmt.Errorf("创建 Harness 失败: harness missing runtime session"))
 	}
 
-	result.SessionID = string(harness.Session.ID)
+	result.SessionID = string(harness.Session.Snapshot().ID)
 	result.RuntimeFidelity = harness.RuntimeFidelity
 	result.ProviderProtocol = harness.RuntimeFidelity.Spec.ProviderProtocol
 	result.Model = harness.RuntimeFidelity.Spec.Model
 
 	started := time.Now()
-	runIdentity := &runIdentityReporter{}
-	runResult, err := harness.Engine.RunWithReporter(caseCtx, harness.Session, caseSnapshot.Prompt, runIdentity)
+	runSpec := harness.RunSpec
+	runSpec.Prompt = caseSnapshot.Prompt
+	runResult, err := harness.Session.Run(caseCtx, runSpec)
 	result.DurationMS = time.Since(started).Milliseconds()
-	result.RunID = runIdentity.RunID()
-
-	if runResult != nil {
-		result.SessionID = runResult.SessionID
-		result.RunID = runResult.RunID
+	if runResult.SessionID != "" {
+		result.SessionID = string(runResult.SessionID)
 	}
-
+	if runResult.RunID != "" {
+		result.RunID = string(runResult.RunID)
+	}
 	if err != nil {
+		err = normalizeRuntimeError(err)
 		result.Error = err.Error()
 		result.RuntimeError = err.Error()
 		result.RuntimeCause = err.Error()
@@ -228,6 +227,15 @@ func (r *Runner) RunRepeat(ctx context.Context, c *Case, repeatIndex int) (retur
 		}
 	} else {
 		result.RuntimeStatus = RuntimeStatusCompleted
+	}
+	if cleanupErr := closeRuntimeSession(harness.Session, r.cleanupTimeoutOrDefault()); cleanupErr != nil {
+		result.Success = false
+		result.Status = ResultStatusInfrastructureFailed
+		result.CleanupError = cleanupErr.Error()
+		result.InfrastructureError = cleanupErr.Error()
+		result.Error = cleanupErr.Error()
+		result.TerminalCause = cleanupErr.Error()
+		return result, cleanupErr
 	}
 
 	validationResults := ValidateAll(caseCtx, workspace, caseSnapshot.Validations)
@@ -256,6 +264,33 @@ func (r *Runner) RunRepeat(ctx context.Context, c *Case, repeatIndex int) (retur
 	}
 
 	return result, nil
+}
+
+type normalizedRuntimeError struct {
+	message string
+	cause   error
+}
+
+func (e *normalizedRuntimeError) Error() string { return e.message }
+func (e *normalizedRuntimeError) Unwrap() error { return e.cause }
+
+func normalizeRuntimeError(err error) error {
+	const contextPrefix = "collect runtime context: "
+	if err == nil || !strings.HasPrefix(err.Error(), contextPrefix) {
+		return err
+	}
+	return &normalizedRuntimeError{message: strings.TrimPrefix(err.Error(), contextPrefix), cause: err}
+}
+
+func closeRuntimeSession(agentSession *foxruntime.AgentSession, timeout time.Duration) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	recoverErr := agentSession.RecoverRunFinish(cleanupCtx)
+	closeErr := agentSession.Close(cleanupCtx)
+	if recoverErr == nil && closeErr == nil {
+		return nil
+	}
+	return fmt.Errorf("清理 benchmark runtime session 失败: %w", errors.Join(recoverErr, closeErr))
 }
 
 func cloneCase(c *Case) *Case {

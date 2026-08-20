@@ -161,7 +161,7 @@ func TestRuntimeHarnessIsTheOnlyTargetAgentEngineAssembler(t *testing.T) {
 	}
 }
 
-func TestRuntimeProfilesHaveNoProductionCallersBeforeProfileCutover(t *testing.T) {
+func TestOnlyCutOverRuntimeProfilesHaveProductionCallers(t *testing.T) {
 	root := moduleRoot(t)
 	var callers []string
 	for _, edge := range productionImportEdges(t, root) {
@@ -169,8 +169,9 @@ func TestRuntimeProfilesHaveNoProductionCallersBeforeProfileCutover(t *testing.T
 			callers = append(callers, edge.From)
 		}
 	}
-	if len(callers) > 0 {
-		t.Fatalf("target runtime production callers before profile cutover:\n%s", strings.Join(callers, "\n"))
+	want := []string{"cmd/bench", "internal/benchmark", "internal/runtimecompaction"}
+	if fmt.Sprint(callers) != fmt.Sprint(want) {
+		t.Fatalf("target runtime production callers = %v, want cut-over clients %v", callers, want)
 	}
 }
 
