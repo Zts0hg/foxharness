@@ -11,9 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 // eventRecorder captures the orchestration event sequence for ordering
@@ -60,20 +57,20 @@ func (r *eventRecorder) OnRemoteEvent(ctx context.Context, event RemoteEvent) er
 // stubCore is a no-op CoreRunner for orchestrator flow tests.
 type stubCore struct {
 	workDir string
-	asker   tools.UserAsker
+	asker   QuestionAsker
 	runs    int
 }
 
-func (c *stubCore) Run(ctx context.Context, attempt CoreAttempt, r engine.Reporter) CoreOutcome {
+func (c *stubCore) Run(ctx context.Context, attempt CoreAttempt, r CoreReporter) CoreOutcome {
 	c.runs++
 	return successfulCoreOutcome(attempt, "ok")
 }
 
-func (c *stubCore) Drain(context.Context) error    { return nil }
-func (c *stubCore) Close(context.Context) error    { return nil }
-func (c *stubCore) SetUserAsker(a tools.UserAsker) { c.asker = a }
-func (c *stubCore) SetModel(model string) error    { return nil }
-func (c *stubCore) WorkDir() string                { return c.workDir }
+func (c *stubCore) Drain(context.Context) error  { return nil }
+func (c *stubCore) Close(context.Context) error  { return nil }
+func (c *stubCore) SetUserAsker(a QuestionAsker) { c.asker = a }
+func (c *stubCore) SetModel(model string) error  { return nil }
+func (c *stubCore) WorkDir() string              { return c.workDir }
 func (c *stubCore) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	return fmt.Sprintf("PROMPT[%s|%s]", command, args), nil
 }

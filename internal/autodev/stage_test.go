@@ -10,9 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 // fakeCore is a scripted CoreRunner. Each Run invocation executes the next
@@ -22,7 +19,7 @@ type fakeCore struct {
 	workDir string
 	prompts []string
 	effects []func()
-	asker   tools.UserAsker
+	asker   QuestionAsker
 }
 
 func successfulCoreOutcome(attempt CoreAttempt, message string) CoreOutcome {
@@ -32,7 +29,7 @@ func successfulCoreOutcome(attempt CoreAttempt, message string) CoreOutcome {
 	}
 }
 
-func (f *fakeCore) Run(ctx context.Context, attempt CoreAttempt, r engine.Reporter) CoreOutcome {
+func (f *fakeCore) Run(ctx context.Context, attempt CoreAttempt, r CoreReporter) CoreOutcome {
 	f.prompts = append(f.prompts, attempt.Prompt)
 	if len(f.effects) > 0 {
 		effect := f.effects[0]
@@ -47,9 +44,9 @@ func (f *fakeCore) Run(ctx context.Context, attempt CoreAttempt, r engine.Report
 func (f *fakeCore) Drain(context.Context) error { return nil }
 func (f *fakeCore) Close(context.Context) error { return nil }
 
-func (f *fakeCore) SetUserAsker(a tools.UserAsker) { f.asker = a }
-func (f *fakeCore) SetModel(model string) error    { return nil }
-func (f *fakeCore) WorkDir() string                { return f.workDir }
+func (f *fakeCore) SetUserAsker(a QuestionAsker) { f.asker = a }
+func (f *fakeCore) SetModel(model string) error  { return nil }
+func (f *fakeCore) WorkDir() string              { return f.workDir }
 
 func (f *fakeCore) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	return fmt.Sprintf("PROMPT[%s|%s]", command, args), nil

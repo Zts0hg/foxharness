@@ -266,7 +266,7 @@ func (r *autodevProfileDetailedReporter) OnToolResult(context.Context, string, s
 func (r *autodevProfileDetailedReporter) OnMessage(context.Context, string) {
 	r.events = append(r.events, "message")
 }
-func (r *autodevProfileDetailedReporter) OnRunComplete(context.Context, engine.RunResult) {
+func (r *autodevProfileDetailedReporter) OnRunComplete(context.Context, autodev.CoreRunResult) {
 	r.events = append(r.events, "complete")
 }
 func (r *autodevProfileDetailedReporter) OnRunError(context.Context, string, string, error) {

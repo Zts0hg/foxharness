@@ -7,7 +7,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -48,7 +47,7 @@ type coreRunnerAdapter struct {
 var _ autodev.CoreRunner = (*coreRunnerAdapter)(nil)
 
 // Run implements autodev.CoreRunner with one correlated terminal outcome.
-func (a *coreRunnerAdapter) Run(ctx context.Context, attempt autodev.CoreAttempt, r engine.Reporter) autodev.CoreOutcome {
+func (a *coreRunnerAdapter) Run(ctx context.Context, attempt autodev.CoreAttempt, r autodev.CoreReporter) autodev.CoreOutcome {
 	recorder, reporter := newCoreOutcomeReporter(r)
 	result, runErr := a.runner.Run(ctx, attempt.Prompt, reporter)
 	sessionID, runID, partial := recorder.snapshot()
@@ -83,7 +82,7 @@ func (a *coreRunnerAdapter) Run(ctx context.Context, attempt autodev.CoreAttempt
 // the engine while forwarding the complete reporter contract unchanged.
 type coreOutcomeReporter struct {
 	mu        sync.Mutex
-	next      engine.Reporter
+	next      autodev.CoreReporter
 	sessionID string
 	runID     string
 	partial   string
@@ -91,7 +90,7 @@ type coreOutcomeReporter struct {
 
 type detailedCoreOutcomeReporter struct{ *coreOutcomeReporter }
 
-func newCoreOutcomeReporter(next engine.Reporter) (*coreOutcomeReporter, engine.Reporter) {
+func newCoreOutcomeReporter(next autodev.CoreReporter) (*coreOutcomeReporter, engine.Reporter) {
 	recorder := &coreOutcomeReporter{next: next}
 	_, detailed := next.(engine.DetailedReporter)
 	if detailed {
@@ -138,7 +137,9 @@ func (r *coreOutcomeReporter) OnMessage(ctx context.Context, content string) {
 }
 func (r *coreOutcomeReporter) OnRunComplete(ctx context.Context, result engine.RunResult) {
 	if r.next != nil {
-		r.next.OnRunComplete(ctx, result)
+		r.next.OnRunComplete(ctx, autodev.CoreRunResult{
+			SessionID: result.SessionID, RunID: result.RunID, FinalMessage: result.FinalMessage,
+		})
 	}
 }
 func (r *coreOutcomeReporter) OnRunError(ctx context.Context, sessionID, runID string, err error) {
@@ -175,8 +176,38 @@ func (a *coreRunnerAdapter) Close(ctx context.Context) error {
 // SetUserAsker implements autodev.CoreRunner; installing the EngineerAsker
 // here both registers the ask_user_question tool and routes it to the
 // simulated engineer (REQ-013).
-func (a *coreRunnerAdapter) SetUserAsker(asker tools.UserAsker) {
-	a.runner.SetUserAsker(asker)
+func (a *coreRunnerAdapter) SetUserAsker(asker autodev.QuestionAsker) {
+	if asker == nil {
+		a.runner.SetUserAsker(nil)
+		return
+	}
+	a.runner.SetUserAsker(autodevToolAsker{next: asker})
+}
+
+type autodevToolAsker struct{ next autodev.QuestionAsker }
+
+func (a autodevToolAsker) Ask(ctx context.Context, questions []tools.Question) ([]tools.Answer, error) {
+	mapped := make([]autodev.Question, len(questions))
+	for index, question := range questions {
+		options := make([]autodev.Option, len(question.Options))
+		for optionIndex, option := range question.Options {
+			options[optionIndex] = autodev.Option{Label: option.Label, Description: option.Description, Preview: option.Preview}
+		}
+		mapped[index] = autodev.Question{
+			Header: question.Header, Prompt: question.Prompt, Options: options, MultiSelect: question.MultiSelect,
+		}
+	}
+	answers, err := a.next.Ask(ctx, mapped)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]tools.Answer, len(answers))
+	for index, answer := range answers {
+		result[index] = tools.Answer{
+			QuestionText: answer.QuestionText, Value: answer.Value, Preview: answer.Preview, Notes: answer.Notes,
+		}
+	}
+	return result, nil
 }
 
 // SetModel implements autodev.CoreRunner.
@@ -254,10 +285,7 @@ func (f *appCoreRunnerFactory) New(ctx context.Context, workDir, model string) (
 // Agents: .foxharness/autodev.yml wins, otherwise the CLI-resolved model
 // (REQ-016).
 func resolveAutodevModel(cliModel string, cfg autodev.AutodevConfig) string {
-	if cfg.Model != "" {
-		return cfg.Model
-	}
-	return cliModel
+	return autodev.ResolveModel(cliModel, cfg)
 }
 
 // resolveEngineerPersona returns the configured engineer persona: the
@@ -265,21 +293,7 @@ func resolveAutodevModel(cliModel string, cfg autodev.AutodevConfig) string {
 // resolve against the repo root); empty means the autodev default persona
 // applies (REQ-016).
 func resolveEngineerPersona(cfg autodev.AutodevConfig, repoRoot string) (string, error) {
-	if strings.TrimSpace(cfg.EngineerPrompt) != "" {
-		return cfg.EngineerPrompt, nil
-	}
-	if cfg.EngineerPromptFile == "" {
-		return "", nil
-	}
-	path := cfg.EngineerPromptFile
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(repoRoot, path)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read engineer_prompt_file: %w", err)
-	}
-	return string(data), nil
+	return autodev.ResolveEngineerPersona(cfg, repoRoot)
 }
 
 // buildAutodevDeps assembles the orchestrator dependencies from the CLI

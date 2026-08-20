@@ -69,7 +69,7 @@ func newCLIApplicationWithProvider(ctx context.Context, config app.CLIConfig, mo
 		return nil, fmt.Errorf("初始化文件记忆失败: %w", err)
 	}
 	checkpointer := checkpoint.New(checkpoint.Config{SessionDir: stored.RootDir})
-	if cliCheckpointDisabled() {
+	if checkpointDisabled() {
 		checkpointer.SetDisabled(true)
 	}
 	if config.SessionID != "" || config.ContinueSession {
@@ -82,7 +82,7 @@ func newCLIApplicationWithProvider(ctx context.Context, config app.CLIConfig, mo
 	if err := skillRegistry.Load(); err != nil {
 		log.Printf("[slash] registry load failed: %v", err)
 	}
-	activations := &cliActivations{}
+	activations := &runtimeActivations{}
 	skillRegistry.OnActivate(activations.record)
 	autoMemory := automemory.NewStore(store.HomeDir(), workDir)
 	hooks := automemory.NewPerRunHooks(modelProvider, autoMemory, workDir)
@@ -97,7 +97,7 @@ func newCLIApplicationWithProvider(ctx context.Context, config app.CLIConfig, mo
 		return nil, fmt.Errorf("初始化 Compactor 失败: %w", err)
 	}
 
-	messageID := &cliMessageID{}
+	messageID := &runtimeMessageID{}
 	journals := &cliJournalSet{}
 	dependencies := foxruntime.HarnessDependencies{
 		NewArtifactJournal: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.SessionArtifactJournal, error) {
@@ -120,7 +120,7 @@ func newCLIApplicationWithProvider(ctx context.Context, config app.CLIConfig, mo
 				return nil, err
 			}
 			registry := buildCLIToolRegistry(config, workDir, stored, modelProvider, checkpointer, messageID, skillRegistry)
-			resultHook := combineCLIResultHooks(conditionalSkillHook(skillRegistry), hooks.RecordCallback(tracker))
+			resultHook := combineResultHooks(conditionalSkillHook(skillRegistry), hooks.RecordCallback(tracker))
 			capabilities := registryexec.CapabilitiesWithContext(
 				registry, assembly.AllowedTools,
 				func(ctx context.Context) context.Context {
@@ -151,7 +151,7 @@ func newCLIApplicationWithProvider(ctx context.Context, config app.CLIConfig, mo
 					window := compaction.NewModelRegistry().Lookup(assembly.Run.Model)
 					return skilltool.FormatSkillsWithinBudget(skillRegistry.ModelInvocable(), window)
 				})
-			return cliPromptCollector{composer: composer}, runtimecompaction.New(compactor), nil
+			return runtimePromptCollector{composer: composer}, runtimecompaction.New(compactor), nil
 		},
 	}
 	harness, err := foxruntime.NewRuntimeHarness(store, dependencies)
@@ -209,7 +209,7 @@ func newCLIApplicationWithProvider(ctx context.Context, config app.CLIConfig, mo
 			hooks.FireTrackedContext(extractionCtx, &extraction, stored, string(result.RunID), tracker)
 		},
 		Drain: func(ctx context.Context) error {
-			waitErr := waitForCLIExtraction(ctx, &extraction)
+			waitErr := waitForExtraction(ctx, &extraction)
 			cancelExtraction()
 			recoveryErr := agentSession.RecoverRunFinish(ctx)
 			closeErr := agentSession.Close(ctx)
@@ -264,7 +264,7 @@ func buildCLIToolRegistry(
 	stored *session.StoredSession,
 	modelProvider provider.LLMProvider,
 	checkpointer checkpoint.Checkpointer,
-	messageID *cliMessageID,
+	messageID *runtimeMessageID,
 	skillRegistry *slash.Registry,
 ) tools.Registry {
 	registry := tools.NewRegistry()
@@ -285,18 +285,18 @@ func buildCLIToolRegistry(
 		})
 	}
 	registry.Register(subagent.NewTool(child, string(stored.ID)))
-	fork := &cliForkRunner{runner: child, parentSessionID: string(stored.ID)}
+	fork := &runtimeForkRunner{runner: child, parentSessionID: string(stored.ID)}
 	executor := slash.NewExecutor(slash.WithWorkDir(workDir), slash.WithForkRunner(fork))
 	registry.Register(skilltool.NewSkillTool(skillRegistry, executor, func() string { return string(stored.ID) }))
 
 	return registry
 }
 
-type cliPromptCollector struct {
+type runtimePromptCollector struct {
 	composer engine.PromptComposer
 }
 
-func (c cliPromptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {
+func (c runtimePromptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {
 	text, err := c.composer.Compose(request.Prompt)
 	if err != nil {
 		return nil, fmt.Errorf("组装系统提示词失败: %w", err)
@@ -328,29 +328,29 @@ func (s *cliJournalSet) get(assembly foxruntime.RunAssembly) (*runtimejournal.Jo
 	return journal, nil
 }
 
-type cliMessageID struct {
+type runtimeMessageID struct {
 	mu    sync.Mutex
 	value string
 }
 
-func (m *cliMessageID) set(value string) {
+func (m *runtimeMessageID) set(value string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.value = value
 }
 
-func (m *cliMessageID) get() string {
+func (m *runtimeMessageID) get() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.value
 }
 
-type cliActivations struct {
+type runtimeActivations struct {
 	mu      sync.Mutex
 	pending []string
 }
 
-func (a *cliActivations) record(command *slash.Command) {
+func (a *runtimeActivations) record(command *slash.Command) {
 	if command == nil || !command.IsModelInvocable() {
 		return
 	}
@@ -359,7 +359,7 @@ func (a *cliActivations) record(command *slash.Command) {
 	a.pending = append(a.pending, skilltool.FormatActivationReminder(command))
 }
 
-func (a *cliActivations) drain() []string {
+func (a *runtimeActivations) drain() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	result := append([]string(nil), a.pending...)
@@ -386,7 +386,7 @@ func conditionalSkillHook(registry *slash.Registry) registryexec.ResultHook {
 	}
 }
 
-func combineCLIResultHooks(hooks ...registryexec.ResultHook) registryexec.ResultHook {
+func combineResultHooks(hooks ...registryexec.ResultHook) registryexec.ResultHook {
 	return func(call schema.ToolCall, result schema.ToolResult) {
 		for _, hook := range hooks {
 			if hook != nil {
@@ -396,16 +396,16 @@ func combineCLIResultHooks(hooks ...registryexec.ResultHook) registryexec.Result
 	}
 }
 
-type cliForkRunner struct {
+type runtimeForkRunner struct {
 	runner          subagent.Runner
 	parentSessionID string
 }
 
-func (r *cliForkRunner) PermissionEnforced() bool {
+func (r *runtimeForkRunner) PermissionEnforced() bool {
 	return r.runner != nil && r.runner.PermissionEnforced()
 }
 
-func (r *cliForkRunner) Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error) {
+func (r *runtimeForkRunner) Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error) {
 	if r.runner == nil {
 		return "", errors.New("fork runner: subagent runner unavailable")
 	}
@@ -427,7 +427,7 @@ func (r *cliForkRunner) Run(ctx context.Context, task string, agentType string, 
 	return result.Report, nil
 }
 
-func cliCheckpointDisabled() bool {
+func checkpointDisabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("FOXHARNESS_DISABLE_FILE_CHECKPOINTING"))) {
 	case "1", "true", "yes", "on":
 		return true
@@ -436,7 +436,7 @@ func cliCheckpointDisabled() bool {
 	}
 }
 
-func waitForCLIExtraction(ctx context.Context, group *sync.WaitGroup) error {
+func waitForExtraction(ctx context.Context, group *sync.WaitGroup) error {
 	done := make(chan struct{})
 	go func() {
 		group.Wait()

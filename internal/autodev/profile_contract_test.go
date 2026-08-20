@@ -10,9 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 func TestPFAUT002ActiveAttemptFreezesItemStageAndPromptIdentity(t *testing.T) {
@@ -78,8 +75,8 @@ func TestPFAUT003ItemRunnerKeepsOneSessionAcrossRunsAndIsolatesItems(t *testing.
 func TestPFAUT007EngineerQuestionPortAlwaysReturnsOneVisibleDecision(t *testing.T) {
 	reporter := &autodevProfileReporter{TerminalReporter: NewTerminalReporter(io.Discard)}
 	asker := NewEngineerAsker(&autodevProfileEngineer{decideErr: errors.New("fixture unavailable")}, reporter, &StageContext{Stage: "implement-tasks"})
-	questions := []tools.Question{
-		{Prompt: "Choose approach", Options: []tools.Option{{Label: "Conservative", Description: "bounded"}}},
+	questions := []Question{
+		{Prompt: "Choose approach", Options: []Option{{Label: "Conservative", Description: "bounded"}}},
 		{Prompt: "Proceed?"},
 	}
 	answers, err := asker.Ask(context.Background(), questions)
@@ -139,14 +136,14 @@ type autodevProfileCore struct {
 	run func(context.Context, CoreAttempt) CoreOutcome
 }
 
-func (c *autodevProfileCore) Run(ctx context.Context, attempt CoreAttempt, _ engine.Reporter) CoreOutcome {
+func (c *autodevProfileCore) Run(ctx context.Context, attempt CoreAttempt, _ CoreReporter) CoreOutcome {
 	return c.run(ctx, attempt)
 }
-func (*autodevProfileCore) Drain(context.Context) error  { return nil }
-func (*autodevProfileCore) Close(context.Context) error  { return nil }
-func (*autodevProfileCore) SetUserAsker(tools.UserAsker) {}
-func (*autodevProfileCore) SetModel(string) error        { return nil }
-func (*autodevProfileCore) WorkDir() string              { return "" }
+func (*autodevProfileCore) Drain(context.Context) error { return nil }
+func (*autodevProfileCore) Close(context.Context) error { return nil }
+func (*autodevProfileCore) SetUserAsker(QuestionAsker)  {}
+func (*autodevProfileCore) SetModel(string) error       { return nil }
+func (*autodevProfileCore) WorkDir() string             { return "" }
 func (*autodevProfileCore) StagePrompt(context.Context, string, string) (string, error) {
 	return "", nil
 }
@@ -187,7 +184,7 @@ func (f *autodevProfileCoreFactory) snapshot() []autodevProfileFactoryRecord {
 
 type autodevProfileEngineer struct{ decideErr error }
 
-func (e *autodevProfileEngineer) Decide(context.Context, []tools.Question, StageContext) ([]tools.Answer, error) {
+func (e *autodevProfileEngineer) Decide(context.Context, []Question, StageContext) ([]Answer, error) {
 	return nil, e.decideErr
 }
 func (*autodevProfileEngineer) Reply(context.Context, string, StageContext) (string, error) {

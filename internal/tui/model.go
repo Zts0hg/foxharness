@@ -108,10 +108,13 @@ type Config struct {
 	Permissions  *PermissionBridge
 
 	// Autodev, when non-nil, launches the backlog autopilot for the
-	// /autodev builtin. internal/app injects it so the tui -> autodev
+	// /autodev builtin. The process composition root injects it so the tui -> autodev
 	// dependency stays one-way.
-	Autodev func(ctx context.Context, backlogPath string, reporter autodev.Reporter) error
+	Autodev AutodevLauncher
 }
+
+// AutodevLauncher starts one Autodev control-plane operation for the TUI adapter.
+type AutodevLauncher func(context.Context, string, autodev.Reporter) error
 
 // Run starts the interactive chat TUI.
 func Run(ctx context.Context, runner Runner, cfg Config) error {

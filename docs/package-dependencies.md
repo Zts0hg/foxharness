@@ -21,6 +21,8 @@ flowchart TD
     BENCHCMD[cmd/bench] --> BEN
     BENCHCMD --> RUNTIME
     AUT[internal/autodev] --> RUNTIME
+    FOX --> AUT
+    TUI -. injected launch .-> AUT
 
     SUB[internal/subagent] --> RUNNER[subagent.Runner]
     FOX --> CHILDRUNTIME[internal/childruntime]
@@ -94,7 +96,7 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 | `internal/benchmark` | Benchmark case, fixture, validation, aggregation, provenance, and report control over the shared runtime. |
 | `internal/subagent` | Model-facing `delegate_task` and fork-skill request/result adaptation through a consumer-owned `Runner` port. |
 | `internal/childruntime` | Concrete composition of the single synchronous `ChildRun` profile and adaptation to `subagent.Runner`; it owns no parent presentation or transport behavior. |
-| `internal/autodev` | Durable deterministic backlog, ledger, worktree, SDD stage, gate, Engineer, and publication control over the shared runtime. |
+| `internal/autodev` | Durable deterministic backlog, ledger, worktree, SDD stage, gate, Engineer, publication control, and typed core/question/report adaptation over the shared runtime. |
 | Provider, tool, compaction, checkpoint, memory, automemory, metrics, and tracing packages | Focused mechanisms injected through consumer-owned contracts. Infrastructure is a classification; there is no aggregate `internal/infrastructure` package. |
 | `cmd/*` | Process input/configuration, concrete construction, dependency wiring, entry selection, and startup only. |
 
@@ -152,7 +154,7 @@ Every benchmark repeat now executes through exactly one production path: `benchm
 
 The legacy parent profiles remain on their own existing engine paths until their scheduled cutovers, so runtime accepts a validated `FrozenParentRun` snapshot without creating a shadow parent session or run. `cmd/fox`, `cmd/feishu`, and `cmd/agentops` construct the concrete child adapter and inject consumer-owned factories; app, Feishu, and AgentOps do not import runtime or childruntime for this workflow. The effective parent capability list travels with the exact tool invocation context; filtered registries preserve the outer authoritative list, and `delegate_task` passes a defensive copy into the child intersection. Fork and delegate therefore share one depth, permission, capability, lifecycle, outcome, and cleanup path.
 
-Hermetic old/target adapters compare tool advertisement, delegated task, agent and project instructions, final report, parent/run/delegation lineage, and persisted final assistant state. Production source contains no child `NewLegacyEngine` or `subagent.NewManager` call. The seven M15 subagent construction rows are removed, reducing the allowlist from 66 to 59 entries; the current SHA-256 is `b9c976b2655c6bc310554f96a6dff26d6d381c256129339d394caceb8b303b53`, while the immutable baseline remains unchanged.
+Hermetic old/target adapters compare tool advertisement, delegated task, agent and project instructions, final report, parent/run/delegation lineage, and persisted final assistant state. Production source contains no child `NewLegacyEngine` or `subagent.NewManager` call. The seven M15 subagent construction rows are removed, reducing the allowlist from 66 to 59 entries; the post-M15 SHA-256 is `b9c976b2655c6bc310554f96a6dff26d6d381c256129339d394caceb8b303b53`, while the immutable baseline remains unchanged.
 
 Parent-scope and invocation cancellation are combined for the child. Runtime panic recovery durably finishes an established run, and ChildRunner then synchronously drains its injected process/permission cleanup, retries any hidden recoverable finish, and closes the child session before returning one typed outcome. Cleanup, close, and panic failures update both the outer child status and nested runtime outcome. Success, start failure, rejection, cancellation, exhaustion, runtime failure, panic, and cleanup failure preserve invocation and lineage correlation. Parent-visible reports come only from the latest complete assistant message emitted after authoritative persistence; streamed, tool-only, stale, and failed-to-commit text cannot become a report, while a previously committed assistant message remains an explicitly failed or exhausted partial result.
 
@@ -162,7 +164,7 @@ Child prompt construction remains a pure use of `internal/prompt` over already r
 
 Permission approval, user questions, and Formal Plan review are three explicit blocking request/response ports rather than a generic event bus. Every request carries an application-owned interaction, session, run, and tool-call correlation; every response returns the interaction ID; cancellation and deadlines travel through `context.Context`. Question IDs supplement the existing question-text compatibility key so later adapters can reject stale or duplicate responses. Codex's request/turn/call/question identities and Claude Code's request/tool-use deduplication validate this correlation boundary, but Fox does not adopt their RPC, stream, or transport protocols.
 
-The unmigrated `AgentRunner`, `RunCLI`, `RunTUI`, Autodev adapter, and plan lifecycle remain a closed compatibility facade until `M24`. An exact AST gate fixes their current concrete imports to `autodev.go`, `cli.go`, `plan_lifecycle.go`, `runner.go`, and `tui.go`; no new application file may add a concrete subsystem dependency. Application contracts and mapping cannot construct or drive runtime, engine, persistence, tools, or presentation. M16 adds the already-authorized `internal/app -> internal/runtime` mapping edge, performs no profile cutover, and leaves the 59-entry decreasing allowlist unchanged.
+The legacy `AgentRunner`, `RunCLI`, `RunTUI`, inactive Autodev differential adapter, and plan lifecycle remain a closed compatibility facade until `M24`. An exact AST gate fixes their current concrete imports to `autodev.go`, `cli.go`, `plan_lifecycle.go`, `runner.go`, and `tui.go`; no new application file may add a concrete subsystem dependency. Application contracts and mapping cannot construct or drive runtime, engine, persistence, tools, or presentation. M16 adds the already-authorized `internal/app -> internal/runtime` mapping edge, performs no profile cutover, and leaves the 59-entry decreasing allowlist unchanged.
 
 `M17` atomically cuts over the production `CLIExec` path. `cmd/fox` selects and constructs the concrete CLI profile, `app.RuntimeApplication` maps the typed command, notifications, lifecycle hooks, and result, and `internal/cli.Run` owns only the exact final-output labels, logging, and result-before-drain order. `internal/cli` imports only `internal/app`; it cannot construct runtime, persistence, providers, tools, checkpoints, memory, compaction, or telemetry. An AST gate rejects any return to `app.RunCLI`, `app.NewAgentRunner`, or direct engine assembly in the print entry.
 
@@ -171,6 +173,12 @@ The CLI composition root preserves explicit, latest-CLI, and fresh session selec
 `registryexec` replaces the former duplicate benchmark and child registry adapters and is also used by CLI composition. It intersects advertised and executable names with the immutable runtime ceiling, retains concrete parallel-safety decisions, propagates exact run/tool-call lineage, and maps completed concrete results once. `todopolicy` supplies the target TODO completion query without making `turnpolicy` or engine read persistence. The legacy engine retains its temporary private equivalent because target engine imports remain schema-only until `M25`.
 
 `app.RunCLI` and its old presentation tests remain as an inactive compatibility facade solely for differential evidence and scheduled deletion at `M24`; no production entry calls it after M17. The M17 cutover introduces no forbidden dependency and therefore leaves the 59-entry decreasing allowlist unchanged.
+
+`M18` atomically cuts over both `fox autodev` and the TUI `/autodev` launcher to one runtime-backed `CoreRunnerFactory` composed in `cmd/fox`. `internal/autodev.RuntimeCoreRunner` directly drives one item-scoped `runtime.AgentSession`; it owns only the typed attempt/outcome, canonical core-event mapping, Engineer question port, model mutation port, stage-prompt port, and item drain/close contract. Backlog selection, durable ledger, worktree lifecycle, fixed CodexSpec stages, deterministic verification, quality gates, Engineer supervision, Git/GitHub publication, retries, and terminal reporting remain in the Autodev control plane.
+
+The target factory preserves a fresh CLI-source session per item runner, same-item serialized runs, the configured model override, unlimited-or-narrowed turn budget, the exact ten-name root capability surface including the `AskUserQuestion` alias, full-access non-human permission semantics, one-level child execution, project instructions, skills, TODO policy, working memory, automemory, checkpoints, state history, automatic compaction, transcript/metrics/tracing artifacts, and extraction ordered after terminal reporting then joined by item drain/close. `cmd/fox` injects this same launcher into both entry adapters; an architecture test rejects every production `app.RunAutodev` caller.
+
+Autodev now owns question, answer, core-reporter, and core-result values instead of importing concrete tool or engine contracts. The inactive app adapter maps these values only for pre-M24 differential tests. The two M18 allowlist rows are removed, reducing the migration ledger from 59 to 57 entries; its SHA-256 is `eeda5615dfe92b8b3b6a12e5f723cb81350b7f12d17514e46220f480afff6f80`.
 
 ## Allowed Dependencies
 

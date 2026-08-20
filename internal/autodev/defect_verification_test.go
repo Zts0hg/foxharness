@@ -17,8 +17,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
 )
 
 type sabotagingClock struct {
@@ -1171,7 +1169,7 @@ type deadlineCore struct {
 	has       bool
 }
 
-func (c *deadlineCore) Run(ctx context.Context, attempt CoreAttempt, reporter engine.Reporter) CoreOutcome {
+func (c *deadlineCore) Run(ctx context.Context, attempt CoreAttempt, reporter CoreReporter) CoreOutcome {
 	deadline, ok := ctx.Deadline()
 	c.has = ok
 	if ok {
@@ -1362,7 +1360,7 @@ type lifecycleCore struct {
 	closeCalls   int
 }
 
-func (c *lifecycleCore) Run(ctx context.Context, attempt CoreAttempt, reporter engine.Reporter) CoreOutcome {
+func (c *lifecycleCore) Run(ctx context.Context, attempt CoreAttempt, reporter CoreReporter) CoreOutcome {
 	c.mu.Lock()
 	if c.drainedRuns != c.runCount {
 		c.mu.Unlock()
@@ -1558,7 +1556,7 @@ type cancelingLifecycleCore struct {
 	closeFresh bool
 }
 
-func (c *cancelingLifecycleCore) Run(_ context.Context, attempt CoreAttempt, _ engine.Reporter) CoreOutcome {
+func (c *cancelingLifecycleCore) Run(_ context.Context, attempt CoreAttempt, _ CoreReporter) CoreOutcome {
 	c.cancel()
 	return CoreOutcome{Attempt: attempt, Status: CoreOutcomeCancelled, SessionID: "test-session", RunID: "test-run", PartialMessage: "partial", Cause: context.Canceled, RetryClass: CoreRetryNever, Lifecycle: CoreLifecycleEvidence{RunStarted: true}}
 }
@@ -1630,7 +1628,7 @@ func (f *visibilityLifecycleFactory) New(ctx context.Context, workDir, model str
 	return &visibilityLifecycleCore{stubCore: stubCore{workDir: workDir}, factory: f, index: index}, nil
 }
 
-func (c *visibilityLifecycleCore) Run(ctx context.Context, attempt CoreAttempt, reporter engine.Reporter) CoreOutcome {
+func (c *visibilityLifecycleCore) Run(ctx context.Context, attempt CoreAttempt, reporter CoreReporter) CoreOutcome {
 	if c.pending {
 		err := errors.New("next run started before prior extraction became visible")
 		return CoreOutcome{Attempt: attempt, Status: CoreOutcomeFailed, SessionID: "test-session", RunID: "test-run", Cause: err, RetryClass: CoreRetryNever, Lifecycle: CoreLifecycleEvidence{RunStarted: true}}

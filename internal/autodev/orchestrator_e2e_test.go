@@ -11,9 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 // e2eItemState is the simulated ground truth for one item's worktree,
@@ -196,7 +193,7 @@ type e2eCore struct {
 	title   string
 	branch  string
 	issueN  *int
-	asker   tools.UserAsker
+	asker   QuestionAsker
 	runs    int
 }
 
@@ -205,7 +202,7 @@ type e2eCore struct {
 // the unbounded RunStep loop.
 const maxE2ERuns = 60
 
-func (c *e2eCore) Run(ctx context.Context, attempt CoreAttempt, r engine.Reporter) CoreOutcome {
+func (c *e2eCore) Run(ctx context.Context, attempt CoreAttempt, r CoreReporter) CoreOutcome {
 	prompt := attempt.Prompt
 	w := c.world
 	w.mu.Lock()
@@ -275,9 +272,9 @@ func issueMarkerFromPrompt(prompt string) string {
 	return prompt[start : start+end+3]
 }
 
-func (c *e2eCore) SetUserAsker(a tools.UserAsker) { c.asker = a }
-func (c *e2eCore) SetModel(model string) error    { return nil }
-func (c *e2eCore) WorkDir() string                { return c.workDir }
+func (c *e2eCore) SetUserAsker(a QuestionAsker) { c.asker = a }
+func (c *e2eCore) SetModel(model string) error  { return nil }
+func (c *e2eCore) WorkDir() string              { return c.workDir }
 func (c *e2eCore) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	return fmt.Sprintf("PROMPT[%s|%s]", command, args), nil
 }

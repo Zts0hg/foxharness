@@ -113,7 +113,7 @@ func main() {
 		signals := make(chan os.Signal, 1)
 		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 		err := runAutodevWithSignals(context.Background(), signals, func(ctx context.Context) error {
-			return app.RunAutodev(ctx, cfg, reporter)
+			return runAutodev(ctx, cfg, reporter)
 		})
 		signal.Stop(signals)
 		if err != nil {
@@ -139,7 +139,10 @@ func main() {
 			}
 			return nil
 		}
-		if err := app.RunTUI(context.Background(), cfg, onSave); err != nil {
+		autodevLauncher := func(ctx context.Context, backlogPath string, reporter autodev.Reporter) error {
+			return runAutodev(ctx, autodevConfigForTUILaunch(cfg, backlogPath), reporter)
+		}
+		if err := app.RunTUI(context.Background(), cfg, onSave, autodevLauncher); err != nil {
 			exitWithError(err)
 		}
 		return

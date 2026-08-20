@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
 )
 
@@ -170,6 +169,18 @@ type coreRetryClassifier interface {
 	CoreRetryClass() CoreRetryClass
 }
 
+type runtimeErrorClassifier interface {
+	RuntimeErrorKind() string
+}
+
+func runtimeErrorKind(err error) string {
+	var classifier runtimeErrorClassifier
+	if errors.As(err, &classifier) {
+		return classifier.RuntimeErrorKind()
+	}
+	return ""
+}
+
 func retryClassFromError(ctx context.Context, err error) CoreRetryClass {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 		return CoreRetryNever
@@ -178,8 +189,7 @@ func retryClassFromError(ctx context.Context, err error) CoreRetryClass {
 	if errors.As(err, &classifier) {
 		return classifier.CoreRetryClass()
 	}
-	var turnLimit *engine.TurnLimitError
-	if errors.As(err, &turnLimit) || provider.IsRetryableProviderError(ctx, err) {
+	if runtimeErrorKind(err) == "turn_limit" || provider.IsRetryableProviderError(ctx, err) {
 		return CoreRetrySameRunner
 	}
 	return CoreRetryFreshRunner
@@ -194,8 +204,7 @@ func ClassifyCoreError(ctx context.Context, err error, started bool) (CoreOutcom
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 		return CoreOutcomeCancelled, CoreRetryNever
 	}
-	var turnLimit *engine.TurnLimitError
-	if errors.As(err, &turnLimit) {
+	if runtimeErrorKind(err) == "turn_limit" {
 		return CoreOutcomeTurnExhausted, CoreRetrySameRunner
 	}
 	if !started {

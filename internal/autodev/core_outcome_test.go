@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 type outcomeCore struct {
@@ -20,7 +19,7 @@ type outcomeCore struct {
 	onRun    func()
 }
 
-func (c *outcomeCore) Run(_ context.Context, attempt CoreAttempt, _ engine.Reporter) CoreOutcome {
+func (c *outcomeCore) Run(_ context.Context, attempt CoreAttempt, _ CoreReporter) CoreOutcome {
 	c.attempts = append(c.attempts, attempt)
 	if c.onRun != nil {
 		c.onRun()
@@ -35,7 +34,7 @@ func (c *outcomeCore) Run(_ context.Context, attempt CoreAttempt, _ engine.Repor
 
 func (c *outcomeCore) Drain(context.Context) error { c.drains++; return nil }
 func (*outcomeCore) Close(context.Context) error   { return nil }
-func (*outcomeCore) SetUserAsker(tools.UserAsker)  {}
+func (*outcomeCore) SetUserAsker(QuestionAsker)    {}
 func (*outcomeCore) SetModel(string) error         { return nil }
 func (*outcomeCore) WorkDir() string               { return "" }
 func (*outcomeCore) StagePrompt(context.Context, string, string) (string, error) {
@@ -48,7 +47,7 @@ type outcomeReviewEngineer struct {
 	reviews  []string
 }
 
-func (*outcomeReviewEngineer) Decide(context.Context, []tools.Question, StageContext) ([]tools.Answer, error) {
+func (*outcomeReviewEngineer) Decide(context.Context, []Question, StageContext) ([]Answer, error) {
 	return nil, nil
 }
 func (*outcomeReviewEngineer) Reply(context.Context, string, StageContext) (string, error) {
@@ -408,7 +407,7 @@ type replacementCore struct {
 	closed     bool
 }
 
-func (c *replacementCore) Run(_ context.Context, attempt CoreAttempt, _ engine.Reporter) CoreOutcome {
+func (c *replacementCore) Run(_ context.Context, attempt CoreAttempt, _ CoreReporter) CoreOutcome {
 	if c.generation == 1 {
 		cause := &retryHintError{class: CoreRetryFreshRunner, err: errors.New("corrupt session state")}
 		return CoreOutcome{
@@ -422,7 +421,7 @@ func (c *replacementCore) Run(_ context.Context, attempt CoreAttempt, _ engine.R
 }
 func (*replacementCore) Drain(context.Context) error   { return nil }
 func (c *replacementCore) Close(context.Context) error { c.closed = true; return nil }
-func (*replacementCore) SetUserAsker(tools.UserAsker)  {}
+func (*replacementCore) SetUserAsker(QuestionAsker)    {}
 func (*replacementCore) SetModel(string) error         { return nil }
 func (c *replacementCore) WorkDir() string             { return c.workDir }
 func (*replacementCore) StagePrompt(context.Context, string, string) (string, error) {
@@ -479,7 +478,7 @@ type cancellingVerifiedCore struct {
 	artifact *bool
 }
 
-func (c *cancellingVerifiedCore) Run(_ context.Context, attempt CoreAttempt, _ engine.Reporter) CoreOutcome {
+func (c *cancellingVerifiedCore) Run(_ context.Context, attempt CoreAttempt, _ CoreReporter) CoreOutcome {
 	*c.artifact = true
 	c.cancel()
 	return CoreOutcome{

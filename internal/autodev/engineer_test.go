@@ -9,18 +9,17 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 // fakeEngineerAgent is a scripted EngineerAgent for asker tests.
 type fakeEngineerAgent struct {
-	decideAnswers []tools.Answer
+	decideAnswers []Answer
 	decideErr     error
 	decideCalls   int
-	lastQuestions []tools.Question
+	lastQuestions []Question
 }
 
-func (f *fakeEngineerAgent) Decide(ctx context.Context, qs []tools.Question, c StageContext) ([]tools.Answer, error) {
+func (f *fakeEngineerAgent) Decide(ctx context.Context, qs []Question, c StageContext) ([]Answer, error) {
 	f.decideCalls++
 	f.lastQuestions = qs
 	return f.decideAnswers, f.decideErr
@@ -53,11 +52,11 @@ func (p *scriptedProvider) Generate(ctx context.Context, messages []schema.Messa
 	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: resp}}, nil
 }
 
-func sampleQuestions() []tools.Question {
-	return []tools.Question{{
+func sampleQuestions() []Question {
+	return []Question{{
 		Header: "Location",
 		Prompt: "Where should discoveries be appended?",
-		Options: []tools.Option{
+		Options: []Option{
 			{Label: "MEMORY.md (Recommended)", Description: "project memory"},
 			{Label: "working_memory.md", Description: "session memory"},
 		},
@@ -66,7 +65,7 @@ func sampleQuestions() []tools.Question {
 
 func TestEngineerAskerRoutesToAgent(t *testing.T) {
 	agent := &fakeEngineerAgent{
-		decideAnswers: []tools.Answer{{
+		decideAnswers: []Answer{{
 			QuestionText: "Where should discoveries be appended?",
 			Value:        "MEMORY.md (Recommended)",
 		}},
@@ -93,7 +92,7 @@ func TestEngineerAskerRoutesToAgent(t *testing.T) {
 
 func TestEngineerAskerPassesThroughOtherFreeText(t *testing.T) {
 	agent := &fakeEngineerAgent{
-		decideAnswers: []tools.Answer{{
+		decideAnswers: []Answer{{
 			QuestionText: "Where should discoveries be appended?",
 			Value:        "Append under a '## Discoveries' section in MEMORY.md",
 		}},

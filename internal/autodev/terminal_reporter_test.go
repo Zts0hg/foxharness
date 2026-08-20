@@ -8,9 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 type failingReporterWriter struct{}
@@ -28,8 +25,8 @@ func TestTerminalReporterRendersOrchestrationEvents(t *testing.T) {
 	rep.OnWorktree(ctx, Worktree{Path: "../wt/engine-memory", Branch: "auto/engine-memory"})
 	rep.OnStageStart(ctx, "engine-memory", "generate-spec")
 	rep.OnEngineerDecision(ctx,
-		[]tools.Question{{Prompt: "Where should discoveries be appended?"}},
-		[]tools.Answer{{QuestionText: "Where should discoveries be appended?", Value: "MEMORY.md"}})
+		[]Question{{Prompt: "Where should discoveries be appended?"}},
+		[]Answer{{QuestionText: "Where should discoveries be appended?", Value: "MEMORY.md"}})
 	rep.OnEngineerReview(ctx, "generate-spec", "spec.md is missing; write it now")
 	rep.OnVerify(ctx, "generate-spec", false, "spec.md absent")
 	rep.OnVerify(ctx, "generate-spec", true, "")
@@ -73,7 +70,7 @@ func TestTerminalReporterRendersEngineEvents(t *testing.T) {
 	rep.OnToolCall(ctx, "bash", `{"command":"git add -A"}`)
 	rep.OnToolResult(ctx, "bash", "ok", false)
 	rep.OnMessage(ctx, "I wrote the spec.")
-	rep.OnRunComplete(ctx, engine.RunResult{RunID: "run-1"})
+	rep.OnRunComplete(ctx, CoreRunResult{RunID: "run-1"})
 
 	out := buf.String()
 	for _, want := range []string{"bash", "git add -A", "I wrote the spec."} {
@@ -95,12 +92,12 @@ func TestUIAUT002TerminalReporterMapsCompleteOrderedEventStream(t *testing.T) {
 	rep.OnToolResult(ctx, "bash", "failed", true)
 	rep.OnToolResult(ctx, "bash", "ok", false)
 	rep.OnMessage(ctx, "first line\nsecond line")
-	rep.OnRunComplete(ctx, engine.RunResult{RunID: "run-1"})
+	rep.OnRunComplete(ctx, CoreRunResult{RunID: "run-1"})
 	rep.OnRunError(ctx, "session-1", "run-2", errors.New("model failed"))
 	rep.OnItemStart(ctx, 1, 2, LedgerItem{Slug: "item", Priority: PriorityHigh})
 	rep.OnWorktree(ctx, Worktree{Path: "/tmp/item", Branch: "auto/item"})
 	rep.OnStageStart(ctx, "item", "generate-spec")
-	rep.OnEngineerDecision(ctx, []tools.Question{{Prompt: "Proceed?"}}, []tools.Answer{{Value: "Yes"}})
+	rep.OnEngineerDecision(ctx, []Question{{Prompt: "Proceed?"}}, []Answer{{Value: "Yes"}})
 	rep.OnEngineerReview(ctx, "generate-spec", "write spec\nthen review")
 	rep.OnVerify(ctx, "generate-spec", true, "")
 	rep.OnVerify(ctx, "generate-spec", false, "spec missing")

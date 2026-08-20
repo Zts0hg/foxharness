@@ -188,7 +188,7 @@ func TestOnlyAuthorizedRuntimeClientsHaveProductionImports(t *testing.T) {
 			callers = append(callers, edge.From)
 		}
 	}
-	want := []string{"cmd/bench", "cmd/fox", "internal/app", "internal/benchmark", "internal/childruntime", "internal/runtimecompaction", "internal/runtimejournal"}
+	want := []string{"cmd/bench", "cmd/fox", "internal/app", "internal/autodev", "internal/benchmark", "internal/childruntime", "internal/runtimecompaction", "internal/runtimejournal"}
 	if fmt.Sprint(callers) != fmt.Sprint(want) {
 		t.Fatalf("target runtime production callers = %v, want authorized clients %v", callers, want)
 	}

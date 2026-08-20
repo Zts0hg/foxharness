@@ -138,7 +138,7 @@ func TestCLIExecTargetSessionSelectionPreservesExactErrorsAndLatestCLISource(t *
 
 func TestCLIExecResultHooksPreserveSkillThenMemoryOrder(t *testing.T) {
 	var order []string
-	hook := combineCLIResultHooks(
+	hook := combineResultHooks(
 		func(schema.ToolCall, schema.ToolResult) { order = append(order, "skill") },
 		func(schema.ToolCall, schema.ToolResult) { order = append(order, "memory") },
 	)

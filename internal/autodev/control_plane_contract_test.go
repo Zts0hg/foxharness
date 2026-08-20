@@ -10,9 +10,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 type cancelledPreconditionGit struct{ calls int }
@@ -356,7 +353,7 @@ func (f *panicCoreFactory) New(context.Context, string, string) (CoreRunner, err
 	return f.core, nil
 }
 
-func (*panicCore) Run(context.Context, CoreAttempt, engine.Reporter) CoreOutcome {
+func (*panicCore) Run(context.Context, CoreAttempt, CoreReporter) CoreOutcome {
 	panic("core fixture panic")
 }
 
@@ -370,9 +367,9 @@ func (c *panicCore) Close(context.Context) error {
 	return nil
 }
 
-func (*panicCore) SetUserAsker(tools.UserAsker) {}
-func (*panicCore) SetModel(string) error        { return nil }
-func (*panicCore) WorkDir() string              { return "/fixture" }
+func (*panicCore) SetUserAsker(QuestionAsker) {}
+func (*panicCore) SetModel(string) error      { return nil }
+func (*panicCore) WorkDir() string            { return "/fixture" }
 func (*panicCore) StagePrompt(context.Context, string, string) (string, error) {
 	return "fixture prompt", nil
 }

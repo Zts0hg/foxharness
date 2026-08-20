@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/autodev"
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -105,12 +103,12 @@ func TestUIAUT004ReporterMapsCompleteOrderedEventStream(t *testing.T) {
 	rep.OnMessage(ctx, " plain ")
 	rep.OnMessageDelta(ctx, "part")
 	rep.OnMessage(ctx, " final ")
-	rep.OnRunComplete(ctx, engine.RunResult{RunID: "run-1"})
+	rep.OnRunComplete(ctx, autodev.CoreRunResult{RunID: "run-1"})
 	rep.OnRunError(ctx, "session-1", "run-1", errors.New("model failed"))
 	rep.OnItemStart(ctx, 1, 2, autodev.LedgerItem{Slug: "item", Priority: autodev.PriorityHigh})
 	rep.OnWorktree(ctx, autodev.Worktree{Path: "/tmp/item", Branch: "auto/item"})
 	rep.OnStageStart(ctx, "item", "generate-spec")
-	rep.OnEngineerDecision(ctx, []tools.Question{{Prompt: "Proceed?"}}, []tools.Answer{{Value: "Yes"}})
+	rep.OnEngineerDecision(ctx, []autodev.Question{{Prompt: "Proceed?"}}, []autodev.Answer{{Value: "Yes"}})
 	rep.OnEngineerReview(ctx, "generate-spec", "write spec")
 	rep.OnVerify(ctx, "generate-spec", true, "")
 	rep.OnVerify(ctx, "generate-spec", false, "spec missing")
@@ -174,7 +172,7 @@ func TestUIAUT006TerminalAndTUIConsumeSameTypedControlFacts(t *testing.T) {
 		reporter.OnItemStart(ctx, 1, 1, autodev.LedgerItem{Slug: "item", Priority: autodev.PriorityHigh})
 		reporter.OnWorktree(ctx, autodev.Worktree{Path: "/tmp/item", Branch: "auto/item"})
 		reporter.OnStageStart(ctx, "item", "generate-spec")
-		reporter.OnEngineerDecision(ctx, []tools.Question{{Prompt: "Proceed?"}}, []tools.Answer{{Value: "Yes"}})
+		reporter.OnEngineerDecision(ctx, []autodev.Question{{Prompt: "Proceed?"}}, []autodev.Answer{{Value: "Yes"}})
 		reporter.OnEngineerReview(ctx, "generate-spec", "write spec")
 		reporter.OnVerify(ctx, "generate-spec", false, "spec missing")
 		reporter.OnGate(ctx, autodev.GateResult{Steps: []autodev.GateStep{{Name: "test", Passed: true}}})

@@ -82,7 +82,7 @@ func TestApplicationLegacyFacadeFileSetIsClosedUntilM24(t *testing.T) {
 		"runner.go:internal/memory", "runner.go:internal/middleware", "runner.go:internal/permission",
 		"runner.go:internal/provider", "runner.go:internal/schema", "runner.go:internal/session",
 		"runner.go:internal/slash", "runner.go:internal/slash/skilltool", "runner.go:internal/subagent",
-		"runner.go:internal/tools", "tui.go:internal/autodev", "tui.go:internal/permission",
+		"runner.go:internal/tools", "tui.go:internal/permission",
 		"tui.go:internal/provider", "tui.go:internal/settings", "tui.go:internal/tui",
 	}
 	if fmt.Sprint(legacy) != fmt.Sprint(want) {

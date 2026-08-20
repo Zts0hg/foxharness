@@ -6,18 +6,14 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
-// CoreRunner is the execution-plane seam over the core Agent. internal/app
-// adapts *app.AgentRunner to this interface; tests inject deterministic
-// fakes. One CoreRunner is created per item, scoped to its worktree.
+// CoreRunner is the execution-plane seam over the shared runtime. Tests inject
+// deterministic fakes. One CoreRunner is created per item and worktree.
 type CoreRunner interface {
 	// Run executes one durably identified attempt and returns exactly one typed
 	// terminal outcome, including failures after a run has started.
-	Run(ctx context.Context, attempt CoreAttempt, r engine.Reporter) CoreOutcome
+	Run(ctx context.Context, attempt CoreAttempt, r CoreReporter) CoreOutcome
 	// Drain waits for post-run work from every completed Run. Callers invoke
 	// it before another Run so memory visibility is scheduler-independent.
 	Drain(ctx context.Context) error
@@ -26,7 +22,7 @@ type CoreRunner interface {
 	Close(ctx context.Context) error
 	// SetUserAsker installs the asker answering ask_user_question calls;
 	// autodev installs an EngineerAsker so no human is required (REQ-013).
-	SetUserAsker(a tools.UserAsker)
+	SetUserAsker(a QuestionAsker)
 	// SetModel switches the model used by future runs (REQ-016).
 	SetModel(model string) error
 	// WorkDir reports the runner's working directory (the item worktree).
@@ -65,7 +61,7 @@ type EngineerAgent interface {
 	// Decide answers an ask_user_question call: it selects an option label
 	// (or labels for multi-select) per question, or supplies "Other" free
 	// text when no offered option fits. It never cancels (REQ-013).
-	Decide(ctx context.Context, qs []tools.Question, c StageContext) ([]tools.Answer, error)
+	Decide(ctx context.Context, qs []Question, c StageContext) ([]Answer, error)
 	// Reply answers a free-form prose question the core Agent ended a turn
 	// with; the reply becomes the next user message (REQ-014).
 	Reply(ctx context.Context, prompt string, c StageContext) (string, error)

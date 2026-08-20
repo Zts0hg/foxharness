@@ -11,12 +11,11 @@ import (
 	"sync"
 
 	"github.com/Zts0hg/foxharness/internal/autodev"
-	"github.com/Zts0hg/foxharness/internal/tools"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TUIReporter implements autodev.Reporter over the TUI event channel. The
-// embedded channelReporter handles the engine.Reporter half so core-Agent
+// embedded channelReporter handles the shared core-event methods so core-Agent
 // output renders exactly like a normal interactive run; the orchestration
 // events render as system entries. Sends never block past context
 // cancellation.
@@ -61,8 +60,13 @@ func (r *TUIReporter) OnStageStart(ctx context.Context, slug, stage string) {
 	r.sendSystem(ctx, "autodev stage", stage, "autodev stage: "+stage)
 }
 
+// OnRunComplete maps the Autodev-owned terminal result to the existing TUI event.
+func (r *TUIReporter) OnRunComplete(ctx context.Context, result autodev.CoreRunResult) {
+	r.send(ctx, runEventMsg{status: fmt.Sprintf("Run complete: %s", result.RunID)})
+}
+
 // OnEngineerDecision implements autodev.Reporter.
-func (r *TUIReporter) OnEngineerDecision(ctx context.Context, questions []tools.Question, answers []tools.Answer) {
+func (r *TUIReporter) OnEngineerDecision(ctx context.Context, questions []autodev.Question, answers []autodev.Answer) {
 	var b strings.Builder
 	for _, q := range questions {
 		b.WriteString("core asks: " + q.Prompt + "\n")

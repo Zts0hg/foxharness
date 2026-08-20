@@ -3,9 +3,6 @@ package autodev
 import (
 	"context"
 	"fmt"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 // itemCoreRunner owns the replaceable CoreRunner generation for exactly one
@@ -16,7 +13,7 @@ type itemCoreRunner struct {
 	factory  CoreRunnerFactory
 	workDir  string
 	model    string
-	asker    tools.UserAsker
+	asker    QuestionAsker
 	current  CoreRunner
 }
 
@@ -40,7 +37,7 @@ func (r *itemCoreRunner) ensure() error {
 	return nil
 }
 
-func (r *itemCoreRunner) Run(ctx context.Context, attempt CoreAttempt, reporter engine.Reporter) CoreOutcome {
+func (r *itemCoreRunner) Run(ctx context.Context, attempt CoreAttempt, reporter CoreReporter) CoreOutcome {
 	if err := r.ensure(); err != nil {
 		status, retryClass := ClassifyCoreError(ctx, err, false)
 		return CoreOutcome{Attempt: attempt, Status: status, Cause: err, RetryClass: retryClass}
@@ -71,7 +68,7 @@ func (r *itemCoreRunner) Replace(ctx context.Context) error {
 	return r.ensure()
 }
 
-func (r *itemCoreRunner) SetUserAsker(asker tools.UserAsker) {
+func (r *itemCoreRunner) SetUserAsker(asker QuestionAsker) {
 	r.asker = asker
 	if r.current != nil {
 		r.current.SetUserAsker(asker)

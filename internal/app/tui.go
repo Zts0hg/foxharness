@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/settings"
@@ -17,7 +16,7 @@ import (
 // RunTUI starts an interactive terminal UI that keeps one session open across
 // many user-submitted runs. The onModelChange callback is invoked whenever the
 // user switches models via the /model command; it may be nil.
-func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error) error {
+func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error, autodevLauncher tui.AutodevLauncher) error {
 	homeDir, _ := os.UserHomeDir()
 	loadedSettings, _ := settings.Load(homeDir)
 	permissionState := permission.NewState(
@@ -73,15 +72,8 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 		Asker:             asker,
 		PlanReviewer:      planReviewer,
 		Permissions:       permissionBridge,
-		Autodev: func(runCtx context.Context, backlogPath string, reporter autodev.Reporter) error {
-			return RunAutodev(runCtx, autodevConfigForTUILaunch(cfg, backlogPath), reporter)
-		},
+		Autodev:           autodevLauncher,
 	})
-}
-
-func autodevConfigForTUILaunch(cfg CLIConfig, backlogPath string) CLIConfig {
-	cfg.Prompt = backlogPath
-	return cfg
 }
 
 func attachInteractivePlanReviewer(runner *AgentRunner) *tui.PlanReviewer {

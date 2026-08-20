@@ -12,3 +12,6 @@ type TurnLimitError struct {
 func (e *TurnLimitError) Error() string {
 	return fmt.Sprintf("超过最大 Turn 数限制: %d", e.MaxTurns)
 }
+
+// RuntimeErrorKind exposes the stable cross-boundary classification without requiring consumers to import engine.
+func (*TurnLimitError) RuntimeErrorKind() string { return "turn_limit" }

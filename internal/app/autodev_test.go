@@ -123,7 +123,7 @@ func TestPFAUT005OutcomeReporterNeverEnablesModelDeltaStreaming(t *testing.T) {
 	}
 }
 
-type autodevDeltaReporter struct{ engine.Reporter }
+type autodevDeltaReporter struct{ autodev.CoreReporter }
 
 func (*autodevDeltaReporter) OnMessageDelta(context.Context, string) {}
 
@@ -139,6 +139,12 @@ func (f *fakeRunnerAPI) SessionID() string                     { return "sess-1"
 type fakeAutodevAsker struct{}
 
 func (fakeAutodevAsker) Ask(ctx context.Context, questions []tools.Question) ([]tools.Answer, error) {
+	return nil, nil
+}
+
+type fakeAutodevCoreAsker struct{}
+
+func (fakeAutodevCoreAsker) Ask(context.Context, []autodev.Question) ([]autodev.Answer, error) {
 	return nil, nil
 }
 
@@ -165,7 +171,7 @@ func TestCoreRunnerAdapterDelegates(t *testing.T) {
 		t.Errorf("runner drain/close calls = %d/%d, want 1/1", api.drains, api.closes)
 	}
 
-	adapter.SetUserAsker(fakeAutodevAsker{})
+	adapter.SetUserAsker(fakeAutodevCoreAsker{})
 	if api.asker == nil {
 		t.Error("SetUserAsker did not reach the runner (REQ-013)")
 	}

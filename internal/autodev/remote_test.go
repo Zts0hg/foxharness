@@ -10,9 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 type recordingRemoteEventReporter struct {
@@ -166,7 +163,7 @@ type remoteCore struct {
 	effects []func()
 }
 
-func (c *remoteCore) Run(ctx context.Context, attempt CoreAttempt, r engine.Reporter) CoreOutcome {
+func (c *remoteCore) Run(ctx context.Context, attempt CoreAttempt, r CoreReporter) CoreOutcome {
 	c.prompts = append(c.prompts, attempt.Prompt)
 	if len(c.effects) > 0 {
 		effect := c.effects[0]
@@ -181,9 +178,9 @@ func (c *remoteCore) Run(ctx context.Context, attempt CoreAttempt, r engine.Repo
 func (c *remoteCore) Drain(context.Context) error { return nil }
 func (c *remoteCore) Close(context.Context) error { return nil }
 
-func (c *remoteCore) SetUserAsker(a tools.UserAsker) {}
-func (c *remoteCore) SetModel(model string) error    { return nil }
-func (c *remoteCore) WorkDir() string                { return "/wt" }
+func (c *remoteCore) SetUserAsker(a QuestionAsker) {}
+func (c *remoteCore) SetModel(model string) error  { return nil }
+func (c *remoteCore) WorkDir() string              { return "/wt" }
 func (c *remoteCore) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	return fmt.Sprintf("PROMPT[%s|%s]", command, args), nil
 }
