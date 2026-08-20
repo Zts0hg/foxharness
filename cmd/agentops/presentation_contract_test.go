@@ -70,7 +70,8 @@ func TestUIAOP001CompositionOrderConstantsAndListenFailure(t *testing.T) {
 		"newDeliveryStore(homeDir)",
 		"make(chan feishu.Task, 64)",
 		"feishu.NewGateway(verificationToken, encryptKey, feishuTasks, approvalStore).WithDeliveryStore(deliveryStore)",
-		"agentops.NewRunner(llmProvider, workDir, logDir, messenger, approvalStore)",
+		"newAgentOpsTaskExecutionFactory(llmProvider, workDir, logDir, messenger, sessionStore, approvalStore)",
+		"agentops.NewRunner(taskFactory, messenger)",
 		`serve(signalCtx, gateway, runner, feishuTasks, ":7777", defaultShutdownTimeout)`,
 	}
 	position := -1

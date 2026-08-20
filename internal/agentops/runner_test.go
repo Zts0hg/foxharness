@@ -79,7 +79,7 @@ func (m *recordingAgentOpsMessenger) contains(substr string) bool {
 func TestAgentOpsFirstModelCallUsesPrimaryRegistryWithoutPlannerPrepass(t *testing.T) {
 	workDir := t.TempDir()
 	provider := &agentOpsSurfaceProvider{}
-	runner := NewRunner(provider, workDir, t.TempDir(), &recordingAgentOpsMessenger{}, approval.NewStore())
+	runner := newLegacyAgentOpsRunner(provider, workDir, t.TempDir(), &recordingAgentOpsMessenger{}, approval.NewStore())
 	runner.sessions = session.NewManagerWithHome(workDir, t.TempDir())
 
 	err := runner.run(context.Background(), Task{
@@ -109,7 +109,7 @@ func TestAgentOpsFirstModelCallUsesPrimaryRegistryWithoutPlannerPrepass(t *testi
 }
 
 func TestRunnerBuildRegistryIncludesTodoTools(t *testing.T) {
-	runner := &Runner{workDir: t.TempDir()}
+	runner := &legacyAgentOpsRunner{workDir: t.TempDir()}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
 	registry := runner.buildRegistry(Task{ChatID: "chat"}, sess)
 
@@ -223,9 +223,9 @@ func TestRunnerBuildRegistryDeniesWorkspaceOutsideWriteWithUnifiedPermission(t *
 		t.Fatal(err)
 	}
 
-	runner := &Runner{
+	runner := &legacyAgentOpsRunner{
 		workDir: workDir, approvalStore: approval.NewStore(),
-		newChildRunner: func(ChildRunnerConfig) subagent.Runner { return &nestedPermissionRunner{} },
+		newChildRunner: func(legacyChildRunnerConfig) subagent.Runner { return &nestedPermissionRunner{} },
 	}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
 	registry := runner.buildRegistry(Task{ChatID: "chat", Text: "write outside workspace"}, sess)
@@ -245,7 +245,7 @@ func TestRunnerBuildRegistryDeniesWorkspaceOutsideWriteWithUnifiedPermission(t *
 
 func TestRunnerBuildRegistryDeniesUnparseableBashWithUnifiedPermission(t *testing.T) {
 	workDir := t.TempDir()
-	runner := &Runner{workDir: workDir, approvalStore: approval.NewStore()}
+	runner := &legacyAgentOpsRunner{workDir: workDir, approvalStore: approval.NewStore()}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
 	registry := runner.buildRegistry(Task{ChatID: "chat", Text: "inspect with shell"}, sess)
 
@@ -264,7 +264,7 @@ func TestRunnerBuildRegistryAllowsReadOnlyLogSearchWithoutApproval(t *testing.T)
 	if err := os.WriteFile(filepath.Join(logDir, "payment.log"), []byte("INFO ok\nERROR timeout\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runner := &Runner{workDir: t.TempDir(), logDir: logDir, approvalStore: approval.NewStore()}
+	runner := &legacyAgentOpsRunner{workDir: t.TempDir(), logDir: logDir, approvalStore: approval.NewStore()}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
 	registry := runner.buildRegistry(Task{ChatID: "chat", Text: "inspect logs"}, sess)
 
@@ -283,9 +283,9 @@ func TestRunnerBuildRegistryAllowsReadOnlyLogSearchWithoutApproval(t *testing.T)
 
 func TestRunnerBuildRegistryMarksWritableDelegationNestedPermissionEnforced(t *testing.T) {
 	workDir := t.TempDir()
-	runner := &Runner{
+	runner := &legacyAgentOpsRunner{
 		workDir: workDir, approvalStore: approval.NewStore(),
-		newChildRunner: func(ChildRunnerConfig) subagent.Runner { return &nestedPermissionRunner{} },
+		newChildRunner: func(legacyChildRunnerConfig) subagent.Runner { return &nestedPermissionRunner{} },
 	}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
 	registry := runner.buildRegistry(Task{ChatID: "chat", Text: "delegate a fix"}, sess)
@@ -328,7 +328,7 @@ func TestAgentOpsBuildComposerInjectsPersistentMemory(t *testing.T) {
 	}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir(), WorkDir: workDir}
 
-	runner := &Runner{workDir: workDir, sessions: manager}
+	runner := &legacyAgentOpsRunner{workDir: workDir, sessions: manager}
 	prompt, err := runner.buildComposer(sess, store).Compose("分析故障")
 	if err != nil {
 		t.Fatal(err)
@@ -389,7 +389,7 @@ func TestAgentOpsFireMemoryExtractionInvokesHooks(t *testing.T) {
 		gotTracker = tr
 	}
 	tracker := hooks.NewTracker()
-	runner := &Runner{}
+	runner := &legacyAgentOpsRunner{}
 	runner.fireMemoryExtraction(hooks, &session.Session{ID: "s"}, "run-42", tracker)
 	if gotRunID != "run-42" {
 		t.Fatalf("extraction fired with runID %q, want run-42", gotRunID)
@@ -406,7 +406,7 @@ func TestAgentOpsFireMemoryExtractionSwallowsPanic(t *testing.T) {
 	store := automemory.NewStore(t.TempDir(), workDir)
 	hooks := automemory.NewPerRunHooks(nil, store, workDir)
 	hooks.FireFunc = func(*session.Session, string, *automemory.Tracker) { panic("boom") }
-	runner := &Runner{}
+	runner := &legacyAgentOpsRunner{}
 	runner.fireMemoryExtraction(hooks, &session.Session{ID: "s"}, "", nil) // must not panic
 }
 

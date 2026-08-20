@@ -1,4 +1,4 @@
-package agentops
+package logsearch
 
 import (
 	"context"
@@ -25,13 +25,12 @@ func (r *failOnSecondReadCloser) Close() error {
 	return nil
 }
 
-func TestLogSearchStopsAfterLimitWithoutDrainingReader(t *testing.T) {
+func TestStopsAfterLimitWithoutDrainingReader(t *testing.T) {
 	reader := &failOnSecondReadCloser{}
-	tool := NewLogSearchTool(t.TempDir())
-	tool.openLog = func(path string) (io.ReadCloser, error) {
+	tool := New(t.TempDir())
+	tool.openLog = func(string) (io.ReadCloser, error) {
 		return reader, nil
 	}
-
 	raw, err := json.Marshal(map[string]any{"service": "payment", "query": "error", "limit": 1})
 	if err != nil {
 		t.Fatal(err)
@@ -40,27 +39,23 @@ func TestLogSearchStopsAfterLimitWithoutDrainingReader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if !strings.Contains(got, "ERROR first match") {
-		t.Fatalf("Execute() = %q, want first match", got)
-	}
-	if reader.reads != 1 {
-		t.Fatalf("reader reads = %d, want 1", reader.reads)
+	if !strings.Contains(got, "ERROR first match") || reader.reads != 1 {
+		t.Fatalf("Execute() = %q with %d reads, want first match with one read", got, reader.reads)
 	}
 }
 
-func TestLogSearchHonorsCanceledContextBeforeScanning(t *testing.T) {
-	tool := NewLogSearchTool(t.TempDir())
-	tool.openLog = func(path string) (io.ReadCloser, error) {
+func TestHonorsCanceledContextBeforeScanning(t *testing.T) {
+	tool := New(t.TempDir())
+	tool.openLog = func(string) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("ERROR should not scan\n")), nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-
 	raw, err := json.Marshal(map[string]any{"service": "payment", "query": "error", "limit": 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tool.Execute(ctx, raw); err == nil {
-		t.Fatalf("Execute() error = nil, want context cancellation")
+		t.Fatal("Execute() error = nil, want context cancellation")
 	}
 }

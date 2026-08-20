@@ -70,6 +70,11 @@ flowchart TD
     FEICMD -. composition .-> RUNTIME
     FEICMD -. composition .-> REGISTRYEXEC
     FEICMD -. composition .-> RUNTIMEJOURNAL
+    AOP --> LOGSEARCH[internal/agentops/logsearch]
+    AOPCMD -. composition .-> APP
+    AOPCMD -. composition .-> RUNTIME
+    AOPCMD -. composition .-> REGISTRYEXEC
+    AOPCMD -. composition .-> RUNTIMEJOURNAL
 ```
 
 The diagram is a directed acyclic graph, not a rule that every execution path must pass through every package. Benchmark, child invocation, and Autodev are runtime control clients rather than user-presentation clients.
@@ -94,7 +99,8 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 | `internal/tui` | Fox-specific Bubble Tea input, queue, overlay, and terminal presentation behavior. |
 | `internal/cli` | Non-interactive prompt/result, stdout/stderr, artifact-label, and exit presentation behavior. |
 | `internal/feishu` | Feishu transport, scheduling, message delivery, and remote approval adaptation. |
-| `internal/agentops` | AgentOps transport/control adaptation, incident task policy, and `log_search` ownership. |
+| `internal/agentops` | AgentOps transport/control adaptation and incident task policy over application capabilities. |
+| `internal/agentops/logsearch` | AgentOps-owned `log_search` schema, permission assessment, bounded scanning, and rooted file access. |
 | `internal/prompt` | Deterministic side-effect-free prompt-fragment representation, ordering, and rendering. |
 | `internal/session` | Stored session/run records, durable identifiers, message/transcript artifacts, compact records, and `FileStore` mechanics. It does not own live runtime lifecycle. |
 | `internal/benchmark` | Benchmark case, fixture, validation, aggregation, provenance, and report control over the shared runtime. |
@@ -185,6 +191,8 @@ The target factory preserves a fresh CLI-source session per item runner, same-it
 Autodev now owns question, answer, core-reporter, and core-result values instead of importing concrete tool or engine contracts. The inactive app adapter maps these values only for pre-M24 differential tests. The two M18 allowlist rows are removed, reducing the migration ledger from 59 to 57 entries; its SHA-256 is `eeda5615dfe92b8b3b6a12e5f723cb81350b7f12d17514e46220f480afff6f80`.
 
 `M19` atomically cuts over FeishuRemote while retaining webhook intake, durable delivery acceptance, bounded/FIFO scheduling, outbound text, delivery observation, approval callbacks, and shutdown in `internal/feishu`. The adapter now defines a narrow task-execution factory and invokes only `app.RunUseCase`; runtime facts reach Chinese Feishu text through application notifications, and ModeAsk requests cross the application-owned `PermissionPort` before the Feishu callback transport. `cmd/feishu` selects the exact chat/sender session and composes the target runtime with the seven-tool ceiling, one-level child execution, project/session/automemory context, automatic compaction, fire-and-forget extraction, and transcript/metrics/trace journals. Legacy Feishu assembly survives only in `_test.go` helpers. All eight M19 exceptions are removed, reducing the allowlist from 57 to 49 rows at SHA-256 `1d97b00904f3755a2363799b87d4bba3857e90daa8322d04d7b229872341cdcd`.
+
+`M20` atomically cuts over AgentOpsTask while retaining its two-channel bridge, global bounded scheduling, task timeout, panic and terminal outcome handling, exact result/artifact presentation, delivery observation, incident prompt, and log-search ownership. A two-stage AgentOps execution port exposes the freshly created session before application initialization, preserving the existing session-notice-before-PLAN/TODO initialization order. `cmd/agentops` composes the target runtime with one exact task provider snapshot, a fresh Feishu-source session, the eight-tool ceiling including AgentOps-owned rooted `log_search`, one-level child execution, project/session/automemory context, automatic compaction, fire-and-forget extraction, and compatibility journals. Remote ModeAsk reuses `feishu.PermissionPort` and the gateway's single callback store with task/session/run/tool correlation. Legacy assembly is test-only. All ten M20 exceptions are removed, reducing the allowlist from 49 to 39 rows at SHA-256 `b4db0d729675d2b4424297ce56a56afe267f32ec8409882f98a4dbf101383b37`.
 
 ## Allowed Dependencies
 

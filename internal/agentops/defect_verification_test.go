@@ -13,12 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Zts0hg/foxharness/internal/approval"
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
-	"github.com/Zts0hg/foxharness/internal/session"
 )
 
 func TestDVAOP002RunnerWaitsForAcceptedWork(t *testing.T) {
@@ -295,15 +294,15 @@ func TestDVAOP004OneProviderSnapshotConfiguresEngineCompactorAndChild(t *testing
 	if compactor.ContextWindow() != wantWindow || compactor.ContextWindow() == compaction.DefaultContextWindow {
 		t.Fatalf("compactor window = %d, selected model window = %d", compactor.ContextWindow(), wantWindow)
 	}
-	source, err := os.ReadFile("runner.go")
+	source, err := os.ReadFile(filepath.Join("..", "..", "cmd", "agentops", "runtime_execution.go"))
 	if err != nil {
 		t.Fatalf("ReadFile(runner.go) error = %v", err)
 	}
 	for _, required := range []string{
-		"taskProvider := snapshotTaskProvider(r.provider)",
-		"r.buildRegistry(task, sess, taskProvider.provider)",
-		"engine.NewLegacyEngine(\n\t\ttaskProvider.provider,",
-		"compaction.NewCompactor(taskProvider.provider, compCfg)",
+		"taskProvider := snapshotAgentOpsProvider(f.provider)",
+		"f.buildTools(stored, taskProvider, coordinator, evidence)",
+		"modelinvoke.New(taskProvider",
+		"compaction.NewCompactor(taskProvider, compactionConfig)",
 	} {
 		if !strings.Contains(string(source), required) {
 			t.Fatalf("Runner does not wire provider snapshot through %q", required)
@@ -312,14 +311,20 @@ func TestDVAOP004OneProviderSnapshotConfiguresEngineCompactorAndChild(t *testing
 }
 
 func TestDVAOP005DeliveryFailuresAreTypedBoundedAndNonRecursive(t *testing.T) {
-	workDir := t.TempDir()
 	observer := &recordingAgentOpsDeliveryFailureObserver{}
 	messenger := &scriptedAgentOpsMessenger{
 		errors: []error{errors.New("session delivery failed"), errors.New("final delivery failed"), errors.New("fallback delivery failed")},
 	}
-	runner := NewRunner(&longFinalProvider{}, workDir, t.TempDir(), messenger, approval.NewStore()).
+	application := &recordingAgentOpsApplication{outcome: &app.RunOutcome{
+		SessionID: "session", RunID: "run", FinalMessage: strings.Repeat("x", 6000),
+		TracePath: "/trace", MetricsPath: "/metrics",
+	}}
+	factory := &recordingAgentOpsExecutionFactory{prepared: PreparedTaskExecution{
+		Session: app.SessionInfo{ID: "session"},
+		Start:   func(context.Context) (TaskApplication, error) { return application, nil },
+	}}
+	runner := NewRunner(factory, messenger).
 		WithDeliveryFailureObserver(observer)
-	runner.sessions = session.NewManagerWithHome(workDir, t.TempDir())
 	runner.Run(context.Background(), Task{TaskID: "delivery", ChatID: "chat", SenderID: "sender", Text: "incident"})
 
 	texts := messenger.snapshot()

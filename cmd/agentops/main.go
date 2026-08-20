@@ -29,12 +29,11 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/agentops"
 	"github.com/Zts0hg/foxharness/internal/approval"
-	"github.com/Zts0hg/foxharness/internal/childruntime"
 	"github.com/Zts0hg/foxharness/internal/feishu"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/provider"
-	"github.com/Zts0hg/foxharness/internal/subagent"
+	"github.com/Zts0hg/foxharness/internal/session"
 )
 
 const defaultShutdownTimeout = 30 * time.Second
@@ -71,13 +70,9 @@ func main() {
 
 	feishuTasks := make(chan feishu.Task, 64)
 	gateway := feishu.NewGateway(verificationToken, encryptKey, feishuTasks, approvalStore).WithDeliveryStore(deliveryStore)
-	runner := agentops.NewRunner(llmProvider, workDir, logDir, messenger, approvalStore).
-		WithChildRunnerFactory(func(config agentops.ChildRunnerConfig) subagent.Runner {
-			return childruntime.New(childruntime.Config{
-				Provider: config.Provider, WorkDir: config.WorkDir, ParentProfile: childruntime.AgentOpsTask,
-				Permission: config.Permission, ParentEvidence: config.ParentEvidence,
-			})
-		}).
+	sessionStore := session.NewFileStore(workDir)
+	taskFactory := newAgentOpsTaskExecutionFactory(llmProvider, workDir, logDir, messenger, sessionStore, approvalStore)
+	runner := agentops.NewRunner(taskFactory, messenger).
 		WithDeliveryFailureObserver(agentops.NewLoggingDeliveryFailureObserver(log.Default()))
 
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

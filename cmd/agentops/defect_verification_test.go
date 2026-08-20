@@ -196,7 +196,7 @@ func TestDVAOPApprovalReusesAuthenticatedExactlyOnceStore(t *testing.T) {
 		t.Fatalf("approval stores = %d, want one shared authority", count)
 	}
 	if !strings.Contains(source, "NewGateway(verificationToken, encryptKey, feishuTasks, approvalStore)") ||
-		!strings.Contains(source, "NewRunner(llmProvider, workDir, logDir, messenger, approvalStore)") {
+		!strings.Contains(source, "newAgentOpsTaskExecutionFactory(llmProvider, workDir, logDir, messenger, sessionStore, approvalStore)") {
 		t.Fatal("Gateway and AgentOps Runner do not share the approval Store")
 	}
 

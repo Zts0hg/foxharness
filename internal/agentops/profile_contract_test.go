@@ -53,9 +53,12 @@ func TestPFAOP001CurrentProfileSnapshotIsFlatAndRestrictionsOnlyNarrow(t *testin
 		t.Fatalf("restriction expanded profile: %#v", result)
 	}
 
-	source := readAgentOpsPackageSource(t, "runner.go")
-	for _, required := range []string{"MaxTurns:     24", "snapshotTaskProvider(r.provider)"} {
-		if !strings.Contains(source, required) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "cmd", "agentops", "runtime_execution.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"foxruntime.AgentOpsTask", "snapshotAgentOpsProvider(f.provider)"} {
+		if !strings.Contains(string(source), required) {
 			t.Fatalf("runner source missing frozen profile setting %q", required)
 		}
 	}
@@ -152,11 +155,13 @@ func TestPFAOP005SessionNoticePrecedesRunAndArtifacts(t *testing.T) {
 	if len(texts) != 2 || !strings.HasPrefix(texts[0], "已创建 AgentOps Session: ") || !strings.HasSuffix(texts[0], "\n开始分析。") || !strings.HasPrefix(texts[1], "resolved\n\nSession: ") {
 		t.Fatalf("message ordering/content = %#v", texts)
 	}
-	source := readAgentOpsPackageSource(t, "runner.go")
-	notice := strings.Index(source, "DeliveryStageSession")
-	ensure := strings.Index(source, "store.EnsureFiles()")
-	if notice < 0 || ensure < 0 || notice >= ensure {
-		t.Fatalf("session notice/EnsureFiles source order = %d/%d", notice, ensure)
+	runnerSource := readAgentOpsPackageSource(t, "runner.go")
+	runtimeSource, err := os.ReadFile(filepath.Join("..", "..", "cmd", "agentops", "runtime_execution.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(runnerSource, "prepared.Start(ctx)") || !strings.Contains(string(runtimeSource), "workingMemory.EnsureFiles()") {
+		t.Fatal("two-phase session notice and runtime initialization path is incomplete")
 	}
 }
 
@@ -316,7 +321,7 @@ func TestPFAOP015ExtractionIsRunBoundedFireAndForget(t *testing.T) {
 	if _, err := session.NewMessageLog(sess).Append("run-42", schema.Message{Role: schema.RoleUser, Content: "extract this incident"}); err != nil {
 		t.Fatal(err)
 	}
-	(&Runner{}).fireMemoryExtraction(hooks, sess, "run-42", hooks.NewTracker())
+	(&legacyAgentOpsRunner{}).fireMemoryExtraction(hooks, sess, "run-42", hooks.NewTracker())
 	select {
 	case <-model.started:
 	case <-time.After(time.Second):
@@ -461,10 +466,10 @@ func (m *agentOpsProfileMessenger) snapshot() []string {
 	return append([]string(nil), m.texts...)
 }
 
-func newAgentOpsProfileRunner(t *testing.T, model provider.LLMProvider, messenger Messenger) *Runner {
+func newAgentOpsProfileRunner(t *testing.T, model provider.LLMProvider, messenger Messenger) *legacyAgentOpsRunner {
 	t.Helper()
 	workDir := t.TempDir()
-	runner := NewRunner(model, workDir, t.TempDir(), messenger, approval.NewStore())
+	runner := newLegacyAgentOpsRunner(model, workDir, t.TempDir(), messenger, approval.NewStore())
 	runner.sessions = session.NewManagerWithHome(workDir, t.TempDir())
 	return runner
 }

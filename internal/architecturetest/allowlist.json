@@ -1,15 +1,5 @@
 {
   "violations": [
-    {"from":"internal/agentops","to":"internal/automemory","remove_by":"M20"},
-    {"from":"internal/agentops","to":"internal/compaction","remove_by":"M20"},
-    {"from":"internal/agentops","to":"internal/engine","remove_by":"M20"},
-    {"from":"internal/agentops","to":"internal/memory","remove_by":"M20"},
-    {"from":"internal/agentops","to":"internal/permission","remove_by":"M20"},
-    {"from":"internal/agentops","to":"internal/provider","remove_by":"M20"},
-    {"from":"internal/agentops","to":"internal/schema","remove_by":"M20"},
-    {"from":"internal/agentops","to":"internal/session","remove_by":"M20"},
-    {"from":"internal/agentops","to":"internal/toolpolicy","remove_by":"M20"},
-    {"from":"internal/agentops","to":"internal/tools","remove_by":"M20"},
     {"from":"internal/app","to":"internal/autodev","remove_by":"M24"},
     {"from":"internal/app","to":"internal/automemory","remove_by":"M24"},
     {"from":"internal/app","to":"internal/checkpoint","remove_by":"M24"},
