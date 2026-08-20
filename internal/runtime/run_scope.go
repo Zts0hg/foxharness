@@ -92,6 +92,7 @@ func (s *RunScope) finish() error {
 
 	s.finished = true
 	s.owner.clearRecovery(s)
+	s.owner.releaseRunContext(s.run.ID)
 	s.releaseAdmission()
 	return nil
 }

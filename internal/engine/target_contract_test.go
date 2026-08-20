@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -115,6 +116,144 @@ func TestTargetRunContextIsImmutableAcrossModelInvocation(t *testing.T) {
 	properties := sourceSnapshot.definitions[0].InputSchema.(map[string]any)["properties"].(map[string]any)
 	if got := properties["path"].(map[string]any)["type"]; got != "string" {
 		t.Fatalf("source nested schema type = %v, want string", got)
+	}
+}
+
+func TestTargetConversationReceivesExactInvocationSnapshot(t *testing.T) {
+	conversation := &invocationRecordingConversation{}
+	executor := &immutableTargetToolExecutor{snapshot: targetToolSnapshot{definitions: []schema.ToolDefinition{{Name: "inspect"}}}}
+	invoker := modelInvokerFunc(func(context.Context, RunContext) (ModelResult, error) {
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}, FinishReason: "stop"}, nil
+	})
+	eng := NewAgentEngine(invoker, executor, conversation, targetTestPolicy{}, nil)
+
+	input := RunInput{Prompt: "work", MaxTurns: 1}
+	if _, err := eng.Run(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	if len(conversation.requests) != 1 {
+		t.Fatalf("conversation requests = %#v", conversation.requests)
+	}
+	got := conversation.requests[0]
+	if got.Input != input || got.Turn != 1 || got.Phase != PhaseAction || got.Preparation != ConversationPrepareNormal {
+		t.Fatalf("conversation request = %#v", got)
+	}
+	if len(got.ToolDefinitions) != 1 || got.ToolDefinitions[0].Name != "inspect" {
+		t.Fatalf("conversation tool snapshot = %#v", got.ToolDefinitions)
+	}
+}
+
+func TestTargetToolSnapshotIsFrozenOncePerTurn(t *testing.T) {
+	executor := &perTurnTargetToolExecutor{snapshots: []targetToolSnapshot{
+		{definitions: []schema.ToolDefinition{{Name: "first"}}},
+		{definitions: []schema.ToolDefinition{{Name: "second"}}},
+	}}
+	invocations := 0
+	invoker := modelInvokerFunc(func(_ context.Context, runContext RunContext) (ModelResult, error) {
+		invocations++
+		if len(runContext.ToolDefinitions) != 1 {
+			t.Fatalf("turn %d definitions = %#v", invocations, runContext.ToolDefinitions)
+		}
+		if invocations == 1 {
+			if runContext.ToolDefinitions[0].Name != "first" {
+				t.Fatalf("first turn definition = %q", runContext.ToolDefinitions[0].Name)
+			}
+			return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "first"}}}}, nil
+		}
+		if runContext.ToolDefinitions[0].Name != "second" {
+			t.Fatalf("second turn definition = %q", runContext.ToolDefinitions[0].Name)
+		}
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}, FinishReason: "stop"}, nil
+	})
+	eng := NewAgentEngine(invoker, executor, &targetTestConversation{}, targetTestPolicy{}, nil)
+
+	if _, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if executor.snapshotCalls != 2 {
+		t.Fatalf("snapshot calls = %d, want one per turn", executor.snapshotCalls)
+	}
+	if !reflect.DeepEqual(executor.executedWith, []string{"first"}) {
+		t.Fatalf("executed snapshots = %v, want first-turn snapshot", executor.executedWith)
+	}
+}
+
+func TestTargetPromptTooLongUsesOneReactiveConversationRetry(t *testing.T) {
+	conversation := &compactingInvocationConversation{}
+	invocations := 0
+	invoker := modelInvokerFunc(func(context.Context, RunContext) (ModelResult, error) {
+		invocations++
+		if invocations == 1 {
+			return ModelResult{}, ErrPromptTooLong
+		}
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}, FinishReason: "stop"}, nil
+	})
+	var facts []Fact
+	eng := NewAgentEngine(invoker, targetTestToolExecutor{}, conversation, targetTestPolicy{}, observerFunc(func(_ context.Context, fact Fact) {
+		facts = append(facts, fact)
+	}))
+
+	if _, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if invocations != 2 || len(conversation.requests) != 2 {
+		t.Fatalf("invocations/requests = %d/%d, want one retry", invocations, len(conversation.requests))
+	}
+	if conversation.requests[0].Preparation != ConversationPrepareNormal || conversation.requests[1].Preparation != ConversationPrepareReactive {
+		t.Fatalf("preparation sequence = %#v", conversation.requests)
+	}
+	if got := factKinds(facts); !reflect.DeepEqual(got, []FactKind{FactRunStarted, FactContextCompacted, FactMessage, FactRunCompleted}) {
+		t.Fatalf("reactive fact order = %v", got)
+	}
+	if facts[1].Name != "reactive" || facts[1].Content != "" {
+		t.Fatalf("reactive compaction fact = %#v", facts[1])
+	}
+}
+
+func TestTargetPromptTooLongDoesNotRetryWithoutChangedProjection(t *testing.T) {
+	conversation := &invocationRecordingConversation{}
+	invocations := 0
+	invoker := modelInvokerFunc(func(context.Context, RunContext) (ModelResult, error) {
+		invocations++
+		return ModelResult{}, ErrPromptTooLong
+	})
+	eng := NewAgentEngine(invoker, targetTestToolExecutor{}, conversation, targetTestPolicy{}, nil)
+
+	_, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 1})
+	if err == nil || !errors.Is(err, ErrPromptTooLong) {
+		t.Fatalf("Run() error = %v, want original prompt-too-long error", err)
+	}
+	if invocations != 1 || len(conversation.requests) != 2 {
+		t.Fatalf("invocations/requests = %d/%d, want one invocation and one recovery proposal request", invocations, len(conversation.requests))
+	}
+}
+
+func TestTargetThinkingUsesTurnSnapshotForBudgetButHidesToolsFromModel(t *testing.T) {
+	conversation := &invocationRecordingConversation{}
+	executor := &perTurnTargetToolExecutor{snapshots: []targetToolSnapshot{{definitions: []schema.ToolDefinition{{Name: "inspect"}}}}}
+	phases := make([]RunContext, 0, 2)
+	invoker := modelInvokerFunc(func(_ context.Context, runContext RunContext) (ModelResult, error) {
+		phases = append(phases, runContext)
+		if runContext.Phase == PhaseThinking {
+			return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "think"}}, nil
+		}
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}, FinishReason: "stop"}, nil
+	})
+	eng := NewAgentEngine(invoker, executor, conversation, targetTestPolicy{}, nil)
+
+	if _, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 1, Thinking: true}); err != nil {
+		t.Fatal(err)
+	}
+	if executor.snapshotCalls != 1 || len(conversation.requests) != 2 || len(phases) != 2 {
+		t.Fatalf("snapshots/requests/phases = %d/%d/%d", executor.snapshotCalls, len(conversation.requests), len(phases))
+	}
+	for index, request := range conversation.requests {
+		if len(request.ToolDefinitions) != 1 || request.ToolDefinitions[0].Name != "inspect" {
+			t.Fatalf("conversation request %d budget definitions = %#v", index, request.ToolDefinitions)
+		}
+	}
+	if len(phases[0].ToolDefinitions) != 0 || len(phases[1].ToolDefinitions) != 1 || phases[1].ToolDefinitions[0].Name != "inspect" {
+		t.Fatalf("model-visible definitions = thinking:%#v action:%#v", phases[0].ToolDefinitions, phases[1].ToolDefinitions)
 	}
 }
 
@@ -501,18 +640,19 @@ type targetTestConversation struct {
 	persisted []runtimecontract.PersistedRecord
 }
 
-func (c *targetTestConversation) Prepare(_ context.Context, input RunInput) (RunContext, error) {
+func (c *targetTestConversation) Prepare(_ context.Context, request ConversationRequest) (ConversationProjection, error) {
+	input := request.Input
 	if c.messages == nil {
 		c.messages = targetSchemaMessages(contractInitialMessages(input.Prompt))
 		c.persisted = append(c.persisted, contractMessageRecord(len(c.persisted)+1, "user:"+input.Prompt))
 	}
-	return RunContext{
+	return ConversationProjection{Context: RunContext{
 		Phase:    PhaseAction,
 		Messages: cloneMessages(c.messages),
 		Model:    c.input.Model,
 		Provider: c.input.Provider,
 		Effort:   c.input.Effort,
-	}, nil
+	}}, nil
 }
 
 func (c *targetTestConversation) RequestChanges(_ context.Context, changes []ConversationChange) error {
@@ -533,6 +673,24 @@ func (targetTestToolExecutor) Snapshot(context.Context) (ToolSnapshot, error) {
 
 func (targetTestToolExecutor) Execute(context.Context, ToolSnapshot, []schema.ToolCall) (ToolBatch, error) {
 	return ToolBatch{}, nil
+}
+
+type perTurnTargetToolExecutor struct {
+	snapshots     []targetToolSnapshot
+	snapshotCalls int
+	executedWith  []string
+}
+
+func (e *perTurnTargetToolExecutor) Snapshot(context.Context) (ToolSnapshot, error) {
+	index := e.snapshotCalls
+	e.snapshotCalls++
+	return e.snapshots[index], nil
+}
+
+func (e *perTurnTargetToolExecutor) Execute(_ context.Context, snapshot ToolSnapshot, calls []schema.ToolCall) (ToolBatch, error) {
+	definitions := snapshot.ToolDefinitions()
+	e.executedWith = append(e.executedWith, definitions[0].Name)
+	return ToolBatch{Results: []ToolExecutionResult{{CallID: calls[0].ID, ModelContent: "ok"}}}, nil
 }
 
 type targetScriptedToolExecutor struct {
@@ -639,8 +797,39 @@ type immutableTargetConversation struct {
 	runContext RunContext
 }
 
-func (c *immutableTargetConversation) Prepare(context.Context, RunInput) (RunContext, error) {
-	return c.runContext, nil
+type invocationRecordingConversation struct {
+	requests []ConversationRequest
+}
+
+type compactingInvocationConversation struct {
+	requests []ConversationRequest
+}
+
+func (c *compactingInvocationConversation) Prepare(_ context.Context, request ConversationRequest) (ConversationProjection, error) {
+	c.requests = append(c.requests, request)
+	projection := ConversationProjection{Context: RunContext{Messages: []schema.Message{{Role: schema.RoleUser, Content: request.Input.Prompt}}}}
+	if request.Preparation == ConversationPrepareReactive {
+		projection.Compactions = []ConversationCompaction{{Trigger: "reactive"}}
+	}
+	return projection, nil
+}
+
+func (*compactingInvocationConversation) RequestChanges(context.Context, []ConversationChange) error {
+	return nil
+}
+
+func (c *invocationRecordingConversation) Prepare(_ context.Context, request ConversationRequest) (ConversationProjection, error) {
+	request.ToolDefinitions = cloneToolDefinitions(request.ToolDefinitions)
+	c.requests = append(c.requests, request)
+	return ConversationProjection{Context: RunContext{Messages: []schema.Message{{Role: schema.RoleUser, Content: request.Input.Prompt}}}}, nil
+}
+
+func (*invocationRecordingConversation) RequestChanges(context.Context, []ConversationChange) error {
+	return nil
+}
+
+func (c *immutableTargetConversation) Prepare(context.Context, ConversationRequest) (ConversationProjection, error) {
+	return ConversationProjection{Context: c.runContext}, nil
 }
 
 func (*immutableTargetConversation) RequestChanges(context.Context, []ConversationChange) error {
@@ -649,8 +838,8 @@ func (*immutableTargetConversation) RequestChanges(context.Context, []Conversati
 
 type proposalMutatingConversation struct{}
 
-func (*proposalMutatingConversation) Prepare(context.Context, RunInput) (RunContext, error) {
-	return RunContext{}, nil
+func (*proposalMutatingConversation) Prepare(context.Context, ConversationRequest) (ConversationProjection, error) {
+	return ConversationProjection{}, nil
 }
 
 func (*proposalMutatingConversation) RequestChanges(_ context.Context, changes []ConversationChange) error {
@@ -687,7 +876,8 @@ type injectionOrderingConversation struct {
 	injected      bool
 }
 
-func (c *injectionOrderingConversation) Prepare(_ context.Context, input RunInput) (RunContext, error) {
+func (c *injectionOrderingConversation) Prepare(_ context.Context, request ConversationRequest) (ConversationProjection, error) {
+	input := request.Input
 	if c.messages == nil {
 		c.messages = []schema.Message{{Role: schema.RoleUser, Content: input.Prompt}}
 	}
@@ -698,7 +888,15 @@ func (c *injectionOrderingConversation) Prepare(_ context.Context, input RunInpu
 		)
 		c.injected = true
 	}
-	return RunContext{Messages: cloneMessages(c.messages)}, nil
+	return ConversationProjection{Context: RunContext{Messages: cloneMessages(c.messages)}}, nil
+}
+
+func factKinds(facts []Fact) []FactKind {
+	kinds := make([]FactKind, len(facts))
+	for index, fact := range facts {
+		kinds[index] = fact.Kind
+	}
+	return kinds
 }
 
 func (c *injectionOrderingConversation) RequestChanges(_ context.Context, changes []ConversationChange) error {

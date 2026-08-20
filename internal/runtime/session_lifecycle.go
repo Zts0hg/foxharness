@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 
+	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
 
@@ -27,6 +28,11 @@ type SessionStore interface {
 	Open(session.ID) (*session.StoredSession, error)
 	StartRun(*session.StoredSession, string) (*session.StoredRun, error)
 	FinishRun(*session.StoredRun) error
+	LoadMessageRecords(*session.StoredSession) ([]session.MessageRecord, error)
+	AppendMessage(*session.StoredSession, session.RunID, engine.Message, string) (session.MessageRecord, error)
+	LoadContextCompactState(*session.StoredSession) (*session.CompactState, error)
+	SaveContextCompactState(*session.StoredSession, *session.CompactState) error
+	TruncateMessagesBefore(*session.StoredSession, int64) error
 }
 
 /* SessionOptions contains persistence metadata for a newly created AgentSession. */
@@ -60,14 +66,20 @@ type RuntimeHarness struct {
 
 /* AgentSession coordinates admission and recoverable state for one live session. */
 type AgentSession struct {
-	store        SessionStore
-	profile      Profile
-	record       session.StoredSession
-	gate         chan struct{}
-	stateMu      sync.Mutex
-	closed       bool
-	recovery     *RunScope
-	releaseLease func()
+	store                  SessionStore
+	profile                Profile
+	record                 session.StoredSession
+	gate                   chan struct{}
+	stateMu                sync.Mutex
+	contextMu              sync.Mutex
+	closed                 bool
+	recovery               *RunScope
+	contextLoaded          bool
+	contextRecords         []session.MessageRecord
+	contextCompactState    *session.CompactState
+	contextInitialPrepared map[session.RunID]bool
+	contextPreparedTurns   map[contextTurnKey]bool
+	releaseLease           func()
 }
 
 /* NewRuntimeHarness constructs a shared harness around the supplied persistence port. */
@@ -223,7 +235,9 @@ func (h *RuntimeHarness) newAgentSession(profile Profile, stored *session.Stored
 	copy := *stored
 	result := &AgentSession{
 		store: h.store, profile: profile, record: copy, gate: make(chan struct{}, 1),
-		releaseLease: releaseLease,
+		contextInitialPrepared: make(map[session.RunID]bool),
+		contextPreparedTurns:   make(map[contextTurnKey]bool),
+		releaseLease:           releaseLease,
 	}
 	result.gate <- struct{}{}
 	return result, nil

@@ -9,6 +9,30 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
 
+/* Message is the narrow model-protocol message value exposed through engine contracts. */
+type Message = schema.Message
+
+/* ToolDefinition is the model-visible tool value exposed through engine contracts. */
+type ToolDefinition = schema.ToolDefinition
+
+/* ToolCall is the narrow model-protocol invocation value exposed through engine contracts. */
+type ToolCall = schema.ToolCall
+
+/* Role is the narrow model-protocol role exposed through engine contracts. */
+type Role = schema.Role
+
+const (
+	/* RoleSystem identifies a system instruction message. */
+	RoleSystem = schema.RoleSystem
+	/* RoleUser identifies a user or tool-result message. */
+	RoleUser = schema.RoleUser
+	/* RoleAssistant identifies an assistant response message. */
+	RoleAssistant = schema.RoleAssistant
+)
+
+/* ErrPromptTooLong is the normalized model error that permits one context recovery attempt. */
+var ErrPromptTooLong = errors.New("model prompt is too long")
+
 /* Phase identifies one model-visible phase within a turn. */
 type Phase string
 
@@ -132,9 +156,39 @@ type ConversationChange struct {
 	Message schema.Message
 }
 
+/* ConversationPreparation identifies why one model-visible projection is requested. */
+type ConversationPreparation string
+
+const (
+	/* ConversationPrepareNormal requests the next ordinary invocation projection. */
+	ConversationPrepareNormal ConversationPreparation = "normal"
+	/* ConversationPrepareReactive requests one prompt-too-long recovery projection. */
+	ConversationPrepareReactive ConversationPreparation = "reactive"
+)
+
+/* ConversationRequest freezes all values used to prepare one model invocation. */
+type ConversationRequest struct {
+	Input           RunInput
+	Turn            int
+	Phase           Phase
+	ToolDefinitions []schema.ToolDefinition
+	Preparation     ConversationPreparation
+}
+
+/* ConversationCompaction describes a committed context reduction represented by a projection. */
+type ConversationCompaction struct {
+	Trigger string
+}
+
+/* ConversationProjection contains one model-visible context and its committed preparation effects. */
+type ConversationProjection struct {
+	Context     RunContext
+	Compactions []ConversationCompaction
+}
+
 /* Conversation prepares immutable invocation snapshots and accepts ordered change requests. */
 type Conversation interface {
-	Prepare(context.Context, RunInput) (RunContext, error)
+	Prepare(context.Context, ConversationRequest) (ConversationProjection, error)
 	RequestChanges(context.Context, []ConversationChange) error
 }
 
@@ -193,6 +247,8 @@ const (
 	FactMessageDelta FactKind = "message_delta"
 	/* FactThinking marks the thinking phase for one turn. */
 	FactThinking FactKind = "thinking"
+	/* FactContextCompacted marks a committed context reduction before model invocation. */
+	FactContextCompacted FactKind = "compaction"
 	/* FactToolCall carries one ordered model-requested tool invocation. */
 	FactToolCall FactKind = "tool_call"
 	/* FactToolResult carries one ordered correlated tool result. */
@@ -286,12 +342,6 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 	if err != nil {
 		return e.fail(emit, RunOutcome{}, "provider", fmt.Errorf("模型生成失败: %w", err))
 	}
-	snapshot, err := e.tools.Snapshot(ctx)
-	if err != nil {
-		return e.fail(emit, RunOutcome{}, "tool", err)
-	}
-
-	definitions := cloneToolDefinitions(snapshot.ToolDefinitions())
 	outcome := RunOutcome{}
 	emitModelFact := func(fact ModelFact) {
 		if fact.Kind == ModelFactMessageDelta && fact.Content != "" {
@@ -301,6 +351,11 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 
 	for turn := 1; ; turn++ {
 		outcome.TurnCount = turn
+		snapshot, err := e.tools.Snapshot(ctx)
+		if err != nil {
+			return e.fail(emit, outcome, "tool", err)
+		}
+		definitions := cloneToolDefinitions(snapshot.ToolDefinitions())
 		beforeTurn, err := policyRun.BeforeTurn(ctx, TurnState{Turn: turn})
 		if err != nil {
 			return e.fail(emit, outcome, "policy", err)
@@ -310,10 +365,14 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		}
 		if input.Thinking {
 			emit(Fact{Kind: FactThinking, Turn: turn})
-			thinkingContext, err := e.prepareContext(ctx, input, turn, PhaseThinking, nil)
+			thinkingContext, compactions, err := e.prepareContext(ctx, input, turn, PhaseThinking, definitions, ConversationPrepareNormal)
 			if err != nil {
 				return e.fail(emit, outcome, "conversation", err)
 			}
+			for _, compaction := range compactions {
+				emit(Fact{Kind: FactContextCompacted, Turn: turn, Phase: PhaseThinking, Name: compaction.Trigger})
+			}
+			thinkingContext.ToolDefinitions = nil
 			thinking, err := modelRun.Invoke(ctx, thinkingContext, emitModelFact)
 			if err != nil {
 				return e.fail(emit, outcome, "provider", fmt.Errorf("模型生成失败: %w", err))
@@ -328,11 +387,23 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 			}
 		}
 
-		runContext, err := e.prepareContext(ctx, input, turn, PhaseAction, definitions)
+		runContext, compactions, err := e.prepareContext(ctx, input, turn, PhaseAction, definitions, ConversationPrepareNormal)
 		if err != nil {
 			return e.fail(emit, outcome, "conversation", err)
 		}
+		for _, compaction := range compactions {
+			emit(Fact{Kind: FactContextCompacted, Turn: turn, Phase: PhaseAction, Name: compaction.Trigger})
+		}
 		modelResult, err := modelRun.Invoke(ctx, runContext, emitModelFact)
+		if errors.Is(err, ErrPromptTooLong) {
+			retryContext, recoveryCompactions, prepareErr := e.prepareContext(ctx, input, turn, PhaseAction, definitions, ConversationPrepareReactive)
+			if prepareErr == nil && len(recoveryCompactions) > 0 {
+				for _, compaction := range recoveryCompactions {
+					emit(Fact{Kind: FactContextCompacted, Turn: turn, Phase: PhaseAction, Name: compaction.Trigger})
+				}
+				modelResult, err = modelRun.Invoke(ctx, retryContext, emitModelFact)
+			}
+		}
 		if err != nil {
 			return e.fail(emit, outcome, "provider", fmt.Errorf("模型生成失败: %w", err))
 		}
@@ -395,15 +466,21 @@ func (e *AgentEngine) prepareContext(
 	turn int,
 	phase Phase,
 	definitions []schema.ToolDefinition,
-) (RunContext, error) {
-	runContext, err := e.conversation.Prepare(ctx, input)
-	if err != nil {
-		return RunContext{}, err
+	preparation ConversationPreparation,
+) (RunContext, []ConversationCompaction, error) {
+	request := ConversationRequest{
+		Input: input, Turn: turn, Phase: phase,
+		ToolDefinitions: cloneToolDefinitions(definitions), Preparation: preparation,
 	}
+	projection, err := e.conversation.Prepare(ctx, request)
+	if err != nil {
+		return RunContext{}, nil, err
+	}
+	runContext := projection.Context
 	runContext.Turn = turn
 	runContext.Phase = phase
 	runContext.ToolDefinitions = cloneToolDefinitions(definitions)
-	return cloneRunContext(runContext), nil
+	return cloneRunContext(runContext), append([]ConversationCompaction(nil), projection.Compactions...), nil
 }
 
 func (e *AgentEngine) executeTools(

@@ -43,3 +43,18 @@ func Render(fragments []Fragment) string {
 	}
 	return strings.Join(parts, "\n\n")
 }
+
+/* CompactedSummary renders the compatibility-preserving model-visible summary body. */
+func CompactedSummary(summary, transcriptPath string) string {
+	body := strings.TrimSpace(summary)
+	var result strings.Builder
+	result.WriteString("## Compacted Context Summary\n\n")
+	result.WriteString("This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion.\n\n")
+	result.WriteString(body)
+	result.WriteString("\n\n")
+	if transcriptPath != "" {
+		result.WriteString(fmt.Sprintf("If you need specific details from before compaction, read the full transcript at: %s\n\n", transcriptPath))
+	}
+	result.WriteString("Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary.")
+	return result.String()
+}

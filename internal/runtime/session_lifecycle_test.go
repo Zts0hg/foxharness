@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -317,19 +318,26 @@ type lifecycleObserver struct{}
 func (lifecycleObserver) Observe(context.Context, engine.Fact) {}
 
 type lifecycleStore struct {
-	mu         sync.Mutex
-	sessions   map[session.ID]*session.StoredSession
-	starts     int
-	finishes   int
-	startErr   error
-	finishErr  error
-	lastCreate session.CreateOptions
-	runSession session.ID
-	openID     session.ID
+	mu          sync.Mutex
+	sessions    map[session.ID]*session.StoredSession
+	starts      int
+	finishes    int
+	startErr    error
+	finishErr   error
+	lastCreate  session.CreateOptions
+	runSession  session.ID
+	openID      session.ID
+	messages    map[session.ID][]session.MessageRecord
+	compact     map[session.ID]*session.CompactState
+	messageErr  error
+	messageTime time.Time
 }
 
 func newLifecycleStore() *lifecycleStore {
-	return &lifecycleStore{sessions: map[session.ID]*session.StoredSession{}}
+	return &lifecycleStore{
+		sessions: map[session.ID]*session.StoredSession{},
+		messages: map[session.ID][]session.MessageRecord{}, compact: map[session.ID]*session.CompactState{},
+	}
 }
 
 func (s *lifecycleStore) Create(options session.CreateOptions) (*session.StoredSession, error) {
@@ -392,6 +400,63 @@ func (s *lifecycleStore) FinishRun(*session.StoredRun) error {
 	return nil
 }
 
+func (s *lifecycleStore) LoadMessageRecords(storedSession *session.StoredSession) ([]session.MessageRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneMessageRecords(s.messages[storedSession.ID]), nil
+}
+
+func (s *lifecycleStore) AppendMessage(storedSession *session.StoredSession, runID session.RunID, message engine.Message, display string) (session.MessageRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.messageErr != nil {
+		err := s.messageErr
+		s.messageErr = nil
+		return session.MessageRecord{}, err
+	}
+	records := s.messages[storedSession.ID]
+	seq := int64(0)
+	for _, record := range records {
+		if record.Seq >= seq {
+			seq = record.Seq + 1
+		}
+	}
+	persisted := session.MessageRecord{
+		Seq: seq, RunID: runID, Kind: session.MessageKindNormal,
+		Time: s.messageTime, Message: cloneContextMessage(message), DisplayContent: display,
+	}
+	records = append(records, persisted)
+	s.messages[storedSession.ID] = records
+	return persisted, nil
+}
+
+func (s *lifecycleStore) LoadContextCompactState(storedSession *session.StoredSession) (*session.CompactState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneCompactState(s.compact[storedSession.ID]), nil
+}
+
+func (s *lifecycleStore) SaveContextCompactState(storedSession *session.StoredSession, state *session.CompactState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.compact[storedSession.ID] = cloneCompactState(state)
+	return nil
+}
+
+func (s *lifecycleStore) TruncateMessagesBefore(storedSession *session.StoredSession, seq int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	records := s.messages[storedSession.ID]
+	kept := make([]session.MessageRecord, 0, len(records))
+	for _, record := range records {
+		if record.Seq < seq {
+			kept = append(kept, record)
+		}
+	}
+	s.messages[storedSession.ID] = kept
+	return nil
+}
+
 func (s *lifecycleStore) startCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -438,6 +503,36 @@ func (s *lifecycleStore) returnOpenID(id session.ID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.openID = id
+}
+
+func (s *lifecycleStore) messageRecords(id session.ID) []session.MessageRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneMessageRecords(s.messages[id])
+}
+
+func (s *lifecycleStore) seedMessages(id session.ID, records []session.MessageRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages[id] = cloneMessageRecords(records)
+}
+
+func (s *lifecycleStore) seedCompactState(id session.ID, state *session.CompactState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.compact[id] = cloneCompactState(state)
+}
+
+func (s *lifecycleStore) compactState(id session.ID) *session.CompactState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneCompactState(s.compact[id])
+}
+
+func (s *lifecycleStore) failNextMessage(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messageErr = err
 }
 
 func intPointer(value int) *int { return &value }

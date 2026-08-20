@@ -130,13 +130,14 @@ type policyConversation struct {
 	requests [][]schema.Message
 }
 
-func (c *policyConversation) Prepare(_ context.Context, input engine.RunInput) (engine.RunContext, error) {
+func (c *policyConversation) Prepare(_ context.Context, request engine.ConversationRequest) (engine.ConversationProjection, error) {
+	input := request.Input
 	if c.messages == nil {
 		c.messages = []schema.Message{{Role: schema.RoleUser, Content: input.Prompt}}
 	}
-	request := clonePolicyMessages(c.messages)
-	c.requests = append(c.requests, request)
-	return engine.RunContext{Messages: request}, nil
+	messages := clonePolicyMessages(c.messages)
+	c.requests = append(c.requests, messages)
+	return engine.ConversationProjection{Context: engine.RunContext{Messages: messages}}, nil
 }
 
 func (c *policyConversation) RequestChanges(_ context.Context, changes []engine.ConversationChange) error {

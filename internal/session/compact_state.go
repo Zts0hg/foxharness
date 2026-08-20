@@ -46,3 +46,13 @@ func SaveCompactState(s *StoredSession, state *CompactState) error {
 	}
 	return nil
 }
+
+/* LoadContextCompactState reads the persisted projection state for runtime. */
+func (s *FileStore) LoadContextCompactState(storedSession *StoredSession) (*CompactState, error) {
+	return LoadCompactState(storedSession)
+}
+
+/* SaveContextCompactState writes one runtime-authorized projection state. */
+func (s *FileStore) SaveContextCompactState(storedSession *StoredSession, state *CompactState) error {
+	return SaveCompactState(storedSession, state)
+}
