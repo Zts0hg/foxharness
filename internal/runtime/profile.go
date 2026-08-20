@@ -106,6 +106,8 @@ type RunSpec struct {
 	AllowedTools      []string
 	DelegationDepth   *int
 	Observer          RunObserver
+	Permission        PermissionScope
+	childPermission   *ChildPermissionRequest
 }
 
 /* RunSnapshot is the flat immutable diagnostic form of a resolved RunSpec. */
@@ -135,9 +137,11 @@ type RunSnapshot struct {
 
 /* ResolvedRunSpec is a validated run input frozen against one Profile. */
 type ResolvedRunSpec struct {
-	snapshot RunSnapshot
-	tools    []string
-	observer RunObserver
+	snapshot        RunSnapshot
+	tools           []string
+	observer        RunObserver
+	permission      PermissionScope
+	childPermission *ChildPermissionRequest
 }
 
 /* ProfileNames returns the seven profiles in their stable public order. */
@@ -210,8 +214,10 @@ func (p Profile) Resolve(spec RunSpec) (ResolvedRunSpec, error) {
 			MaxTurns: maxTurns, TaskTimeout: taskTimeout, Thinking: thinking, ReadOnly: readOnly,
 			AllowedTools: strings.Join(tools, ","), DelegationDepth: depth,
 		},
-		tools:    append([]string(nil), tools...),
-		observer: spec.Observer,
+		tools:           append([]string(nil), tools...),
+		observer:        spec.Observer,
+		permission:      spec.Permission,
+		childPermission: cloneChildPermissionRequest(spec.childPermission),
 	}, nil
 }
 
@@ -228,6 +234,11 @@ func (s ResolvedRunSpec) AllowedTools() []string {
 /* Observer returns the run-scoped observer supplied by the caller. */
 func (s ResolvedRunSpec) Observer() RunObserver {
 	return s.observer
+}
+
+/* Permission returns the run-scoped permission authority supplied by the caller. */
+func (s ResolvedRunSpec) Permission() PermissionScope {
+	return s.permission
 }
 
 func validateSessionSelection(snapshot ProfileSnapshot, spec RunSpec) error {

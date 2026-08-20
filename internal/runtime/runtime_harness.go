@@ -17,6 +17,8 @@ type RunAssembly struct {
 	Run          RunScopeSnapshot
 	Spec         RunSnapshot
 	AllowedTools []string
+	Permission   PermissionScope
+	ChildRunner  *ChildRunner
 }
 
 /* RuntimeFact correlates one canonical engine fact with its owning session and run. */
@@ -58,11 +60,12 @@ type RunWarning struct {
 
 /* RunResult combines the engine outcome with runtime-owned artifacts and warnings. */
 type RunResult struct {
-	SessionID     session.ID
-	RunID         session.RunID
-	Outcome       engine.RunOutcome
-	ArtifactPaths []string
-	Warnings      []RunWarning
+	SessionID        session.ID
+	RunID            session.RunID
+	Outcome          engine.RunOutcome
+	ArtifactPaths    []string
+	Warnings         []RunWarning
+	CommittedMessage string
 }
 
 /* HarnessDependencies contains immutable factories and shared dependency hooks. */
@@ -84,9 +87,27 @@ func (s *AgentSession) Run(ctx context.Context, spec RunSpec) (result RunResult,
 	}
 	assembly := RunAssembly{
 		Session: s.Snapshot(), Run: scope.Snapshot(), Spec: scope.resolved.Snapshot(),
-		AllowedTools: scope.AllowedTools(),
+		AllowedTools: scope.AllowedTools(), Permission: scope.Permission(),
 	}
 	observer := newRuntimeObserver(assembly, scope.Observer())
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			panicErr := fmt.Errorf("runtime run panic: %v", recovered)
+			result.Outcome, runErr = failedRuntimeOutcome(scope.Context(), observer, "panic", panicErr)
+			result, runErr = s.finishRun(scope, observer, result, runErr)
+		}
+	}()
+	assembly.ChildRunner, err = s.NewChildRunner(scope)
+	if err != nil {
+		result.Outcome, runErr = failedAssemblyOutcome(scope.Context(), observer, "child", err)
+		return s.finishRun(scope, observer, result, runErr)
+	}
+	permission, err := resolveRunPermission(scope.Context(), scope, assembly)
+	if err != nil {
+		result.Outcome, runErr = failedAssemblyOutcome(scope.Context(), observer, "permission", err)
+		return s.finishRun(scope, observer, result, runErr)
+	}
+	assembly.Permission = permission
 
 	artifactJournal, warning := buildArtifactJournal(scope.Context(), s.dependencies, assembly)
 	if warning != nil {
@@ -106,6 +127,10 @@ func (s *AgentSession) Run(ctx context.Context, spec RunSpec) (result RunResult,
 		result.Outcome, runErr = s.runAssembled(scope, assembly, observer, model)
 	}
 
+	return s.finishRun(scope, observer, result, runErr)
+}
+
+func (s *AgentSession) finishRun(scope *RunScope, observer *runtimeObserver, result RunResult, runErr error) (RunResult, error) {
 	finishErr := s.FinishRun(scope)
 	if finishErr != nil {
 		if runErr == nil {
@@ -150,12 +175,12 @@ func (s *AgentSession) runAssembled(
 
 func failedAssemblyOutcome(ctx context.Context, observer *runtimeObserver, kind string, err error) (engine.RunOutcome, error) {
 	wrapped := fmt.Errorf("assemble runtime %s: %w", kind, err)
-	observer.Observe(ctx, engine.Fact{Kind: engine.FactRunStarted, Sequence: 1})
-	observer.Observe(ctx, engine.Fact{
-		Kind: engine.FactRunError, Sequence: 2, Content: wrapped.Error(), IsError: true,
-	})
-	outcome := engine.RunOutcome{ErrorKind: kind, Err: wrapped}
-	return outcome, wrapped
+	return failedRuntimeOutcome(ctx, observer, kind, wrapped)
+}
+
+func failedRuntimeOutcome(ctx context.Context, observer *runtimeObserver, kind string, err error) (engine.RunOutcome, error) {
+	observer.observeFailure(ctx, err)
+	return engine.RunOutcome{ErrorKind: kind, Err: err}, err
 }
 
 func buildModel(ctx context.Context, dependencies HarnessDependencies, request RunAssembly) (engine.ModelInvoker, error) {
@@ -246,16 +271,17 @@ func buildTelemetryJournal(ctx context.Context, dependencies HarnessDependencies
 }
 
 type runtimeObserver struct {
-	mu            sync.Mutex
-	sessionID     session.ID
-	runID         session.RunID
-	observer      RunObserver
-	artifacts     SessionArtifactJournal
-	telemetry     TelemetryJournal
-	warnings      []RunWarning
-	artifactPaths []string
-	terminal      *engine.Fact
-	lastSequence  int
+	mu               sync.Mutex
+	sessionID        session.ID
+	runID            session.RunID
+	observer         RunObserver
+	artifacts        SessionArtifactJournal
+	telemetry        TelemetryJournal
+	warnings         []RunWarning
+	artifactPaths    []string
+	committedMessage string
+	terminal         *engine.Fact
+	lastSequence     int
 }
 
 func newRuntimeObserver(request RunAssembly, observer RunObserver) *runtimeObserver {
@@ -288,6 +314,9 @@ func (o *runtimeObserver) dispatch(ctx context.Context, fact engine.Fact) {
 		o.observer.ObserveRunFact(ctx, correlated)
 	}
 	o.mu.Lock()
+	if fact.Kind == engine.FactMessage {
+		o.committedMessage = fact.Content
+	}
 	if fact.ArtifactPath != "" {
 		o.artifactPaths = append(o.artifactPaths, fact.ArtifactPath)
 	}
@@ -302,6 +331,19 @@ func (o *runtimeObserver) dispatch(ctx context.Context, fact engine.Fact) {
 			o.addWarning(RunWarning{Sink: "telemetry", Operation: "record_fact", Error: err.Error()})
 		}
 	}
+}
+
+func (o *runtimeObserver) observeFailure(ctx context.Context, err error) {
+	o.mu.Lock()
+	sequence := o.lastSequence
+	o.mu.Unlock()
+	if sequence == 0 {
+		o.Observe(ctx, engine.Fact{Kind: engine.FactRunStarted, Sequence: 1})
+		sequence = 1
+	}
+	o.Observe(ctx, engine.Fact{
+		Kind: engine.FactRunError, Sequence: sequence + 1, Content: err.Error(), IsError: true,
+	})
 }
 
 func (o *runtimeObserver) finish(ctx context.Context, finalErr error, finishFailed bool) {
@@ -334,8 +376,9 @@ func (o *runtimeObserver) result(outcome engine.RunOutcome) RunResult {
 	defer o.mu.Unlock()
 	return RunResult{
 		SessionID: o.sessionID, RunID: o.runID, Outcome: outcome,
-		ArtifactPaths: append([]string(nil), o.artifactPaths...),
-		Warnings:      append([]RunWarning(nil), o.warnings...),
+		ArtifactPaths:    append([]string(nil), o.artifactPaths...),
+		Warnings:         append([]RunWarning(nil), o.warnings...),
+		CommittedMessage: o.committedMessage,
 	}
 }
 

@@ -55,6 +55,8 @@ type AgentSessionSnapshot struct {
 	RootDir         string
 	ParentSessionID session.ID
 	ParentRunID     session.RunID
+	DelegationID    string
+	Agent           string
 }
 
 /* RuntimeHarness holds concurrency-safe factories and persistence dependencies. */
@@ -68,6 +70,7 @@ type RuntimeHarness struct {
 
 /* AgentSession coordinates admission and recoverable state for one live session. */
 type AgentSession struct {
+	harness                *RuntimeHarness
 	store                  SessionStore
 	profile                Profile
 	record                 session.StoredSession
@@ -184,6 +187,8 @@ func (s *AgentSession) Snapshot() AgentSessionSnapshot {
 		RootDir:         s.record.RootDir,
 		ParentSessionID: s.record.ParentSessionID,
 		ParentRunID:     s.record.ParentRunID,
+		DelegationID:    s.record.DelegationID,
+		Agent:           s.record.Agent,
 	}
 }
 
@@ -298,7 +303,7 @@ func (h *RuntimeHarness) newAgentSession(profile Profile, stored *session.Stored
 	}
 	copy := *stored
 	result := &AgentSession{
-		store: h.store, profile: profile, record: copy, gate: make(chan struct{}, 1),
+		harness: h, store: h.store, profile: profile, record: copy, gate: make(chan struct{}, 1),
 		dependencies: h.dependencies, limiter: h.limiters[profileSnapshot.Name],
 		contextInitialPrepared: make(map[session.RunID]bool),
 		contextPreparedTurns:   make(map[contextTurnKey]bool),

@@ -65,6 +65,11 @@ func (s *RunScope) Observer() RunObserver {
 	return s.resolved.Observer()
 }
 
+/* Permission returns the permission authority frozen when the run was admitted. */
+func (s *RunScope) Permission() PermissionScope {
+	return s.resolved.Permission()
+}
+
 /* Context returns the run-owned cancellation context. */
 func (s *RunScope) Context() context.Context {
 	return s.ctx
