@@ -315,7 +315,7 @@ func TestFileStoreSatisfiesRuntimeSessionStoreAndPersistsRunMetadata(t *testing.
 
 type lifecycleObserver struct{}
 
-func (lifecycleObserver) Observe(context.Context, engine.Fact) {}
+func (lifecycleObserver) ObserveRunFact(context.Context, RuntimeFact) {}
 
 type lifecycleStore struct {
 	mu          sync.Mutex

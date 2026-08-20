@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
 
@@ -106,7 +105,7 @@ type RunSpec struct {
 	ReadOnly          *bool
 	AllowedTools      []string
 	DelegationDepth   *int
-	Observer          engine.Observer
+	Observer          RunObserver
 }
 
 /* RunSnapshot is the flat immutable diagnostic form of a resolved RunSpec. */
@@ -138,7 +137,7 @@ type RunSnapshot struct {
 type ResolvedRunSpec struct {
 	snapshot RunSnapshot
 	tools    []string
-	observer engine.Observer
+	observer RunObserver
 }
 
 /* ProfileNames returns the seven profiles in their stable public order. */
@@ -227,7 +226,7 @@ func (s ResolvedRunSpec) AllowedTools() []string {
 }
 
 /* Observer returns the run-scoped observer supplied by the caller. */
-func (s ResolvedRunSpec) Observer() engine.Observer {
+func (s ResolvedRunSpec) Observer() RunObserver {
 	return s.observer
 }
 

@@ -152,11 +152,12 @@ func TestMemoryStoreIsOnlyWorkingMemoryOwner(t *testing.T) {
 	}
 }
 
-func TestTargetAgentEngineHasNoProductionCallersBeforeProfileCutover(t *testing.T) {
+func TestRuntimeHarnessIsTheOnlyTargetAgentEngineAssembler(t *testing.T) {
 	root := moduleRoot(t)
 	callers := productionSelectorReferences(t, root, modulePath+"/internal/engine", "NewAgentEngine")
-	if len(callers) > 0 {
-		t.Fatalf("target AgentEngine production callers before profile cutover:\n%s", strings.Join(callers, "\n"))
+	want := []string{"internal/runtime/runtime_harness.go"}
+	if fmt.Sprint(callers) != fmt.Sprint(want) {
+		t.Fatalf("target AgentEngine production callers = %v, want sole runtime assembly %v", callers, want)
 	}
 }
 

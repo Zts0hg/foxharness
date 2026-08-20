@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
 
@@ -62,7 +61,7 @@ func (s *RunScope) AllowedTools() []string {
 }
 
 /* Observer returns the observer frozen when the run was admitted. */
-func (s *RunScope) Observer() engine.Observer {
+func (s *RunScope) Observer() RunObserver {
 	return s.resolved.Observer()
 }
 
@@ -102,5 +101,6 @@ func (s *RunScope) releaseAdmission() {
 		return
 	}
 	s.released = true
+	s.owner.releaseCapacity()
 	s.owner.release()
 }

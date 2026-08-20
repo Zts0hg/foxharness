@@ -59,9 +59,11 @@ type AgentSessionSnapshot struct {
 
 /* RuntimeHarness holds concurrency-safe factories and persistence dependencies. */
 type RuntimeHarness struct {
-	store SessionStore
-	mu    sync.Mutex
-	open  map[session.ID]struct{}
+	store        SessionStore
+	dependencies HarnessDependencies
+	limiters     map[ProfileName]chan struct{}
+	mu           sync.Mutex
+	open         map[session.ID]struct{}
 }
 
 /* AgentSession coordinates admission and recoverable state for one live session. */
@@ -80,14 +82,36 @@ type AgentSession struct {
 	contextInitialPrepared map[session.RunID]bool
 	contextPreparedTurns   map[contextTurnKey]bool
 	releaseLease           func()
+	dependencies           HarnessDependencies
+	limiter                chan struct{}
 }
 
 /* NewRuntimeHarness constructs a shared harness around the supplied persistence port. */
-func NewRuntimeHarness(store SessionStore) (*RuntimeHarness, error) {
+func NewRuntimeHarness(store SessionStore, configured ...HarnessDependencies) (*RuntimeHarness, error) {
 	if isNilSessionStore(store) {
 		return nil, errors.New("runtime session store is required")
 	}
-	return &RuntimeHarness{store: store, open: make(map[session.ID]struct{})}, nil
+	if len(configured) > 1 {
+		return nil, errors.New("runtime harness accepts at most one dependency set")
+	}
+	dependencies := HarnessDependencies{}
+	if len(configured) == 1 {
+		dependencies = configured[0]
+	}
+	limiters := make(map[ProfileName]chan struct{})
+	for _, name := range profileOrder {
+		profile, err := ResolveProfile(name)
+		if err != nil {
+			return nil, err
+		}
+		if capacity := profile.Snapshot().MaxConcurrency; capacity > 0 {
+			limiters[name] = make(chan struct{}, capacity)
+		}
+	}
+	return &RuntimeHarness{
+		store: store, dependencies: dependencies, limiters: limiters,
+		open: make(map[session.ID]struct{}),
+	}, nil
 }
 
 /* CreateSession persists and opens a new live session bound to the selected profile. */
@@ -112,7 +136,20 @@ func (h *RuntimeHarness) CreateSession(ctx context.Context, name ProfileName, op
 	if err != nil {
 		return nil, fmt.Errorf("create runtime session: %w", err)
 	}
-	return h.newAgentSession(profile, stored)
+	agentSession, err := h.newAgentSession(profile, stored)
+	if err != nil {
+		return nil, err
+	}
+	if h.dependencies.InitializeSession != nil {
+		if err := h.dependencies.InitializeSession(ctx, agentSession.Snapshot()); err != nil {
+			agentSession.stateMu.Lock()
+			agentSession.closed = true
+			agentSession.stateMu.Unlock()
+			agentSession.releaseLease()
+			return nil, fmt.Errorf("initialize runtime session: %w", err)
+		}
+	}
+	return agentSession, nil
 }
 
 /* OpenSession opens a stored record as a live session under its matching profile. */
@@ -162,23 +199,36 @@ func (s *AgentSession) BeginRun(ctx context.Context, spec RunSpec) (*RunScope, e
 	if err := s.acquire(ctx); err != nil {
 		return nil, err
 	}
+	if err := s.acquireCapacity(ctx); err != nil {
+		s.release()
+		return nil, err
+	}
 
 	record := s.record
 	storedRun, err := s.store.StartRun(&record, spec.Prompt)
 	if err != nil {
+		s.releaseCapacity()
 		s.release()
 		return nil, fmt.Errorf("start stored run: %w", err)
 	}
 	if storedRun == nil {
+		s.releaseCapacity()
 		s.release()
 		return nil, errors.New("start stored run returned nil")
 	}
 	if storedRun.SessionID != s.record.ID {
+		s.releaseCapacity()
 		s.release()
 		return nil, fmt.Errorf("stored run session %q does not match live session %q", storedRun.SessionID, s.record.ID)
 	}
 
-	runContext, cancel := context.WithCancel(ctx)
+	var runContext context.Context
+	var cancel context.CancelFunc
+	if timeout := resolved.Snapshot().TaskTimeout; timeout > 0 {
+		runContext, cancel = context.WithTimeout(ctx, timeout)
+	} else {
+		runContext, cancel = context.WithCancel(ctx)
+	}
 	runCopy := *storedRun
 	return newRunScope(s, runContext, cancel, runCopy, resolved), nil
 }
@@ -187,6 +237,20 @@ func (s *AgentSession) BeginRun(ctx context.Context, spec RunSpec) (*RunScope, e
 func (s *AgentSession) FinishRun(scope *RunScope) error {
 	if scope == nil || scope.owner != s {
 		return ErrRunScopeOwner
+	}
+	return scope.finish()
+}
+
+/* RecoverRunFinish retries the hidden durable finish of a Run call that failed terminal persistence. */
+func (s *AgentSession) RecoverRunFinish(ctx context.Context) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	s.stateMu.Lock()
+	scope := s.recovery
+	s.stateMu.Unlock()
+	if scope == nil {
+		return nil
 	}
 	return scope.finish()
 }
@@ -235,6 +299,7 @@ func (h *RuntimeHarness) newAgentSession(profile Profile, stored *session.Stored
 	copy := *stored
 	result := &AgentSession{
 		store: h.store, profile: profile, record: copy, gate: make(chan struct{}, 1),
+		dependencies: h.dependencies, limiter: h.limiters[profileSnapshot.Name],
 		contextInitialPrepared: make(map[session.RunID]bool),
 		contextPreparedTurns:   make(map[contextTurnKey]bool),
 		releaseLease:           releaseLease,
@@ -302,6 +367,24 @@ func (s *AgentSession) lock(ctx context.Context) error {
 
 func (s *AgentSession) release() {
 	s.gate <- struct{}{}
+}
+
+func (s *AgentSession) acquireCapacity(ctx context.Context) error {
+	if s.limiter == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case s.limiter <- struct{}{}:
+		return nil
+	}
+}
+
+func (s *AgentSession) releaseCapacity() {
+	if s.limiter != nil {
+		<-s.limiter
+	}
 }
 
 func contextError(ctx context.Context) error {
