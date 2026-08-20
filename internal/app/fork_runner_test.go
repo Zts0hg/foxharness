@@ -5,17 +5,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/childruntime"
+	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/subagent"
 )
 
 func TestSubagentForkRunner_UsesLiveGetters(t *testing.T) {
-	mgrCalls := 0
+	runnerCalls := 0
 	sessCalls := 0
 	r := &subagentForkRunner{
-		getManager: func() *subagent.Manager {
-			mgrCalls++
+		getRunner: func() subagent.Runner {
+			runnerCalls++
 			return nil
 		},
 		getSession: func() string {
@@ -26,14 +28,14 @@ func TestSubagentForkRunner_UsesLiveGetters(t *testing.T) {
 	// Manager is nil, so Run returns an error — but we still want to know
 	// that the manager getter was invoked at call time, not at construction.
 	_, _ = r.Run(t.Context(), "task", "agent", nil)
-	if mgrCalls == 0 {
-		t.Error("getManager must be called at Run time, not snapshot")
+	if runnerCalls == 0 {
+		t.Error("getRunner must be called at Run time, not snapshot")
 	}
 	// Run twice — getters must be re-invoked, proving the runner does not
 	// cache stale state across calls.
 	_, _ = r.Run(t.Context(), "task2", "agent", nil)
-	if mgrCalls != 2 {
-		t.Errorf("expected getManager to be called per Run, got %d", mgrCalls)
+	if runnerCalls != 2 {
+		t.Errorf("expected getRunner to be called per Run, got %d", runnerCalls)
 	}
 }
 
@@ -44,8 +46,11 @@ func TestIACHD005ForkRunnerReadsLiveManagerAndSessionForEveryInvocation(t *testi
 	parentSessions := []string{"parent-one", "parent-two"}
 	call := 0
 	runner := &subagentForkRunner{
-		getManager: func() *subagent.Manager {
-			return subagent.NewManager(providers[call], workDir)
+		getRunner: func() subagent.Runner {
+			return childruntime.New(childruntime.Config{
+				Provider: providers[call], WorkDir: workDir, ParentProfile: childruntime.TUIInteractive,
+				Permission: permission.NewCoordinator(permission.Config{State: permission.NewState(permission.ModeFullAccess, true)}),
+			})
 		},
 		getSession: func() string {
 			return parentSessions[call]

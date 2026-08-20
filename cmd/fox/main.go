@@ -42,6 +42,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
+	"github.com/Zts0hg/foxharness/internal/childruntime"
 	"github.com/Zts0hg/foxharness/internal/configcmd"
 	"github.com/Zts0hg/foxharness/internal/effort"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
@@ -49,6 +50,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/settings"
+	"github.com/Zts0hg/foxharness/internal/subagent"
 	"github.com/Zts0hg/foxharness/internal/tui"
 
 	"golang.org/x/term"
@@ -98,6 +100,7 @@ func main() {
 	cfg.Model = resolvedLLM.Model
 	cfg.LLM.Model = resolvedLLM.Model
 	applyPersistedEffort(homeDir, &cfg, resolvedLLM)
+	cfg.NewChildRunner = newChildRunner
 	if err := validateEffortConfig(&cfg, resolvedLLM); err != nil {
 		exitWithError(err)
 	}
@@ -150,6 +153,15 @@ func main() {
 	if err := app.RunCLI(context.Background(), cfg); err != nil {
 		exitWithError(err)
 	}
+}
+
+func newChildRunner(config app.ChildRunnerConfig) subagent.Runner {
+	return childruntime.New(childruntime.Config{
+		Provider: config.Provider, WorkDir: config.WorkDir,
+		ParentProfile:    childruntime.ParentProfile(config.ParentProfile),
+		ProviderProtocol: config.ProviderProtocol, Model: config.Model, Effort: config.Effort,
+		Permission: config.Permission, ParentEvidence: config.ParentEvidence,
+	})
 }
 
 func exitWithError(err error) {

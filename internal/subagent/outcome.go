@@ -1,15 +1,11 @@
 package subagent
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
 )
 
 // OutcomeStatus identifies the terminal state of one ChildRun invocation.
@@ -79,31 +75,6 @@ func FormatFailureOutcome(outcome *Result, terminalErr error) string {
 	return text.String()
 }
 
-type outcomeRecorder struct {
-	runID  string
-	report string
-}
-
-func (r *outcomeRecorder) OnRunStart(_ context.Context, _ string, runID string) {
-	r.runID = runID
-}
-
-func (*outcomeRecorder) OnThinking(context.Context, int) {}
-
-func (*outcomeRecorder) OnCompaction(context.Context, string) {}
-
-func (*outcomeRecorder) OnToolCall(context.Context, string, string) {}
-
-func (*outcomeRecorder) OnToolResult(context.Context, string, string, bool) {}
-
-func (r *outcomeRecorder) OnMessage(_ context.Context, content string) {
-	r.report = content
-}
-
-func (*outcomeRecorder) OnRunComplete(context.Context, engine.RunResult) {}
-
-func (*outcomeRecorder) OnRunError(context.Context, string, string, error) {}
-
 func newChildOutcome(req Request) *Result {
 	agent := AgentID(strings.TrimSpace(string(req.Agent)))
 	if agent == "" {
@@ -118,26 +89,6 @@ func newChildOutcome(req Request) *Result {
 		Depth:           req.Depth,
 		Status:          OutcomeStartFailed,
 	}
-}
-
-func classifyOutcome(err error, runID string) OutcomeStatus {
-	switch {
-	case err == nil:
-		return OutcomeSucceeded
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return OutcomeCancelled
-	case isTurnLimitError(err):
-		return OutcomeTurnExhausted
-	case runID == "":
-		return OutcomeStartFailed
-	default:
-		return OutcomeFailed
-	}
-}
-
-func isTurnLimitError(err error) bool {
-	var turnLimit *engine.TurnLimitError
-	return errors.As(err, &turnLimit)
 }
 
 func newChildInvocationID() string {

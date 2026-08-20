@@ -143,10 +143,7 @@ func TestMemoryStoreIsOnlyWorkingMemoryOwner(t *testing.T) {
 		t.Fatalf("working-memory ownership escaped internal/memory:\n%s", strings.Join(got, "\n"))
 	}
 	got := workingMemoryPathCompatibilityUsage(t, root)
-	want := []string{
-		"internal/feishu/runner.go:MemoryPath=1",
-		"internal/subagent/manager.go:MemoryPath=1",
-	}
+	want := []string{"internal/feishu/runner.go:MemoryPath=1"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("persistence working-memory path usage = %v, want exact decreasing ceiling %v", got, want)
 	}
@@ -169,7 +166,7 @@ func TestOnlyCutOverRuntimeProfilesHaveProductionCallers(t *testing.T) {
 			callers = append(callers, edge.From)
 		}
 	}
-	want := []string{"cmd/bench", "internal/benchmark", "internal/runtimecompaction"}
+	want := []string{"cmd/bench", "internal/benchmark", "internal/childruntime", "internal/runtimecompaction"}
 	if fmt.Sprint(callers) != fmt.Sprint(want) {
 		t.Fatalf("target runtime production callers = %v, want cut-over clients %v", callers, want)
 	}
@@ -568,6 +565,7 @@ func isPresentationPackage(path string) bool {
 func isPresentationForbiddenTarget(path string) bool {
 	return oneOf(path,
 		"internal/engine", "internal/runtime", "internal/session", "internal/checkpoint",
+		"internal/childruntime",
 		"internal/compaction", "internal/provider", "internal/tools", "internal/memory",
 		"internal/automemory", "internal/metrics", "internal/tracing", "internal/schema",
 		"internal/permission", "internal/toolpolicy",

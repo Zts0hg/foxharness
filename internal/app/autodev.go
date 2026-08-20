@@ -216,8 +216,9 @@ func (a *coreRunnerAdapter) StagePrompt(ctx context.Context, command, args strin
 // appCoreRunnerFactory creates one real AgentRunner per item, scoped to the
 // item's worktree. The SDD pipeline supplies its own staged structure.
 type appCoreRunnerFactory struct {
-	llmConfig llmconfig.ResolvedConfig
-	maxTurns  int
+	llmConfig      llmconfig.ResolvedConfig
+	maxTurns       int
+	newChildRunner ChildRunnerFactory
 }
 
 var _ autodev.CoreRunnerFactory = (*appCoreRunnerFactory)(nil)
@@ -240,6 +241,8 @@ func (f *appCoreRunnerFactory) New(ctx context.Context, workDir, model string) (
 		MaxTurns:          f.maxTurns,
 		ExtractionContext: ctx,
 		Permission:        permissions,
+		RuntimeProfile:    childParentAutodev,
+		NewChildRunner:    f.newChildRunner,
 	})
 	if err != nil {
 		return nil, err
@@ -315,8 +318,9 @@ func buildAutodevDeps(ctx context.Context, cfg CLIConfig, reporter autodev.Repor
 		Config:   adCfg,
 		RepoRoot: repoRoot,
 		CoreFactory: &appCoreRunnerFactory{
-			llmConfig: llmConfig,
-			maxTurns:  cfg.MaxTurns,
+			llmConfig:      llmConfig,
+			maxTurns:       cfg.MaxTurns,
+			newChildRunner: cfg.NewChildRunner,
 		},
 		Engineer: autodev.NewEngineerAgent(llm, adCfg.Model, persona),
 		Git:      autodev.NewExecGitRunner(),

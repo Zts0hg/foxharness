@@ -31,6 +31,7 @@ type CLIConfig struct {
 	ContinueSession bool
 	NewSession      bool
 	Interactive     bool
+	NewChildRunner  ChildRunnerFactory
 }
 
 // RunCLI executes a single agent session from prompt to final output. It

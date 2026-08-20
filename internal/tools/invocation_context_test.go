@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolprotocol"
 )
 
 func TestRegistryExecutionCarriesRunAndExactToolCallIdentity(t *testing.T) {
@@ -27,6 +28,22 @@ func TestRegistryExecutionCarriesRunAndExactToolCallIdentity(t *testing.T) {
 	parent, ok := InvocationContextFrom(ctx)
 	if !ok || parent.ToolCallID != "" {
 		t.Fatalf("registry mutated parent context = %#v/%t", parent, ok)
+	}
+}
+
+func TestFilteredRegistryCarriesItsNarrowCapabilitySnapshot(t *testing.T) {
+	capabilities := make(chan []string, 1)
+	base := NewRegistry()
+	base.Register(&invocationCaptureTool{name: "capture", contexts: make(chan InvocationContext, 1), capabilities: capabilities})
+	base.Register(&invocationCaptureTool{name: "other", contexts: make(chan InvocationContext, 1)})
+	filtered := NewFilteredRegistry(base, []string{"capture"})
+	result := filtered.Execute(context.Background(), schema.ToolCall{ID: "call", Name: "capture", Arguments: json.RawMessage(`{}`)})
+	if result.IsError {
+		t.Fatalf("Execute() = %#v", result)
+	}
+	got := <-capabilities
+	if len(got) != 1 || got[0] != "capture" {
+		t.Fatalf("effective tool snapshot = %v, want [capture]", got)
 	}
 }
 
@@ -58,8 +75,9 @@ func TestParallelRegistryExecutionsKeepToolCallIdentityIsolated(t *testing.T) {
 }
 
 type invocationCaptureTool struct {
-	name     string
-	contexts chan InvocationContext
+	name         string
+	contexts     chan InvocationContext
+	capabilities chan []string
 }
 
 func (t *invocationCaptureTool) Name() string { return t.name }
@@ -71,5 +89,8 @@ func (t *invocationCaptureTool) Definition() schema.ToolDefinition {
 func (t *invocationCaptureTool) Execute(ctx context.Context, _ json.RawMessage) (string, error) {
 	invocation, _ := InvocationContextFrom(ctx)
 	t.contexts <- invocation
+	if t.capabilities != nil {
+		t.capabilities <- toolprotocol.CapabilitiesFromContext(ctx)
+	}
 	return "ok", nil
 }

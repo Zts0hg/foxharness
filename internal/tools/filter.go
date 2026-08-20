@@ -71,6 +71,7 @@ func (f *filteredRegistry) Execute(ctx context.Context, call schema.ToolCall) sc
 			IsError:    true,
 		}
 	}
+	ctx = withToolCapabilities(ctx, f.GetAvailableTools())
 	return f.base.Execute(ctx, call)
 }
 

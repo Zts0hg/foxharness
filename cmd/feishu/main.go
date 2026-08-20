@@ -25,11 +25,13 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
+	"github.com/Zts0hg/foxharness/internal/childruntime"
 	"github.com/Zts0hg/foxharness/internal/feishu"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/subagent"
 )
 
 const defaultShutdownTimeout = 30 * time.Second
@@ -63,6 +65,12 @@ func main() {
 	tasks := make(chan feishu.Task, 32)
 
 	runner := feishu.NewRunner(llmProvider, workDir, messenger, sessionManager, approvalStore).
+		WithChildRunnerFactory(func(config feishu.ChildRunnerConfig) subagent.Runner {
+			return childruntime.New(childruntime.Config{
+				Provider: config.Provider, WorkDir: config.WorkDir, ParentProfile: childruntime.FeishuRemote,
+				Permission: config.Permission, ParentEvidence: config.ParentEvidence,
+			})
+		}).
 		WithDeliveryFailureObserver(feishu.NewLoggingDeliveryFailureObserver(log.Default()))
 	deliveryStore, err := newDeliveryStore(homeDir)
 	if err != nil {

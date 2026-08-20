@@ -84,6 +84,21 @@ type ChildRunResult struct {
 	Runtime         RunResult
 }
 
+/* FrozenParentRun carries one already-admitted parent run into child composition. */
+type FrozenParentRun struct {
+	Profile          ProfileName
+	SessionID        session.ID
+	RunID            session.RunID
+	WorkDir          string
+	ProviderProtocol string
+	Model            string
+	Effort           string
+	AllowedTools     []string
+	Permission       PermissionScope
+	Context          context.Context
+	DelegationDepth  int
+}
+
 /* ChildRunner freezes one live parent run as the sole authority for nested execution. */
 type ChildRunner struct {
 	harness            *RuntimeHarness
@@ -110,6 +125,42 @@ func (s *AgentSession) NewChildRunner(scope *RunScope) (*ChildRunner, error) {
 		parentSpec: scope.resolved.Snapshot(), parentTools: scope.AllowedTools(),
 		permission: scope.Permission(), permissionRequired: requiresChildPermission(scope.Snapshot().PermissionPolicy),
 		parentContext: scope.Context(), parentMaxDepth: scope.profile.MaxDelegationDepth,
+	}, nil
+}
+
+/* NewChildRunnerFromFrozenParent adapts an already-admitted legacy parent without creating shadow state. */
+func (h *RuntimeHarness) NewChildRunnerFromFrozenParent(parent FrozenParentRun) (*ChildRunner, error) {
+	if h == nil {
+		return nil, errors.New("runtime child runner requires its owning harness")
+	}
+	profile, err := ResolveProfile(parent.Profile)
+	if err != nil {
+		return nil, err
+	}
+	parentContext := parent.Context
+	if parentContext == nil {
+		parentContext = context.Background()
+	}
+	snapshot := profile.Snapshot()
+	return &ChildRunner{
+		harness: h,
+		parentSession: AgentSessionSnapshot{
+			ID: parent.SessionID, Profile: parent.Profile, Source: snapshot.SessionSource,
+			WorkDir: parent.WorkDir,
+		},
+		parentRun: RunScopeSnapshot{
+			Profile: parent.Profile, SessionID: parent.SessionID, RunID: parent.RunID,
+			Model: parent.Model, Effort: parent.Effort, PermissionPolicy: snapshot.PermissionPolicy,
+			DelegationDepth: parent.DelegationDepth,
+		},
+		parentSpec: RunSnapshot{
+			Profile: parent.Profile, WorkDir: parent.WorkDir,
+			ProviderProtocol: parent.ProviderProtocol, Model: parent.Model, Effort: parent.Effort,
+			DelegationDepth: parent.DelegationDepth,
+		},
+		parentTools: append([]string(nil), parent.AllowedTools...),
+		permission:  parent.Permission, permissionRequired: requiresChildPermission(snapshot.PermissionPolicy),
+		parentContext: parentContext, parentMaxDepth: snapshot.MaxDelegationDepth,
 	}, nil
 }
 
@@ -318,6 +369,7 @@ func renderChildPrompt(parent session.ID, request ChildRunRequest, allowedTools 
 		mode = "read-only"
 	}
 	return prompt.Render([]prompt.Fragment{
+		prompt.Text("Agent: " + request.Agent),
 		prompt.Section("Child execution", strings.TrimSpace(request.AgentInstructions)),
 		prompt.Section("Parent session", string(parent)),
 		prompt.Section("Delegated task", request.Task),

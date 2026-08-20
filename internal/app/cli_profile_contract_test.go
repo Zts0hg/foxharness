@@ -544,7 +544,7 @@ func newCLIProfileRunner(t *testing.T, modelProvider provider.LLMProvider) (*Age
 		slashRegistry: registry,
 	}
 	runner.slashExecutor = slash.NewExecutor(slash.WithWorkDir(workDir), slash.WithForkRunner(&subagentForkRunner{
-		getManager: runner.currentSubagentManager,
+		getRunner:  runner.currentSubagentRunner,
 		getSession: runner.currentSessionIDLocked,
 	}))
 	return runner, sess

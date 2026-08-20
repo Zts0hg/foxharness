@@ -4,11 +4,35 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestPFCHD022SubagentProductionContainsOnlyInvocationAdaptation(t *testing.T) {
+	directory := filepath.Join(moduleRoot(t), "internal", "subagent")
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(directory, entry.Name())
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"NewLegacyEngine", "type Manager struct", "/internal/runtime", "/internal/engine", "/internal/provider", "/internal/session", "/internal/tools"} {
+			if strings.Contains(string(content), forbidden) {
+				t.Errorf("%s retains forbidden child runtime construction dependency %q", entry.Name(), forbidden)
+			}
+		}
+	}
+}
 
 func TestIACHD006ChildInvocationAdaptersRemainHeadlessAndSinglePath(t *testing.T) {
 	tests := []struct {
@@ -58,7 +82,7 @@ func TestIACHD006ChildInvocationAdaptersRemainHeadlessAndSinglePath(t *testing.T
 				return true
 			})
 			if runCalls != 1 {
-				t.Fatalf("adapter Manager.Run calls = %d, want exactly one", runCalls)
+				t.Fatalf("adapter Runner.Run calls = %d, want exactly one", runCalls)
 			}
 		})
 	}

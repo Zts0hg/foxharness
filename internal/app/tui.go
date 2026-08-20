@@ -46,6 +46,7 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 	})
 	defer coordinator.State().ClearGrants()
 	runnerCfg := agentRunnerConfigFromCLI(cfg)
+	runnerCfg.RuntimeProfile = childParentTUI
 	runnerCfg.OnModelChange = onModelChange
 	runnerCfg.Permission = coordinator
 	var err error

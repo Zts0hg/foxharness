@@ -74,6 +74,7 @@ func TestChildRunnerFreezesLineageAndIntersectsCapabilityCeilings(t *testing.T) 
 			t.Fatalf("child runner capability does not belong to assembly run: %#v", assembly.ChildRunner)
 		}
 		if !strings.Contains(assembly.Spec.Prompt, "Effective tools") || !strings.Contains(assembly.Spec.Prompt, "read_file") ||
+			!strings.Contains(assembly.Spec.Prompt, "Agent: general-purpose") ||
 			strings.Contains(assembly.Spec.Prompt, "delegate_task") || strings.Contains(assembly.Spec.Prompt, "write_file") {
 			t.Fatalf("child prompt does not match effective capability snapshot:\n%s", assembly.Spec.Prompt)
 		}
@@ -86,6 +87,46 @@ func TestChildRunnerFreezesLineageAndIntersectsCapabilityCeilings(t *testing.T) 
 	}
 	if err := parent.FinishRun(parentScope); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestChildRunnerFromFrozenParentDoesNotCreateShadowParentState(t *testing.T) {
+	store := newLifecycleStore()
+	var childAssemblies []RunAssembly
+	harness, err := NewRuntimeHarness(store, successfulHarnessDependencies(&childAssemblies))
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := []string{"delegate_task", "read_file", "write_file"}
+	parent := FrozenParentRun{
+		Profile: CLIExec, SessionID: "legacy-parent", RunID: "legacy-run",
+		WorkDir: "/workspace", ProviderProtocol: "messages", Model: "parent-model",
+		AllowedTools: allowed, Context: context.Background(),
+	}
+	runner, err := harness.NewChildRunnerFromFrozenParent(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed[1] = "write_file"
+	parent.AllowedTools[2] = "bash"
+
+	result, err := runner.Run(context.Background(), ChildRunRequest{
+		InvocationID: "legacy-invocation", DelegationID: "legacy-tool-call",
+		Task: "inspect", ReadOnly: true, AllowedTools: []string{"read_file"}, Depth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ParentSessionID != "legacy-parent" || result.ParentRunID != "legacy-run" || result.Status != ChildSucceeded {
+		t.Fatalf("bridged child result = %#v", result)
+	}
+	if store.sessionCount() != 1 || store.startCount() != 1 {
+		t.Fatalf("bridge persisted sessions/runs = %d/%d, want only one child session/run", store.sessionCount(), store.startCount())
+	}
+	for _, assembly := range childAssemblies {
+		if !reflect.DeepEqual(assembly.AllowedTools, []string{"read_file"}) || assembly.Run.Model != "parent-model" {
+			t.Fatalf("bridged child assembly was not frozen: %#v", assembly)
+		}
 	}
 }
 

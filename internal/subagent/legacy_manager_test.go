@@ -1,7 +1,3 @@
-// Package subagent provides isolated sub-task execution within the foxharness
-// agent framework. A Manager spins up a dedicated engine and session for each
-// delegated task, optionally restricting the subagent to read-only tools, and
-// returns a high-density report to the parent agent.
 package subagent
 
 import (
@@ -9,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
@@ -22,33 +17,38 @@ import (
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
-// AgentID is the normalized identity of a child agent definition.
-type AgentID string
-
-const (
-	// AgentGeneralPurpose is the built-in ChildRun agent used by delegation
-	// and by fork skills that omit an explicit agent.
-	AgentGeneralPurpose AgentID = "general-purpose"
-)
-
-type childAgent struct {
-	id           AgentID
-	persona      string
-	allowedTools []string
+type outcomeRecorder struct {
+	runID  string
+	report string
 }
 
-func resolveAgent(raw AgentID) (childAgent, error) {
-	id := AgentID(strings.TrimSpace(string(raw)))
-	if id == "" {
-		id = AgentGeneralPurpose
+func (r *outcomeRecorder) OnRunStart(_ context.Context, _ string, runID string) { r.runID = runID }
+func (*outcomeRecorder) OnThinking(context.Context, int)                        {}
+func (*outcomeRecorder) OnCompaction(context.Context, string)                   {}
+func (*outcomeRecorder) OnToolCall(context.Context, string, string)             {}
+func (*outcomeRecorder) OnToolResult(context.Context, string, string, bool)     {}
+func (r *outcomeRecorder) OnMessage(_ context.Context, content string)          { r.report = content }
+func (*outcomeRecorder) OnRunComplete(context.Context, engine.RunResult)        {}
+func (*outcomeRecorder) OnRunError(context.Context, string, string, error)      {}
+
+func classifyOutcome(err error, runID string) OutcomeStatus {
+	switch {
+	case err == nil:
+		return OutcomeSucceeded
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return OutcomeCancelled
+	case isTurnLimitError(err):
+		return OutcomeTurnExhausted
+	case runID == "":
+		return OutcomeStartFailed
+	default:
+		return OutcomeFailed
 	}
-	if id != AgentGeneralPurpose {
-		return childAgent{}, fmt.Errorf("subagent: unknown agent %q", id)
-	}
-	return childAgent{
-		id:      id,
-		persona: "通用编码执行代理，严格服从当前 ChildRun 的任务和能力边界。",
-	}, nil
+}
+
+func isTurnLimitError(err error) bool {
+	var turnLimit *engine.TurnLimitError
+	return errors.As(err, &turnLimit)
 }
 
 func narrowAgentTools(caller []string, agent childAgent) []string {
@@ -73,59 +73,6 @@ func narrowAgentTools(caller []string, agent childAgent) []string {
 	}
 	return effective
 }
-
-func cloneToolNames(names []string) []string {
-	if names == nil {
-		return nil
-	}
-	return append(make([]string, 0, len(names)), names...)
-}
-
-// Request describes a subagent task, including the parent session reference,
-// the task description, and whether the subagent should operate in read-only
-// mode.
-type Request struct {
-	ParentSessionID string
-	ParentRunID     string
-	DelegationID    string
-	Task            string
-	ReadOnly        bool
-	Agent           AgentID
-	// Depth is one for the only accepted ChildRun level. Zero is normalized to
-	// one for compatibility with existing callers; every other value is rejected.
-	Depth int
-
-	// AllowedTools, when non-nil, restricts the sub-agent's tool registry to
-	// exactly the named tools; an explicit empty slice permits no tools. The filter is applied on
-	// top of the base registry (after ReadOnly trims write/edit), so
-	// callers that pass an allow-list overlapping with read-only get
-	// the intersection. Used by slash fork-mode skills with
-	// `allowed-tools` to honor the constraint inside the sub-agent.
-	AllowedTools []string
-}
-
-// Result is the single typed terminal outcome for one ChildRun invocation. It
-// carries correlation and lineage throughout admission, startup, and execution;
-// Report is final on success and the latest committed assistant text otherwise.
-type Result struct {
-	InvocationID    string
-	SessionID       string
-	RunID           string
-	ParentSessionID string
-	ParentRunID     string
-	DelegationID    string
-	Agent           AgentID
-	Depth           int
-	Status          OutcomeStatus
-	Report          string
-}
-
-// DefaultMaxTurns is the default maximum number of turns a subagent engine may
-// execute before its turn budget is considered exhausted. It is sized for
-// real-world coding subtasks and aligns with the subagent turn budget used by
-// Claude Code. Production callers receive it automatically via NewManager;
-// internal and test callers may override it with Manager.WithMaxTurns.
-const DefaultMaxTurns = 200
 
 // Manager creates and runs isolated subagent sessions using a shared LLM
 // provider and workspace root.

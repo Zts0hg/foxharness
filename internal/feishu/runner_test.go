@@ -14,9 +14,17 @@ import (
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/subagent"
 	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
+
+type nestedPermissionRunner struct{}
+
+func (*nestedPermissionRunner) PermissionEnforced() bool { return true }
+func (*nestedPermissionRunner) Run(context.Context, subagent.Request) (*subagent.Result, error) {
+	return &subagent.Result{Status: subagent.OutcomeSucceeded}, nil
+}
 
 func TestParseSessionDirective(t *testing.T) {
 	tests := []struct {
@@ -72,7 +80,10 @@ func TestRunnerBuildRegistryDeniesWorkspaceOutsideWriteWithUnifiedPermission(t *
 		t.Fatal(err)
 	}
 
-	runner := &Runner{workDir: workDir, approvalStore: approval.NewStore()}
+	runner := &Runner{
+		workDir: workDir, approvalStore: approval.NewStore(),
+		newChildRunner: func(ChildRunnerConfig) subagent.Runner { return &nestedPermissionRunner{} },
+	}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
 	registry := runner.buildRegistry(sess, "chat", "write outside workspace")
 
@@ -107,7 +118,10 @@ func TestRunnerBuildRegistryDeniesUnparseableBashWithUnifiedPermission(t *testin
 
 func TestRunnerBuildRegistryMarksWritableDelegationNestedPermissionEnforced(t *testing.T) {
 	workDir := t.TempDir()
-	runner := &Runner{workDir: workDir, approvalStore: approval.NewStore()}
+	runner := &Runner{
+		workDir: workDir, approvalStore: approval.NewStore(),
+		newChildRunner: func(ChildRunnerConfig) subagent.Runner { return &nestedPermissionRunner{} },
+	}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
 	registry := runner.buildRegistry(sess, "chat", "delegate a fix")
 

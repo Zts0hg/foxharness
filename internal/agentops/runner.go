@@ -52,11 +52,29 @@ type Runner struct {
 	runTask                 func(context.Context, Task) error
 	taskOutcomeObserver     TaskOutcomeObserver
 	deliveryFailureObserver DeliveryFailureObserver
+	newChildRunner          ChildRunnerFactory
 }
+
+/* ChildRunnerConfig contains the frozen AgentOps parent dependencies supplied to composition. */
+type ChildRunnerConfig struct {
+	Provider       provider.LLMProvider
+	WorkDir        string
+	Permission     *permission.Coordinator
+	ParentEvidence permission.EvidenceProvider
+}
+
+/* ChildRunnerFactory maps an AgentOps parent run to the model-facing child port. */
+type ChildRunnerFactory func(ChildRunnerConfig) subagent.Runner
 
 /* WithDeliveryFailureObserver installs the non-blocking delivery failure observer. */
 func (r *Runner) WithDeliveryFailureObserver(observer DeliveryFailureObserver) *Runner {
 	r.deliveryFailureObserver = observer
+	return r
+}
+
+/* WithChildRunnerFactory installs the composition-owned ChildRun adapter. */
+func (r *Runner) WithChildRunnerFactory(factory ChildRunnerFactory) *Runner {
+	r.newChildRunner = factory
 	return r
 }
 
@@ -379,10 +397,14 @@ func (r *Runner) buildRegistry(task Task, sess *session.StoredSession, taskProvi
 	if len(taskProviders) > 0 && taskProviders[0] != nil {
 		taskProvider = taskProviders[0]
 	}
-	subManager := subagent.NewManager(taskProvider, r.workDir).
-		WithPermission(coordinator).
-		WithParentEvidence(evidenceProvider)
-	registry.Register(subagent.NewTool(subManager, string(sess.ID)))
+	var childRunner subagent.Runner
+	if r.newChildRunner != nil {
+		childRunner = r.newChildRunner(ChildRunnerConfig{
+			Provider: taskProvider, WorkDir: r.workDir,
+			Permission: coordinator, ParentEvidence: evidenceProvider,
+		})
+	}
+	registry.Register(subagent.NewTool(childRunner, string(sess.ID)))
 
 	return permission.DecorateRegistry(registry, coordinator, evidenceProvider)
 }

@@ -23,8 +23,11 @@ flowchart TD
     AUT[internal/autodev] --> RUNTIME
 
     SUB[internal/subagent] --> RUNNER[subagent.Runner]
-    WIRE[composition roots] --> RUNNER
-    WIRE --> CHILD[runtime.ChildRunner]
+    FOX --> CHILDRUNTIME[internal/childruntime]
+    FEICMD --> CHILDRUNTIME
+    AOPCMD --> CHILDRUNTIME
+    CHILDRUNTIME -. implements .-> RUNNER
+    CHILDRUNTIME --> CHILD[runtime.ChildRunner]
 
     RUNTIME --> ENGINE[internal/engine]
     RUNTIME --> SESSION[internal/session]
@@ -36,6 +39,8 @@ flowchart TD
     TOOLRUNTIME[internal/toolruntime] --> TOOLEXEC
     TOOLRUNTIME --> ENGINE
     TOOLRUNTIME --> TOOLRESULT[internal/toolresult]
+    TOOLS[internal/tools] --> TOOLPROTOCOL[internal/toolprotocol]
+    SUB --> TOOLPROTOCOL
     MODELINVOKE[internal/modelinvoke] --> ENGINE
     MODELINVOKE --> PROVIDER[internal/provider]
     RUNTIMECOMPACT[internal/runtimecompaction] --> RUNTIME
@@ -62,6 +67,7 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 | `internal/engine` | Infrastructure-independent run/turn transitions and consumer-owned model, tool, conversation, policy, and observer ports. |
 | `internal/toolexec` | Immutable resolved capability snapshots, parallel/exclusive batch scheduling, cancellation completion, and ordered structured tool results. It does not own catalogs, permissions, session persistence, or presentation. |
 | `internal/toolruntime` | Run-local composition of constrained tool execution with the compatibility-preserving full, model-preview, observer-preview, and persisted-artifact result forms. It does not discover tools, decide permissions, or commit conversation state. |
+| `internal/toolprotocol` | Narrow tool-invocation lineage, effective-capability snapshot, and structured execution-result values shared without importing the concrete tool registry. |
 | `internal/modelinvoke` | Provider transport adaptation, response/error normalization, invocation options, and per-run model-call lifecycle hooks for `engine.ModelInvoker`. It does not own turns, context, or provider configuration. |
 | `internal/runtimecompaction` | Translation of concrete compaction mechanics into runtime-owned durable-state and run-local projection proposals plus blocking-budget decisions. It never commits compact state. |
 | `internal/turnpolicy` | Immutable factories for run-scoped recovery, reminder, completion, and TODO decisions. Runtime supplies already-bound queries; this package does not read persistence, select tools, emit telemetry, or own conversation state. |
@@ -75,6 +81,7 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 | `internal/session` | Stored session/run records, durable identifiers, message/transcript artifacts, compact records, and `FileStore` mechanics. It does not own live runtime lifecycle. |
 | `internal/benchmark` | Benchmark case, fixture, validation, aggregation, provenance, and report control over the shared runtime. |
 | `internal/subagent` | Model-facing `delegate_task` and fork-skill request/result adaptation through a consumer-owned `Runner` port. |
+| `internal/childruntime` | Concrete composition of the single synchronous `ChildRun` profile and adaptation to `subagent.Runner`; it owns no parent presentation or transport behavior. |
 | `internal/autodev` | Durable deterministic backlog, ledger, worktree, SDD stage, gate, Engineer, and publication control over the shared runtime. |
 | Provider, tool, compaction, checkpoint, memory, automemory, metrics, and tracing packages | Focused mechanisms injected through consumer-owned contracts. Infrastructure is a classification; there is no aggregate `internal/infrastructure` package. |
 | `cmd/*` | Process input/configuration, concrete construction, dependency wiring, entry selection, and startup only. |
@@ -89,7 +96,7 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 
 `FileStore` is the new-code boundary for file-backed create, lookup, run-start, and run-finish mechanics. The final stored-record contract contains data and derived artifact paths only. Until the runtime cutover, `StoredSession.StartRun` and `StoredRun.Finish` are the two explicitly allowlisted compatibility exceptions required by the current engine; no new caller may use them. `M10` introduces `runtime.AgentSession` and the consumer-owned `runtime.SessionStore` and makes runtime the sole live recoverable-state owner; `M11` moves context, compaction, resume, and rewind coordination to its single commit path. `M26` deletes the aliases and compatibility methods. `internal/session` must never import `internal/runtime`.
 
-`M03` makes `internal/memory.Store` the only implementation owner for session `working_memory.md`, `PLAN.md`, and `TODO.md` behavior. `internal/session` no longer defines a working-memory type, template, load, append, or replace implementation. To preserve the existing guarantee that a newly returned stored session already has its scratchpad, `FileStore.Create` temporarily delegates only scratchpad initialization to `memory.Store`. `M12` gives the target runtime a session-initialization hook, so new composition injects memory without runtime importing the concrete mechanism; the legacy `FileStore.Create` delegation remains only for profiles that have not yet crossed that boundary and is removed with the old construction path. App, benchmark, and AgentOps use `Store.WorkingMemoryPath` directly. Feishu and the old ChildRun assembly retain exactly two deprecated `StoredSession.MemoryPath` calls because their current package boundaries forbid importing the memory mechanism; an automated decreasing ceiling prevents any new use, and the ChildRun (`M15`) and Feishu (`M19`) profile cutovers remove them.
+`M03` makes `internal/memory.Store` the only implementation owner for session `working_memory.md`, `PLAN.md`, and `TODO.md` behavior. `internal/session` no longer defines a working-memory type, template, load, append, or replace implementation. To preserve the existing guarantee that a newly returned stored session already has its scratchpad, `FileStore.Create` temporarily delegates only scratchpad initialization to `memory.Store`. `M12` gives the target runtime a session-initialization hook, so new composition injects memory without runtime importing the concrete mechanism; the legacy `FileStore.Create` delegation remains only for profiles that have not yet crossed that boundary and is removed with the old construction path. App, benchmark, AgentOps, and the migrated ChildRun composition use `Store.WorkingMemoryPath` directly. Feishu retains the only deprecated production `StoredSession.MemoryPath` call until its M19 cutover; an automated decreasing ceiling prevents any new use.
 
 `M04` establishes the target `AgentEngine` and its consumer-owned `ModelInvoker`, `ToolExecutor`, `Conversation`, `TurnPolicy`, and `Observer` ports. `RunInput`, immutable per-invocation `RunContext`, and runtime-neutral `RunOutcome` keep session identity, persistence, artifacts, and telemetry outside the target coordinator. A concrete `ToolSnapshot` remains owned by its executor, exposes only cloned model-visible definitions to engine, and is passed back unchanged for later execution. Engine facts use one synchronous sequence assigned per run, and the target engine retains only immutable collaborators.
 
@@ -129,6 +136,12 @@ Three focused mechanism packages avoid both legacy import cycles and a generic i
 
 Every benchmark repeat now executes through exactly one production path: `benchmark.Runner -> runtime.AgentSession.Run -> runtime.AgentEngine`. The runner uses the immutable case prompt, retains session/run identity and stable report errors, retries hidden finish persistence, closes the live session under a fresh bounded cleanup context, and only then performs evaluation. The old `LegacyEngine` benchmark composition remains reachable solely from the test-only differential adapter, where the current and target paths prove exact prompt, final result, usage-bearing persisted messages, and session-local identity behavior. The two M14 allowlist rows are removed, reducing the migration ledger from 68 to 66 entries without changing the immutable baseline ceiling.
 
+`M15` atomically moves both `delegate_task` and fork-skill execution to `runtime.ChildRunner`. Production `internal/subagent` now contains only request/result values, agent selection, compatible formatting, the model-facing tool, and its consumer-owned `Runner`; the former `Manager` and child tool snapshot exist only as `_test.go` legacy differential adapters. `internal/childruntime` is the single concrete ChildRun composition: it supplies the provider adapter, immutable tool executor, permission scope, prompt collector, session-local compactor, policy, memory initialization, cleanup supervisor, and frozen-parent bridge to runtime.
+
+The legacy parent profiles remain on their own existing engine paths until their scheduled cutovers, so runtime accepts a validated `FrozenParentRun` snapshot without creating a shadow parent session or run. `cmd/fox`, `cmd/feishu`, and `cmd/agentops` construct the concrete child adapter and inject consumer-owned factories; app, Feishu, and AgentOps do not import runtime or childruntime for this workflow. The effective parent capability list travels with the exact tool invocation context; filtered registries preserve the outer authoritative list, and `delegate_task` passes a defensive copy into the child intersection. Fork and delegate therefore share one depth, permission, capability, lifecycle, outcome, and cleanup path.
+
+Hermetic old/target adapters compare tool advertisement, delegated task, agent and project instructions, final report, parent/run/delegation lineage, and persisted final assistant state. Production source contains no child `NewLegacyEngine` or `subagent.NewManager` call. The seven M15 subagent construction rows are removed, reducing the allowlist from 66 to 59 entries; the current SHA-256 is `b9c976b2655c6bc310554f96a6dff26d6d381c256129339d394caceb8b303b53`, while the immutable baseline remains unchanged.
+
 Parent-scope and invocation cancellation are combined for the child. Runtime panic recovery durably finishes an established run, and ChildRunner then synchronously drains its injected process/permission cleanup, retries any hidden recoverable finish, and closes the child session before returning one typed outcome. Cleanup, close, and panic failures update both the outer child status and nested runtime outcome. Success, start failure, rejection, cancellation, exhaustion, runtime failure, panic, and cleanup failure preserve invocation and lineage correlation. Parent-visible reports come only from the latest complete assistant message emitted after authoritative persistence; streamed, tool-only, stale, and failed-to-commit text cannot become a report, while a previously committed assistant message remains an explicitly failed or exhausted partial result.
 
 Child prompt construction remains a pure use of `internal/prompt` over already resolved values. It contains exact parent lineage, task, execution mode, effective tool names, permission policy, optional selected-agent instructions, and high-density report guidance, without adding interaction, TODO, skill, checkpoint, rewind, or nested-delegation capabilities. M13 does not switch the production `delegate_task` or fork adapters: the corrected legacy `subagent.Manager` remains their sole path until M15 atomically maps the consumer-owned `subagent.Runner` port to this capability and removes legacy child engine assembly.
@@ -144,6 +157,7 @@ Child prompt construction remains a pure use of `internal/prompt` over already r
 | TUI, CLI, Feishu, AgentOps adapters | `internal/app` plus adapter-local presentation/transport helpers and independently owned control-plane values. They do not operate concrete runtime subsystems. |
 | `internal/benchmark`, `internal/autodev` | `internal/runtime` as privileged control clients plus their own evaluation or deterministic control-plane mechanisms. |
 | `internal/subagent` | Its own `Runner` port and protocol/value packages required for model-facing request adaptation. It does not import runtime. |
+| `internal/childruntime` | Runtime and the focused provider, tool, permission, prompt-discovery compatibility, compaction, memory, and process-cleanup mechanisms required only to compose `ChildRun`. |
 | `cmd/*` | Relevant adapters, runtime constructors, consumer ports, and concrete implementations only for construction and startup. |
 
 An interface belongs to the package that consumes it. Concrete provider, tool, compaction, persistence, memory, and telemetry implementations satisfy those interfaces through composition; their packages do not force inward packages to import outward implementations.
@@ -157,6 +171,7 @@ An interface belongs to the package that consumes it. Concrete provider, tool, c
 - `internal/app` must not import presentation adapters or concrete engine, persistence, provider, tool, compaction, checkpoint, memory, or telemetry implementations.
 - Presentation and transport adapters must not import or construct engine, runtime, session store, compaction, checkpoint, provider, tool registry, memory, telemetry, or concrete permission-policy implementations.
 - `internal/subagent` and `internal/runtime` must not import each other. Composition maps `subagent.Runner` to `runtime.ChildRunner`.
+- App and presentation/transport adapters must receive ChildRun factories through consumer-owned ports; only composition roots may import `internal/childruntime`.
 - Benchmark and Autodev must not independently assemble the engine or bypass runtime lifecycle and security invariants.
 - No package may create or import `internal/infrastructure`.
 - No reverse import may be introduced to implement a callback. Bidirectional control uses consumer-owned request/response ports.

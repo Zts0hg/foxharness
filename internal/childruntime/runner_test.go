@@ -1,0 +1,87 @@
+package childruntime
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/Zts0hg/foxharness/internal/permission"
+	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/subagent"
+)
+
+type captureProvider struct {
+	messages []schema.Message
+	tools    []schema.ToolDefinition
+}
+
+func (p *captureProvider) Generate(_ context.Context, messages []schema.Message, tools []schema.ToolDefinition) (*provider.GenerateResponse, error) {
+	p.messages = append([]schema.Message(nil), messages...)
+	p.tools = append([]schema.ToolDefinition(nil), tools...)
+	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "child report"}}, nil
+}
+
+func (*captureProvider) ProviderProtocol() string { return "openai" }
+func (*captureProvider) ModelName() string        { return "child-model" }
+
+func TestRunnerExecutesThroughRuntimeChildProfile(t *testing.T) {
+	homeDir := t.TempDir()
+	workDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	model := &captureProvider{}
+	coordinator := permission.NewCoordinator(permission.Config{
+		State: permission.NewState(permission.ModeFullAccess, true),
+	})
+	runner := New(Config{
+		Provider: model, WorkDir: workDir, ParentProfile: TUIInteractive,
+		Permission: coordinator,
+	})
+	result, err := runner.Run(context.Background(), subagent.Request{
+		ParentSessionID: "parent-session", ParentRunID: "parent-run", DelegationID: "tool-call",
+		Task: "inspect", ReadOnly: true, Depth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != subagent.OutcomeSucceeded || result.Report != "child report" || result.SessionID == "" || result.RunID == "" {
+		t.Fatalf("child outcome = %#v", result)
+	}
+	if len(model.tools) != 2 || model.tools[0].Name != "bash" || model.tools[1].Name != "read_file" {
+		t.Fatalf("child tools = %#v", model.tools)
+	}
+	child, err := session.NewFileStore(workDir).Open(session.ID(result.SessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ParentSessionID != "parent-session" || child.ParentRunID != "parent-run" || child.DelegationID != "tool-call" {
+		t.Fatalf("child lineage = %#v", child)
+	}
+}
+
+func TestRunnerNormalizesRejectedRequestBeforeAgentResolution(t *testing.T) {
+	workDir := t.TempDir()
+	runner := New(Config{WorkDir: workDir})
+
+	result, err := runner.Run(context.Background(), subagent.Request{
+		ParentSessionID: "parent-session",
+		ParentRunID:     "parent-run",
+		DelegationID:    "tool-call",
+		Agent:           subagent.AgentID("unknown-agent"),
+		Task:            "inspect",
+	})
+
+	if err == nil {
+		t.Fatal("unknown agent error = nil")
+	}
+	if result == nil || result.Status != subagent.OutcomeRejected || result.Depth != 1 {
+		t.Fatalf("rejected outcome = %#v, want normalized depth-one rejection", result)
+	}
+	if result.ParentSessionID != "parent-session" || result.ParentRunID != "parent-run" || result.DelegationID != "tool-call" {
+		t.Fatalf("rejected lineage = %#v", result)
+	}
+	if _, openErr := session.NewFileStore(workDir).Open(session.ID(result.SessionID)); !errors.Is(openErr, session.ErrNotFound) {
+		t.Fatalf("rejected child session lookup error = %v, want ErrNotFound", openErr)
+	}
+}

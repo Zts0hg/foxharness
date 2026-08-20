@@ -30,6 +30,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/toolpolicy"
+	"github.com/Zts0hg/foxharness/internal/toolprotocol"
 )
 
 // Registry defines the interface for tool registration and execution.
@@ -95,10 +96,7 @@ type ParallelSafeTool interface {
 
 // ExecutionResult carries tool output together with a tool-level failure flag.
 // Infrastructure failures should still be returned as errors from ExecuteResult.
-type ExecutionResult struct {
-	Output string
-	Failed bool
-}
+type ExecutionResult = toolprotocol.ExecutionResult
 
 // ResultTool is an optional richer execution interface for tools whose
 // successful process invocation can still represent a failed user action.
@@ -257,6 +255,7 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 
 		}
 	}
+	ctx = withDefaultToolCapabilities(ctx, r.GetAvailableTools())
 	ctx = withToolCallContext(ctx, call.ID)
 
 	if resultTool, ok := tool.(ResultTool); ok {

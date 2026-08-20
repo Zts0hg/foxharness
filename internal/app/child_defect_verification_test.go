@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/childruntime"
+	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -63,7 +65,7 @@ func TestDVCHD005ForkAdapterPropagatesGeneralPurposeAgentToChildInvocation(t *te
 	}
 	provider := &forkChildCaptureProvider{}
 	runner := &subagentForkRunner{
-		getManager: func() *subagent.Manager { return subagent.NewManager(provider, workDir) },
+		getRunner:  func() subagent.Runner { return testChildRunner(provider, workDir, 0) },
 		getSession: func() string { return "parent-session" },
 	}
 
@@ -98,7 +100,7 @@ func TestDVCHD005ForkAdapterRejectsUnknownAgentBeforeChildInvocation(t *testing.
 	t.Setenv("HOME", t.TempDir())
 	provider := &forkChildCaptureProvider{}
 	runner := &subagentForkRunner{
-		getManager: func() *subagent.Manager { return subagent.NewManager(provider, t.TempDir()) },
+		getRunner:  func() subagent.Runner { return testChildRunner(provider, t.TempDir(), 0) },
 		getSession: func() string { return "parent-session" },
 	}
 
@@ -122,7 +124,7 @@ func TestDVCHD006ForkAdapterRetainsPartialOutcomeAndTerminalError(t *testing.T) 
 	terminalErr := errors.New("fork provider failed")
 	provider := &failingForkChildProvider{err: terminalErr}
 	runner := &subagentForkRunner{
-		getManager: func() *subagent.Manager { return subagent.NewManager(provider, t.TempDir()).WithMaxTurns(3) },
+		getRunner:  func() subagent.Runner { return testChildRunner(provider, t.TempDir(), 3) },
 		getSession: func() string { return "parent-session" },
 	}
 
@@ -146,9 +148,8 @@ func TestIACHD005ForkAdapterCarriesLiveParentInvocationLineage(t *testing.T) {
 	t.Setenv("HOME", homeDir)
 	workDir := t.TempDir()
 	provider := &forkChildCaptureProvider{}
-	manager := subagent.NewManager(provider, workDir)
 	runner := &subagentForkRunner{
-		getManager: func() *subagent.Manager { return manager },
+		getRunner:  func() subagent.Runner { return testChildRunner(provider, workDir, 0) },
 		getSession: func() string { return "parent-session" },
 	}
 	registry := tools.NewRegistry()
@@ -165,6 +166,23 @@ func TestIACHD005ForkAdapterCarriesLiveParentInvocationLineage(t *testing.T) {
 	if child.ParentRunID != "parent-run" || child.DelegationID != "fork-tool-call" {
 		t.Fatalf("fork child lineage = %#v", child)
 	}
+}
+
+func testChildRunner(modelProvider provider.LLMProvider, workDir string, maxTurns int) subagent.Runner {
+	return childruntime.New(childruntime.Config{
+		Provider: modelProvider, WorkDir: workDir, ParentProfile: childruntime.TUIInteractive,
+		Permission: permission.NewCoordinator(permission.Config{State: permission.NewState(permission.ModeFullAccess, true)}),
+		MaxTurns:   maxTurns,
+	})
+}
+
+func testAppChildRunnerFactory(config ChildRunnerConfig) subagent.Runner {
+	return childruntime.New(childruntime.Config{
+		Provider: config.Provider, WorkDir: config.WorkDir,
+		ParentProfile:    childruntime.ParentProfile(config.ParentProfile),
+		ProviderProtocol: config.ProviderProtocol, Model: config.Model, Effort: config.Effort,
+		Permission: config.Permission, ParentEvidence: config.ParentEvidence,
+	})
 }
 
 type forkInvocationTool struct {

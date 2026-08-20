@@ -378,6 +378,8 @@ func TestAutodevToolCallsNeedNoHumanApproval(t *testing.T) {
 
 	runner := &AgentRunner{
 		workDir:        workDir,
+		runtimeProfile: childParentAutodev,
+		newChildRunner: testAppChildRunnerFactory,
 		store:          store,
 		manager:        manager,
 		llmProvider:    autodevFakeLLM{},
@@ -421,8 +423,9 @@ func TestPFAUT009FactoryInstallsNonInteractiveChildPermissionCeiling(t *testing.
 	workDir := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
 	factory := &appCoreRunnerFactory{
-		llmConfig: testAutodevResolvedLLM("fixture-model"),
-		maxTurns:  1,
+		llmConfig:      testAutodevResolvedLLM("fixture-model"),
+		maxTurns:       1,
+		newChildRunner: testAppChildRunnerFactory,
 	}
 	core, err := factory.New(context.Background(), workDir, "fixture-model")
 	if err != nil {
@@ -441,7 +444,7 @@ func TestPFAUT009FactoryInstallsNonInteractiveChildPermissionCeiling(t *testing.
 	if !ok {
 		t.Fatalf("adapter runner = %T, want *AgentRunner", adapter.runner)
 	}
-	if manager := runner.currentSubagentManager(); manager == nil || !manager.PermissionEnforced() {
+	if childRunner := runner.currentSubagentRunner(); childRunner == nil || !childRunner.PermissionEnforced() {
 		t.Fatal("Autodev advertised delegate_task without a non-interactive child permission boundary")
 	}
 }

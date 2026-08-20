@@ -47,6 +47,8 @@ type AgentRunnerConfig struct {
 	NewSession      bool
 	OnModelChange   func(model string) error
 	Permission      *permission.Coordinator
+	RuntimeProfile  ChildParentProfile
+	NewChildRunner  ChildRunnerFactory
 	// ExtractionContext optionally binds asynchronous post-run extraction to
 	// an external lifecycle owner. Ordinary profiles leave it nil.
 	ExtractionContext context.Context
@@ -61,6 +63,8 @@ type AgentRunner struct {
 	workDir          string
 	model            string
 	providerProtocol string
+	runtimeProfile   ChildParentProfile
+	newChildRunner   ChildRunnerFactory
 	llmConfig        llmconfig.ResolvedConfig
 
 	enableThinking    bool
@@ -103,6 +107,30 @@ type AgentRunner struct {
 	extractCancel context.CancelFunc
 }
 
+/* ChildRunnerConfig contains the legacy-parent snapshot supplied to composition. */
+type ChildRunnerConfig struct {
+	Provider         provider.LLMProvider
+	WorkDir          string
+	ParentProfile    ChildParentProfile
+	ProviderProtocol string
+	Model            string
+	Effort           string
+	Permission       *permission.Coordinator
+	ParentEvidence   permission.EvidenceProvider
+}
+
+/* ChildRunnerFactory maps legacy parent state to the consumer-owned subagent port. */
+type ChildRunnerFactory func(ChildRunnerConfig) subagent.Runner
+
+/* ChildParentProfile identifies the legacy parent behavior bundle at composition time. */
+type ChildParentProfile string
+
+const (
+	childParentCLI     ChildParentProfile = "CLIExec"
+	childParentTUI     ChildParentProfile = "TUIInteractive"
+	childParentAutodev ChildParentProfile = "AutodevPipeline"
+)
+
 func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
 	return AgentRunnerConfig{
 		WorkDir:         cfg.WorkDir,
@@ -114,6 +142,7 @@ func agentRunnerConfigFromCLI(cfg CLIConfig) AgentRunnerConfig {
 		SessionID:       cfg.SessionID,
 		ContinueSession: cfg.ContinueSession,
 		NewSession:      cfg.NewSession,
+		NewChildRunner:  cfg.NewChildRunner,
 	}
 }
 
@@ -158,6 +187,9 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 	}
 
 	providerProtocol := strings.ToLower(strings.TrimSpace(cfg.LLM.Protocol))
+	if cfg.RuntimeProfile == "" {
+		cfg.RuntimeProfile = childParentCLI
+	}
 
 	slashRegistry := slash.NewRegistry(workDir)
 	if err := slashRegistry.Load(); err != nil {
@@ -173,6 +205,8 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 		workDir:                workDir,
 		model:                  cfg.LLM.Model,
 		providerProtocol:       providerProtocol,
+		runtimeProfile:         cfg.RuntimeProfile,
+		newChildRunner:         cfg.NewChildRunner,
 		llmConfig:              cfg.LLM,
 		enableThinking:         cfg.EnableThinking,
 		effortOverride:         cfg.EffortOverride,
@@ -194,7 +228,7 @@ func NewAgentRunner(ctx context.Context, cfg AgentRunnerConfig) (*AgentRunner, e
 	ar.slashExecutor = slash.NewExecutor(
 		slash.WithWorkDir(workDir),
 		slash.WithForkRunner(&subagentForkRunner{
-			getManager: ar.currentSubagentManager,
+			getRunner:  ar.currentSubagentRunner,
 			getSession: ar.currentSessionIDLocked,
 		}),
 	)
@@ -267,18 +301,30 @@ func registryExposesTool(registry tools.Registry, name string) bool {
 	return false
 }
 
-// currentSubagentManager returns a freshly-built subagent.Manager bound to
+// currentSubagentRunner returns a freshly-built target ChildRun adapter bound to
 // the runner's current LLM provider. Built per-call so a /model switch is
 // immediately reflected in fork-mode skills without rebuilding the
 // executor or fork runner.
-func (r *AgentRunner) currentSubagentManager() *subagent.Manager {
+func (r *AgentRunner) currentSubagentRunner() subagent.Runner {
 	r.mu.Lock()
 	p := r.llmProvider
 	wd := r.workDir
 	permissions := r.permissionCoordinator
 	sess := r.currentSession
+	profile := r.runtimeProfile
+	protocol := r.providerProtocol
+	model := r.model
+	effort := r.effortOverride
+	newChildRunner := r.newChildRunner
 	r.mu.Unlock()
-	return subagent.NewManager(p, wd).WithPermission(permissions).WithParentEvidence(r.permissionEvidenceProvider(sess, ""))
+	if newChildRunner == nil {
+		return nil
+	}
+	return newChildRunner(ChildRunnerConfig{
+		Provider: p, WorkDir: wd, ParentProfile: profile, ProviderProtocol: protocol,
+		Model: model, Effort: effort, Permission: permissions,
+		ParentEvidence: r.permissionEvidenceProvider(sess, ""),
+	})
 }
 
 func (r *AgentRunner) permissionEvidenceProvider(sess *session.StoredSession, currentPrompt string, trustCurrentPrompt ...bool) permission.EvidenceProvider {
@@ -1066,30 +1112,28 @@ func (r *AgentRunner) conditionalActivationHook() func(schema.ToolCall, schema.T
 	}
 }
 
-// subagentForkRunner implements slash.ForkRunner by delegating to a
-// subagent.Manager built on demand. Both the manager and the parent
-// session id are read through getters so that /new (new session) and
-// /model (provider swap) are reflected immediately — keeping snapshots
-// here would leave fork-mode skills pinned to the original session and
-// model. The selected agent is resolved by the manager before child-session
-// creation so unsupported fork metadata cannot silently fall back.
+// subagentForkRunner implements slash.ForkRunner by delegating to a Runner
+// built on demand. Both the runner and parent session ID are read through
+// getters so /new and /model changes take effect immediately. The selected
+// agent is resolved before child-session creation, so unsupported fork
+// metadata cannot silently fall back.
 type subagentForkRunner struct {
-	getManager func() *subagent.Manager
+	getRunner  func() subagent.Runner
 	getSession func() string
 }
 
 func (s *subagentForkRunner) PermissionEnforced() bool {
-	manager := s.getManager()
-	return manager != nil && manager.PermissionEnforced()
+	runner := s.getRunner()
+	return runner != nil && runner.PermissionEnforced()
 }
 
 func (s *subagentForkRunner) Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error) {
-	mgr := s.getManager()
-	if mgr == nil {
-		return "", fmt.Errorf("fork runner: subagent manager unavailable")
+	runner := s.getRunner()
+	if runner == nil {
+		return "", fmt.Errorf("fork runner: subagent runner unavailable")
 	}
 	invocation, _ := tools.InvocationContextFrom(ctx)
-	res, err := mgr.Run(ctx, subagent.Request{
+	res, err := runner.Run(ctx, subagent.Request{
 		ParentSessionID: s.getSession(),
 		ParentRunID:     invocation.RunID,
 		DelegationID:    invocation.ToolCallID,
@@ -1139,8 +1183,22 @@ func (r *AgentRunner) buildRegistry(sess *session.StoredSession, llmProvider pro
 	if len(evidenceProviders) > 0 {
 		evidenceProvider = evidenceProviders[0]
 	}
-	subManager := subagent.NewManager(llmProvider, r.workDir).WithPermission(permissions).WithParentEvidence(evidenceProvider)
-	registry.Register(subagent.NewTool(subManager, string(sess.ID)))
+	r.mu.Lock()
+	profile := r.runtimeProfile
+	protocol := r.providerProtocol
+	model := r.model
+	effort := r.effortOverride
+	newChildRunner := r.newChildRunner
+	r.mu.Unlock()
+	var childRunner subagent.Runner
+	if newChildRunner != nil {
+		childRunner = newChildRunner(ChildRunnerConfig{
+			Provider: llmProvider, WorkDir: r.workDir, ParentProfile: profile,
+			ProviderProtocol: protocol, Model: model, Effort: effort,
+			Permission: permissions, ParentEvidence: evidenceProvider,
+		})
+	}
+	registry.Register(subagent.NewTool(childRunner, string(sess.ID)))
 
 	r.mu.Lock()
 	slashReg := r.slashRegistry

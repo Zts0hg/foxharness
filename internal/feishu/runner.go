@@ -43,7 +43,19 @@ type Runner struct {
 	runTask                 func(context.Context, Task)
 	taskOutcomeObserver     TaskOutcomeObserver
 	deliveryFailureObserver DeliveryFailureObserver
+	newChildRunner          ChildRunnerFactory
 }
+
+/* ChildRunnerConfig contains the frozen Feishu parent dependencies supplied to composition. */
+type ChildRunnerConfig struct {
+	Provider       provider.LLMProvider
+	WorkDir        string
+	Permission     *permission.Coordinator
+	ParentEvidence permission.EvidenceProvider
+}
+
+/* ChildRunnerFactory maps a Feishu parent run to the model-facing child port. */
+type ChildRunnerFactory func(ChildRunnerConfig) subagent.Runner
 
 const (
 	defaultMaxConcurrentTasks  = 4
@@ -86,6 +98,12 @@ func NewRunner(
 /* WithDeliveryFailureObserver installs the non-blocking delivery failure observer. */
 func (r *Runner) WithDeliveryFailureObserver(observer DeliveryFailureObserver) *Runner {
 	r.deliveryFailureObserver = observer
+	return r
+}
+
+/* WithChildRunnerFactory installs the composition-owned ChildRun adapter. */
+func (r *Runner) WithChildRunnerFactory(factory ChildRunnerFactory) *Runner {
+	r.newChildRunner = factory
 	return r
 }
 
@@ -265,9 +283,13 @@ func (r *Runner) buildRegistry(sess *session.StoredSession, chatID string, curre
 		Approver:  approver,
 		Evidence:  evidenceProvider,
 	})
-	subManager := subagent.NewManager(r.provider, r.workDir).
-		WithPermission(coordinator).
-		WithParentEvidence(evidenceProvider)
+	var childRunner subagent.Runner
+	if r.newChildRunner != nil {
+		childRunner = r.newChildRunner(ChildRunnerConfig{
+			Provider: r.provider, WorkDir: r.workDir,
+			Permission: coordinator, ParentEvidence: evidenceProvider,
+		})
+	}
 
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(r.workDir))
@@ -276,7 +298,7 @@ func (r *Runner) buildRegistry(sess *session.StoredSession, chatID string, curre
 	registry.Register(tools.NewBashTool(r.workDir))
 	registry.Register(tools.NewReadTodoTool(sess.RootDir))
 	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
-	registry.Register(subagent.NewTool(subManager, string(sess.ID)))
+	registry.Register(subagent.NewTool(childRunner, string(sess.ID)))
 	return permission.DecorateRegistry(registry, coordinator, evidenceProvider)
 }
 
