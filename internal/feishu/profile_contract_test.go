@@ -12,11 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/automemory"
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/toolpolicy"
@@ -182,7 +183,7 @@ func TestPFFEI009ApprovalEvidenceIsSessionBoundedAndDeduplicated(t *testing.T) {
 	if _, err := session.NewMessageLog(sess).Append("prior", schema.Message{Role: schema.RoleUser, Content: "prior task"}); err != nil {
 		t.Fatal(err)
 	}
-	provider := remotePermissionEvidenceProvider(sess, current)
+	provider := legacyRemotePermissionEvidenceProvider(sess, current)
 	request := permissionRequestForProfile("write_file", `{"path":"x","content":"y"}`)
 	evidence := provider(request)
 	joined := evidence.Text
@@ -234,7 +235,7 @@ func TestPFFEI013ExtractionIsRunBoundedFireAndForget(t *testing.T) {
 	if _, err := session.NewMessageLog(sess).Append("run-42", schema.Message{Role: schema.RoleUser, Content: "extract this run"}); err != nil {
 		t.Fatal(err)
 	}
-	(&Runner{}).fireMemoryExtraction(hooks, sess, "run-42", hooks.NewTracker())
+	(&legacyFeishuRunner{}).fireMemoryExtraction(hooks, sess, "run-42", hooks.NewTracker())
 	select {
 	case <-modelProvider.started:
 	case <-time.After(time.Second):
@@ -246,14 +247,16 @@ func TestPFFEI013ExtractionIsRunBoundedFireAndForget(t *testing.T) {
 
 func TestPFFEI015ReporterDoesNotRequestStreamingOrThinking(t *testing.T) {
 	reporter := NewReporter(nil, "chat", "task")
-	if _, ok := any(reporter).(engine.MessageDeltaReporter); ok {
-		t.Fatal("Feishu reporter exposes model-delta observation")
+	if _, ok := any(reporter).(app.NotificationSink); !ok {
+		t.Fatal("Feishu reporter does not implement the application notification boundary")
 	}
-	source := readPackageSource(t, "runner.go")
-	for _, required := range []string{"EnableThinking: false", "MaxTurns:       20"} {
-		if !strings.Contains(source, required) {
-			t.Fatalf("runner source missing frozen config %q", required)
-		}
+	profile, err := foxruntime.ResolveProfile(foxruntime.FeishuRemote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := profile.Snapshot()
+	if snapshot.DefaultThinking || snapshot.ThinkingMutable || snapshot.ModelStreaming || snapshot.ModelDeltaObservation || snapshot.DefaultMaxTurns != 20 {
+		t.Fatalf("Feishu non-streaming runtime profile = %#v", snapshot)
 	}
 }
 
@@ -324,7 +327,7 @@ func (p *feishuProfileProvider) Generate(_ context.Context, messages []schema.Me
 func (*feishuProfileProvider) ProviderProtocol() string { return "scripted" }
 func (*feishuProfileProvider) ModelName() string        { return "claude-4-sonnet" }
 
-func newFeishuProfileRunner(t *testing.T, modelProvider provider.LLMProvider) (*Runner, *session.Session) {
+func newFeishuProfileRunner(t *testing.T, modelProvider provider.LLMProvider) (*legacyFeishuRunner, *session.Session) {
 	t.Helper()
 	workDir := t.TempDir()
 	manager := session.NewManagerWithHome(workDir, t.TempDir())
@@ -332,7 +335,7 @@ func newFeishuProfileRunner(t *testing.T, modelProvider provider.LLMProvider) (*
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewRunner(modelProvider, workDir, nil, manager, approval.NewStore()), sess
+	return newLegacyFeishuRunner(modelProvider, workDir, nil, manager, approval.NewStore()), sess
 }
 
 func feishuProfileToolNames(definitions []schema.ToolDefinition) string {

@@ -12,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/approval"
-	"github.com/Zts0hg/foxharness/internal/engine"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	larkevent "github.com/larksuite/oapi-sdk-go/v3/event"
@@ -182,15 +182,15 @@ func TestUIFEI005ReporterAndTerminalMessagesAreExactAndCorrelated(t *testing.T) 
 	messenger := newRecordingMessenger(client)
 	reporter := NewReporter(messenger, "chat-1", "task-1")
 	ctx := context.Background()
-	reporter.OnRunStart(ctx, "session-1", "run-1")
-	reporter.OnThinking(ctx, 2)
-	reporter.OnCompaction(ctx, "turn")
-	reporter.OnToolCall(ctx, "read_file", `{"path":"a.txt"}`)
-	reporter.OnToolResult(ctx, "read_file", "contents", false)
-	reporter.OnToolResult(ctx, "bash", "failed", true)
-	reporter.OnMessage(ctx, "final assistant")
-	reporter.OnRunComplete(ctx, engine.RunResult{})
-	reporter.OnRunError(ctx, "session-1", "run-1", errors.New("ignored"))
+	reporter.Notify(ctx, app.Notification{Kind: app.NotificationRunStarted, SessionID: "session-1", RunID: "run-1"})
+	reporter.Notify(ctx, app.Notification{Kind: app.NotificationThinking, Turn: 2})
+	reporter.Notify(ctx, app.Notification{Kind: app.NotificationContextCompacted, Name: "turn"})
+	reporter.Notify(ctx, app.Notification{Kind: app.NotificationToolCall, Name: "read_file", Content: `{"path":"a.txt"}`})
+	reporter.Notify(ctx, app.Notification{Kind: app.NotificationToolResult, Name: "read_file", Content: "contents"})
+	reporter.Notify(ctx, app.Notification{Kind: app.NotificationToolResult, Name: "bash", Content: "failed", IsError: true})
+	reporter.Notify(ctx, app.Notification{Kind: app.NotificationMessage, Content: "final assistant"})
+	reporter.Notify(ctx, app.Notification{Kind: app.NotificationRunCompleted})
+	reporter.Notify(ctx, app.Notification{Kind: app.NotificationRunError, Content: errors.New("ignored").Error()})
 
 	runner := &Runner{messenger: messenger}
 	task := Task{TaskID: "task-1", ChatID: "chat-1"}
@@ -221,7 +221,7 @@ func TestUIFEI006UnicodeBoundsEmptySuppressionAndTransportErrors(t *testing.T) {
 	client := &recordingLarkClient{}
 	messenger := newRecordingMessenger(client)
 	reporter := NewReporter(messenger, "chat", "task")
-	reporter.OnMessage(context.Background(), "   ")
+	reporter.Notify(context.Background(), app.Notification{Kind: app.NotificationMessage, Content: "   "})
 	if got := client.snapshot(); len(got) != 0 {
 		t.Fatalf("empty message delivered: %#v", got)
 	}

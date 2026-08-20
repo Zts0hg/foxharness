@@ -53,7 +53,7 @@ func TestParseSessionDirective(t *testing.T) {
 }
 
 func TestRunnerBuildRegistryIncludesTodoTools(t *testing.T) {
-	runner := &Runner{workDir: t.TempDir()}
+	runner := &legacyFeishuRunner{workDir: t.TempDir()}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
 	registry := runner.buildRegistry(sess, "chat")
 
@@ -80,9 +80,9 @@ func TestRunnerBuildRegistryDeniesWorkspaceOutsideWriteWithUnifiedPermission(t *
 		t.Fatal(err)
 	}
 
-	runner := &Runner{
+	runner := &legacyFeishuRunner{
 		workDir: workDir, approvalStore: approval.NewStore(),
-		newChildRunner: func(ChildRunnerConfig) subagent.Runner { return &nestedPermissionRunner{} },
+		newChildRunner: func(legacyChildRunnerConfig) subagent.Runner { return &nestedPermissionRunner{} },
 	}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
 	registry := runner.buildRegistry(sess, "chat", "write outside workspace")
@@ -102,7 +102,7 @@ func TestRunnerBuildRegistryDeniesWorkspaceOutsideWriteWithUnifiedPermission(t *
 
 func TestRunnerBuildRegistryDeniesUnparseableBashWithUnifiedPermission(t *testing.T) {
 	workDir := t.TempDir()
-	runner := &Runner{workDir: workDir, approvalStore: approval.NewStore()}
+	runner := &legacyFeishuRunner{workDir: workDir, approvalStore: approval.NewStore()}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
 	registry := runner.buildRegistry(sess, "chat", "inspect with shell")
 
@@ -118,9 +118,9 @@ func TestRunnerBuildRegistryDeniesUnparseableBashWithUnifiedPermission(t *testin
 
 func TestRunnerBuildRegistryMarksWritableDelegationNestedPermissionEnforced(t *testing.T) {
 	workDir := t.TempDir()
-	runner := &Runner{
+	runner := &legacyFeishuRunner{
 		workDir: workDir, approvalStore: approval.NewStore(),
-		newChildRunner: func(ChildRunnerConfig) subagent.Runner { return &nestedPermissionRunner{} },
+		newChildRunner: func(legacyChildRunnerConfig) subagent.Runner { return &nestedPermissionRunner{} },
 	}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir()}
 	registry := runner.buildRegistry(sess, "chat", "delegate a fix")
@@ -253,7 +253,7 @@ func TestFeishuBuildComposerInjectsPersistentMemory(t *testing.T) {
 	}
 	sess := &session.Session{ID: "sess", RootDir: t.TempDir(), WorkDir: workDir}
 
-	runner := &Runner{workDir: workDir, sessionManager: manager}
+	runner := &legacyFeishuRunner{workDir: workDir, sessionManager: manager}
 	prompt, err := runner.buildComposer(sess, store).Compose("分析日志")
 	if err != nil {
 		t.Fatal(err)
@@ -314,7 +314,7 @@ func TestFeishuFireMemoryExtractionInvokesHooks(t *testing.T) {
 		gotTracker = tr
 	}
 	tracker := hooks.NewTracker()
-	runner := &Runner{}
+	runner := &legacyFeishuRunner{}
 	runner.fireMemoryExtraction(hooks, &session.Session{ID: "s"}, "run-42", tracker)
 	if gotRunID != "run-42" {
 		t.Fatalf("extraction fired with runID %q, want run-42", gotRunID)
@@ -331,7 +331,7 @@ func TestFeishuFireMemoryExtractionSwallowsPanic(t *testing.T) {
 	store := automemory.NewStore(t.TempDir(), workDir)
 	hooks := automemory.NewPerRunHooks(nil, store, workDir)
 	hooks.FireFunc = func(*session.Session, string, *automemory.Tracker) { panic("boom") }
-	runner := &Runner{}
+	runner := &legacyFeishuRunner{}
 	runner.fireMemoryExtraction(hooks, &session.Session{ID: "s"}, "", nil) // must not panic
 }
 

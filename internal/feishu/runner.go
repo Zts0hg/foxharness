@@ -5,35 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Zts0hg/foxharness/internal/approval"
-	"github.com/Zts0hg/foxharness/internal/automemory"
-	"github.com/Zts0hg/foxharness/internal/compaction"
-	prompt "github.com/Zts0hg/foxharness/internal/context"
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/permission"
-	"github.com/Zts0hg/foxharness/internal/provider"
-	"github.com/Zts0hg/foxharness/internal/schema"
-	"github.com/Zts0hg/foxharness/internal/session"
-	"github.com/Zts0hg/foxharness/internal/subagent"
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/app"
 )
 
-// Runner consumes Task values from a channel and executes each one in a
-// dedicated goroutine using the full agent engine stack: session creation,
-// tool registration (file I/O, bash, sub-agent), danger-action approval
-// middleware, context compaction, and a 5-minute per-task timeout.
+/* Runner consumes tasks while retaining Feishu scheduling and presentation ownership. */
 type Runner struct {
-	provider       provider.LLMProvider
-	workDir        string
-	messenger      *Messenger
-	sessionManager *session.FileStore
-	approvalStore  *approval.Store
-	locksMu        sync.Mutex
-	locks          map[string]*sessionLock
+	executionFactory TaskExecutionFactory
+	messenger        TextMessenger
+	locksMu          sync.Mutex
+	locks            map[string]*sessionLock
 
 	maxConcurrentTasks      int
 	taskTimeout             time.Duration
@@ -43,19 +28,7 @@ type Runner struct {
 	runTask                 func(context.Context, Task)
 	taskOutcomeObserver     TaskOutcomeObserver
 	deliveryFailureObserver DeliveryFailureObserver
-	newChildRunner          ChildRunnerFactory
 }
-
-/* ChildRunnerConfig contains the frozen Feishu parent dependencies supplied to composition. */
-type ChildRunnerConfig struct {
-	Provider       provider.LLMProvider
-	WorkDir        string
-	Permission     *permission.Coordinator
-	ParentEvidence permission.EvidenceProvider
-}
-
-/* ChildRunnerFactory maps a Feishu parent run to the model-facing child port. */
-type ChildRunnerFactory func(ChildRunnerConfig) subagent.Runner
 
 const (
 	defaultMaxConcurrentTasks  = 4
@@ -70,22 +43,11 @@ type sessionLock struct {
 	lastUsed time.Time
 }
 
-// NewRunner constructs a Runner with the given LLM provider, working
-// directory, Feishu messenger for user notifications, session manager, and
-// approval store.
-func NewRunner(
-	provider provider.LLMProvider,
-	workDir string,
-	messenger *Messenger,
-	sessionManager *session.FileStore,
-	approvalStore *approval.Store,
-) *Runner {
+/* NewRunner constructs a Feishu control-plane runner over an application execution factory. */
+func NewRunner(executionFactory TaskExecutionFactory, messenger TextMessenger) *Runner {
 	return &Runner{
-		provider:            provider,
-		workDir:             workDir,
+		executionFactory:    executionFactory,
 		messenger:           messenger,
-		sessionManager:      sessionManager,
-		approvalStore:       approvalStore,
 		locks:               make(map[string]*sessionLock),
 		maxConcurrentTasks:  defaultMaxConcurrentTasks,
 		taskTimeout:         defaultTaskTimeout,
@@ -98,12 +60,6 @@ func NewRunner(
 /* WithDeliveryFailureObserver installs the non-blocking delivery failure observer. */
 func (r *Runner) WithDeliveryFailureObserver(observer DeliveryFailureObserver) *Runner {
 	r.deliveryFailureObserver = observer
-	return r
-}
-
-/* WithChildRunnerFactory installs the composition-owned ChildRun adapter. */
-func (r *Runner) WithChildRunnerFactory(factory ChildRunnerFactory) *Runner {
-	r.newChildRunner = factory
 	return r
 }
 
@@ -155,7 +111,6 @@ func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 func (r *Runner) runOne(ctx context.Context, task Task) {
 	runCtx, cancel := context.WithTimeout(ctx, r.taskTimeoutOrDefault())
 	defer cancel()
-	providerMetadata := snapshotTaskProviderMetadata(r.provider)
 
 	r.deliverTaskText(runCtx, task, DeliveryStageReceipt, fmt.Sprintf("已收到任务 %s，开始执行。", task.TaskID))
 
@@ -169,71 +124,70 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	defer releaseLock()
 
 	forceNew, taskText := parseSessionDirective(task.Text)
-	sess, created, err := r.resolveSession(forceNew, task)
+	taskPrompt := feishuTaskPrompt(task, taskText)
+	prepared, err := r.prepareTask(runCtx, TaskExecutionRequest{
+		Task: task, Prompt: taskPrompt, ForceNewSession: forceNew,
+	})
 	if err != nil {
 		r.deliverTaskText(runCtx, task, DeliveryStageSession, fmt.Sprintf("创建 Session 失败: %v", err))
 		return
 	}
+	if prepared.Drain != nil {
+		defer func() {
+			drainCtx, cancelDrain := context.WithTimeout(context.WithoutCancel(runCtx), defaultTerminalSendTimeout)
+			defer cancelDrain()
+			if drainErr := prepared.Drain(drainCtx); drainErr != nil {
+				log.Printf("[Feishu Runner] task=%s session=%s drain failed: %v", task.TaskID, prepared.Session.ID, drainErr)
+			}
+		}()
+	}
 
-	if created {
-		r.deliverTaskText(runCtx, task, DeliveryStageSession, fmt.Sprintf("任务已进入新 Session: %s", sess.ID))
+	if prepared.Created {
+		r.deliverTaskText(runCtx, task, DeliveryStageSession, fmt.Sprintf("任务已进入新 Session: %s", prepared.Session.ID))
 	} else {
-		r.deliverTaskText(runCtx, task, DeliveryStageSession, fmt.Sprintf("继续使用 Session: %s", sess.ID))
+		r.deliverTaskText(runCtx, task, DeliveryStageSession, fmt.Sprintf("继续使用 Session: %s", prepared.Session.ID))
 	}
-
-	autoStore := automemory.NewStore(r.sessionManager.HomeDir(), r.workDir)
-	hooks := automemory.NewPerRunHooks(r.provider, autoStore, r.workDir)
-	tracker := hooks.NewTracker()
-
-	taskPrompt := feishuTaskPrompt(task, taskText)
-	registry := r.buildRegistry(sess, task.ChatID, taskPrompt)
-
-	composer := r.buildComposer(sess, autoStore)
-	engineConfig := engine.Config{
-		EnableThinking: false,
-		MaxTurns:       20,
-		OnToolCalled:   hooks.RecordCallback(tracker),
-	}
-	compCfg := compaction.DefaultCompactionConfig()
-	providerMetadata.apply(&engineConfig, &compCfg)
-	eng := engine.NewLegacyEngine(
-		r.provider,
-		registry,
-		r.workDir,
-		composer,
-		engineConfig,
-	)
-	compCfg.SessionDir = sess.RootDir
-	compCfg.TranscriptPath = sess.TranscriptPath()
-	compactor, err := compaction.NewCompactor(r.provider, compCfg)
-	if err != nil {
-		log.Printf("[Feishu Runner] 初始化 Compactor 失败: %v", err)
-		r.deliverTaskText(runCtx, task, DeliveryStageFailure, fmt.Sprintf("初始化任务执行环境失败：%v", err))
+	if prepared.SetupError != nil {
+		log.Printf("[Feishu Runner] task=%s session=%s runtime setup failed: %v", task.TaskID, prepared.Session.ID, prepared.SetupError)
+		r.deliverTaskText(runCtx, task, DeliveryStageFailure, fmt.Sprintf("初始化任务执行环境失败：%v", prepared.SetupError))
 		return
 	}
-	eng.WithCompactor(compactor)
 
 	reporter := NewReporter(r.messenger, task.ChatID, task.TaskID).WithDeliveryFailureObserver(r.deliveryFailureObserver)
-	result, err := eng.RunWithReporter(runCtx, sess, taskPrompt, reporter)
-	if result != nil {
-		r.fireMemoryExtraction(hooks, sess, result.RunID, tracker)
-	}
+	result, err := prepared.Application.Run(runCtx, app.RunCommand{Prompt: taskPrompt}, reporter)
 	if err != nil {
-		log.Printf("[Feishu Runner] task=%s session=%s  failed: %v", task.TaskID, sess.ID, err)
+		log.Printf("[Feishu Runner] task=%s session=%s failed: %v", task.TaskID, prepared.Session.ID, err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			r.deliverCancellation(task, err)
 		} else {
-			r.deliverTaskText(runCtx, task, DeliveryStageFailure, fmt.Sprintf("Session %s 执行失败：%v", sess.ID, err))
+			r.deliverTaskText(runCtx, task, DeliveryStageFailure, fmt.Sprintf("Session %s 执行失败：%v", prepared.Session.ID, err))
 		}
 		return
 	}
 
 	if result == nil || result.FinalMessage == "" {
-		r.deliverTaskText(runCtx, task, DeliveryStageFinal, fmt.Sprintf("任务 %s 执行完成，Session: %s", task.TaskID, sess.ID))
+		r.deliverTaskText(runCtx, task, DeliveryStageFinal, fmt.Sprintf("任务 %s 执行完成，Session: %s", task.TaskID, prepared.Session.ID))
 		return
 	}
 
-	r.deliverTaskText(runCtx, task, DeliveryStageFinal, fmt.Sprintf("任务 %s 已完成，Session: %s，Run: %s", task.TaskID, sess.ID, result.RunID))
+	r.deliverTaskText(runCtx, task, DeliveryStageFinal, fmt.Sprintf("任务 %s 已完成，Session: %s，Run: %s", task.TaskID, prepared.Session.ID, result.RunID))
+}
+
+func (r *Runner) prepareTask(ctx context.Context, request TaskExecutionRequest) (PreparedTaskExecution, error) {
+	if isNilDependency(r.executionFactory) {
+		return PreparedTaskExecution{}, errors.New("Feishu task execution factory is required")
+	}
+	prepared, err := r.executionFactory.PrepareTask(ctx, request)
+	if err != nil {
+		return PreparedTaskExecution{}, err
+	}
+	if isNilDependency(prepared.Application) && prepared.SetupError == nil {
+		return PreparedTaskExecution{}, errors.New("Feishu task application is required")
+	}
+	if strings.TrimSpace(prepared.Session.ID) == "" {
+		return PreparedTaskExecution{}, errors.New("Feishu task session identity is required")
+	}
+	return prepared, nil
 }
 
 func feishuTaskPrompt(task Task, taskText string) string {
@@ -243,125 +197,6 @@ func feishuTaskPrompt(task Task, taskText string) string {
 		task.MessageID,
 		taskText,
 	)
-}
-
-// buildComposer assembles the system-prompt composer for a task, injecting the
-// cross-session persistent memory index when a store is available (REQ-006).
-func (r *Runner) buildComposer(sess *session.StoredSession, store *automemory.Store) *prompt.Composer {
-	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
-	if store != nil {
-		composer = composer.WithAutoMemory(store)
-	}
-	return composer
-}
-
-// fireMemoryExtraction launches the post-run memory extraction hook (PLD-8). It
-// is fire-and-forget and panic-guarded so it can never disturb the task result.
-func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *session.StoredSession, runID string, tracker *automemory.Tracker) {
-	if hooks == nil {
-		return
-	}
-	defer func() {
-		if rec := recover(); rec != nil {
-			log.Printf("[Feishu Runner] memory extraction launch panic recovered: %v", rec)
-		}
-	}()
-	hooks.Fire(sess, runID, tracker)
-}
-
-func (r *Runner) buildRegistry(sess *session.StoredSession, chatID string, currentPrompt ...string) tools.Registry {
-	evidenceProvider := remotePermissionEvidenceProvider(sess, firstPrompt(currentPrompt))
-	var approver permission.UserApprover
-	if r.messenger != nil && r.approvalStore != nil {
-		approver = approval.NewPermissionApprover(chatID, r.messenger, r.approvalStore)
-	}
-	coordinator := permission.NewCoordinator(permission.Config{
-		State:     permission.NewState(permission.ModeAsk, false),
-		Workspace: r.workDir,
-		CWD:       r.workDir,
-		Source:    permission.SourceMain,
-		Approver:  approver,
-		Evidence:  evidenceProvider,
-	})
-	var childRunner subagent.Runner
-	if r.newChildRunner != nil {
-		childRunner = r.newChildRunner(ChildRunnerConfig{
-			Provider: r.provider, WorkDir: r.workDir,
-			Permission: coordinator, ParentEvidence: evidenceProvider,
-		})
-	}
-
-	registry := tools.NewRegistry()
-	registry.Register(tools.NewReadFileTool(r.workDir))
-	registry.Register(tools.NewWriteFileTool(r.workDir))
-	registry.Register(tools.NewEditFileTool(r.workDir))
-	registry.Register(tools.NewBashTool(r.workDir))
-	registry.Register(tools.NewReadTodoTool(sess.RootDir))
-	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
-	registry.Register(subagent.NewTool(childRunner, string(sess.ID)))
-	return permission.DecorateRegistry(registry, coordinator, evidenceProvider)
-}
-
-func remotePermissionEvidenceProvider(sess *session.StoredSession, currentPrompt string) permission.EvidenceProvider {
-	return func(request permission.Request) permission.Evidence {
-		var messages []schema.Message
-		if sess != nil {
-			records, err := session.NewMessageLog(sess).LoadRecords()
-			if err == nil {
-				messages = make([]schema.Message, 0, len(records)+1)
-				for _, record := range records {
-					messages = append(messages, record.Message)
-				}
-			}
-		}
-		if strings.TrimSpace(currentPrompt) != "" && !containsDirectUserMessage(messages, currentPrompt) {
-			messages = append(messages, schema.Message{Role: schema.RoleUser, Content: currentPrompt})
-		}
-		return permission.BuildEvidence(messages, nil, request)
-	}
-}
-
-func firstPrompt(prompts []string) string {
-	if len(prompts) == 0 {
-		return ""
-	}
-	return prompts[0]
-}
-
-func containsDirectUserMessage(messages []schema.Message, content string) bool {
-	for _, message := range messages {
-		if message.Role == schema.RoleUser && message.ToolCallID == "" && message.Content == content {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *Runner) resolveSession(forceNew bool, task Task) (*session.StoredSession, bool, error) {
-	if !forceNew {
-		sess, err := r.sessionManager.Latest(session.LookupOptions{
-			Source: session.SOURCEFeishu,
-			UserID: task.SenderID,
-			ChatID: task.ChatID,
-		})
-		if err == nil {
-			return sess, false, nil
-		}
-		if !errors.Is(err, session.ErrNotFound) {
-			return nil, false, err
-		}
-	}
-
-	sess, err := r.sessionManager.Create(session.CreateOptions{
-		Source:  session.SOURCEFeishu,
-		WorkDir: r.workDir,
-		UserID:  task.SenderID,
-		ChatID:  task.ChatID,
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	return sess, true, nil
 }
 
 func (r *Runner) concurrentTaskLimit() int {
@@ -421,12 +256,25 @@ func (r *Runner) handleTaskPanic(task Task, recovered any) {
 }
 
 func (r *Runner) deliverTaskText(ctx context.Context, task Task, stage DeliveryStage, text string) {
-	if r.messenger == nil {
+	if isNilDependency(r.messenger) {
 		r.observeDeliveryFailure(DeliveryFailure{TaskID: task.TaskID, ChatID: task.ChatID, Stage: stage, Cause: errMessengerUnavailable})
 		return
 	}
 	if err := r.messenger.SendText(ctx, task.ChatID, text); err != nil {
 		r.observeDeliveryFailure(DeliveryFailure{TaskID: task.TaskID, ChatID: task.ChatID, Stage: stage, Cause: err})
+	}
+}
+
+func isNilDependency(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
 	}
 }
 

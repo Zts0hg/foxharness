@@ -165,7 +165,7 @@ func TestMemoryStoreIsOnlyWorkingMemoryOwner(t *testing.T) {
 		t.Fatalf("working-memory ownership escaped internal/memory:\n%s", strings.Join(got, "\n"))
 	}
 	got := workingMemoryPathCompatibilityUsage(t, root)
-	want := []string{"internal/feishu/runner.go:MemoryPath=1"}
+	var want []string
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("persistence working-memory path usage = %v, want exact decreasing ceiling %v", got, want)
 	}
@@ -188,7 +188,7 @@ func TestOnlyAuthorizedRuntimeClientsHaveProductionImports(t *testing.T) {
 			callers = append(callers, edge.From)
 		}
 	}
-	want := []string{"cmd/bench", "cmd/fox", "internal/app", "internal/autodev", "internal/benchmark", "internal/childruntime", "internal/runtimecompaction", "internal/runtimejournal"}
+	want := []string{"cmd/bench", "cmd/feishu", "cmd/fox", "internal/app", "internal/autodev", "internal/benchmark", "internal/childruntime", "internal/runtimecompaction", "internal/runtimejournal"}
 	if fmt.Sprint(callers) != fmt.Sprint(want) {
 		t.Fatalf("target runtime production callers = %v, want authorized clients %v", callers, want)
 	}

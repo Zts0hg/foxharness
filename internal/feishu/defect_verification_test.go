@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/approval"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/engine"
@@ -608,7 +609,7 @@ func TestDVFEI010DeliveryFailuresAreTypedAndObservedByStage(t *testing.T) {
 	runner.deliverTaskText(context.Background(), task, DeliveryStageFinal, "final")
 	runner.deliverTaskText(context.Background(), task, DeliveryStageFailure, "failure")
 	reporter := NewReporter(runner.messenger, task.ChatID, task.TaskID).WithDeliveryFailureObserver(observer)
-	reporter.OnMessage(context.Background(), "lifecycle")
+	reporter.Notify(context.Background(), app.Notification{Kind: app.NotificationMessage, Content: "lifecycle"})
 	runner.handleTaskPanic(task, "panic")
 	runner.deliverCancellation(task, context.Canceled)
 

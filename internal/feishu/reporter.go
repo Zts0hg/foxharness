@@ -6,13 +6,12 @@ import (
 	"log"
 	"strings"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/app"
 )
 
-// Reporter streams engine lifecycle events back to the Feishu chat that
-// originated a task.
+/* Reporter maps application notifications to the existing Feishu task messages. */
 type Reporter struct {
-	messenger               *Messenger
+	messenger               TextMessenger
 	chatID                  string
 	taskID                  string
 	deliveryFailureObserver DeliveryFailureObserver
@@ -24,8 +23,8 @@ func (r *Reporter) WithDeliveryFailureObserver(observer DeliveryFailureObserver)
 	return r
 }
 
-// NewReporter creates a Feishu-backed engine reporter for one task.
-func NewReporter(messenger *Messenger, chatID, taskID string) *Reporter {
+/* NewReporter creates a Feishu-backed application notification sink for one task. */
+func NewReporter(messenger TextMessenger, chatID, taskID string) *Reporter {
 	return &Reporter{
 		messenger: messenger,
 		chatID:    chatID,
@@ -33,19 +32,25 @@ func NewReporter(messenger *Messenger, chatID, taskID string) *Reporter {
 	}
 }
 
-func (r *Reporter) OnRunStart(ctx context.Context, sessionID string, runID string) {
-	r.send(ctx, fmt.Sprintf("任务 %s：Run %s 已开始，Session: %s。", r.taskID, runID, sessionID))
+/* Notify maps one UI-neutral application notification without retaining run state. */
+func (r *Reporter) Notify(ctx context.Context, notification app.Notification) {
+	switch notification.Kind {
+	case app.NotificationRunStarted:
+		r.send(ctx, fmt.Sprintf("任务 %s：Run %s 已开始，Session: %s。", r.taskID, notification.RunID, notification.SessionID))
+	case app.NotificationThinking:
+		r.send(ctx, fmt.Sprintf("任务 %s：第 %d 轮正在规划。", r.taskID, notification.Turn))
+	case app.NotificationContextCompacted:
+		r.send(ctx, fmt.Sprintf("任务 %s：上下文已压缩（%s）。", r.taskID, notification.Name))
+	case app.NotificationToolCall:
+		r.onToolCall(ctx, notification.Name, notification.Content)
+	case app.NotificationToolResult:
+		r.onToolResult(ctx, notification.Name, notification.Content, notification.IsError)
+	case app.NotificationMessage:
+		r.onMessage(ctx, notification.Content)
+	}
 }
 
-func (r *Reporter) OnThinking(ctx context.Context, turn int) {
-	r.send(ctx, fmt.Sprintf("任务 %s：第 %d 轮正在规划。", r.taskID, turn))
-}
-
-func (r *Reporter) OnCompaction(ctx context.Context, scope string) {
-	r.send(ctx, fmt.Sprintf("任务 %s：上下文已压缩（%s）。", r.taskID, scope))
-}
-
-func (r *Reporter) OnToolCall(ctx context.Context, toolName string, args string) {
+func (r *Reporter) onToolCall(ctx context.Context, toolName string, args string) {
 	msg := fmt.Sprintf(
 		"任务 %s：准备执行工具 %s。\n参数：%s",
 		r.taskID,
@@ -55,7 +60,7 @@ func (r *Reporter) OnToolCall(ctx context.Context, toolName string, args string)
 	r.send(ctx, msg)
 }
 
-func (r *Reporter) OnToolResult(ctx context.Context, toolName string, result string, isError bool) {
+func (r *Reporter) onToolResult(ctx context.Context, toolName string, result string, isError bool) {
 	if isError {
 		r.send(ctx, fmt.Sprintf(
 			"任务 %s：工具 %s 执行失败。\n%s",
@@ -80,7 +85,7 @@ func (r *Reporter) OnToolResult(ctx context.Context, toolName string, result str
 	))
 }
 
-func (r *Reporter) OnMessage(ctx context.Context, content string) {
+func (r *Reporter) onMessage(ctx context.Context, content string) {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return
@@ -88,14 +93,8 @@ func (r *Reporter) OnMessage(ctx context.Context, content string) {
 	r.send(ctx, truncateFeishuText(content, 1800))
 }
 
-func (r *Reporter) OnRunComplete(ctx context.Context, result engine.RunResult) {
-}
-
-func (r *Reporter) OnRunError(ctx context.Context, sessionID string, runID string, err error) {
-}
-
 func (r *Reporter) send(ctx context.Context, text string) {
-	if r == nil || r.messenger == nil || strings.TrimSpace(text) == "" {
+	if r == nil || isNilDependency(r.messenger) || strings.TrimSpace(text) == "" {
 		return
 	}
 	if err := r.messenger.SendText(ctx, r.chatID, text); err != nil {
@@ -129,4 +128,4 @@ func truncateFeishuText(s string, limit int) string {
 	return string(runes[:limit-len(suffixRunes)]) + suffix
 }
 
-var _ engine.Reporter = (*Reporter)(nil)
+var _ app.NotificationSink = (*Reporter)(nil)
