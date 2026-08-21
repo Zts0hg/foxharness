@@ -15,6 +15,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/childruntime"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	legacycontext "github.com/Zts0hg/foxharness/internal/context"
@@ -40,7 +41,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/turnpolicy"
 )
 
-func newCLIApplication(ctx context.Context, config app.CLIConfig) (*app.RuntimeApplication, error) {
+func newCLIApplication(ctx context.Context, config foxConfig) (*app.RuntimeApplication, error) {
 	if err := validateCLILLM(config); err != nil {
 		return nil, err
 	}
@@ -51,7 +52,7 @@ func newCLIApplication(ctx context.Context, config app.CLIConfig) (*app.RuntimeA
 	return newCLIApplicationWithProvider(ctx, config, modelProvider)
 }
 
-func newCLIApplicationWithProvider(ctx context.Context, config app.CLIConfig, modelProvider provider.LLMProvider) (*app.RuntimeApplication, error) {
+func newCLIApplicationWithProvider(ctx context.Context, config foxConfig, modelProvider provider.LLMProvider) (*app.RuntimeApplication, error) {
 	if err := validateCLILLM(config); err != nil {
 		return nil, err
 	}
@@ -223,14 +224,14 @@ func newCLIApplicationWithProvider(ctx context.Context, config app.CLIConfig, mo
 	return application, nil
 }
 
-func validateCLILLM(config app.CLIConfig) error {
+func validateCLILLM(config foxConfig) error {
 	if config.ResolvedLLM.Protocol == "" || config.ResolvedLLM.BaseURL == "" || config.ResolvedLLM.Model == "" {
 		return errors.New("missing LLM configuration: protocol, base_url, and model are required")
 	}
 	return nil
 }
 
-func selectCLIStoredSession(store *session.FileStore, workDir string, config app.CLIConfig) (*session.StoredSession, error) {
+func selectCLIStoredSession(store *session.FileStore, workDir string, config foxConfig) (*session.StoredSession, error) {
 	if config.NewSession && (config.SessionID != "" || config.ContinueSession) {
 		return nil, errors.New("-new 不能和 -session 或 -continue 同时使用")
 	}
@@ -259,7 +260,7 @@ func selectCLIStoredSession(store *session.FileStore, workDir string, config app
 }
 
 func buildCLIToolRegistry(
-	config app.CLIConfig,
+	config foxConfig,
 	workDir string,
 	stored *session.StoredSession,
 	modelProvider provider.LLMProvider,
@@ -278,8 +279,8 @@ func buildCLIToolRegistry(
 
 	var child subagent.Runner
 	if config.NewChildRunner != nil {
-		child = config.NewChildRunner(app.ChildRunnerConfig{
-			Provider: modelProvider, WorkDir: workDir, ParentProfile: app.ChildParentProfile(foxruntime.CLIExec),
+		child = config.NewChildRunner(childruntime.Config{
+			Provider: modelProvider, WorkDir: workDir, ParentProfile: childruntime.ParentProfile(foxruntime.CLIExec),
 			ProviderProtocol: strings.ToLower(strings.TrimSpace(config.ResolvedLLM.Protocol)),
 			Model:            config.Model, Effort: config.EffortOverride,
 		})

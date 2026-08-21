@@ -9,10 +9,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/childruntime"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	legacycontext "github.com/Zts0hg/foxharness/internal/context"
@@ -44,7 +44,7 @@ type autodevProviderFactory func(llmconfig.ResolvedConfig) (provider.LLMProvider
 type autodevRuntimeCoreFactory struct {
 	llmConfig      llmconfig.ResolvedConfig
 	maxTurns       int
-	newChildRunner app.ChildRunnerFactory
+	newChildRunner childRunnerFactory
 	newProvider    autodevProviderFactory
 }
 
@@ -104,9 +104,9 @@ func (f *autodevRuntimeCoreFactory) New(ctx context.Context, workDir, model stri
 		if f.newChildRunner == nil {
 			return nil
 		}
-		return f.newChildRunner(app.ChildRunnerConfig{
+		return f.newChildRunner(childruntime.Config{
 			Provider: providerState, WorkDir: workDir,
-			ParentProfile:    app.ChildParentProfile(foxruntime.AutodevPipeline),
+			ParentProfile:    childruntime.ParentProfile(foxruntime.AutodevPipeline),
 			ProviderProtocol: strings.ToLower(strings.TrimSpace(providerState.configSnapshot().Protocol)),
 			Model:            providerState.model(), Permission: permissions,
 		})
@@ -439,7 +439,7 @@ func (r *autodevForkRunner) Run(ctx context.Context, task, agentType string, all
 	return result.Report, nil
 }
 
-func buildRuntimeAutodevDeps(ctx context.Context, config app.CLIConfig, reporter autodev.Reporter) (autodev.Deps, error) {
+func buildRuntimeAutodevDeps(ctx context.Context, config foxConfig, reporter autodev.Reporter) (autodev.Deps, error) {
 	repoRoot, err := filepath.Abs(config.WorkDir)
 	if err != nil {
 		return autodev.Deps{}, err
@@ -474,7 +474,7 @@ func buildRuntimeAutodevDeps(ctx context.Context, config app.CLIConfig, reporter
 	}, nil
 }
 
-func runAutodev(ctx context.Context, config app.CLIConfig, reporter autodev.Reporter) error {
+func runAutodev(ctx context.Context, config foxConfig, reporter autodev.Reporter) error {
 	deps, err := buildRuntimeAutodevDeps(ctx, config, reporter)
 	if err != nil {
 		return err
@@ -482,7 +482,7 @@ func runAutodev(ctx context.Context, config app.CLIConfig, reporter autodev.Repo
 	return autodev.New(deps).Run(ctx)
 }
 
-func autodevConfigForTUILaunch(config app.CLIConfig, backlogPath string) app.CLIConfig {
+func autodevConfigForTUILaunch(config foxConfig, backlogPath string) foxConfig {
 	config.Prompt = backlogPath
 	return config
 }

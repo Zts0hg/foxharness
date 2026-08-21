@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/configcmd"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
@@ -258,7 +257,7 @@ func TestValidateEffortConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := app.CLIConfig{EffortOverride: tt.effort}
+			cfg := foxConfig{EffortOverride: tt.effort}
 			err := validateEffortConfig(&cfg, llmconfig.ResolvedConfig{Protocol: tt.protocol})
 			if tt.wantErr {
 				if err == nil {
@@ -284,13 +283,13 @@ func TestApplyPersistedEffortUsesProtocolPreferenceUnlessCLIOverrideSet(t *testi
 		},
 	})
 
-	cfg := app.CLIConfig{}
+	cfg := foxConfig{}
 	applyPersistedEffort(home, &cfg, llmconfig.ResolvedConfig{Protocol: llmconfig.ProtocolOpenAI})
 	if cfg.EffortOverride != "minimal" {
 		t.Fatalf("EffortOverride = %q, want minimal", cfg.EffortOverride)
 	}
 
-	cfg = app.CLIConfig{EffortOverride: "high"}
+	cfg = foxConfig{EffortOverride: "high"}
 	applyPersistedEffort(home, &cfg, llmconfig.ResolvedConfig{Protocol: llmconfig.ProtocolOpenAI})
 	if cfg.EffortOverride != "high" {
 		t.Fatalf("EffortOverride = %q, want CLI override high", cfg.EffortOverride)
@@ -418,17 +417,17 @@ func TestUIAUT001AutodevRoutingMatrix(t *testing.T) {
 		name       string
 		args       []string
 		wantPrompt string
-		check      func(t *testing.T, cfg app.CLIConfig)
+		check      func(t *testing.T, cfg foxConfig)
 	}{
 		{name: "default backlog", args: []string{"autodev"}},
 		{name: "single positional backlog", args: []string{"autodev", "missing-but-uninterpreted.md"}, wantPrompt: "missing-but-uninterpreted.md"},
 		{name: "prompt backlog", args: []string{"autodev", "-prompt", "PROMPT.md"}, wantPrompt: "PROMPT.md"},
-		{name: "short workdir", args: []string{"autodev", "-C", "/repo", "WORK.md"}, wantPrompt: "WORK.md", check: func(t *testing.T, cfg app.CLIConfig) {
+		{name: "short workdir", args: []string{"autodev", "-C", "/repo", "WORK.md"}, wantPrompt: "WORK.md", check: func(t *testing.T, cfg foxConfig) {
 			if cfg.WorkDir != "/repo" {
 				t.Fatalf("WorkDir = %q, want /repo", cfg.WorkDir)
 			}
 		}},
-		{name: "long workdir and runtime options", args: []string{"autodev", "-workdir", "/repo", "-llm-provider", "fixture", "-protocol", "claude", "-base-url", "http://fixture", "-auth", "none", "-model", "model-x", "-max-turns", "17", "WORK.md"}, wantPrompt: "WORK.md", check: func(t *testing.T, cfg app.CLIConfig) {
+		{name: "long workdir and runtime options", args: []string{"autodev", "-workdir", "/repo", "-llm-provider", "fixture", "-protocol", "claude", "-base-url", "http://fixture", "-auth", "none", "-model", "model-x", "-max-turns", "17", "WORK.md"}, wantPrompt: "WORK.md", check: func(t *testing.T, cfg foxConfig) {
 			if cfg.WorkDir != "/repo" || cfg.LLM.ProviderID != "fixture" || cfg.LLM.Protocol != "claude" || cfg.LLM.BaseURL != "http://fixture" || cfg.LLM.Auth != "none" || cfg.Model != "model-x" || cfg.MaxTurns != 17 {
 				t.Fatalf("resolved parse snapshot = %+v", cfg)
 			}

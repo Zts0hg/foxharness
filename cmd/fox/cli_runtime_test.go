@@ -28,7 +28,7 @@ func TestCLIExecTargetCompositionPreservesProfileArtifactsAndPresentation(t *tes
 		t.Fatal(err)
 	}
 	model := &targetCLIProvider{}
-	cfg := app.CLIConfig{
+	cfg := foxConfig{
 		WorkDir: workDir, Prompt: "/help remains ordinary input", Model: "cli-target-model",
 		ResolvedLLM: llmconfig.ResolvedConfig{
 			Protocol: "openai", BaseURL: "https://example.test", Model: "cli-target-model",
@@ -118,17 +118,17 @@ func TestCLIExecTargetSessionSelectionPreservesExactErrorsAndLatestCLISource(t *
 	if _, err := store.Create(session.CreateOptions{Source: session.SOURCEFeishu, WorkDir: workDir}); err != nil {
 		t.Fatal(err)
 	}
-	selected, err := selectCLIStoredSession(store, workDir, app.CLIConfig{ContinueSession: true})
+	selected, err := selectCLIStoredSession(store, workDir, foxConfig{ContinueSession: true})
 	if err != nil || selected.ID != existing.ID {
 		t.Fatalf("continue selection = %#v/%v, want %s", selected, err, existing.ID)
 	}
 	for _, check := range []struct {
-		config app.CLIConfig
+		config foxConfig
 		want   string
 	}{
-		{config: app.CLIConfig{NewSession: true, SessionID: string(existing.ID)}, want: "-new 不能和 -session 或 -continue 同时使用"},
-		{config: app.CLIConfig{SessionID: string(existing.ID), ContinueSession: true}, want: "-session 不能和 -continue 同时使用"},
-		{config: app.CLIConfig{SessionID: "missing"}, want: "Session missing 不存在"},
+		{config: foxConfig{NewSession: true, SessionID: string(existing.ID)}, want: "-new 不能和 -session 或 -continue 同时使用"},
+		{config: foxConfig{SessionID: string(existing.ID), ContinueSession: true}, want: "-session 不能和 -continue 同时使用"},
+		{config: foxConfig{SessionID: "missing"}, want: "Session missing 不存在"},
 	} {
 		if _, err := selectCLIStoredSession(store, workDir, check.config); err == nil || err.Error() != check.want {
 			t.Fatalf("selection error = %v, want %q", err, check.want)
@@ -155,7 +155,7 @@ func TestCLIExecTargetToolRunReturnsBeforeTrackedExtractionAndDrainJoins(t *test
 		t.Fatal(err)
 	}
 	model := &targetCLIToolProvider{extractionStarted: make(chan struct{}), releaseExtraction: make(chan struct{})}
-	config := app.CLIConfig{
+	config := foxConfig{
 		WorkDir: workDir, Model: "model", MaxTurns: 4,
 		ResolvedLLM: llmconfig.ResolvedConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "model"},
 	}

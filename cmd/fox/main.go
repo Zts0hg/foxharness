@@ -175,13 +175,8 @@ func main() {
 	}
 }
 
-func newChildRunner(config app.ChildRunnerConfig) subagent.Runner {
-	return childruntime.New(childruntime.Config{
-		Provider: config.Provider, WorkDir: config.WorkDir,
-		ParentProfile:    childruntime.ParentProfile(config.ParentProfile),
-		ProviderProtocol: config.ProviderProtocol, Model: config.Model, Effort: config.Effort,
-		Permission: config.Permission, ParentEvidence: config.ParentEvidence,
-	})
+func newChildRunner(config childruntime.Config) subagent.Runner {
+	return childruntime.New(config)
 }
 
 func exitWithError(err error) {
@@ -426,8 +421,8 @@ func runAutodevWithSignals(parent context.Context, signals <-chan os.Signal, run
 	}
 }
 
-func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, error) {
-	var cfg app.CLIConfig
+func parseArgs(args []string, output io.Writer) (foxConfig, launchMode, error) {
+	var cfg foxConfig
 	mode := launchTUI
 	if len(args) > 0 && args[0] == "exec" {
 		mode = launchPrint
@@ -513,7 +508,7 @@ func resolveLLMConfig(homeDir string, cli llmconfig.CLIOverrides, lookup llmconf
 	return llmresolve.FromUserSettings(homeDir, cli, lookup)
 }
 
-func validateEffortConfig(cfg *app.CLIConfig, resolved llmconfig.ResolvedConfig) error {
+func validateEffortConfig(cfg *foxConfig, resolved llmconfig.ResolvedConfig) error {
 	if cfg == nil || strings.TrimSpace(cfg.EffortOverride) == "" {
 		return nil
 	}
@@ -525,7 +520,7 @@ func validateEffortConfig(cfg *app.CLIConfig, resolved llmconfig.ResolvedConfig)
 	return nil
 }
 
-func applyPersistedEffort(homeDir string, cfg *app.CLIConfig, resolved llmconfig.ResolvedConfig) {
+func applyPersistedEffort(homeDir string, cfg *foxConfig, resolved llmconfig.ResolvedConfig) {
 	if cfg == nil || strings.TrimSpace(cfg.EffortOverride) != "" {
 		return
 	}

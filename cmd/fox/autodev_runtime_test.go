@@ -10,7 +10,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/provider"
@@ -19,7 +18,7 @@ import (
 )
 
 func TestUIAUT006TUILaunchPreservesTypedAutodevConfig(t *testing.T) {
-	original := app.CLIConfig{
+	original := foxConfig{
 		WorkDir: "/repo", Prompt: "interactive initial prompt", Model: "model-x",
 		LLM:            llmconfig.CLIOverrides{ProviderID: "fixture", Protocol: "claude", BaseURL: "http://fixture", Auth: "none"},
 		ResolvedLLM:    llmconfig.ResolvedConfig{ProviderID: "fixture", Protocol: "claude", BaseURL: "http://fixture", Auth: "none", Model: "model-x"},
@@ -190,7 +189,7 @@ func TestM18BuildRuntimeAutodevDepsUsesTargetFactoryAndSharedModel(t *testing.T)
 	if err := os.WriteFile(filepath.Join(repoRoot, ".foxharness", "autodev.yml"), []byte("model: shared-model\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	deps, err := buildRuntimeAutodevDeps(context.Background(), app.CLIConfig{
+	deps, err := buildRuntimeAutodevDeps(context.Background(), foxConfig{
 		WorkDir: repoRoot, Model: "cli-model",
 		ResolvedLLM: llmconfig.ResolvedConfig{Protocol: "openai", BaseURL: "http://127.0.0.1:1", Model: "cli-model", Auth: llmconfig.AuthNone},
 	}, autodev.NewTerminalReporter(os.Stderr))

@@ -16,6 +16,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/childruntime"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
 	legacycontext "github.com/Zts0hg/foxharness/internal/context"
@@ -67,7 +68,7 @@ type tuiRunResources struct {
 type tuiRuntimeComposition struct {
 	mu sync.Mutex
 
-	config          app.CLIConfig
+	config          foxConfig
 	workDir         string
 	store           *session.FileStore
 	harness         *foxruntime.RuntimeHarness
@@ -97,13 +98,13 @@ type tuiRuntimeComposition struct {
 	onModelChange    func(string) error
 }
 
-func newTUIStartup(ctx context.Context, config app.CLIConfig, interactions tui.Interactions, onModelChange func(string) error) (tui.Startup, error) {
+func newTUIStartup(ctx context.Context, config foxConfig, interactions tui.Interactions, onModelChange func(string) error) (tui.Startup, error) {
 	return newTUIStartupWithProviderFactory(ctx, config, interactions, provider.NewProvider, onModelChange)
 }
 
 func newTUIStartupWithProviderFactory(
 	ctx context.Context,
-	config app.CLIConfig,
+	config foxConfig,
 	interactions tui.Interactions,
 	providerFactory tuiProviderFactory,
 	onModelChange func(string) error,
@@ -447,8 +448,8 @@ func (c *tuiRuntimeComposition) buildToolRegistry(assembly foxruntime.RunAssembl
 
 	var child subagent.Runner
 	if c.config.NewChildRunner != nil {
-		child = c.config.NewChildRunner(app.ChildRunnerConfig{
-			Provider: modelProvider, WorkDir: c.workDir, ParentProfile: app.ChildParentProfile(foxruntime.TUIInteractive),
+		child = c.config.NewChildRunner(childruntime.Config{
+			Provider: modelProvider, WorkDir: c.workDir, ParentProfile: childruntime.ParentProfile(foxruntime.TUIInteractive),
 			ProviderProtocol: assembly.Spec.ProviderProtocol, Model: assembly.Run.Model, Effort: assembly.Run.Effort,
 			Permission: c.permissions, ParentEvidence: c.permissionEvidence(resource.stored, assembly.Spec.Prompt),
 		})
@@ -959,9 +960,9 @@ func (r *tuiForkRunner) Run(ctx context.Context, task string, agentType string, 
 		return "", err
 	}
 	invocation, _ := tools.InvocationContextFrom(ctx)
-	child := r.composition.config.NewChildRunner(app.ChildRunnerConfig{
+	child := r.composition.config.NewChildRunner(childruntime.Config{
 		Provider: modelProvider, WorkDir: r.composition.workDir,
-		ParentProfile:    app.ChildParentProfile(foxruntime.TUIInteractive),
+		ParentProfile:    childruntime.ParentProfile(foxruntime.TUIInteractive),
 		ProviderProtocol: strings.ToLower(strings.TrimSpace(r.composition.config.ResolvedLLM.Protocol)),
 		Model:            model, Effort: effort, Permission: r.composition.permissions,
 		ParentEvidence: r.composition.permissionEvidence(resource.stored, ""),

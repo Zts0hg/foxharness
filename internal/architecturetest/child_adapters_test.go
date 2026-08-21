@@ -41,11 +41,13 @@ func TestIACHD006ChildInvocationAdaptersRemainHeadlessAndSinglePath(t *testing.T
 		method   string
 	}{
 		{path: "internal/subagent/tool.go", receiver: "Tool", method: "Execute"},
-		{path: "internal/app/runner.go", receiver: "subagentForkRunner", method: "Run"},
+		{path: "cmd/fox/cli_runtime.go", receiver: "runtimeForkRunner", method: "Run"},
+		{path: "cmd/fox/tui_runtime.go", receiver: "tuiForkRunner", method: "Run"},
 	}
 	for _, test := range tests {
 		t.Run(test.receiver+"."+test.method, func(t *testing.T) {
 			file := parseGoFile(t, filepath.Join(moduleRoot(t), filepath.FromSlash(test.path)))
+			forbiddenImports := make(map[string]string)
 			for _, spec := range file.Imports {
 				path, err := strconv.Unquote(spec.Path.Value)
 				if err != nil {
@@ -53,7 +55,14 @@ func TestIACHD006ChildInvocationAdaptersRemainHeadlessAndSinglePath(t *testing.T
 				}
 				for _, forbidden := range []string{"/internal/tui", "/internal/feishu", "/internal/agentops", "/internal/benchmark"} {
 					if strings.HasSuffix(path, forbidden) {
-						t.Fatalf("adapter imports presentation/control package %q", path)
+						name := filepath.Base(path)
+						if spec.Name != nil {
+							name = spec.Name.Name
+						}
+						if name == "." {
+							t.Fatalf("adapter file dot-imports presentation/control package %q", path)
+						}
+						forbiddenImports[name] = path
 					}
 				}
 			}
@@ -75,8 +84,13 @@ func TestIACHD006ChildInvocationAdaptersRemainHeadlessAndSinglePath(t *testing.T
 						}
 					}
 				case *ast.SelectorExpr:
-					if identifier, ok := node.X.(*ast.Ident); ok && identifier.Name == "os" && node.Sel.Name == "Stdout" {
-						t.Error("adapter accesses stdout")
+					if identifier, ok := node.X.(*ast.Ident); ok {
+						if path := forbiddenImports[identifier.Name]; path != "" {
+							t.Errorf("adapter references presentation/control package %q", path)
+						}
+						if identifier.Name == "os" && node.Sel.Name == "Stdout" {
+							t.Error("adapter accesses stdout")
+						}
 					}
 				}
 				return true

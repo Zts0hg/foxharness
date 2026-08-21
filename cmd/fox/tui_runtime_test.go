@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/app"
+	"github.com/Zts0hg/foxharness/internal/childruntime"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
@@ -30,7 +31,7 @@ func TestTUIInteractiveTargetCompositionPreservesMultiRunSessionAndCapabilitySur
 		t.Fatal(err)
 	}
 	model := &targetTUIProvider{}
-	config := app.CLIConfig{
+	config := foxConfig{
 		WorkDir: workDir, Model: "tui-model", EffortOverride: "high", MaxTurns: 4,
 		ResolvedLLM: llmconfig.ResolvedConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "tui-model"},
 	}
@@ -96,7 +97,7 @@ func TestTUIInteractiveTargetFormalPlanTransitionsThroughReviewedChecklist(t *te
 	t.Setenv("HOME", t.TempDir())
 	workDir := t.TempDir()
 	model := &formalPlanTUIProvider{}
-	config := app.CLIConfig{
+	config := foxConfig{
 		WorkDir: workDir, Model: "tui-model", MaxTurns: 6,
 		ResolvedLLM: llmconfig.ResolvedConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "tui-model"},
 	}
@@ -138,7 +139,7 @@ func TestTUIInteractiveTargetModelAndEffortChangesAffectOnlyFutureRuns(t *testin
 	var factoryModels []string
 	providers := make(map[string]*modelSnapshotTUIProvider)
 	var savedModel string
-	config := app.CLIConfig{
+	config := foxConfig{
 		WorkDir: workDir, Model: "model-a", EffortOverride: "high", MaxTurns: 3,
 		ResolvedLLM: llmconfig.ResolvedConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "model-a"},
 	}
@@ -180,7 +181,7 @@ func TestTUIInteractiveTargetModelPersistenceFailureDoesNotUndoValidatedSwitch(t
 	t.Setenv("HOME", t.TempDir())
 	workDir := t.TempDir()
 	providers := make(map[string]*modelSnapshotTUIProvider)
-	config := app.CLIConfig{
+	config := foxConfig{
 		WorkDir: workDir, Model: "model-a", MaxTurns: 3,
 		ResolvedLLM: llmconfig.ResolvedConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "model-a"},
 	}
@@ -211,7 +212,7 @@ func TestTUIInteractiveTargetCompactionAndRewindUseActiveSessionState(t *testing
 		t.Helper()
 		t.Setenv("HOME", t.TempDir())
 		workDir := t.TempDir()
-		config := app.CLIConfig{
+		config := foxConfig{
 			WorkDir: workDir, Model: "tui-model", MaxTurns: 3,
 			ResolvedLLM: llmconfig.ResolvedConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "tui-model"},
 		}
@@ -280,11 +281,11 @@ func TestTUIInteractiveTargetForkCarriesParentPermissionEvidence(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workDir, "AGENTS.md"), []byte("TRUSTED_FORK_INSTRUCTION\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	var childConfig app.ChildRunnerConfig
-	config := app.CLIConfig{
+	var childConfig childruntime.Config
+	config := foxConfig{
 		WorkDir: workDir, Model: "tui-model", MaxTurns: 3,
 		ResolvedLLM: llmconfig.ResolvedConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "tui-model"},
-		NewChildRunner: func(config app.ChildRunnerConfig) subagent.Runner {
+		NewChildRunner: func(config childruntime.Config) subagent.Runner {
 			childConfig = config
 			return targetTUIChildRunner{}
 		},
