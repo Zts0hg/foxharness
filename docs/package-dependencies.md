@@ -1,6 +1,6 @@
 # Fox Package Dependency Contract
 
-This document is the authoritative human-readable package dependency contract for Fox. Automated enforcement lives in `internal/architecturetest/imports_test.go`; the temporary migration ledger lives in `internal/architecturetest/allowlist.json`. A dependency-changing commit must update all three artifacts together.
+This document is the authoritative human-readable package dependency contract for Fox. Automated enforcement lives in `internal/architecturetest/imports_test.go`; `baseline_allowlist.json` preserves the immutable pre-refactor ceiling and `allowlist.json` records the now-empty migration ledger. A dependency-changing commit must update the document and enforcement together.
 
 ## Target Import Graph
 
@@ -110,7 +110,31 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 | Provider, tool, compaction, checkpoint, memory, automemory, metrics, and tracing packages | Focused mechanisms injected through consumer-owned contracts. Infrastructure is a classification; there is no aggregate `internal/infrastructure` package. |
 | `cmd/*` | Process input/configuration, concrete construction, dependency wiring, entry selection, and startup only. |
 
-### Current Migration State
+## Final Implemented State
+
+The M27 architecture has one Go module and no RPC boundary or generic event bus. `internal/engine` is the pure turn state machine; `internal/runtime` owns live session/run lifecycle, frozen profiles, complete-context decisions, recoverable-state coordination, child execution, and benchmark-facing harness control; `internal/app` exposes UI-neutral commands, DTOs, notifications, and interaction ports. Concrete provider, tool, persistence, memory, compaction, permission, artifact, and telemetry mechanisms remain focused packages wired only by composition roots.
+
+`internal/prompt` imports only the standard library and deterministically renders caller-ordered fragments. Runtime `PromptCollector` performs project-instruction and skill discovery, reads injected memory sources, applies frozen collaboration and effective-tool values, and returns fragments to `ContextController` for final rendering. `internal/context` no longer exists.
+
+`internal/session` imports only `internal/schema` and owns persisted records and file mechanics, not live runtime lifecycle or working memory. `memory.Store` is the sole owner of `working_memory.md`, `PLAN.md`, and `TODO.md`; composition or runtime initialization invokes it explicitly. Only `StoredSession`, `StoredRun`, `FileStore`, `TranscriptLog`, and `TranscriptEvent` remain as persistence vocabulary.
+
+### Production Profile Paths
+
+| Profile | Single production path | Boundary proof |
+|---|---|---|
+| `TUIInteractive` | `cmd/fox -> tui.Run -> app.InteractiveRuntimeApplication -> runtime.AgentSession -> engine.AgentEngine` | TUI imports application/presentation helpers only; `cmd/fox` is the concrete composition root. |
+| `CLIExec` | `cmd/fox -> cli.Run -> app.RuntimeApplication -> runtime.AgentSession -> engine.AgentEngine` | CLI imports only `internal/app`; no legacy CLI runner or direct engine entry exists. |
+| `FeishuRemote` | `cmd/feishu -> feishu.Runner -> app.RuntimeApplication -> runtime.AgentSession -> engine.AgentEngine` | Feishu owns transport/scheduling; `cmd/feishu` owns runtime construction. |
+| `AgentOpsTask` | `cmd/agentops -> agentops.Runner -> app.RuntimeApplication -> runtime.AgentSession -> engine.AgentEngine` | AgentOps owns incident policy and `log_search`; `cmd/agentops` owns runtime construction. |
+| `BenchmarkEval` | `cmd/bench -> benchmark.Runner -> runtime.AgentSession -> engine.AgentEngine` | Benchmark is a direct runtime control client and does not assemble engine internals. |
+| `ChildRun` | `subagent.Runner port -> childruntime.Runner -> runtime.ChildRunner -> runtime.AgentSession -> engine.AgentEngine` | `internal/childruntime` is the sole concrete one-level child composition. |
+| `AutodevPipeline` | `cmd/fox or TUI launcher -> autodev.RuntimeCoreRunner -> runtime.AgentSession -> engine.AgentEngine` | Autodev is a direct runtime control client; its backlog/worktree/SDD/publication control remains outside runtime. |
+
+`RuntimeHarness` is the only production caller of `engine.NewAgentEngine`. Architecture tests independently reject old app, engine, context, session, benchmark, child, CLI, remote, Autodev, and TUI paths. The production import graph has no target-rule violation, and `internal/architecturetest/allowlist.json` contains an empty `violations` array.
+
+## Migration History
+
+The following milestone notes preserve why each dependency moved. Present-tense statements within a note describe the repository at that milestone; the final implemented state above is authoritative for current code.
 
 `M01` establishes `internal/prompt` as the standard-library-only fragment representation and renderer. It accepts already-resolved fragments in caller-supplied order and performs no file discovery, memory access, collaboration selection, capability selection, persistence, or injection timing.
 
@@ -206,6 +230,8 @@ Codex validates this boundary by translating TUI actions into typed `AppCommand`
 
 `M25` deletes `LegacyEngine`, its mutable `Config`, Reporter chain, session/context/tool/telemetry ownership, and engine-level differential adapter. The shared RT/ST fixtures now execute only through `AgentEngine`, and the target runtime/profile suites own all higher-level behavior. Model fallback and turn-policy state are created per run, so a reused engine has no cross-run mutable execution state. Prompt composition contracts formerly housed in engine are now minimal consumer-owned interfaces in composition and control clients. Repository-wide AST gates cover production, test, and build-tag files; every engine production file imports only the standard library and `internal/schema`. The decreasing migration allowlist is empty at SHA-256 `c6c5c5ddfb7d7a5198b30c5bc2f9ee0ebb6156dfabc193837c10fd97251ed3ca`.
 
+`M26` deletes `internal/context`, all temporary session aliases and lifecycle wrappers, `StoredSession.MemoryPath`, and the final `internal/session -> internal/memory` edge. Runtime `PromptCollector` becomes the sole complete-context collector used by production composition, while `ContextController` owns frozen collection timing and final fragment rendering. Every profile explicitly invokes `memory.Store` at its existing initialization boundary.
+
 ## Allowed Dependencies
 
 | Importer | Allowed target architecture dependencies |
@@ -217,7 +243,7 @@ Codex validates this boundary by translating TUI actions into typed `AppCommand`
 | TUI, CLI, Feishu, AgentOps adapters | `internal/app` plus adapter-local presentation/transport helpers and independently owned control-plane values. They do not operate concrete runtime subsystems. |
 | `internal/benchmark`, `internal/autodev` | `internal/runtime` as privileged control clients plus their own evaluation or deterministic control-plane mechanisms. |
 | `internal/subagent` | Its own `Runner` port and protocol/value packages required for model-facing request adaptation. It does not import runtime. |
-| `internal/childruntime` | Runtime and the focused provider, tool, permission, prompt-discovery compatibility, compaction, memory, and process-cleanup mechanisms required only to compose `ChildRun`. |
+| `internal/childruntime` | Runtime and the focused provider, tool, permission, runtime prompt collection, compaction, memory, and process-cleanup mechanisms required only to compose `ChildRun`. |
 | `cmd/*` | Relevant adapters, runtime constructors, consumer ports, and concrete implementations only for construction and startup. |
 
 An interface belongs to the package that consumes it. Concrete provider, tool, compaction, persistence, memory, and telemetry implementations satisfy those interfaces through composition; their packages do not force inward packages to import outward implementations.
@@ -291,13 +317,13 @@ A fact is produced once and remains canonically ordered. Session artifacts may b
 | Turn completion/reminders | `engine.TurnPolicy` | `internal/turnpolicy`, configured with runtime-owned queries through composition |
 | Conversation projection | `engine.Conversation` | `runtime.ContextController` |
 | Recoverable persistence | `runtime.SessionStore` | `session.FileStore` |
-| Prompt fragments | pure renderer calls | `internal/prompt` |
+| Prompt fragments | `runtime.ContextCollector` and `runtime.ContextController` | `runtime.PromptCollector` resolves inputs; `internal/prompt` renders ordered fragments. |
 | Compaction mechanics | runtime-owned compaction capability | `internal/compaction` |
 | Runtime observation | `runtime.RunObserver` | app mapper, artifacts, metrics, tracing adapters |
 | Child invocation | `subagent.Runner` | composition adapter to `runtime.ChildRunner` |
 | User interactions | runtime and app request/response ports | TUI or remote adapter implementations |
 
-## Decreasing Allowlist
+## Architecture Enforcement
 
 `internal/architecturetest/baseline_allowlist.json` is the immutable `B00` ceiling. `internal/architecturetest/allowlist.json` is the decreasing migration ledger and must always be a subset of that ceiling. Both contain exact production package edges, and each row has a mandatory `remove_by` boundary. A commit fails when it:
 
@@ -321,4 +347,4 @@ The initial allowlist contains 68 exact edges. Its latest deletion boundaries ar
 | `M24` | Old `internal/app` assembly and presentation imports. |
 | `M25` | Old engine concrete infrastructure imports. |
 
-`M27` requires an empty allowlist and exact agreement between this document, automated tests, and production imports.
+At M27 the migration ledger is empty at SHA-256 `c6c5c5ddfb7d7a5198b30c5bc2f9ee0ebb6156dfabc193837c10fd97251ed3ca`. The immutable B00 ceiling remains available only to prove that no migration commit broadened the violation set; it is not an exception list for current code. This document, the automated rules, and production imports agree on zero forbidden edges.
