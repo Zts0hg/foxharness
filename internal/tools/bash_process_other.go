@@ -6,9 +6,12 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+
+	"github.com/Zts0hg/foxharness/internal/shellcmd"
 )
 
 func configureShellCommand(cmd *exec.Cmd) {
+	shellcmd.ConfigureCommand(cmd)
 }
 
 func signalShellProcessTree(cmd *exec.Cmd, force bool) error {

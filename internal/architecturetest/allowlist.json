@@ -28,7 +28,6 @@
     {"from":"internal/engine","to":"internal/session","remove_by":"M25"},
     {"from":"internal/engine","to":"internal/toolresult","remove_by":"M25"},
     {"from":"internal/engine","to":"internal/tools","remove_by":"M25"},
-    {"from":"internal/engine","to":"internal/tracing","remove_by":"M25"},
-    {"from":"internal/tui","to":"internal/tools","remove_by":"M23"}
+    {"from":"internal/engine","to":"internal/tracing","remove_by":"M25"}
   ]
 }

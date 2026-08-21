@@ -57,3 +57,38 @@ func TestExecutorCapsPersistsAndSeparatesLargeResultForms(t *testing.T) {
 		t.Fatalf("observer result length/content = %d/%q", len(result.ObserverContent), result.ObserverContent)
 	}
 }
+
+func TestDynamicExecutorRefreshesCapabilitiesAfterTurnBoundaryAndFreezesEachSnapshot(t *testing.T) {
+	phase := 0
+	executor := NewDynamic(func() []toolexec.Capability {
+		name := "first"
+		if phase > 0 {
+			name = "second"
+		}
+		return []toolexec.Capability{{Definition: schema.ToolDefinition{Name: name}}}
+	}, func(context.Context) error {
+		phase++
+		return nil
+	}, toolresult.OSFileSystem{}, t.TempDir())
+
+	first, err := executor.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := first.ToolDefinitions()[0].Name; got != "first" {
+		t.Fatalf("first snapshot = %q", got)
+	}
+	if err := executor.BeginTurn(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	second, err := executor.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.ToolDefinitions()[0].Name; got != "second" {
+		t.Fatalf("second snapshot = %q", got)
+	}
+	if got := first.ToolDefinitions()[0].Name; got != "first" {
+		t.Fatalf("first snapshot mutated to %q", got)
+	}
+}

@@ -7,19 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+
+	"github.com/Zts0hg/foxharness/internal/shellcmd"
 )
 
 func configureShellCommand(cmd *exec.Cmd) {
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		err := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
-		if err != nil {
-			return cmd.Process.Kill()
-		}
-		return nil
-	}
+	shellcmd.ConfigureCommand(cmd)
 }
 
 func signalShellProcessTree(cmd *exec.Cmd, force bool) error {

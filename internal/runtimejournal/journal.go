@@ -316,6 +316,13 @@ type journalTools struct {
 	base    engine.ToolExecutor
 }
 
+func (t *journalTools) BeginTurn(ctx context.Context) error {
+	if boundary, ok := t.base.(engine.TurnBoundaryToolExecutor); ok {
+		return boundary.BeginTurn(ctx)
+	}
+	return nil
+}
+
 func (t *journalTools) Snapshot(ctx context.Context) (engine.ToolSnapshot, error) {
 	base, err := t.base.Snapshot(ctx)
 	if err != nil {
@@ -380,3 +387,4 @@ var _ foxruntime.SessionArtifactJournal = (*Journal)(nil)
 var _ foxruntime.TelemetryJournal = (*Journal)(nil)
 var _ engine.ModelInvoker = journalModel{}
 var _ engine.ToolExecutor = (*journalTools)(nil)
+var _ engine.TurnBoundaryToolExecutor = (*journalTools)(nil)

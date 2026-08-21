@@ -121,6 +121,11 @@ type ToolExecutor interface {
 	Execute(context.Context, ToolSnapshot, []schema.ToolCall) (ToolBatch, error)
 }
 
+/* TurnBoundaryToolExecutor updates dynamic capabilities before a turn snapshot is frozen. */
+type TurnBoundaryToolExecutor interface {
+	BeginTurn(context.Context) error
+}
+
 /* ConversationChangeKind identifies an ordered model-visible context change. */
 type ConversationChangeKind string
 
@@ -351,6 +356,11 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 
 	for turn := 1; ; turn++ {
 		outcome.TurnCount = turn
+		if boundary, ok := e.tools.(TurnBoundaryToolExecutor); ok {
+			if err := boundary.BeginTurn(ctx); err != nil {
+				return e.fail(emit, outcome, "tool", err)
+			}
+		}
 		snapshot, err := e.tools.Snapshot(ctx)
 		if err != nil {
 			return e.fail(emit, outcome, "tool", err)

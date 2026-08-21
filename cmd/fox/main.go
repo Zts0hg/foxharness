@@ -142,31 +142,16 @@ func main() {
 		autodevLauncher := func(ctx context.Context, backlogPath string, reporter autodev.Reporter) error {
 			return runAutodev(ctx, autodevConfigForTUILaunch(cfg, backlogPath), reporter)
 		}
-		permissionBridge := tui.NewPermissionBridge()
-		asker := tui.NewAsker()
-		planReviewer := tui.NewPlanReviewer()
-		var legacyRunner *app.AgentRunner
-		bindings := app.LegacyTUIBindings{
-			Permissions:        permissionBridge,
-			Questions:          asker,
-			PlanReview:         planReviewer,
-			InteractionNotices: permissionBridge,
-			Attach: func(runner *app.AgentRunner) {
-				legacyRunner = runner
+		if err := tui.Run(context.Background(), tui.Config{
+			Model: cfg.Model, InitialPrompt: cfg.Prompt, HomeDir: homeDir,
+			EffortOverride: cfg.EffortOverride, ProviderID: cfg.ResolvedLLM.ProviderID,
+			ProviderProfileID: cfg.ResolvedLLM.SettingsProviderID,
+			ProviderProtocol:  cfg.ResolvedLLM.Protocol,
+			Autodev:           autodevLauncher,
+			Initialize: func(ctx context.Context, interactions tui.Interactions) (tui.Startup, error) {
+				return newTUIStartup(ctx, cfg, interactions, onSave)
 			},
-			Start: func(ctx context.Context, application app.InteractiveApplication) error {
-				return tui.Run(ctx, application, tui.Config{
-					Model: cfg.Model, InitialPrompt: cfg.Prompt, HomeDir: homeDir,
-					EffortOverride: cfg.EffortOverride, ProviderID: cfg.ResolvedLLM.ProviderID,
-					ProviderProfileID: cfg.ResolvedLLM.SettingsProviderID,
-					ProviderProtocol:  cfg.ResolvedLLM.Protocol,
-					Registry:          legacyRunner.SlashRegistry(), Executor: legacyRunner.SlashExecutor(),
-					Asker: asker, PlanReviewer: planReviewer, Permissions: permissionBridge,
-					Autodev: autodevLauncher,
-				})
-			},
-		}
-		if err := app.RunTUI(context.Background(), cfg, onSave, bindings); err != nil {
+		}); err != nil {
 			exitWithError(err)
 		}
 		return

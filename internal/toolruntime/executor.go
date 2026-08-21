@@ -19,11 +19,34 @@ const observerOutputLimit = 800
 
 /* Executor owns run-local tool-result persistence and prompt-budget state. */
 type Executor struct {
-	base    *toolexec.Executor
-	fs      toolresult.FileSystem
-	dir     string
-	mu      sync.Mutex
-	seenIDs map[string]bool
+	base         *toolexec.Executor
+	capabilities func() []toolexec.Capability
+	beginTurn    func(context.Context) error
+	fs           toolresult.FileSystem
+	dir          string
+	mu           sync.Mutex
+	seenIDs      map[string]bool
+}
+
+/* NewDynamic constructs an executor whose immutable capabilities are rediscovered once per turn. */
+func NewDynamic(
+	capabilities func() []toolexec.Capability,
+	beginTurn func(context.Context) error,
+	fs toolresult.FileSystem,
+	artifactDir string,
+) *Executor {
+	return &Executor{
+		capabilities: capabilities, beginTurn: beginTurn, fs: fs, dir: artifactDir,
+		seenIDs: make(map[string]bool),
+	}
+}
+
+/* BeginTurn advances an optional dynamic capability owner before discovery. */
+func (e *Executor) BeginTurn(ctx context.Context) error {
+	if e == nil || e.beginTurn == nil {
+		return nil
+	}
+	return e.beginTurn(ctx)
 }
 
 /* New constructs a run-local tool executor from constrained capabilities. */
@@ -36,14 +59,18 @@ func New(capabilities []toolexec.Capability, fs toolresult.FileSystem, artifactD
 
 /* Snapshot freezes the advertised and executable capability surface. */
 func (e *Executor) Snapshot(ctx context.Context) (engine.ToolSnapshot, error) {
-	if e == nil || e.base == nil || e.fs == nil {
+	if e == nil || (e.base == nil && e.capabilities == nil) || e.fs == nil {
 		return nil, fmt.Errorf("runtime tool executor is not configured")
 	}
-	base, err := e.base.Snapshot(ctx)
+	baseExecutor := e.base
+	if e.capabilities != nil {
+		baseExecutor = toolexec.New(e.capabilities())
+	}
+	base, err := baseExecutor.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &snapshot{owner: e, base: base}, nil
+	return &snapshot{owner: e, executor: baseExecutor, base: base}, nil
 }
 
 /* Execute runs one ordered batch and derives its bounded result forms. */
@@ -52,7 +79,7 @@ func (e *Executor) Execute(ctx context.Context, frozen engine.ToolSnapshot, call
 	if !ok || owned.owner != e {
 		return engine.ToolBatch{}, fmt.Errorf("runtime tool snapshot does not belong to executor")
 	}
-	batch, err := e.base.Execute(ctx, owned.base, calls)
+	batch, err := owned.executor.Execute(ctx, owned.base, calls)
 	if err != nil {
 		return batch, err
 	}
@@ -82,8 +109,9 @@ func (e *Executor) Execute(ctx context.Context, frozen engine.ToolSnapshot, call
 }
 
 type snapshot struct {
-	owner *Executor
-	base  engine.ToolSnapshot
+	owner    *Executor
+	executor *toolexec.Executor
+	base     engine.ToolSnapshot
 }
 
 func (s *snapshot) ToolDefinitions() []schema.ToolDefinition {
@@ -99,3 +127,4 @@ func truncateObserverOutput(value string) string {
 }
 
 var _ engine.ToolExecutor = (*Executor)(nil)
+var _ engine.TurnBoundaryToolExecutor = (*Executor)(nil)

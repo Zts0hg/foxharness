@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -175,6 +176,25 @@ func TestTargetToolSnapshotIsFrozenOncePerTurn(t *testing.T) {
 	}
 	if !reflect.DeepEqual(executor.executedWith, []string{"first"}) {
 		t.Fatalf("executed snapshots = %v, want first-turn snapshot", executor.executedWith)
+	}
+}
+
+func TestTargetToolTurnBoundaryRunsBeforeEachSnapshot(t *testing.T) {
+	executor := &turnBoundaryTargetToolExecutor{}
+	invocations := 0
+	invoker := modelInvokerFunc(func(_ context.Context, _ RunContext) (ModelResult, error) {
+		invocations++
+		if invocations == 1 {
+			return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{{ID: "call", Name: "inspect"}}}}, nil
+		}
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}}, nil
+	})
+	engine := NewAgentEngine(invoker, executor, &targetTestConversation{}, targetTestPolicy{}, nil)
+	if _, err := engine.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(executor.order, ","), "begin,snapshot,execute,begin,snapshot"; got != want {
+		t.Fatalf("tool lifecycle order = %q, want %q", got, want)
 	}
 }
 
@@ -679,6 +699,23 @@ type perTurnTargetToolExecutor struct {
 	snapshots     []targetToolSnapshot
 	snapshotCalls int
 	executedWith  []string
+}
+
+type turnBoundaryTargetToolExecutor struct{ order []string }
+
+func (e *turnBoundaryTargetToolExecutor) BeginTurn(context.Context) error {
+	e.order = append(e.order, "begin")
+	return nil
+}
+
+func (e *turnBoundaryTargetToolExecutor) Snapshot(context.Context) (ToolSnapshot, error) {
+	e.order = append(e.order, "snapshot")
+	return targetToolSnapshot{definitions: []schema.ToolDefinition{{Name: "inspect"}}}, nil
+}
+
+func (e *turnBoundaryTargetToolExecutor) Execute(_ context.Context, _ ToolSnapshot, calls []schema.ToolCall) (ToolBatch, error) {
+	e.order = append(e.order, "execute")
+	return ToolBatch{Results: []ToolExecutionResult{{CallID: calls[0].ID}}}, nil
 }
 
 func (e *perTurnTargetToolExecutor) Snapshot(context.Context) (ToolSnapshot, error) {

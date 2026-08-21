@@ -6,16 +6,12 @@ import (
 	"errors"
 	"os/exec"
 	"syscall"
+
+	"github.com/Zts0hg/foxharness/internal/shellcmd"
 )
 
 func configureShellCommand(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
+	shellcmd.ConfigureCommand(cmd)
 }
 
 func signalShellProcessTree(cmd *exec.Cmd, force bool) error {

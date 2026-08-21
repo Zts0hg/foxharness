@@ -5,7 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,8 +20,8 @@ import (
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/effort"
 	"github.com/Zts0hg/foxharness/internal/settings"
+	"github.com/Zts0hg/foxharness/internal/shellcmd"
 	"github.com/Zts0hg/foxharness/internal/slash"
-	"github.com/Zts0hg/foxharness/internal/tools"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
 	xansi "github.com/charmbracelet/x/ansi"
@@ -33,7 +37,7 @@ const (
 	mouseTailDelay    = 150 * time.Millisecond
 	inputHistoryLimit = 100
 
-	maxShellCommandOutputBytes = tools.MaxBashOutputBytes
+	maxShellCommandOutputBytes = shellcmd.MaxOutputBytes
 )
 
 // Runner is the application capability set required by the TUI.
@@ -77,19 +81,111 @@ type Config struct {
 	// /autodev builtin. The process composition root injects it so the tui -> autodev
 	// dependency stays one-way.
 	Autodev AutodevLauncher
+
+	/* Initialize composes the UI-neutral application after the TUI creates its presentation-owned interaction ports. */
+	Initialize func(context.Context, Interactions) (Startup, error)
+
+	runProgram func(Model) error
+}
+
+/* Interactions contains the presentation-owned blocking and observation ports supplied to composition. */
+type Interactions struct {
+	Permissions        app.PermissionPort
+	Questions          app.QuestionPort
+	PlanReview         app.PlanReviewPort
+	InteractionNotices app.InteractionNoticeSink
+}
+
+/* Startup contains the composed application and session-scoped adapter resources. */
+type Startup struct {
+	Application   Runner
+	Registry      *slash.Registry
+	Executor      *slash.Executor
+	SessionLogDir string
+	Close         func(context.Context) error
 }
 
 // AutodevLauncher starts one Autodev control-plane operation for the TUI adapter.
 type AutodevLauncher func(context.Context, string, autodev.Reporter) error
 
-// Run starts the interactive chat TUI.
-func Run(ctx context.Context, runner Runner, cfg Config) error {
-	m := NewModel(ctx, runner, cfg)
+/* Run owns interactive port creation, application initialization, and terminal program lifetime. */
+func Run(ctx context.Context, cfg Config) (runErr error) {
+	if cfg.Initialize == nil {
+		return errors.New("TUI application initializer is required")
+	}
+	permissionBridge := NewPermissionBridge()
+	asker := NewAsker()
+	planReviewer := NewPlanReviewer()
+	startup, err := cfg.Initialize(ctx, Interactions{
+		Permissions: permissionBridge, Questions: asker, PlanReview: planReviewer,
+		InteractionNotices: permissionBridge,
+	})
+	if err != nil {
+		return err
+	}
+	if startup.Close != nil {
+		defer func() {
+			runErr = errors.Join(runErr, startup.Close(context.Background()))
+		}()
+	}
+	if isNilRunner(startup.Application) {
+		return errors.New("TUI application initializer returned nil")
+	}
+
+	cfg.Asker = asker
+	cfg.PlanReviewer = planReviewer
+	cfg.Permissions = permissionBridge
+	cfg.Registry = startup.Registry
+	cfg.Executor = startup.Executor
+	m := NewModel(ctx, startup.Application, cfg)
 	if cfg.Registry != nil {
 		m = m.WithRegistry(cfg.Registry, cfg.Executor)
 	}
-	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(), tea.WithContext(ctx)).Run()
-	return err
+	restoreLogs := redirectLogs(startup.SessionLogDir)
+	defer restoreLogs()
+	if cfg.runProgram != nil {
+		return cfg.runProgram(m)
+	}
+	_, runErr = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(), tea.WithContext(ctx)).Run()
+	return runErr
+}
+
+func isNilRunner(value Runner) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
+
+func redirectLogs(sessionDir string) func() {
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	previousPrefix := log.Prefix()
+	restore := func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+		log.SetPrefix(previousPrefix)
+	}
+	if strings.TrimSpace(sessionDir) == "" {
+		log.SetOutput(io.Discard)
+		return restore
+	}
+	file, err := os.OpenFile(filepath.Join(sessionDir, "tui.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.SetOutput(io.Discard)
+		return restore
+	}
+	log.SetOutput(file)
+	return func() {
+		restore()
+		_ = file.Close()
+	}
 }
 
 type entry struct {
@@ -3876,7 +3972,7 @@ type compactFinishedMsg struct {
 type shellCommandFinishedMsg struct {
 	operationID uint64
 	command     string
-	result      tools.BashCommandResult
+	result      shellcmd.Result
 }
 
 func runPromptCmd(ctx context.Context, runner Runner, prompt string, mode collaboration.Mode, operationID uint64, events chan<- tea.Msg) tea.Cmd {
@@ -3890,12 +3986,12 @@ func runShellCommandCmd(ctx context.Context, workDir string, command string, ope
 		return shellCommandFinishedMsg{
 			operationID: operationID,
 			command:     command,
-			result:      tools.RunBashCommand(ctx, workDir, command, 0),
+			result:      shellcmd.Run(ctx, workDir, command, 0),
 		}
 	}
 }
 
-func formatShellCommandResult(result tools.BashCommandResult) string {
+func formatShellCommandResult(result shellcmd.Result) string {
 	output := truncateShellCommandOutput(result.Output)
 	if result.Truncated && output != "" {
 		output += shellCommandTruncationMarker()

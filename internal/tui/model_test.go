@@ -22,7 +22,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/settings"
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/shellcmd"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -521,7 +521,7 @@ func TestModelBangCommandCompletionStartsQueuedPrompt(t *testing.T) {
 	m, queuedCmd := update(t, m, shellCommandFinishedMsg{
 		operationID: m.activeOperationID,
 		command:     "printf shell",
-		result:      tools.BashCommandResult{Output: "shell"},
+		result:      shellcmd.Result{Output: "shell"},
 	})
 	if queuedCmd == nil {
 		t.Fatalf("shell command completion did not start queued prompt")
@@ -561,7 +561,7 @@ func TestModelFailedBangCommandCompletionStartsQueuedPrompt(t *testing.T) {
 	m, queuedCmd := update(t, m, shellCommandFinishedMsg{
 		operationID: m.activeOperationID,
 		command:     "false",
-		result:      tools.BashCommandResult{Err: errors.New("exit status 1"), ExitCode: 1},
+		result:      shellcmd.Result{Err: errors.New("exit status 1"), ExitCode: 1},
 	})
 	if queuedCmd == nil {
 		t.Fatalf("failed shell command completion did not start queued prompt")
@@ -1110,7 +1110,7 @@ func TestShellCommandRenderingPreservesWhitespace(t *testing.T) {
 
 func TestFormatShellCommandResultTruncatesLargeOutput(t *testing.T) {
 	raw := strings.Repeat("x", maxShellCommandOutputBytes*2)
-	formatted := formatShellCommandResult(tools.BashCommandResult{Output: raw})
+	formatted := formatShellCommandResult(shellcmd.Result{Output: raw})
 
 	if len(formatted) >= len(raw) {
 		t.Fatalf("formatted output length = %d, want shorter than raw length %d", len(formatted), len(raw))
@@ -1125,7 +1125,7 @@ func TestFormatShellCommandResultPreservesWhitespace(t *testing.T) {
 		"  key: value\n\n",
 		" \n\t",
 	} {
-		formatted := formatShellCommandResult(tools.BashCommandResult{Output: output})
+		formatted := formatShellCommandResult(shellcmd.Result{Output: output})
 		if formatted != output {
 			t.Fatalf("formatted output = %q, want original output %q", formatted, output)
 		}

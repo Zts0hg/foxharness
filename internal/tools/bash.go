@@ -4,61 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"sync"
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/shellcmd"
 	"github.com/Zts0hg/foxharness/internal/toolpolicy"
-	"github.com/Zts0hg/foxharness/internal/toolresult"
 )
 
 const (
 	defaultBashTimeout = 30 * time.Second
-	MaxBashOutputBytes = toolresult.MaxToolResultBytes
+	MaxBashOutputBytes = shellcmd.MaxOutputBytes
 )
 
 // BashCommandResult captures the local shell process result before applying
 // model-tool-specific formatting.
-type BashCommandResult struct {
-	Output    string
-	ExitCode  int
-	TimedOut  bool
-	Truncated bool
-	Err       error
-}
+type BashCommandResult = shellcmd.Result
 
 // RunBashCommand executes command with bash in workDir and returns combined
 // stdout/stderr plus process status.
 func RunBashCommand(ctx context.Context, workDir string, command string, timeout time.Duration) BashCommandResult {
-	if timeout <= 0 {
-		timeout = defaultBashTimeout
-	}
-	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", command)
-	cmd.Dir = workDir
-	configureShellCommand(cmd)
-
-	output := newBoundedOutput(MaxBashOutputBytes)
-	cmd.Stdout = output
-	cmd.Stderr = output
-
-	err := cmd.Run()
-	result := BashCommandResult{
-		Output:    output.String(),
-		Truncated: output.Truncated(),
-		Err:       err,
-	}
-	if timeoutCtx.Err() == context.DeadlineExceeded {
-		result.TimedOut = true
-		result.Err = timeoutCtx.Err()
-	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		result.ExitCode = exitErr.ExitCode()
-	}
-	return result
+	return shellcmd.Run(ctx, workDir, command, timeout)
 }
 
 type boundedOutput struct {
