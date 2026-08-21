@@ -406,12 +406,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshRuntimeInfo()
 		if msg.err != nil {
 			if isRunCancellation(msg.err) {
-				m.cancelRunInteractions()
+				rearmInteractions := m.cancelRunInteractions()
 				m.status = "Conversation interrupted"
 				if !entriesContainText(m.entries, "system", interruptedTurnMessage) {
 					m.appendEntry("system", "interrupted", interruptedTurnMessage, false)
 				}
-				return m.startQueuedPromptIfReady()
+				next, queued := m.startQueuedPromptIfReady()
+				return next, tea.Batch(queued, rearmInteractions)
 			}
 			m.status = "Run failed"
 			if len(m.queuedPrompts) > 0 {
@@ -2049,13 +2050,17 @@ func (m Model) hasBlockingInteraction() bool {
 	return m.askForm != nil || m.planForm != nil || m.approvalForm != nil || m.permissionForm != nil || m.effortForm != nil || m.rewindSelector != nil
 }
 
-func (m *Model) cancelRunInteractions() {
+func (m *Model) cancelRunInteractions() tea.Cmd {
+	var rearm []tea.Cmd
 	if m.askForm != nil {
 		select {
 		case m.askForm.req.reply <- answerResult{cancelled: true}:
 		default:
 		}
 		m.askForm = nil
+		if m.asker != nil {
+			rearm = append(rearm, listenForAsk(m.ctx, m.asker))
+		}
 	}
 	if m.planForm != nil {
 		select {
@@ -2063,6 +2068,9 @@ func (m *Model) cancelRunInteractions() {
 		default:
 		}
 		m.planForm = nil
+		if m.planReviewer != nil {
+			rearm = append(rearm, listenForPlanReview(m.ctx, m.planReviewer))
+		}
 	}
 	if m.approvalForm != nil {
 		select {
@@ -2072,7 +2080,11 @@ func (m *Model) cancelRunInteractions() {
 		default:
 		}
 		m.approvalForm = nil
+		if m.permissionBridge != nil {
+			rearm = append(rearm, listenForPermissionRequest(m.ctx, m.permissionBridge))
+		}
 	}
+	return tea.Batch(rearm...)
 }
 
 func (m Model) startQueuedPromptIfReady() (Model, tea.Cmd) {
