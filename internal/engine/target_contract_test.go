@@ -28,7 +28,7 @@ func TestTargetContractAdapterRunsM04Scenarios(t *testing.T) {
 }
 
 func TestTargetContractAdapterRunsRuntimeTurnCatalog(t *testing.T) {
-	for _, testCase := range currentRuntimeTurnScenarios() {
+	for _, testCase := range runtimeTurnScenarios() {
 		t.Run(testCase.name, func(t *testing.T) {
 			if err := runtimecontract.VerifyScenario(context.Background(), newTargetContractAdapter(t), testCase.scenario); err != nil {
 				t.Fatalf("VerifyScenario() error = %v", err)
@@ -38,7 +38,7 @@ func TestTargetContractAdapterRunsRuntimeTurnCatalog(t *testing.T) {
 }
 
 func TestTargetContractAdapterRunsStreamingCatalog(t *testing.T) {
-	for _, testCase := range currentStreamingScenarios() {
+	for _, testCase := range streamingScenarios() {
 		t.Run(testCase.name, func(t *testing.T) {
 			if err := runtimecontract.VerifyScenario(context.Background(), newTargetContractAdapter(t), testCase.scenario); err != nil {
 				t.Fatalf("VerifyScenario() error = %v", err)
@@ -457,6 +457,15 @@ func newTargetContractAdapter(t *testing.T) runtimecontract.Adapter {
 	return &targetContractAdapter{t: t}
 }
 
+func targetContractScriptStreams(script runtimecontract.Script) bool {
+	for _, step := range script.ModelSteps {
+		if len(step.Deltas) > 0 || step.ErrorKind != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *targetContractAdapter) Run(
 	ctx context.Context,
 	input runtimecontract.RunInput,
@@ -466,7 +475,7 @@ func (a *targetContractAdapter) Run(
 	conversation := &targetTestConversation{input: input}
 	invoker := &targetScriptedInvoker{
 		steps:        script.ModelSteps,
-		streaming:    currentContractScriptStreams(script),
+		streaming:    targetContractScriptStreams(script),
 		parallelSafe: targetParallelSafety(script.Tools),
 	}
 	toolExecutor := newTargetScriptedToolExecutor(script.Tools, invoker)

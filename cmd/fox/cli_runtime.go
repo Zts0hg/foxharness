@@ -294,7 +294,11 @@ func buildCLIToolRegistry(
 }
 
 type runtimePromptCollector struct {
-	composer engine.PromptComposer
+	composer cliPromptComposer
+}
+
+type cliPromptComposer interface {
+	Compose(string) (string, error)
 }
 
 func (c runtimePromptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {

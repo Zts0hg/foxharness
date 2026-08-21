@@ -30,7 +30,11 @@ func NewRuntimeSpec(protocol, model string, maxTurns int, toolNames []string) Be
 	return spec
 }
 
-type benchmarkComposerFactory func(foxruntime.RunAssembly) engine.PromptComposer
+type benchmarkPromptComposer interface {
+	Compose(string) (string, error)
+}
+
+type benchmarkComposerFactory func(foxruntime.RunAssembly) benchmarkPromptComposer
 type benchmarkRegistryFactory func(foxruntime.RunAssembly) tools.Registry
 
 func newTargetBenchmarkHarness(
@@ -92,7 +96,7 @@ func newTargetBenchmarkHarnessWithStore(
 }
 
 type benchmarkContextCollector struct {
-	composer engine.PromptComposer
+	composer benchmarkPromptComposer
 }
 
 func (c benchmarkContextCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {

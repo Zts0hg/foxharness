@@ -42,7 +42,7 @@ func (r *recordingRunner) PermissionEnforced() bool { return r.enforce }
 func TestIACHD004DelegateUsesConsumerOwnedRunnerExactlyOnce(t *testing.T) {
 	runner := &recordingRunner{enforce: true, result: &Result{SessionID: "child-session", Report: "done", Status: OutcomeSucceeded}}
 	tool := NewTool(runner, "parent-session")
-	ctx := tools.WithRunContext(context.Background(), "parent-session", "parent-run")
+	ctx := toolprotocol.WithToolCall(tools.WithRunContext(context.Background(), "parent-session", "parent-run"), "delegate-call")
 	result, err := tool.Execute(ctx, json.RawMessage(`{"task":"  inspect files  ","read_only":false}`))
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestIACHD004DelegateUsesConsumerOwnedRunnerExactlyOnce(t *testing.T) {
 		t.Fatalf("runner calls = %d, want 1", runner.calls)
 	}
 	if runner.request.ParentSessionID != "parent-session" || runner.request.ParentRunID != "parent-run" ||
-		runner.request.Task != "inspect files" || runner.request.ReadOnly || runner.request.Depth != 1 {
+		runner.request.DelegationID != "delegate-call" || runner.request.Task != "inspect files" || runner.request.ReadOnly || runner.request.Depth != 1 {
 		t.Fatalf("runner request = %#v", runner.request)
 	}
 	if result != "Subagent Session: child-session\n\nReport:\ndone" {

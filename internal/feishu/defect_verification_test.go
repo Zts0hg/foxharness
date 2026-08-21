@@ -19,10 +19,6 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/approval"
-	"github.com/Zts0hg/foxharness/internal/compaction"
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/provider"
-	"github.com/Zts0hg/foxharness/internal/schema"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
@@ -526,32 +522,6 @@ func TestDVFEI007ApprovalCallbackMapsConflictAndNotFound(t *testing.T) {
 	}
 }
 
-func TestDVFEI008SelectedModelSnapshotConfiguresEngineAndCompactor(t *testing.T) {
-	providerWithModel := &rotatingNamedProvider{}
-	metadata := snapshotTaskProviderMetadata(providerWithModel)
-	engineConfig := engine.Config{}
-	compactionConfig := compaction.DefaultCompactionConfig()
-	metadata.apply(&engineConfig, &compactionConfig)
-	if calls := providerWithModel.modelCalls.Load(); calls != 1 {
-		t.Fatalf("ModelName() calls = %d, want one frozen read", calls)
-	}
-	if engineConfig.Model != "claude-4-sonnet" || compactionConfig.Model != engineConfig.Model {
-		t.Fatalf("model snapshot = engine %q, compactor %q", engineConfig.Model, compactionConfig.Model)
-	}
-	if engineConfig.ProviderProtocol != "scripted" {
-		t.Fatalf("provider protocol = %q, want scripted", engineConfig.ProviderProtocol)
-	}
-
-	compactor, err := compaction.NewCompactor(providerWithModel, compactionConfig)
-	if err != nil {
-		t.Fatalf("NewCompactor() error = %v", err)
-	}
-	selectedWindow := compaction.NewModelRegistry().Lookup(engineConfig.Model)
-	if compactor.ContextWindow() != selectedWindow || compactor.ContextWindow() == compaction.DefaultContextWindow {
-		t.Fatalf("compactor window = %d, selected model window = %d", compactor.ContextWindow(), selectedWindow)
-	}
-}
-
 func TestDVFEI009PanicRecoveryEmitsOneOutcomeAndBoundedTerminalReply(t *testing.T) {
 	httpClient := &countingHTTPClient{
 		contextErrors:    make(chan error, 1),
@@ -722,23 +692,6 @@ func waitForLockRefs(t *testing.T, runner *Runner, key string, want int) {
 	}
 	t.Fatalf("session lock refs did not reach %d", want)
 }
-
-type rotatingNamedProvider struct {
-	modelCalls atomic.Int32
-}
-
-func (*rotatingNamedProvider) Generate(context.Context, []schema.Message, []schema.ToolDefinition) (*provider.GenerateResponse, error) {
-	return nil, errors.New("not called")
-}
-
-func (p *rotatingNamedProvider) ModelName() string {
-	if p.modelCalls.Add(1) == 1 {
-		return "claude-4-sonnet"
-	}
-	return "unknown-later-model"
-}
-
-func (*rotatingNamedProvider) ProviderProtocol() string { return "scripted" }
 
 type countingHTTPClient struct {
 	calls            atomic.Int32

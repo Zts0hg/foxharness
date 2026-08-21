@@ -106,10 +106,7 @@ func TestViolationRulesAllowConfirmedEdges(t *testing.T) {
 func TestDeprecatedSessionCompatibilityUsageMatchesCeiling(t *testing.T) {
 	root := moduleRoot(t)
 	got := deprecatedSessionCompatibilityUsage(t, root)
-	want := []string{
-		"internal/engine/loop.go:Finish=1",
-		"internal/engine/loop.go:StartRun=1",
-	}
+	var want []string
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("deprecated session compatibility usage = %v, want exact decreasing ceiling %v", got, want)
 	}

@@ -1,14 +1,3 @@
 {
-  "violations": [
-    {"from":"internal/engine","to":"internal/checkpoint","remove_by":"M25"},
-    {"from":"internal/engine","to":"internal/compaction","remove_by":"M25"},
-    {"from":"internal/engine","to":"internal/metrics","remove_by":"M25"},
-    {"from":"internal/engine","to":"internal/provider","remove_by":"M25"},
-    {"from":"internal/engine","to":"internal/recovery","remove_by":"M25"},
-    {"from":"internal/engine","to":"internal/reminder","remove_by":"M25"},
-    {"from":"internal/engine","to":"internal/session","remove_by":"M25"},
-    {"from":"internal/engine","to":"internal/toolresult","remove_by":"M25"},
-    {"from":"internal/engine","to":"internal/tools","remove_by":"M25"},
-    {"from":"internal/engine","to":"internal/tracing","remove_by":"M25"}
-  ]
+  "violations": []
 }

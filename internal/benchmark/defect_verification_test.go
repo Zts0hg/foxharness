@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 )
 
@@ -790,12 +789,12 @@ func (composer benchmarkCauseComposer) Compose(string) (string, error) {
 	return "", composer.cause
 }
 
-func benchmarkHarnessFactory(t *testing.T, spec BenchmarkRuntimeSpec, composer engine.PromptComposer) HarnessFactory {
+func benchmarkHarnessFactory(t *testing.T, spec BenchmarkRuntimeSpec, composer benchmarkPromptComposer) HarnessFactory {
 	t.Helper()
 	home := t.TempDir()
 	return func(ctx context.Context, workDir string, _ *Case) (*Harness, error) {
 		return newTargetBenchmarkHarness(ctx, workDir, home, spec, benchmarkFinalProvider{},
-			func(foxruntime.RunAssembly) engine.PromptComposer { return composer }, nil)
+			func(foxruntime.RunAssembly) benchmarkPromptComposer { return composer }, nil)
 	}
 }
 

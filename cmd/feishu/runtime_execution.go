@@ -332,7 +332,11 @@ func containsFeishuUserMessage(messages []schema.Message, content string) bool {
 }
 
 type feishuPromptCollector struct {
-	composer engine.PromptComposer
+	composer feishuPromptComposer
+}
+
+type feishuPromptComposer interface {
+	Compose(string) (string, error)
 }
 
 func (c feishuPromptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {

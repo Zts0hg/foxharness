@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -145,7 +144,7 @@ func TestRunCaseIncludesRuntimeFidelityMetadata(t *testing.T) {
 	runner := NewRunner(func(ctx context.Context, workDir string, c *Case) (*Harness, error) {
 		spec := NewRuntimeSpec("test", "model", 1, nil)
 		harness, err := newTargetBenchmarkHarness(ctx, workDir, t.TempDir(), spec, benchmarkFinalProvider{},
-			func(foxruntime.RunAssembly) engine.PromptComposer { return benchmarkComposer{} }, nil)
+			func(foxruntime.RunAssembly) benchmarkPromptComposer { return benchmarkComposer{} }, nil)
 		if err != nil {
 			return nil, err
 		}

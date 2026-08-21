@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
@@ -56,7 +55,7 @@ func TestM14RuntimeCleanupFailureRetainsStartedRuntimeEvidence(t *testing.T) {
 		spec := NewRuntimeSpec("scripted", "fixture-model", 1, nil)
 		return newTargetBenchmarkHarnessWithStore(
 			ctx, workDir, store, spec, benchmarkFinalProvider{},
-			func(foxruntime.RunAssembly) engine.PromptComposer { return benchmarkComposer{} }, nil,
+			func(foxruntime.RunAssembly) benchmarkPromptComposer { return benchmarkComposer{} }, nil,
 		)
 	})
 	result, err := runner.RunCase(context.Background(), &Case{ID: "cleanup", Fixture: fixture, Prompt: "run", MaxTurns: 1})

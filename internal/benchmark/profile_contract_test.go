@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	prompt "github.com/Zts0hg/foxharness/internal/context"
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
@@ -240,7 +239,7 @@ func benchmarkProfileHarness(t *testing.T, workDir string, c *Case, model provid
 func benchmarkProfileHarnessWithHome(workDir, home string, c *Case, model provider.LLMProvider) (*Harness, error) {
 	spec := NewRuntimeSpec("scripted", "fixture-model", c.MaxTurns, []string{"read_file", "write_file", "bash", "edit_file", "read_todo", "update_todo"})
 	return newTargetBenchmarkHarness(context.Background(), workDir, home, spec, model,
-		func(assembly foxruntime.RunAssembly) engine.PromptComposer {
+		func(assembly foxruntime.RunAssembly) benchmarkPromptComposer {
 			store := memory.NewSessionStore(workDir, assembly.Session.RootDir)
 			if err := store.EnsureFiles(); err != nil {
 				return benchmarkCauseComposer{cause: err}

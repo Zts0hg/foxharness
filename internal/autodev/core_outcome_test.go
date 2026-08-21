@@ -3,13 +3,17 @@ package autodev
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
 )
+
+type turnLimitCoreError struct{ maxTurns int }
+
+func (e *turnLimitCoreError) Error() string          { return fmt.Sprintf("turn limit: %d", e.maxTurns) }
+func (*turnLimitCoreError) RuntimeErrorKind() string { return "turn_limit" }
 
 type outcomeCore struct {
 	outcomes []CoreOutcome
@@ -64,7 +68,7 @@ func (e *outcomeReviewEngineer) Review(_ context.Context, evidence CoreReviewEvi
 }
 
 func TestDVAUT010CoreOutcomeRetainsTypedTerminalCorrelation(t *testing.T) {
-	cause := &engine.TurnLimitError{MaxTurns: 3}
+	cause := &turnLimitCoreError{maxTurns: 3}
 	outcome := CoreOutcome{
 		Attempt:        CoreAttempt{AttemptID: "attempt-1", CorrelationID: "core:item-1:implement:1", Ordinal: 1},
 		Status:         CoreOutcomeTurnExhausted,
@@ -85,9 +89,9 @@ func TestDVAUT010CoreOutcomeRetainsTypedTerminalCorrelation(t *testing.T) {
 	if !errors.Is(err, cause) {
 		t.Fatalf("errors.Is(%v, cause) = false", err)
 	}
-	var turnLimit *engine.TurnLimitError
-	if !errors.As(err, &turnLimit) || turnLimit.MaxTurns != 3 {
-		t.Fatalf("errors.As(%v) = %#v, want retained TurnLimitError", err, turnLimit)
+	var turnLimit *turnLimitCoreError
+	if !errors.As(err, &turnLimit) || turnLimit.maxTurns != 3 {
+		t.Fatalf("errors.As(%v) = %#v, want retained typed turn-limit cause", err, turnLimit)
 	}
 }
 
@@ -106,7 +110,7 @@ func TestDVAUT010CoreErrorClassificationClosesRetryPolicy(t *testing.T) {
 		{name: "success", started: true, wantState: CoreOutcomeSucceeded, wantRetry: CoreRetryNever},
 		{name: "provider", err: &coreStatusCodeError{StatusCode: 503}, started: true, wantState: CoreOutcomeFailed, wantRetry: CoreRetrySameRunner},
 		{name: "tool", err: &retryHintError{class: CoreRetrySameRunner, err: errors.New("tool failed")}, started: true, wantState: CoreOutcomeFailed, wantRetry: CoreRetrySameRunner},
-		{name: "turn-limit", err: &engine.TurnLimitError{MaxTurns: 3}, started: true, wantState: CoreOutcomeTurnExhausted, wantRetry: CoreRetrySameRunner},
+		{name: "turn-limit", err: &turnLimitCoreError{maxTurns: 3}, started: true, wantState: CoreOutcomeTurnExhausted, wantRetry: CoreRetrySameRunner},
 		{name: "persistence", err: errors.New("session persistence failed"), started: true, wantState: CoreOutcomeFailed, wantRetry: CoreRetryFreshRunner},
 		{name: "start-failure", err: errors.New("session creation failed"), wantState: CoreOutcomeStartFailed, wantRetry: CoreRetryFreshRunner},
 		{name: "cancellation", err: context.Canceled, started: true, wantState: CoreOutcomeCancelled, wantRetry: CoreRetryNever},

@@ -235,7 +235,11 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 }
 
 type benchmarkPromptCollector struct {
-	composer engine.PromptComposer
+	composer benchmarkPromptComposer
+}
+
+type benchmarkPromptComposer interface {
+	Compose(string) (string, error)
 }
 
 func (c benchmarkPromptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {

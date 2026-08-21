@@ -163,10 +163,6 @@ func targetEngineFiles(t *testing.T) map[string]*ast.File {
 	t.Helper()
 	root := moduleRoot(t)
 	engineDir := filepath.Join(root, "internal", "engine")
-	legacyFiles := map[string]struct{}{
-		"config.go": {}, "context.go": {}, "errors.go": {},
-		"loop.go": {}, "reporter.go": {}, "todo_gate.go": {},
-	}
 	fset := token.NewFileSet()
 	packages, err := parser.ParseDir(fset, engineDir, func(info os.FileInfo) bool {
 		return !strings.HasSuffix(info.Name(), "_test.go")
@@ -177,10 +173,7 @@ func targetEngineFiles(t *testing.T) map[string]*ast.File {
 	result := map[string]*ast.File{}
 	for _, parsedPackage := range packages {
 		for path, file := range parsedPackage.Files {
-			_, legacy := legacyFiles[filepath.Base(path)]
-			if !legacy || declaresTargetEngine(file) {
-				result[path] = file
-			}
+			result[path] = file
 		}
 	}
 	return result
@@ -212,31 +205,6 @@ func targetStructFields(t *testing.T, typeName string) map[string]string {
 		t.Fatalf("%s declaration not found in target engine files", typeName)
 	}
 	return result
-}
-
-func declaresTargetEngine(file *ast.File) bool {
-	targetTypes := map[string]struct{}{
-		"AgentEngine": {}, "Conversation": {}, "Fact": {}, "ModelInvoker": {},
-		"Observer": {}, "RunContext": {}, "RunInput": {}, "RunOutcome": {},
-		"ToolExecutor": {}, "TurnPolicy": {}, "TurnRunPolicy": {},
-	}
-	for _, declaration := range file.Decls {
-		switch declaration := declaration.(type) {
-		case *ast.GenDecl:
-			for _, spec := range declaration.Specs {
-				if typeSpec, ok := spec.(*ast.TypeSpec); ok {
-					if _, target := targetTypes[typeSpec.Name.Name]; target {
-						return true
-					}
-				}
-			}
-		case *ast.FuncDecl:
-			if declaration.Recv != nil && len(declaration.Recv.List) == 1 && receiverName(declaration.Recv.List[0].Type) == "AgentEngine" {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func receiverName(expression ast.Expr) string {

@@ -3,38 +3,34 @@ package agentops
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"sync"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/provider"
-	"github.com/Zts0hg/foxharness/internal/schema"
-	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/app"
 )
 
 func TestUIAOP004ExactDefaultAndFailurePresentation(t *testing.T) {
 	t.Run("empty final uses default and exact artifacts", func(t *testing.T) {
 		messenger := &agentOpsTransportMessenger{}
-		runner := newAgentOpsProfileRunner(t, agentOpsEmptyFinalProvider{}, messenger)
+		application := &agentOpsTransportApplication{outcome: &app.RunOutcome{RunID: "run-1"}}
+		runner := NewRunner(agentOpsTransportFactory{prepared: PreparedTaskExecution{
+			Session:   app.SessionInfo{ID: "session-1"},
+			TracePath: "/session/runs/run-1/trace.jsonl", MetricsPath: "/session/runs/run-1/metrics.jsonl",
+			Start: func(context.Context) (TaskApplication, error) { return application, nil },
+		}}, messenger)
 		task := Task{TaskID: "task", ChatID: "chat", SenderID: "sender", MessageID: "message", Text: "incident"}
 		if err := runner.run(context.Background(), task); err != nil {
 			t.Fatal(err)
 		}
-		sess, err := runner.sessions.Latest(session.LookupOptions{Source: session.SOURCEFeishu, UserID: "sender", ChatID: "chat"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		records, err := session.NewMessageLog(sess).LoadRecords()
-		if err != nil || len(records) != 2 || records[0].RunID == "" {
-			t.Fatalf("records = %#v, %v", records, err)
-		}
-		runID := string(records[0].RunID)
 		want := []agentOpsTransportMessage{
-			{chatID: "chat", text: "已创建 AgentOps Session: " + string(sess.ID) + "\n开始分析。"},
-			{chatID: "chat", text: "任务执行完成。\n\nSession: " + string(sess.ID) + "\nRun: " + runID + "\nTrace: " + filepath.Join(sess.RunsDir(), runID, "trace.jsonl") + "\nMetrics: " + filepath.Join(sess.RunsDir(), runID, "metrics.jsonl")},
+			{chatID: "chat", text: "已创建 AgentOps Session: session-1\n开始分析。"},
+			{chatID: "chat", text: "任务执行完成。\n\nSession: session-1\nRun: run-1\nTrace: /session/runs/run-1/trace.jsonl\nMetrics: /session/runs/run-1/metrics.jsonl"},
 		}
 		if got := messenger.snapshot(); !equalAgentOpsTransportMessages(got, want) {
 			t.Fatalf("messages = %#v, want %#v", got, want)
+		}
+		if application.drains != 1 {
+			t.Fatalf("application drains = %d, want 1", application.drains)
 		}
 	})
 
@@ -58,14 +54,25 @@ func TestUIAOP004ExactDefaultAndFailurePresentation(t *testing.T) {
 	}
 }
 
-type agentOpsEmptyFinalProvider struct{}
+type agentOpsTransportFactory struct{ prepared PreparedTaskExecution }
 
-func (agentOpsEmptyFinalProvider) Generate(context.Context, []schema.Message, []schema.ToolDefinition) (*provider.GenerateResponse, error) {
-	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant}}, nil
+func (f agentOpsTransportFactory) PrepareTask(context.Context, TaskExecutionRequest) (PreparedTaskExecution, error) {
+	return f.prepared, nil
 }
 
-func (agentOpsEmptyFinalProvider) ProviderProtocol() string { return "scripted" }
-func (agentOpsEmptyFinalProvider) ModelName() string        { return "claude-4-sonnet" }
+type agentOpsTransportApplication struct {
+	outcome *app.RunOutcome
+	drains  int
+}
+
+func (a *agentOpsTransportApplication) Run(context.Context, app.RunCommand, app.NotificationSink) (*app.RunOutcome, error) {
+	return a.outcome, nil
+}
+
+func (a *agentOpsTransportApplication) Drain(context.Context) error {
+	a.drains++
+	return nil
+}
 
 type agentOpsTransportMessage struct {
 	chatID string

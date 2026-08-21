@@ -1,29 +1,13 @@
 package engine
 
-import (
-	"context"
-	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/testsupport/runtimecontract"
-)
-
-func TestCurrentProductionContractAdapterRunsRuntimeTurnCatalog(t *testing.T) {
-	for _, testCase := range currentRuntimeTurnScenarios() {
-		t.Run(testCase.name, func(t *testing.T) {
-			adapter := newCurrentProductionContractAdapter(t)
-			if err := runtimecontract.VerifyScenario(context.Background(), adapter, testCase.scenario); err != nil {
-				t.Fatalf("VerifyScenario() error = %v", err)
-			}
-		})
-	}
-}
+import "github.com/Zts0hg/foxharness/internal/testsupport/runtimecontract"
 
 type runtimeTurnTestCase struct {
 	name     string
 	scenario runtimecontract.Scenario
 }
 
-func currentRuntimeTurnScenarios() []runtimeTurnTestCase {
+func runtimeTurnScenarios() []runtimeTurnTestCase {
 	return []runtimeTurnTestCase{
 		{name: "RT-001 tool-free completion", scenario: runtimeTurnToolFreeScenario()},
 		{name: "RT-002 correlated tool round trip", scenario: runtimeTurnToolScenario(false)},

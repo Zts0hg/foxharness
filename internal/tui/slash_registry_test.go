@@ -10,7 +10,6 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/slash"
 )
 
@@ -39,7 +38,7 @@ type restrictedFakeRunner struct {
 	restrictedRuns   []string
 	restrictedAllow  []string
 	restrictedModes  []collaboration.Mode
-	restrictedResult *engine.RunResult
+	restrictedResult *app.RunOutcome
 }
 
 type effortFakeRunner struct {

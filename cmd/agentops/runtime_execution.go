@@ -328,7 +328,11 @@ func containsAgentOpsUserMessage(messages []schema.Message, content string) bool
 }
 
 type agentOpsPromptCollector struct {
-	composer engine.PromptComposer
+	composer agentOpsPromptComposer
+}
+
+type agentOpsPromptComposer interface {
+	Compose(string) (string, error)
 }
 
 func (c agentOpsPromptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {

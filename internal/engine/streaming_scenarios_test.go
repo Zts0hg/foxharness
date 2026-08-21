@@ -1,26 +1,10 @@
 package engine
 
 import (
-	"context"
-	"strings"
-	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/testsupport/runtimecontract"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
-func TestCurrentProductionContractAdapterRunsStreamingCatalog(t *testing.T) {
-	for _, testCase := range currentStreamingScenarios() {
-		t.Run(testCase.name, func(t *testing.T) {
-			if err := runtimecontract.VerifyScenario(context.Background(), newCurrentProductionContractAdapter(t), testCase.scenario); err != nil {
-				t.Fatalf("VerifyScenario() error = %v", err)
-			}
-		})
-	}
-}
-
-func currentStreamingScenarios() []runtimeTurnTestCase {
+func streamingScenarios() []runtimeTurnTestCase {
 	return []runtimeTurnTestCase{
 		{name: "ST-001 successful deltas", scenario: streamingSuccessScenario()},
 		{name: "ST-002 unsupported pre-delta fallback", scenario: streamingFallbackScenario("ST-002", "unsupported")},
@@ -140,36 +124,4 @@ func streamingRequest(input runtimecontract.RunInput, transport string, messages
 	request := contractRequest(input, "action", messages, definitions)
 	request.Transport = transport
 	return request
-}
-
-func TestCurrentProductionStreamingFailureDoesNotLeakAcrossRuns(t *testing.T) {
-	workDir := t.TempDir()
-	manager := session.NewManagerWithHome(workDir, t.TempDir())
-	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider := &currentContractProvider{
-		steps: []runtimecontract.ModelStep{
-			{Deltas: []string{"partial"}, Error: "stream interrupted", ErrorKind: "ordinary"},
-			{Deltas: []string{"clean"}, Response: runtimecontract.ModelResponse{Content: "clean", FinishReason: "stop"}},
-		},
-		model: "scripted-model", protocol: "scripted", streaming: true,
-	}
-	eng := NewLegacyEngine(provider, tools.NewRegistry(), workDir, currentContractPromptComposer{}, Config{MaxTurns: 1})
-	firstReporter := &currentContractStreamingReporter{currentContractReporter: &currentContractReporter{}}
-	if _, err := eng.RunWithReporter(context.Background(), sess, "first", firstReporter); err == nil || !strings.Contains(err.Error(), "stream interrupted") {
-		t.Fatalf("first run error = %v", err)
-	}
-	secondReporter := &currentContractStreamingReporter{currentContractReporter: &currentContractReporter{}}
-	result, err := eng.RunWithReporter(context.Background(), sess, "second", secondReporter)
-	if err != nil || result.FinalMessage != "clean" {
-		t.Fatalf("second run result/error = %#v, %v", result, err)
-	}
-	if got := provider.requests; len(got) != 2 || got[0].Transport != "stream" || got[1].Transport != "stream" {
-		t.Fatalf("cross-run requests = %#v", got)
-	}
-	if len(secondReporter.facts) != 4 || secondReporter.facts[1].Kind != "message_delta" || secondReporter.facts[1].Content != "clean" {
-		t.Fatalf("second run facts = %#v", secondReporter.facts)
-	}
 }

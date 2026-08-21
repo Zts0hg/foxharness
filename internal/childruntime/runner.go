@@ -224,7 +224,11 @@ func newCompactor(modelProvider provider.LLMProvider, model, sessionDir string) 
 }
 
 type promptCollector struct {
-	composer engine.PromptComposer
+	composer promptComposer
+}
+
+type promptComposer interface {
+	Compose(string) (string, error)
 }
 
 func (c promptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {
