@@ -1,6 +1,7 @@
-package context
+package runtime
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,14 +11,38 @@ import (
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 )
 
+func TestPromptCollectorCollectPreservesProfileErrorContext(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workDir, "AGENTS.md"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		profile ProfileName
+		prefix  string
+	}{
+		{profile: CLIExec, prefix: "组装系统提示词失败: 读取 AGENTS.md 失败:"},
+		{profile: ChildRun, prefix: "compose child prompt: 读取 AGENTS.md 失败:"},
+	}
+	for _, test := range tests {
+		t.Run(string(test.profile), func(t *testing.T) {
+			_, err := NewPromptCollector(workDir).Collect(context.Background(), ContextCollectionRequest{
+				Profile: test.profile, WorkDir: workDir,
+			})
+			if err == nil || !strings.HasPrefix(err.Error(), test.prefix) {
+				t.Fatalf("Collect() error = %v, want prefix %q", err, test.prefix)
+			}
+		})
+	}
+}
+
 func TestComposeFormalPlanGuidanceOverridesMutationInstructions(t *testing.T) {
 	workDir := t.TempDir()
 	memoryPath := filepath.Join(workDir, "working_memory.md")
-	prompt, err := NewComposer(workDir).
-		WithCollaborationMode(collaboration.ModeFormalPlan).
+	prompt, err := NewPromptCollector(workDir).
+		withCollaborationMode(string(collaboration.ModeFormalPlan)).
 		WithMemory(memoryPath).
-		WithAutoMemory(automemory.NewStore(t.TempDir(), workDir)).
-		Compose("plan a risky refactor")
+		WithAutoMemory(automemory.NewStore(t.TempDir(), workDir), automemory.MainMemoryGuidance).
+		compose("plan a risky refactor")
 	if err != nil {
 		t.Fatalf("Compose() error = %v", err)
 	}
@@ -52,9 +77,9 @@ func TestComposeFormalPlanGuidanceOverridesMutationInstructions(t *testing.T) {
 }
 
 func TestComposeDefaultOmitsFormalPlanGuidance(t *testing.T) {
-	prompt, err := NewComposer(t.TempDir()).
-		WithCollaborationMode(collaboration.ModeDefault).
-		Compose("implement a change")
+	prompt, err := NewPromptCollector(t.TempDir()).
+		withCollaborationMode(string(collaboration.ModeDefault)).
+		compose("implement a change")
 	if err != nil {
 		t.Fatalf("Compose() error = %v", err)
 	}
@@ -66,7 +91,7 @@ func TestComposeDefaultOmitsFormalPlanGuidance(t *testing.T) {
 func TestComposeInteractiveAskGuidance(t *testing.T) {
 	workDir := t.TempDir()
 
-	enabled, err := NewComposer(workDir).WithInteractiveAsk(true).Compose("普通任务")
+	enabled, err := NewPromptCollector(workDir).WithInteractiveAsk(true).compose("普通任务")
 	if err != nil {
 		t.Fatalf("Compose(enabled) error = %v", err)
 	}
@@ -74,7 +99,7 @@ func TestComposeInteractiveAskGuidance(t *testing.T) {
 		t.Fatalf("interactive guidance missing when enabled:\n%s", enabled)
 	}
 
-	disabled, err := NewComposer(workDir).WithInteractiveAsk(false).Compose("普通任务")
+	disabled, err := NewPromptCollector(workDir).WithInteractiveAsk(false).compose("普通任务")
 	if err != nil {
 		t.Fatalf("Compose(disabled) error = %v", err)
 	}
@@ -83,7 +108,7 @@ func TestComposeInteractiveAskGuidance(t *testing.T) {
 	}
 
 	// Default (no WithInteractiveAsk) must also omit it.
-	def, err := NewComposer(workDir).Compose("普通任务")
+	def, err := NewPromptCollector(workDir).compose("普通任务")
 	if err != nil {
 		t.Fatalf("Compose(default) error = %v", err)
 	}
@@ -93,11 +118,11 @@ func TestComposeInteractiveAskGuidance(t *testing.T) {
 }
 
 func TestComposeToolCapabilityScopeSuppressesUnavailableOptionalGuidance(t *testing.T) {
-	prompt, err := NewComposer(t.TempDir()).
+	prompt, err := NewPromptCollector(t.TempDir()).
 		WithToolCapabilities([]string{"read_file"}).
 		WithInteractiveAsk(true).
 		WithSkillList(func() string { return "refactor: unavailable skill" }).
-		Compose("inspect")
+		compose("inspect")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +134,7 @@ func TestComposeToolCapabilityScopeSuppressesUnavailableOptionalGuidance(t *test
 }
 
 func TestComposeToolCapabilityScopeDoesNotOverstateBashPolicy(t *testing.T) {
-	prompt, err := NewComposer(t.TempDir()).WithToolCapabilities([]string{"bash"}).Compose("inspect")
+	prompt, err := NewPromptCollector(t.TempDir()).WithToolCapabilities([]string{"bash"}).compose("inspect")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +192,7 @@ Rules:
 		t.Fatal(err)
 	}
 
-	prompt, err := NewComposer(workDir).Compose("请使用 $go-refactor 改一下代码")
+	prompt, err := NewPromptCollector(workDir).compose("请使用 $go-refactor 改一下代码")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +223,7 @@ func TestComposeDoesNotLoadUnmentionedSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt, err := NewComposer(workDir).Compose("普通任务，不点名技能")
+	prompt, err := NewPromptCollector(workDir).compose("普通任务，不点名技能")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +244,7 @@ func TestComposeNoLongerInjectsLegacyProjectMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt, err := NewComposer(workDir).WithMemory(workingMemoryPath).Compose("普通任务")
+	prompt, err := NewPromptCollector(workDir).WithMemory(workingMemoryPath).compose("普通任务")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +277,7 @@ func TestComposeInjectsPersistentMemoryIndexAndGuardrails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt, err := NewComposer(workDir).WithAutoMemory(store).Compose("普通任务")
+	prompt, err := NewPromptCollector(workDir).WithAutoMemory(store, automemory.MainMemoryGuidance).compose("普通任务")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +316,7 @@ func TestSC001MemoryPersistsAcrossSessionsSameProject(t *testing.T) {
 
 	// A fresh session in the same project (new Store, same home+workDir) sees it.
 	session2 := automemory.NewStore(home, workDir)
-	prompt, err := NewComposer(workDir).WithAutoMemory(session2).Compose("task")
+	prompt, err := NewPromptCollector(workDir).WithAutoMemory(session2, automemory.MainMemoryGuidance).compose("task")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +352,7 @@ func TestSC002UserMemoryVisibleAcrossProjects(t *testing.T) {
 	}
 
 	storeB := automemory.NewStore(home, projectB)
-	prompt, err := NewComposer(projectB).WithAutoMemory(storeB).Compose("task")
+	prompt, err := NewPromptCollector(projectB).WithAutoMemory(storeB, automemory.MainMemoryGuidance).compose("task")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +365,7 @@ func TestSC002UserMemoryVisibleAcrossProjects(t *testing.T) {
 }
 
 func TestComposeOmitsPersistentMemoryWhenStoreUnset(t *testing.T) {
-	prompt, err := NewComposer(t.TempDir()).Compose("普通任务")
+	prompt, err := NewPromptCollector(t.TempDir()).compose("普通任务")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +382,7 @@ func TestComposeIncludesWorkingMemoryMaintenanceGuidance(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt, err := NewComposer(workDir).WithMemory(workingMemoryPath).Compose("普通任务")
+	prompt, err := NewPromptCollector(workDir).WithMemory(workingMemoryPath).compose("普通任务")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +424,7 @@ func TestComposeWorkingMemoryPathResolvesBackToSessionFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt, err := NewComposer(workDir).WithMemory(workingMemoryPath).Compose("task")
+	prompt, err := NewPromptCollector(workDir).WithMemory(workingMemoryPath).compose("task")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +470,7 @@ func TestComposeNormalizesRelativeWorkDirBeforeRenderingMemoryPaths(t *testing.T
 		t.Fatal(err)
 	}
 
-	prompt, err := NewComposer(workDir).WithMemory(workingMemoryPath).Compose("task")
+	prompt, err := NewPromptCollector(workDir).WithMemory(workingMemoryPath).compose("task")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +517,7 @@ func TestComposeMemoryPathStaysRelativeToSymlinkWorkDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt, err := NewComposer(workDir).WithMemory(workingMemoryPath).Compose("task")
+	prompt, err := NewPromptCollector(workDir).WithMemory(workingMemoryPath).compose("task")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +547,7 @@ func TestComposePersistentMemoryDirsStayRelativeToSymlinkWorkDir(t *testing.T) {
 	}
 	store := automemory.NewStore(home, workDir)
 
-	prompt, err := NewComposer(workDir).WithAutoMemory(store).Compose("task")
+	prompt, err := NewPromptCollector(workDir).WithAutoMemory(store, automemory.MainMemoryGuidance).compose("task")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +581,7 @@ func extractWorkingMemoryRelPath(t *testing.T, prompt string) string {
 }
 
 func TestComposeIncludesTodoToolInstructions(t *testing.T) {
-	prompt, err := NewComposer(t.TempDir()).Compose("普通任务")
+	prompt, err := NewPromptCollector(t.TempDir()).compose("普通任务")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -18,7 +18,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -26,13 +25,11 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/benchmark"
 	"github.com/Zts0hg/foxharness/internal/compaction"
-	legacycontext "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/modelinvoke"
-	"github.com/Zts0hg/foxharness/internal/prompt"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/registryexec"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
@@ -177,7 +174,7 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 		},
 		NewContext: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.ContextCollector, foxruntime.ContextCompactor, error) {
 			workingMemory := memory.NewSessionStore(workDir, assembly.Session.RootDir).WorkingMemoryPath()
-			collector := benchmarkPromptCollector{composer: legacycontext.NewComposer(workDir).WithMemory(workingMemory)}
+			collector := foxruntime.NewPromptCollector(workDir).WithMemory(workingMemory)
 			return collector, runtimecompaction.New(compactor), nil
 		},
 	}
@@ -232,22 +229,6 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 		RunSpec:         runSpec,
 		RuntimeFidelity: runtimeSpec.Fidelity(),
 	}, nil
-}
-
-type benchmarkPromptCollector struct {
-	composer benchmarkPromptComposer
-}
-
-type benchmarkPromptComposer interface {
-	Compose(string) (string, error)
-}
-
-func (c benchmarkPromptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {
-	text, err := c.composer.Compose(request.Prompt)
-	if err != nil {
-		return nil, fmt.Errorf("组装系统提示词失败: %w", err)
-	}
-	return []prompt.Fragment{prompt.Text(text)}, nil
 }
 
 func buildBenchmarkRegistry(workDir string, sess *session.StoredSession) tools.Registry {

@@ -14,13 +14,11 @@ import (
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/childruntime"
 	"github.com/Zts0hg/foxharness/internal/compaction"
-	legacycontext "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/feishu"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/modelinvoke"
 	"github.com/Zts0hg/foxharness/internal/permission"
-	"github.com/Zts0hg/foxharness/internal/prompt"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/registryexec"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
@@ -98,6 +96,9 @@ func (f *feishuTaskExecutionFactory) selectSession(request feishu.TaskExecutionR
 	if err != nil {
 		return nil, false, err
 	}
+	if err := memory.NewSessionStore(f.workDir, stored.RootDir).EnsureWorkingMemory(); err != nil {
+		return nil, false, fmt.Errorf("初始化 Working Memory 失败: %w", err)
+	}
 	return stored, true, nil
 }
 
@@ -158,8 +159,8 @@ func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request
 			return turnpolicy.New(turnpolicy.Config{}), nil
 		},
 		NewContext: func(_ context.Context, _ foxruntime.RunAssembly) (foxruntime.ContextCollector, foxruntime.ContextCompactor, error) {
-			composer := legacycontext.NewComposer(f.workDir).WithMemory(workingMemory.WorkingMemoryPath()).WithAutoMemory(autoMemory)
-			return feishuPromptCollector{composer: composer}, runtimecompaction.New(compactor), nil
+			collector := foxruntime.NewPromptCollector(f.workDir).WithMemory(workingMemory.WorkingMemoryPath()).WithAutoMemory(autoMemory, automemory.MainMemoryGuidance)
+			return collector, runtimecompaction.New(compactor), nil
 		},
 	}
 	harness, err := foxruntime.NewRuntimeHarness(f.store, dependencies)
@@ -329,22 +330,6 @@ func containsFeishuUserMessage(messages []schema.Message, content string) bool {
 		}
 	}
 	return false
-}
-
-type feishuPromptCollector struct {
-	composer feishuPromptComposer
-}
-
-type feishuPromptComposer interface {
-	Compose(string) (string, error)
-}
-
-func (c feishuPromptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {
-	text, err := c.composer.Compose(request.Prompt)
-	if err != nil {
-		return nil, fmt.Errorf("组装系统提示词失败: %w", err)
-	}
-	return []prompt.Fragment{prompt.Text(text)}, nil
 }
 
 type feishuRunAssets struct {

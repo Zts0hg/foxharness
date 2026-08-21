@@ -13,9 +13,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/childruntime"
-	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
-	legacycontext "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/memory"
@@ -173,16 +171,15 @@ func (f *autodevRuntimeCoreFactory) New(ctx context.Context, workDir, model stri
 			if err != nil {
 				return nil, nil, err
 			}
-			composer := legacycontext.NewComposer(workDir).
-				WithCollaborationMode(collaboration.ModeDefault).
+			collector := foxruntime.NewPromptCollector(workDir).
 				WithInteractiveAsk(true).
 				WithMemory(memoryStore.WorkingMemoryPath()).
-				WithAutoMemory(autoMemory).
+				WithAutoMemory(autoMemory, automemory.MainMemoryGuidance).
 				WithSkillList(func() string {
 					window := compaction.NewModelRegistry().Lookup(assembly.Spec.Model)
 					return skilltool.FormatSkillsWithinBudget(skillRegistry.ModelInvocable(), window)
 				})
-			return runtimePromptCollector{composer: composer}, runtimecompaction.New(asset.compactor), nil
+			return collector, runtimecompaction.New(asset.compactor), nil
 		},
 	}
 	harness, err := foxruntime.NewRuntimeHarness(store, dependencies)

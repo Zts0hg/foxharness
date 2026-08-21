@@ -63,29 +63,6 @@ func TestFileStoreOwnsStoredSessionAndRunPersistence(t *testing.T) {
 	}
 }
 
-func TestLegacyStorageVocabularyPreservesMethodBehavior(t *testing.T) {
-	workDir := t.TempDir()
-	legacyManager := NewManagerWithHome(workDir, t.TempDir())
-	var store *FileStore = legacyManager
-
-	legacySession, err := legacyManager.Create(CreateOptions{Source: SOURCECLI, WorkDir: workDir})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-	var _ *Session = legacySession
-	legacyRun, err := legacySession.StartRun("legacy caller")
-	if err != nil {
-		t.Fatalf("StartRun() error = %v", err)
-	}
-	var _ *Run = legacyRun
-	if err := legacyRun.Finish(); err != nil {
-		t.Fatalf("Finish() error = %v", err)
-	}
-	if store == nil || legacyRun.EndedAt == nil {
-		t.Fatal("legacy compatibility methods did not preserve stored-run behavior")
-	}
-}
-
 func TestTranscriptLogRetainsTranscriptEventEncoding(t *testing.T) {
 	storedSession := &StoredSession{RootDir: t.TempDir()}
 	log := NewTranscriptLog(storedSession)

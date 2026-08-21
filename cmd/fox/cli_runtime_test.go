@@ -110,7 +110,7 @@ func TestCLIExecTargetCompositionPreservesProfileArtifactsAndPresentation(t *tes
 
 func TestCLIExecTargetSessionSelectionPreservesExactErrorsAndLatestCLISource(t *testing.T) {
 	workDir := t.TempDir()
-	store := session.NewManagerWithHome(workDir, t.TempDir())
+	store := session.NewFileStoreWithHome(workDir, t.TempDir())
 	existing, err := store.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
 	if err != nil {
 		t.Fatal(err)

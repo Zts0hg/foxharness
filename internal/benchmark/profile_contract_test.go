@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/memory"
+	"github.com/Zts0hg/foxharness/internal/prompt"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -38,7 +38,7 @@ func TestPFBEN001CurrentProfileSnapshotIsImmutableAndFlat(t *testing.T) {
 	if spec.ToolSurface[0] != "bash" {
 		t.Fatalf("fidelity consumer mutated runtime spec: %#v", spec.ToolSurface)
 	}
-	filtered := tools.NewFilteredRegistry(benchmarkProfileRegistry(t.TempDir(), &session.Session{RootDir: t.TempDir()}), []string{"read_file", "delegate_task"})
+	filtered := tools.NewFilteredRegistry(benchmarkProfileRegistry(t.TempDir(), &session.StoredSession{RootDir: t.TempDir()}), []string{"read_file", "delegate_task"})
 	if got := benchmarkProfileToolNames(filtered.GetAvailableTools()); got != "read_file" {
 		t.Fatalf("restriction expanded benchmark ceiling: %q", got)
 	}
@@ -141,8 +141,8 @@ func TestPFBEN008And009ContextIsFixtureAndSessionLocal(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: Fixture Skill\ndescription: fixture only\n---\n\nBENCHMARK_SKILL_FRAGMENT\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manager := session.NewManagerWithHome(workDir, t.TempDir())
-	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	sessionStore := session.NewFileStoreWithHome(workDir, t.TempDir())
+	sess, err := sessionStore.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,13 +150,17 @@ func TestPFBEN008And009ContextIsFixtureAndSessionLocal(t *testing.T) {
 	if err := store.EnsureFiles(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(sess.MemoryPath(), []byte("BENCHMARK_SESSION_MEMORY\n"), 0o600); err != nil {
+	memoryPath := store.WorkingMemoryPath()
+	if err := os.WriteFile(memoryPath, []byte("BENCHMARK_SESSION_MEMORY\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	composed, err := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath()).Compose("use $fixture-skill")
+	fragments, err := foxruntime.NewPromptCollector(workDir).WithMemory(memoryPath).Collect(context.Background(), foxruntime.ContextCollectionRequest{
+		Profile: foxruntime.BenchmarkEval, Prompt: "use $fixture-skill", WorkDir: workDir,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	composed := prompt.Render(fragments)
 	for _, fragment := range []string{"BENCHMARK_PROJECT_INSTRUCTION", "BENCHMARK_SESSION_MEMORY", "BENCHMARK_SKILL_FRAGMENT", "Session Plan and Todo Files"} {
 		if strings.Count(composed, fragment) != 1 {
 			t.Fatalf("prompt contains %q %d times:\n%s", fragment, strings.Count(composed, fragment), composed)
@@ -244,15 +248,34 @@ func benchmarkProfileHarnessWithHome(workDir, home string, c *Case, model provid
 			if err := store.EnsureFiles(); err != nil {
 				return benchmarkCauseComposer{cause: err}
 			}
-			return prompt.NewComposer(workDir).WithMemory(store.WorkingMemoryPath())
+			return benchmarkRuntimePromptComposer{
+				workDir: workDir,
+				collector: foxruntime.NewPromptCollector(workDir).
+					WithMemory(store.WorkingMemoryPath()),
+			}
 		},
 		func(assembly foxruntime.RunAssembly) tools.Registry {
-			return benchmarkProfileRegistry(workDir, &session.Session{RootDir: assembly.Session.RootDir})
+			return benchmarkProfileRegistry(workDir, &session.StoredSession{RootDir: assembly.Session.RootDir})
 		},
 	)
 }
 
-func benchmarkProfileRegistry(workDir string, sess *session.Session) tools.Registry {
+type benchmarkRuntimePromptComposer struct {
+	workDir   string
+	collector *foxruntime.PromptCollector
+}
+
+func (c benchmarkRuntimePromptComposer) Compose(userPrompt string) (string, error) {
+	fragments, err := c.collector.Collect(context.Background(), foxruntime.ContextCollectionRequest{
+		Profile: foxruntime.BenchmarkEval, Prompt: userPrompt, WorkDir: c.workDir,
+	})
+	if err != nil {
+		return "", err
+	}
+	return prompt.Render(fragments), nil
+}
+
+func benchmarkProfileRegistry(workDir string, sess *session.StoredSession) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
 	registry.Register(tools.NewWriteFileTool(workDir))

@@ -33,7 +33,7 @@ func TestAgentOpsTaskFactoryRunsTargetProfileWithFreshSessionAndCompatibleArtifa
 	if err := os.WriteFile(filepath.Join(logDir, "payment.log"), []byte("INFO ok\nERROR timeout\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	store := session.NewManagerWithHome(workDir, homeDir)
+	store := session.NewFileStoreWithHome(workDir, homeDir)
 	model := &composedAgentOpsProvider{}
 	factory := newAgentOpsTaskExecutionFactory(model, workDir, logDir, discardAgentOpsMessenger{}, store, approval.NewStore())
 	task := agentops.Task{
@@ -47,6 +47,9 @@ func TestAgentOpsTaskFactoryRunsTargetProfileWithFreshSessionAndCompatibleArtifa
 	}
 	if prepared.Session.ID == "" {
 		t.Fatal("prepared session identity is empty")
+	}
+	if _, err := os.Stat(filepath.Join(prepared.Session.Directory, "working_memory.md")); err != nil {
+		t.Fatalf("working_memory.md missing after task preparation: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(prepared.Session.Directory, "PLAN.md")); !os.IsNotExist(err) {
 		t.Fatalf("PLAN.md exists before application start: %v", err)

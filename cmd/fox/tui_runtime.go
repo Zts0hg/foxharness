@@ -19,7 +19,6 @@ import (
 	"github.com/Zts0hg/foxharness/internal/childruntime"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
-	legacycontext "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/interactionruntime"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
@@ -501,16 +500,15 @@ func (c *tuiRuntimeComposition) newContext(_ context.Context, assembly foxruntim
 	if err != nil {
 		return nil, nil, err
 	}
-	composer := legacycontext.NewComposer(c.workDir).
-		WithCollaborationMode(collaboration.Mode(assembly.Run.CollaborationMode)).
+	collector := foxruntime.NewPromptCollector(c.workDir).
 		WithInteractiveAsk(true).
 		WithMemory(resource.memory.WorkingMemoryPath()).
-		WithAutoMemory(c.autoMemory).
+		WithAutoMemory(c.autoMemory, automemory.MainMemoryGuidance).
 		WithSkillList(func() string {
 			window := compaction.NewModelRegistry().Lookup(assembly.Run.Model)
 			return skilltool.FormatSkillsWithinBudget(c.registry.ModelInvocable(), window)
 		})
-	return runtimePromptCollector{composer: composer}, runtimecompaction.New(compactor), nil
+	return collector, runtimecompaction.New(compactor), nil
 }
 
 func (c *tuiRuntimeComposition) bind(agentSession *foxruntime.AgentSession) (app.InteractiveRuntimeBinding, error) {

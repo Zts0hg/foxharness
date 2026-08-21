@@ -33,7 +33,7 @@ func TestFeishuTaskFactoryRunsTargetProfileWithCompatibleSessionAndArtifacts(t *
 	if err := os.WriteFile(filepath.Join(workDir, "fixture.txt"), []byte("fixture body"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	store := session.NewManagerWithHome(workDir, homeDir)
+	store := session.NewFileStoreWithHome(workDir, homeDir)
 	model := &composedFeishuProvider{}
 	factory := newFeishuTaskExecutionFactory(model, workDir, discardFeishuMessenger{}, store, approval.NewStore())
 	request := feishu.TaskExecutionRequest{
@@ -47,6 +47,9 @@ func TestFeishuTaskFactoryRunsTargetProfileWithCompatibleSessionAndArtifacts(t *
 	}
 	if !prepared.Created || prepared.Session.ID == "" {
 		t.Fatalf("first prepared session = %#v", prepared)
+	}
+	if _, err := os.Stat(filepath.Join(prepared.Session.Directory, "working_memory.md")); err != nil {
+		t.Fatalf("working_memory.md missing after task preparation: %v", err)
 	}
 	outcome, err := prepared.Application.Run(ctx, app.RunCommand{Prompt: request.Prompt}, &recordingNotificationSink{})
 	if err != nil {
@@ -154,7 +157,7 @@ func TestApplicationPermissionApproverMapsRunCorrelationAndDecision(t *testing.T
 func TestFeishuRuntimeExtractionRemainsFireAndForget(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
-	store := session.NewManagerWithHome(workDir, t.TempDir())
+	store := session.NewFileStoreWithHome(workDir, t.TempDir())
 	model := &feishuExtractionBarrierProvider{
 		started: make(chan struct{}), release: make(chan struct{}), completed: make(chan struct{}),
 	}

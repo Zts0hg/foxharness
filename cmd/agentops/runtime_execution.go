@@ -15,13 +15,11 @@ import (
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/childruntime"
 	"github.com/Zts0hg/foxharness/internal/compaction"
-	legacycontext "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/feishu"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/modelinvoke"
 	"github.com/Zts0hg/foxharness/internal/permission"
-	"github.com/Zts0hg/foxharness/internal/prompt"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/registryexec"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
@@ -67,6 +65,9 @@ func (f *agentOpsTaskExecutionFactory) PrepareTask(_ context.Context, request ag
 	})
 	if err != nil {
 		return agentops.PreparedTaskExecution{}, err
+	}
+	if err := memory.NewSessionStore(f.workDir, stored.RootDir).EnsureWorkingMemory(); err != nil {
+		return agentops.PreparedTaskExecution{}, fmt.Errorf("初始化 Working Memory 失败: %w", err)
 	}
 	return agentops.PreparedTaskExecution{
 		Session: app.SessionInfo{
@@ -145,8 +146,8 @@ func (f *agentOpsTaskExecutionFactory) newApplication(
 			return turnpolicy.New(turnpolicy.Config{}), nil
 		},
 		NewContext: func(_ context.Context, _ foxruntime.RunAssembly) (foxruntime.ContextCollector, foxruntime.ContextCompactor, error) {
-			composer := legacycontext.NewComposer(f.workDir).WithMemory(workingMemory.WorkingMemoryPath()).WithAutoMemory(autoMemory)
-			return agentOpsPromptCollector{composer: composer}, runtimecompaction.New(compactor), nil
+			collector := foxruntime.NewPromptCollector(f.workDir).WithMemory(workingMemory.WorkingMemoryPath()).WithAutoMemory(autoMemory, automemory.MainMemoryGuidance)
+			return collector, runtimecompaction.New(compactor), nil
 		},
 	}
 	harness, err := foxruntime.NewRuntimeHarness(f.store, dependencies)
@@ -325,22 +326,6 @@ func containsAgentOpsUserMessage(messages []schema.Message, content string) bool
 		}
 	}
 	return false
-}
-
-type agentOpsPromptCollector struct {
-	composer agentOpsPromptComposer
-}
-
-type agentOpsPromptComposer interface {
-	Compose(string) (string, error)
-}
-
-func (c agentOpsPromptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {
-	text, err := c.composer.Compose(request.Prompt)
-	if err != nil {
-		return nil, fmt.Errorf("组装系统提示词失败: %w", err)
-	}
-	return []prompt.Fragment{prompt.Text(text)}, nil
 }
 
 type agentOpsRunAssets struct {

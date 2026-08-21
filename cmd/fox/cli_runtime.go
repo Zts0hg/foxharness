@@ -16,14 +16,11 @@ import (
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/childruntime"
-	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
-	legacycontext "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/modelinvoke"
-	"github.com/Zts0hg/foxharness/internal/prompt"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/registryexec"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
@@ -143,16 +140,15 @@ func newCLIApplicationWithProvider(ctx context.Context, config foxConfig, modelP
 			}}), nil
 		},
 		NewContext: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.ContextCollector, foxruntime.ContextCompactor, error) {
-			composer := legacycontext.NewComposer(workDir).
-				WithCollaborationMode(collaboration.ModeDefault).
+			collector := foxruntime.NewPromptCollector(workDir).
 				WithInteractiveAsk(false).
 				WithMemory(memoryStore.WorkingMemoryPath()).
-				WithAutoMemory(autoMemory).
+				WithAutoMemory(autoMemory, automemory.MainMemoryGuidance).
 				WithSkillList(func() string {
 					window := compaction.NewModelRegistry().Lookup(assembly.Run.Model)
 					return skilltool.FormatSkillsWithinBudget(skillRegistry.ModelInvocable(), window)
 				})
-			return runtimePromptCollector{composer: composer}, runtimecompaction.New(compactor), nil
+			return collector, runtimecompaction.New(compactor), nil
 		},
 	}
 	harness, err := foxruntime.NewRuntimeHarness(store, dependencies)
@@ -291,22 +287,6 @@ func buildCLIToolRegistry(
 	registry.Register(skilltool.NewSkillTool(skillRegistry, executor, func() string { return string(stored.ID) }))
 
 	return registry
-}
-
-type runtimePromptCollector struct {
-	composer cliPromptComposer
-}
-
-type cliPromptComposer interface {
-	Compose(string) (string, error)
-}
-
-func (c runtimePromptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {
-	text, err := c.composer.Compose(request.Prompt)
-	if err != nil {
-		return nil, fmt.Errorf("组装系统提示词失败: %w", err)
-	}
-	return []prompt.Fragment{prompt.Text(text)}, nil
 }
 
 type cliJournalSet struct {

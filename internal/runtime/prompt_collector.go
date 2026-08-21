@@ -1,10 +1,7 @@
-// Package context assembles the system prompt for foxharness agent sessions.
-// A Composer loads project-level instructions (AGENTS.md), optional skill
-// files referenced via $name syntax in the user prompt, and session working
-// memory, combining them into a single system prompt ready for the LLM.
-package context
+package runtime
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,108 +9,80 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Zts0hg/foxharness/internal/automemory"
-	"github.com/Zts0hg/foxharness/internal/collaboration"
-	renderprompt "github.com/Zts0hg/foxharness/internal/prompt"
+	"github.com/Zts0hg/foxharness/internal/prompt"
 )
 
-// AutoMemoryStore supplies the cross-session persistent memory injected into the
-// system prompt. It is satisfied by *automemory.Store; the interface keeps the
-// Composer decoupled and testable.
+/* AutoMemoryStore supplies persistent-memory values without exposing its concrete storage mechanism. */
 type AutoMemoryStore interface {
-	// MergedIndexString returns the merged two-tier memory index (descriptions
-	// only), or the empty string when no memories exist.
+	/* MergedIndexString returns the merged two-tier description index or an empty string. */
 	MergedIndexString() string
-	// UserGlobalDir returns the absolute user-global memory directory.
+	/* UserGlobalDir returns the absolute user-global memory directory. */
 	UserGlobalDir() string
-	// ProjectDir returns the absolute project-scoped memory directory.
+	/* ProjectDir returns the absolute project-scoped memory directory. */
 	ProjectDir() string
 }
 
-// Composer builds the full system prompt by layering base instructions,
-// project-level AGENTS.md, persistent memory, referenced skills, and session
-// working memory.
-type Composer struct {
-	workDir           string
-	memoryPath        string
-	memoryRO          bool
-	skillListFn       func() string
-	interactiveAsk    bool
-	collaborationMode collaboration.Mode
-	autoMemory        AutoMemoryStore
-	autoMemoryRO      bool
-	toolCapabilities  map[string]struct{}
+/* AutoMemoryGuidance renders already-resolved persistent-memory locations without granting runtime storage ownership. */
+type AutoMemoryGuidance func(userDirRel, projectDirRel string) string
+
+/* PromptCollector resolves ordered prompt fragments from one frozen runtime request and injected sources. */
+type PromptCollector struct {
+	workDir            string
+	memoryPath         string
+	memoryRO           bool
+	skillListFn        func() string
+	interactiveAsk     bool
+	collaborationMode  string
+	autoMemory         AutoMemoryStore
+	autoMemoryGuidance AutoMemoryGuidance
+	toolCapabilities   map[string]struct{}
 }
 
-// WithSkillList registers a function that returns the formatted list of
-// model-invocable skills. When set, Compose appends the rendered list as a
-// dedicated section so the LLM can decide when to invoke the `skill` tool.
-// Pass nil to clear.
-func (c *Composer) WithSkillList(fn func() string) *Composer {
+/* WithSkillList returns a copy that obtains the formatted model-invocable skill list from fn. */
+func (c *PromptCollector) WithSkillList(fn func() string) *PromptCollector {
 	clone := *c
 	clone.skillListFn = fn
 	return &clone
 }
 
-// NewComposer creates a Composer rooted at the given workspace directory.
-func NewComposer(workDir string) *Composer {
-	return &Composer{workDir: workDir}
+/* NewPromptCollector creates a collector rooted at workDir. */
+func NewPromptCollector(workDir string) *PromptCollector {
+	return &PromptCollector{workDir: workDir}
 }
 
-// WithMemory returns a copy of the Composer configured to load session
-// working memory from the given file path.
-func (c *Composer) WithMemory(path string) *Composer {
+/* WithMemory returns a copy that loads writable session working memory from path. */
+func (c *PromptCollector) WithMemory(path string) *PromptCollector {
 	clone := *c
 	clone.memoryPath = path
 	clone.memoryRO = false
 	return &clone
 }
 
-// WithReadOnlyMemory returns a copy of the Composer configured to inject
-// session working memory without telling the model to mutate it. It is used for
-// read-only delegated contexts whose tool registry lacks write_file/edit_file.
-func (c *Composer) WithReadOnlyMemory(path string) *Composer {
+/* WithReadOnlyMemory returns a copy that injects session working memory with read-only guidance. */
+func (c *PromptCollector) WithReadOnlyMemory(path string) *PromptCollector {
 	clone := *c
 	clone.memoryPath = path
 	clone.memoryRO = true
 	return &clone
 }
 
-// WithAutoMemory returns a copy of the Composer configured to inject the
-// cross-session persistent memory index and lifecycle guardrails from the given
-// store. Pass nil to disable the section.
-func (c *Composer) WithAutoMemory(store AutoMemoryStore) *Composer {
+/* WithAutoMemory returns a copy that injects persistent-memory values and caller-supplied guidance. */
+func (c *PromptCollector) WithAutoMemory(store AutoMemoryStore, guidance AutoMemoryGuidance) *PromptCollector {
 	clone := *c
 	clone.autoMemory = store
-	clone.autoMemoryRO = false
+	clone.autoMemoryGuidance = guidance
 	return &clone
 }
 
-// WithReadOnlyAutoMemory returns a copy of the Composer configured to inject the
-// cross-session persistent memory index with read-only guidance. This is used by
-// subagents, which may inspect memories but must not create/update/remove them.
-func (c *Composer) WithReadOnlyAutoMemory(store AutoMemoryStore) *Composer {
-	clone := *c
-	clone.autoMemory = store
-	clone.autoMemoryRO = true
-	return &clone
-}
-
-// WithInteractiveAsk returns a copy of the Composer that, when enabled, appends
-// guidance directing the model to use the ask_user_question tool for ambiguous
-// requests. It MUST be enabled only when that tool is actually registered (the
-// interactive TUI), so the model is never told to use a tool it lacks.
-func (c *Composer) WithInteractiveAsk(enabled bool) *Composer {
+/* WithInteractiveAsk returns a copy that may advertise the interactive question capability. */
+func (c *PromptCollector) WithInteractiveAsk(enabled bool) *PromptCollector {
 	clone := *c
 	clone.interactiveAsk = enabled
 	return &clone
 }
 
-// WithToolCapabilities returns a copy whose built-in tool guidance is rendered
-// only for the supplied model-visible tool names. An explicit empty slice
-// renders no tool guidance; composers that do not call this method retain the
-// existing full prompt behavior.
-func (c *Composer) WithToolCapabilities(names []string) *Composer {
+/* WithToolCapabilities returns a copy whose guidance is restricted to the supplied model-visible tools. */
+func (c *PromptCollector) WithToolCapabilities(names []string) *PromptCollector {
 	clone := *c
 	clone.toolCapabilities = make(map[string]struct{}, len(names))
 	for _, name := range names {
@@ -122,54 +91,77 @@ func (c *Composer) WithToolCapabilities(names []string) *Composer {
 	return &clone
 }
 
-// WithCollaborationMode returns a copy configured with mode-specific system
-// guidance. Unknown values normalize to Default.
-func (c *Composer) WithCollaborationMode(mode collaboration.Mode) *Composer {
+func (c *PromptCollector) withCollaborationMode(mode string) *PromptCollector {
 	clone := *c
-	clone.collaborationMode = collaboration.Normalize(mode)
+	clone.collaborationMode = normalizePromptCollaborationMode(mode)
 	return &clone
 }
 
-// Compose assembles the full system prompt string by loading AGENTS.md,
-// resolving $name skill references found in the user prompt, and appending
-// session working memory when available.
-func (c *Composer) Compose(userPrompt string) (string, error) {
+/* Collect resolves the complete fragment set from one frozen runtime request. */
+func (c *PromptCollector) Collect(_ context.Context, request ContextCollectionRequest) ([]prompt.Fragment, error) {
+	clone := *c
+	if request.WorkDir != "" {
+		clone.workDir = request.WorkDir
+	}
+	clone.collaborationMode = normalizePromptCollaborationMode(request.CollaborationMode)
+	if clone.toolCapabilities != nil {
+		clone = *clone.WithToolCapabilities(request.AllowedTools)
+	}
+	fragments, err := clone.composeFragments(request.Prompt)
+	if err != nil {
+		if request.Profile == ChildRun {
+			return nil, fmt.Errorf("compose child prompt: %w", err)
+		}
+		return nil, fmt.Errorf("组装系统提示词失败: %w", err)
+	}
+	return fragments, nil
+}
+
+func (c *PromptCollector) compose(userPrompt string) (string, error) {
+	parts, err := c.composeFragments(userPrompt)
+	if err != nil {
+		return "", err
+	}
+	return prompt.Render(parts), nil
+}
+
+func (c *PromptCollector) composeFragments(userPrompt string) ([]prompt.Fragment, error) {
 	basePrompt := baseSystemPrompt()
 	if c.toolCapabilities != nil {
 		basePrompt = capabilityScopedSystemPrompt(c.toolCapabilities)
 	}
-	parts := []renderprompt.Fragment{renderprompt.Text(basePrompt)}
-	if c.collaborationMode == collaboration.ModeFormalPlan {
-		parts = append(parts, renderprompt.Section("Formal Plan Collaboration Mode", formalPlanGuidance()))
+	parts := []prompt.Fragment{prompt.Text(basePrompt)}
+	if c.collaborationMode == formalPlanCollaborationMode {
+		parts = append(parts, prompt.Section("Formal Plan Collaboration Mode", formalPlanGuidance()))
 	}
 	if c.interactiveAsk && (c.toolCapabilities == nil || hasCapability(c.toolCapabilities, "ask_user_question")) {
-		parts = append(parts, renderprompt.Section("Asking the User", askGuidance()))
+		parts = append(parts, prompt.Section("Asking the User", askGuidance()))
 	}
 	memoryGuidance := memoryInstructions()
-	if c.collaborationMode == collaboration.ModeFormalPlan {
+	if c.collaborationMode == formalPlanCollaborationMode {
 		memoryGuidance = formalPlanMemoryInstructions()
 	} else if c.toolCapabilities != nil {
 		memoryGuidance = capabilityScopedTodoInstructions(c.toolCapabilities)
 	}
 	if memoryGuidance != "" {
-		parts = append(parts, renderprompt.Section("Session Plan and Todo Files", memoryGuidance))
+		parts = append(parts, prompt.Section("Session Plan and Todo Files", memoryGuidance))
 	}
 
 	if c.autoMemory != nil && (c.toolCapabilities == nil || hasCapability(c.toolCapabilities, "read_file")) {
-		parts = append(parts, renderprompt.Section("Persistent Memory", c.persistentMemoryBody()))
+		parts = append(parts, prompt.Section("Persistent Memory", c.persistentMemoryBody()))
 	}
 
 	agents, err := c.loadAgentsFile()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if agents != "" {
-		parts = append(parts, renderprompt.Section("Project Instructions from AGENTS.md", agents))
+		parts = append(parts, prompt.Section("Project Instructions from AGENTS.md", agents))
 	}
 
 	skills, err := c.loadMentionedSkills(userPrompt)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	for _, skill := range skills {
 		parts = append(parts, skillFragment(skill))
@@ -178,24 +170,32 @@ func (c *Composer) Compose(userPrompt string) (string, error) {
 	if c.memoryPath != "" {
 		memory, err := c.loadWorkingMemory()
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		parts = append(parts, renderprompt.Section("Session Working Memory", workingMemoryBody(
+		parts = append(parts, prompt.Section("Session Working Memory", workingMemoryBody(
 			memory,
 			c.relToWorkDir(c.memoryPath),
 			c.memoryRO,
-			c.collaborationMode == collaboration.ModeFormalPlan,
+			c.collaborationMode == formalPlanCollaborationMode,
 		)))
 	}
 
 	if c.skillListFn != nil && (c.toolCapabilities == nil || hasCapability(c.toolCapabilities, "skill")) {
 		if list := strings.TrimSpace(c.skillListFn()); list != "" {
-			parts = append(parts, renderprompt.Section("Available Skills (invoke via the `skill` tool)", list))
+			parts = append(parts, prompt.Section("Available Skills (invoke via the `skill` tool)", list))
 		}
 	}
 
-	return renderprompt.Render(parts), nil
+	return parts, nil
+}
 
+const formalPlanCollaborationMode = "formal_plan"
+
+func normalizePromptCollaborationMode(mode string) string {
+	if strings.TrimSpace(mode) == formalPlanCollaborationMode {
+		return formalPlanCollaborationMode
+	}
+	return ""
 }
 
 func capabilityScopedSystemPrompt(capabilities map[string]struct{}) string {
@@ -309,11 +309,10 @@ Rules:
 `)
 }
 
-// workingMemoryGuidance instructs the agent to keep the session-scoped
-// working_memory scratchpad current (REQ-015), explicitly distinct from the
-// cross-session Persistent Memory layer (REQ-016). relPath is the workDir-relative
-// path to the session file, surfaced so the agent's write_file/edit_file edits
-// land in the injected scratchpad rather than <workDir>/working_memory.md.
+/*
+workingMemoryGuidance distinguishes the session scratchpad from persistent memory
+and names its workspace-relative path for file-tool updates.
+*/
 func workingMemoryGuidance(relPath string) string {
 	var b strings.Builder
 	b.WriteString("working_memory.md is your session-scoped scratchpad. It perishes when this session ends and is separate from the cross-session Persistent Memory above — do not put durable cross-session knowledge here.\n")
@@ -346,8 +345,7 @@ func formalPlanWorkingMemoryGuidance(relPath string) string {
 	return b.String()
 }
 
-// workingMemoryBody combines the maintenance guidance with the file's current
-// contents.
+/* workingMemoryBody combines maintenance guidance with the current file contents. */
 func workingMemoryBody(current, relPath string, readOnly bool, formalPlan bool) string {
 	current = strings.TrimSpace(current)
 	if current == "" {
@@ -362,23 +360,21 @@ func workingMemoryBody(current, relPath string, readOnly bool, formalPlan bool) 
 	return workingMemoryGuidance(relPath) + "\n\n" + current
 }
 
-// persistentMemoryBody renders the cross-session memory section: the merged
-// two-tier index (REQ-006) followed by the shared lifecycle guidance and
-// guardrails (REQ-014). Directory paths are expressed relative to the working
-// directory so the existing file tools can address them.
-func (c *Composer) persistentMemoryBody() string {
+/* persistentMemoryBody renders the persistent index and injected lifecycle guidance. */
+func (c *PromptCollector) persistentMemoryBody() string {
 	index := strings.TrimSpace(c.autoMemory.MergedIndexString())
 	userRel := c.relToWorkDir(c.autoMemory.UserGlobalDir())
 	projectRel := c.relToWorkDir(c.autoMemory.ProjectDir())
 
-	guidance := automemory.MainMemoryGuidance(userRel, projectRel)
-	if c.collaborationMode == collaboration.ModeFormalPlan {
+	guidance := ""
+	if c.autoMemoryGuidance != nil {
+		guidance = c.autoMemoryGuidance(userRel, projectRel)
+	}
+	if c.collaborationMode == formalPlanCollaborationMode {
 		guidance = strings.TrimSpace(`
 Before approval, persistent memory is read-only. You may inspect relevant memories with read_file, but do not create, update, delete, or otherwise persist memory files.
 After approval, resume normal persistent memory maintenance once the lifecycle exposes write tools. The write instructions below apply only after approval.
 `) + "\n\n" + guidance
-	} else if c.autoMemoryRO {
-		guidance = automemory.ReadOnlyMemoryGuidance(userRel, projectRel)
 	}
 	if index == "" {
 		return "No memories saved yet.\n\n" + guidance
@@ -386,10 +382,8 @@ After approval, resume normal persistent memory maintenance once the lifecycle e
 	return "Current memory index (read a file for its full content when relevant):\n" + index + "\n\n" + guidance
 }
 
-// relToWorkDir expresses a path relative to the Composer's working directory.
-// The work directory is normalized first so callers can construct a Composer
-// with either an absolute or relative workDir and still get tool-usable paths.
-func (c *Composer) relToWorkDir(abs string) string {
+/* relToWorkDir selects a normalized tool-usable path relative to the collector workspace. */
+func (c *PromptCollector) relToWorkDir(abs string) string {
 	workDir := normalizeForRel(c.workDir)
 	targets := []string{normalizeForRel(abs)}
 	if resolved, err := filepath.EvalSymlinks(targets[0]); err == nil {
@@ -440,7 +434,7 @@ Core rules:
 `)
 }
 
-func (c *Composer) loadAgentsFile() (string, error) {
+func (c *PromptCollector) loadAgentsFile() (string, error) {
 	path := filepath.Join(c.workDir, "AGENTS.md")
 	content, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -455,7 +449,7 @@ func (c *Composer) loadAgentsFile() (string, error) {
 
 var skillRefPattern = regexp.MustCompile(`\$([a-zA-Z0-9][a-zA-Z0-9_-]*)`)
 
-func (c *Composer) loadMentionedSkills(userPrompt string) ([]loadedSkill, error) {
+func (c *PromptCollector) loadMentionedSkills(userPrompt string) ([]loadedSkill, error) {
 	names := mentionedSkillNames(userPrompt)
 	if len(names) == 0 {
 		return nil, nil
@@ -494,7 +488,7 @@ func mentionedSkillNames(input string) []string {
 	return names
 }
 
-func (c *Composer) loadSkill(name string) (loadedSkill, error) {
+func (c *PromptCollector) loadSkill(name string) (loadedSkill, error) {
 	path := filepath.Join(c.workDir, ".foxharness", "skills", name, "SKILL.md")
 
 	content, err := os.ReadFile(path)
@@ -555,7 +549,7 @@ func parseSkillMarkdown(requestedName, content string) loadedSkill {
 	return skill
 }
 
-func skillFragment(skill loadedSkill) renderprompt.Fragment {
+func skillFragment(skill loadedSkill) prompt.Fragment {
 	var b strings.Builder
 	if skill.RequestedName != "" && skill.RequestedName != skill.Name {
 		b.WriteString(fmt.Sprintf("Requested as: $%s\n\n", skill.RequestedName))
@@ -567,10 +561,10 @@ func skillFragment(skill loadedSkill) renderprompt.Fragment {
 	}
 	b.WriteString(skill.Content)
 
-	return renderprompt.Section("Loaded Skill: "+skill.Name, b.String())
+	return prompt.Section("Loaded Skill: "+skill.Name, b.String())
 }
 
-func (c *Composer) loadWorkingMemory() (string, error) {
+func (c *PromptCollector) loadWorkingMemory() (string, error) {
 	if c.memoryPath == "" {
 		return "", nil
 	}

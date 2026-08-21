@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -63,8 +64,8 @@ func TestSC004MutualExclusionSkipsExtraction(t *testing.T) {
 func TestSC005ExtractionLeavesSessionLogUnchanged(t *testing.T) {
 	workDir := t.TempDir()
 	home := t.TempDir()
-	manager := session.NewManagerWithHome(workDir, home)
-	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	sessionStore := session.NewFileStoreWithHome(workDir, home)
+	sess, err := sessionStore.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,23 +112,31 @@ func TestSC005ExtractionLeavesSessionLogUnchanged(t *testing.T) {
 func TestSC006WorkingMemoryIsSessionScopedAndNotInStore(t *testing.T) {
 	workDir := t.TempDir()
 	home := t.TempDir()
-	manager := session.NewManagerWithHome(workDir, home)
+	sessionStore := session.NewFileStoreWithHome(workDir, home)
 
-	s1, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	s1, err := sessionStore.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s2, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	s2, err := sessionStore.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s1.MemoryPath() == s2.MemoryPath() {
+	m1 := memory.NewSessionStore(workDir, s1.RootDir)
+	m2 := memory.NewSessionStore(workDir, s2.RootDir)
+	if err := m1.EnsureWorkingMemory(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m2.EnsureWorkingMemory(); err != nil {
+		t.Fatal(err)
+	}
+	if m1.WorkingMemoryPath() == m2.WorkingMemoryPath() {
 		t.Fatalf("SC-006: working_memory paths must differ per session")
 	}
 
 	store := NewStore(home, workDir)
 	for _, dir := range []string{store.UserGlobalDir(), store.ProjectDir()} {
-		if pathWithin(dir, s1.MemoryPath()) || pathWithin(dir, s2.MemoryPath()) {
+		if pathWithin(dir, m1.WorkingMemoryPath()) || pathWithin(dir, m2.WorkingMemoryPath()) {
 			t.Fatalf("SC-006: working_memory must not live inside the persistent memory dir %s", dir)
 		}
 	}

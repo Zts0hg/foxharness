@@ -17,19 +17,9 @@ type StoredRun struct {
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 }
 
-// Run is the deprecated compatibility name for StoredRun.
-// Deprecated: use StoredRun.
-type Run = StoredRun
-
 // StartRun persists a new stored run for the provided session.
 func (s *FileStore) StartRun(storedSession *StoredSession, prompt string) (*StoredRun, error) {
 	return startStoredRun(storedSession, prompt)
-}
-
-// StartRun is the deprecated compatibility wrapper for FileStore.StartRun.
-// Deprecated: use FileStore.StartRun for new code.
-func (s *StoredSession) StartRun(prompt string) (*StoredRun, error) {
-	return startStoredRun(s, prompt)
 }
 
 func startStoredRun(storedSession *StoredSession, prompt string) (*StoredRun, error) {
@@ -55,12 +45,6 @@ func startStoredRun(storedSession *StoredSession, prompt string) (*StoredRun, er
 // FinishRun marks a stored run as completed and rewrites its metadata.
 func (s *FileStore) FinishRun(run *StoredRun) error {
 	return finishStoredRun(run)
-}
-
-// Finish is the deprecated compatibility wrapper for FileStore.FinishRun.
-// Deprecated: use FileStore.FinishRun for new code.
-func (r *StoredRun) Finish() error {
-	return finishStoredRun(r)
 }
 
 func finishStoredRun(r *StoredRun) error {

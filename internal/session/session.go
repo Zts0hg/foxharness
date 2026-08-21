@@ -16,8 +16,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/Zts0hg/foxharness/internal/memory"
 )
 
 // Source identifies where a session request originated.
@@ -68,16 +66,6 @@ type StoredSession struct {
 	Agent string `json:"agent,omitempty"`
 	// CreatedAt is the timestamp when the session was created.
 	CreatedAt time.Time `json:"created_at"`
-}
-
-// Session is the deprecated compatibility name for StoredSession.
-// Deprecated: use StoredSession.
-type Session = StoredSession
-
-// MemoryPath returns the path to the working memory file for this session.
-// Deprecated: use memory.Store.WorkingMemoryPath for active behavior.
-func (s *StoredSession) MemoryPath() string {
-	return filepath.Join(s.RootDir, "working_memory.md")
 }
 
 // PlanPath returns the path to the session-local plan file.
@@ -146,7 +134,7 @@ func (s *StoredSession) TracePath() string {
 // FileStore persists stored sessions and runs under one project-scoped user
 // directory. It owns storage mechanics, not live runtime lifecycle policy.
 type FileStore struct {
-	// workDir is the absolute project working directory for this manager.
+	// workDir is the absolute project working directory for this file store.
 	workDir string
 	// homeDir is the user home directory that owns .foxharness.
 	homeDir string
@@ -155,10 +143,6 @@ type FileStore struct {
 	// baseDir is the root directory for all sessions in this project.
 	baseDir string
 }
-
-// Manager is the deprecated compatibility name for FileStore.
-// Deprecated: use FileStore.
-type Manager = FileStore
 
 // NewFileStore creates a FileStore under the current user's home directory.
 func NewFileStore(workDir string) *FileStore {
@@ -183,20 +167,7 @@ func NewFileStoreWithHome(workDir string, homeDir string) *FileStore {
 	}
 }
 
-// NewManager is the deprecated compatibility constructor for NewFileStore.
-// Deprecated: use NewFileStore.
-func NewManager(workDir string) *Manager {
-	return NewFileStore(workDir)
-}
-
-// NewManagerWithHome is the deprecated compatibility constructor for
-// NewFileStoreWithHome.
-// Deprecated: use NewFileStoreWithHome.
-func NewManagerWithHome(workDir string, homeDir string) *Manager {
-	return NewFileStoreWithHome(workDir, homeDir)
-}
-
-// HomeDir returns the user home directory that owns this manager's .foxharness
+// HomeDir returns the user home directory that owns this file store's .foxharness
 // storage root. Callers that need to place sibling state under the same home
 // (e.g. the persistent memory store) use this to stay aligned with session
 // storage.
@@ -232,10 +203,7 @@ type LookupOptions struct {
 	ChatID string
 }
 
-// Create creates a new session with the provided options.
-// A unique session ID is generated, and the session directory structure
-// is initialized with all required files.
-// Returns the created Session, or an error if initialization fails.
+/* Create persists a new stored session and initializes only persistence-owned files. */
 func (m *FileStore) Create(opts CreateOptions) (*StoredSession, error) {
 	id := newSessionID()
 	root := filepath.Join(m.baseDir, string(id))
@@ -266,9 +234,6 @@ func (m *FileStore) Create(opts CreateOptions) (*StoredSession, error) {
 	}
 	if err := writeJSON(filepath.Join(root, "session.json"), s); err != nil {
 		return nil, err
-	}
-	if err := memory.NewSessionStore(workDir, root).EnsureWorkingMemory(); err != nil {
-		return nil, fmt.Errorf("初始化 Working Memory 失败: %w", err)
 	}
 	if err := os.WriteFile(s.MessagesPath(), nil, 0644); err != nil {
 		return nil, fmt.Errorf("初始化消息日志失败: %w", err)

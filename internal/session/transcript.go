@@ -14,20 +14,9 @@ type TranscriptLog struct {
 	path string
 }
 
-// Transcript is the deprecated compatibility name for TranscriptLog.
-// Deprecated: use TranscriptLog.
-type Transcript = TranscriptLog
-
 // NewTranscriptLog creates a TranscriptLog for the provided stored session.
 func NewTranscriptLog(s *StoredSession) *TranscriptLog {
 	return &TranscriptLog{path: s.TranscriptPath()}
-}
-
-// NewTranscript is the deprecated compatibility constructor for
-// NewTranscriptLog.
-// Deprecated: use NewTranscriptLog.
-func NewTranscript(s *StoredSession) *Transcript {
-	return NewTranscriptLog(s)
 }
 
 // TranscriptEvent represents one persisted transcript artifact.
@@ -41,10 +30,6 @@ type TranscriptEvent struct {
 	// Payload contains the event-specific data.
 	Payload any `json:"payload"`
 }
-
-// Event is the deprecated compatibility name for TranscriptEvent.
-// Deprecated: use TranscriptEvent.
-type Event = TranscriptEvent
 
 // Append adds a new event to the transcript.
 // The event is serialized as JSON and appended to the transcript file.

@@ -4,7 +4,6 @@ package childruntime
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,12 +11,10 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/compaction"
-	legacycontext "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/modelinvoke"
 	"github.com/Zts0hg/foxharness/internal/permission"
-	"github.com/Zts0hg/foxharness/internal/prompt"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/registryexec"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
@@ -160,11 +157,11 @@ func (r *Runner) Run(ctx context.Context, request subagent.Request) (*subagent.R
 				return nil, nil, errors.New("child runtime compactor was not initialized")
 			}
 			workingMemory := memory.NewSessionStore(r.config.WorkDir, assembly.Session.RootDir).WorkingMemoryPath()
-			composer := legacycontext.NewComposer(r.config.WorkDir).
+			collector := foxruntime.NewPromptCollector(r.config.WorkDir).
 				WithReadOnlyMemory(workingMemory).
-				WithReadOnlyAutoMemory(automemory.NewStore(r.config.HomeDir, r.config.WorkDir)).
+				WithAutoMemory(automemory.NewStore(r.config.HomeDir, r.config.WorkDir), automemory.ReadOnlyMemoryGuidance).
 				WithToolCapabilities(assembly.AllowedTools)
-			return promptCollector{composer: composer}, runtimecompaction.New(compactor), nil
+			return collector, runtimecompaction.New(compactor), nil
 		},
 	}
 	harness, err := foxruntime.NewRuntimeHarness(store, dependencies)
@@ -221,22 +218,6 @@ func newCompactor(modelProvider provider.LLMProvider, model, sessionDir string) 
 	config.SessionDir = sessionDir
 	config.TranscriptPath = filepath.Join(sessionDir, "transcript.jsonl")
 	return compaction.NewCompactor(modelProvider, config)
-}
-
-type promptCollector struct {
-	composer promptComposer
-}
-
-type promptComposer interface {
-	Compose(string) (string, error)
-}
-
-func (c promptCollector) Collect(_ context.Context, request foxruntime.ContextCollectionRequest) ([]prompt.Fragment, error) {
-	text, err := c.composer.Compose(request.Prompt)
-	if err != nil {
-		return nil, fmt.Errorf("compose child prompt: %w", err)
-	}
-	return []prompt.Fragment{prompt.Text(text)}, nil
 }
 
 func (r *Runner) buildRegistry(store *session.FileStore, assembly foxruntime.RunAssembly, supervisor *tools.BashProcessSupervisor) (tools.Registry, error) {

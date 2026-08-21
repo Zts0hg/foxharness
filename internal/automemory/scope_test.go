@@ -82,7 +82,7 @@ func TestFilePathRejectsTraversalSlugs(t *testing.T) {
 // TestDirsNormalizesRelativeWorkDirToAbsolute ensures a relative workDir (e.g.
 // AGENTOPS_WORKDIR=.) derives the same project key as its absolute form, so
 // project memories are co-located with sessions regardless of how the caller
-// expressed the path. session.Manager absolutizes workDir before keying; the
+// expressed the path. session.FileStore absolutizes workDir before keying; the
 // automemory store must do the same.
 func TestDirsNormalizesRelativeWorkDirToAbsolute(t *testing.T) {
 	home := t.TempDir()
@@ -98,9 +98,9 @@ func TestDirsNormalizesRelativeWorkDirToAbsolute(t *testing.T) {
 		t.Fatalf("relative workDir project dir = %q, want %q (must match absolute)", got, want)
 	}
 
-	// And it must match what session.Manager (which absolutizes) would use.
-	manager := session.NewManagerWithHome(absWorkDir, home) // absWorkDir as the workDir arg
-	_ = manager
+	// And it must match what session.FileStore (which absolutizes) would use.
+	sessionStore := session.NewFileStoreWithHome(absWorkDir, home) // absWorkDir as the workDir arg
+	_ = sessionStore
 	// The session key derives from the absolute workDir; the automemory project
 	// dir must embed the same key.
 	wantKey := session.EncodeProjectPath(absWorkDir)

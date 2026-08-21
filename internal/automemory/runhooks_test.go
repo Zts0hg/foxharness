@@ -117,8 +117,8 @@ func TestPerRunHooksRecordCallbackRecordsSuccessOnly(t *testing.T) {
 func TestPerRunHooksFireFiltersMessagesToRunAndCallsProvider(t *testing.T) {
 	workDir := t.TempDir()
 	home := t.TempDir()
-	manager := session.NewManagerWithHome(workDir, home)
-	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	sessionStore := session.NewFileStoreWithHome(workDir, home)
+	sess, err := sessionStore.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestPerRunHooksFireFuncOverride(t *testing.T) {
 
 	var gotRunID string
 	var gotTracker *Tracker
-	hooks.FireFunc = func(s *session.Session, runID string, tr *Tracker) {
+	hooks.FireFunc = func(s *session.StoredSession, runID string, tr *Tracker) {
 		gotRunID = runID
 		gotTracker = tr
 	}
@@ -231,8 +231,8 @@ func (p *recordingProvider) Generate(ctx context.Context, messages []schema.Mess
 func TestPerRunHooksFireTrackedWaitsForCompletion(t *testing.T) {
 	workDir := t.TempDir()
 	home := t.TempDir()
-	manager := session.NewManagerWithHome(workDir, home)
-	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	sessionStore := session.NewFileStoreWithHome(workDir, home)
+	sess, err := sessionStore.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,8 +275,8 @@ func (ctxBlockingProvider) Generate(ctx context.Context, messages []schema.Messa
 func TestPerRunHooksFireTrackedBoundedByTimeout(t *testing.T) {
 	workDir := t.TempDir()
 	home := t.TempDir()
-	manager := session.NewManagerWithHome(workDir, home)
-	sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+	sessionStore := session.NewFileStoreWithHome(workDir, home)
+	sess, err := sessionStore.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
 	if err != nil {
 		t.Fatal(err)
 	}
