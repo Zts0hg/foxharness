@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/app"
 )
 
 func TestPlanReviewerDeliversExactPlanAndDecision(t *testing.T) {
@@ -15,20 +15,22 @@ func TestPlanReviewerDeliversExactPlanAndDecision(t *testing.T) {
 
 	go func() {
 		req := <-reviewer.Requests()
-		if req.planMarkdown != plan {
-			t.Errorf("request plan = %q, want exact %q", req.planMarkdown, plan)
+		if req.request.PlanMarkdown != plan {
+			t.Errorf("request plan = %q, want exact %q", req.request.PlanMarkdown, plan)
 		}
-		req.reply <- planReviewResult{review: tools.PlanReview{
-			Decision: tools.PlanContinuePlanning,
+		req.reply <- planReviewResult{response: app.PlanReviewResponse{
+			CorrelationID: req.request.Correlation.ID, Decision: app.PlanContinuePlanning,
 			Feedback: "add rollback steps",
 		}}
 	}()
 
-	got, err := reviewer.ReviewPlan(context.Background(), plan)
+	got, err := reviewer.ReviewPlan(context.Background(), app.PlanReviewRequest{
+		Correlation: app.InteractionCorrelation{ID: "plan-1"}, PlanMarkdown: plan,
+	})
 	if err != nil {
 		t.Fatalf("ReviewPlan() error = %v", err)
 	}
-	if got.Decision != tools.PlanContinuePlanning || got.Feedback != "add rollback steps" {
+	if got.Decision != app.PlanContinuePlanning || got.Feedback != "add rollback steps" || got.CorrelationID != "plan-1" {
 		t.Fatalf("ReviewPlan() = %#v", got)
 	}
 }
@@ -40,8 +42,8 @@ func TestPlanReviewerCancelledReply(t *testing.T) {
 		req.reply <- planReviewResult{cancelled: true}
 	}()
 
-	_, err := reviewer.ReviewPlan(context.Background(), "proposal")
-	if !errors.Is(err, tools.ErrPlanReviewCancelled) {
+	_, err := reviewer.ReviewPlan(context.Background(), app.PlanReviewRequest{Correlation: app.InteractionCorrelation{ID: "plan-1"}})
+	if !errors.Is(err, app.ErrPlanReviewCancelled) {
 		t.Fatalf("ReviewPlan() error = %v, want ErrPlanReviewCancelled", err)
 	}
 }
@@ -51,7 +53,7 @@ func TestPlanReviewerContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := reviewer.ReviewPlan(ctx, "proposal")
+		_, err := reviewer.ReviewPlan(ctx, app.PlanReviewRequest{})
 		done <- err
 	}()
 

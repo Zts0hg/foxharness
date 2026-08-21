@@ -147,13 +147,12 @@ func main() {
 		planReviewer := tui.NewPlanReviewer()
 		var legacyRunner *app.AgentRunner
 		bindings := app.LegacyTUIBindings{
-			Approver:      permissionBridge,
-			EventSink:     permissionBridge,
-			OnReviewRetry: permissionBridge.OnReviewRetry,
+			Permissions:        permissionBridge,
+			Questions:          asker,
+			PlanReview:         planReviewer,
+			InteractionNotices: permissionBridge,
 			Attach: func(runner *app.AgentRunner) {
 				legacyRunner = runner
-				runner.SetUserAsker(asker)
-				runner.SetPlanReviewer(planReviewer)
 			},
 			Start: func(ctx context.Context, application app.InteractiveApplication) error {
 				return tui.Run(ctx, application, tui.Config{

@@ -15,11 +15,12 @@ import (
 
 /* LegacyTUIBindings injects presentation-owned interaction bridges and startup into the temporary TUI facade. */
 type LegacyTUIBindings struct {
-	Approver      permission.UserApprover
-	EventSink     permission.EventSink
-	OnReviewRetry func(permission.Request, int)
-	Attach        func(*AgentRunner)
-	Start         func(context.Context, InteractiveApplication) error
+	Permissions        PermissionPort
+	Questions          QuestionPort
+	PlanReview         PlanReviewPort
+	InteractionNotices InteractionNoticeSink
+	Attach             func(*AgentRunner)
+	Start              func(context.Context, InteractiveApplication) error
 }
 
 // RunTUI starts an interactive terminal UI that keeps one session open across
@@ -32,6 +33,7 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 		permission.NormalizeMode(loadedSettings.TUI.Permissions.Mode),
 		loadedSettings.TUI.Permissions.FullAccessWarningRemembered,
 	)
+	permissionEvents := newLegacyPermissionEventSink(bindings.InteractionNotices)
 	var runner *AgentRunner
 	reviewer := permission.NewProviderReviewer(func() provider.LLMProvider {
 		if runner == nil {
@@ -41,15 +43,15 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 		defer runner.mu.Unlock()
 		return runner.llmProvider
 	})
-	reviewer.OnRetry = bindings.OnReviewRetry
+	reviewer.OnRetry = permissionEvents.OnReviewRetry
 	coordinator := permission.NewCoordinator(permission.Config{
 		State:     permissionState,
 		Workspace: cfg.WorkDir,
 		CWD:       cfg.WorkDir,
 		Source:    permission.SourceMain,
-		Approver:  bindings.Approver,
+		Approver:  newLegacyPermissionApprover(bindings.Permissions),
 		Reviewer:  reviewer,
-		Sink:      bindings.EventSink,
+		Sink:      permissionEvents,
 	})
 	defer coordinator.State().ClearGrants()
 	runnerCfg := agentRunnerConfigFromCLI(cfg)
@@ -61,6 +63,8 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 	if err != nil {
 		return err
 	}
+	runner.SetUserAsker(newLegacyQuestionAsker(bindings.Questions))
+	runner.SetPlanReviewer(newLegacyPlanReviewer(bindings.PlanReview))
 	restoreLogs := redirectTUILogs(runner.SessionDir())
 	defer restoreLogs()
 

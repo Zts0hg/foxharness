@@ -7,9 +7,7 @@ import (
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/app"
-	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/slash"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 func TestPFTUI017CancellationStopsPromptCommandPreparation(t *testing.T) {
@@ -73,8 +71,8 @@ func TestPFTUI017CancellationClosesRunInteractionBeforeContinuingQueue(t *testin
 	m.running = true
 	m.queuedPrompts = testQueuedPrompts("queued after cancellation")
 	m.askForm = newAskForm(askRequest{
-		questions: []tools.Question{{Prompt: "Continue?", Options: []tools.Option{{Label: "Yes"}, {Label: "No"}}}},
-		reply:     make(chan answerResult, 1),
+		request: app.QuestionRequest{Questions: []app.Question{{Prompt: "Continue?", Options: []app.QuestionOption{{Label: "Yes"}, {Label: "No"}}}}},
+		reply:   make(chan answerResult, 1),
 	})
 
 	m, queuedCmd := update(t, m, runFinishedMsg{err: context.Canceled})
@@ -94,7 +92,7 @@ func TestPFTUI017CancellationResolvesEveryPendingRunInteraction(t *testing.T) {
 		m := NewModel(context.Background(), newFakeRunner(), Config{})
 		reply := make(chan planReviewResult, 1)
 		m.running = true
-		m.planForm = newPlanReviewForm(planReviewRequest{planMarkdown: "# Plan", reply: reply})
+		m.planForm = newPlanReviewForm(planReviewRequest{request: app.PlanReviewRequest{PlanMarkdown: "# Plan"}, reply: reply})
 
 		m, _ = update(t, m, runFinishedMsg{err: context.Canceled})
 		if m.planForm != nil {
@@ -112,7 +110,7 @@ func TestPFTUI017CancellationResolvesEveryPendingRunInteraction(t *testing.T) {
 
 	t.Run("approval", func(t *testing.T) {
 		m := NewModel(context.Background(), newFakeRunner(), Config{})
-		reply := make(chan permission.UserDecision, 1)
+		reply := make(chan app.PermissionResponse, 1)
 		m.running = true
 		m.approvalForm = newApprovalForm(permissionRequest{reply: reply})
 
@@ -122,7 +120,7 @@ func TestPFTUI017CancellationResolvesEveryPendingRunInteraction(t *testing.T) {
 		}
 		select {
 		case decision := <-reply:
-			if decision.Kind != permission.UserDeny {
+			if decision.Decision != app.PermissionDeny {
 				t.Fatalf("approval cancellation = %#v, want deny", decision)
 			}
 		default:
@@ -137,8 +135,8 @@ func TestPFTUI005QueueWaitsWhileBlockingOverlayOwnsInput(t *testing.T) {
 	m.running = true
 	m.queuedPrompts = testQueuedPrompts("queued after interaction")
 	m.askForm = newAskForm(askRequest{
-		questions: []tools.Question{{Prompt: "Continue?", Options: []tools.Option{{Label: "Yes"}, {Label: "No"}}}},
-		reply:     make(chan answerResult, 1),
+		request: app.QuestionRequest{Questions: []app.Question{{Prompt: "Continue?", Options: []app.QuestionOption{{Label: "Yes"}, {Label: "No"}}}}},
+		reply:   make(chan answerResult, 1),
 	})
 
 	m, queuedCmd := update(t, m, runFinishedMsg{result: &app.RunOutcome{RunID: "run-with-overlay"}})

@@ -4,19 +4,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/permission"
-	"github.com/Zts0hg/foxharness/internal/toolpolicy"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestApprovalFormShowsHumanOnlyPolicyReason(t *testing.T) {
-	form := newApprovalForm(permissionRequest{approval: permission.ApprovalRequest{Request: permission.Request{
-		Action: "custom_tool", CWD: "/tmp/work", Risk: permission.RiskHigh,
-		Capabilities: toolpolicy.Assessment{
-			Behavior: toolpolicy.BehaviorHumanOnly,
-			Reason:   "registered tool does not declare permission capabilities",
-		},
-	}}})
+	form := newApprovalForm(permissionRequest{approval: app.PermissionRequest{
+		Action: "custom_tool", CWD: "/tmp/work", Risk: "high",
+		PolicyReason: "registered tool does not declare permission capabilities",
+	}})
 
 	view := form.view(100)
 	if !strings.Contains(view, "Policy") || !strings.Contains(view, "registered tool does not declare permission capabilities") {
@@ -25,12 +21,12 @@ func TestApprovalFormShowsHumanOnlyPolicyReason(t *testing.T) {
 }
 
 func TestApprovalFormUsesCodexLikeGroupedPrompt(t *testing.T) {
-	form := newApprovalForm(permissionRequest{approval: permission.ApprovalRequest{Request: permission.Request{
+	form := newApprovalForm(permissionRequest{approval: app.PermissionRequest{
 		ToolName: "bash",
 		Action:   "bash sed -n '60,240p' src/platform/wechat-ad-service.ts",
 		CWD:      "/tmp/work",
-		Risk:     permission.RiskMedium,
-	}}})
+		Risk:     "medium",
+	}})
 
 	view := stripANSI(form.view(100))
 	for _, want := range []string{
@@ -52,11 +48,11 @@ func TestApprovalFormUsesCodexLikeGroupedPrompt(t *testing.T) {
 }
 
 func TestApprovalFormWrapsExactActionInsteadOfTruncatingIt(t *testing.T) {
-	form := newApprovalForm(permissionRequest{approval: permission.ApprovalRequest{Request: permission.Request{
+	form := newApprovalForm(permissionRequest{approval: app.PermissionRequest{
 		Action: "skill inspect; planned commands=[touch first_marker && rm -rf final_marker]",
 		CWD:    "/tmp/work",
-		Risk:   permission.RiskCritical,
-	}}})
+		Risk:   "critical",
+	}})
 
 	view := form.view(36)
 	if !strings.Contains(view, "final_marker") {
@@ -65,16 +61,12 @@ func TestApprovalFormWrapsExactActionInsteadOfTruncatingIt(t *testing.T) {
 }
 
 func TestApprovalFormCollapsesUnavailableAutoReviewFailure(t *testing.T) {
-	form := newApprovalForm(permissionRequest{approval: permission.ApprovalRequest{
-		Request: permission.Request{
-			ToolName: "bash",
-			Action:   "bash date",
-			CWD:      "/tmp/work",
-			Risk:     permission.RiskMedium,
-		},
-		Review: &permission.ReviewResult{
-			Rationale: "Auto-review was unavailable after three attempts.",
-		},
+	form := newApprovalForm(permissionRequest{approval: app.PermissionRequest{
+		ToolName:        "bash",
+		Action:          "bash date",
+		CWD:             "/tmp/work",
+		Risk:            "medium",
+		ReviewerReason:  "Auto-review was unavailable after three attempts.",
 		ReviewerFailure: "unterminated review JSON object",
 	}})
 
@@ -88,11 +80,11 @@ func TestApprovalFormCollapsesUnavailableAutoReviewFailure(t *testing.T) {
 }
 
 func TestApprovalFormVerticalArrowsMoveBetweenOptions(t *testing.T) {
-	form := newApprovalForm(permissionRequest{approval: permission.ApprovalRequest{Request: permission.Request{
+	form := newApprovalForm(permissionRequest{approval: app.PermissionRequest{
 		Action: "bash date",
 		CWD:    "/tmp/work",
-		Risk:   permission.RiskLow,
-	}}})
+		Risk:   "low",
+	}})
 
 	form.update(tea.KeyMsg{Type: tea.KeyDown})
 	if form.action != 1 {

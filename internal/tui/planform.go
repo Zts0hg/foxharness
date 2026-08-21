@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -19,7 +19,7 @@ type planReviewForm struct {
 	lineCount    int
 	viewportRows int
 
-	review    tools.PlanReview
+	response  app.PlanReviewResponse
 	done      bool
 	cancelled bool
 }
@@ -72,10 +72,10 @@ func (f *planReviewForm) update(msg tea.KeyMsg) tea.Cmd {
 func (f *planReviewForm) submit() tea.Cmd {
 	f.done = true
 	if f.action == 0 {
-		f.review = tools.PlanReview{Decision: tools.PlanApproved}
+		f.response = app.PlanReviewResponse{CorrelationID: f.req.request.Correlation.ID, Decision: app.PlanApproved}
 	} else {
-		f.review = tools.PlanReview{
-			Decision: tools.PlanContinuePlanning,
+		f.response = app.PlanReviewResponse{
+			CorrelationID: f.req.request.Correlation.ID, Decision: app.PlanContinuePlanning,
 			Feedback: string(f.feedback),
 		}
 	}
@@ -107,7 +107,7 @@ func (f *planReviewForm) view(width, maxHeight int) string {
 		return ""
 	}
 	contentWidth := max(width-inputStyle.GetHorizontalFrameSize()-2, 20)
-	rendered := renderMarkdown(f.req.planMarkdown, contentWidth)
+	rendered := renderMarkdown(f.req.request.PlanMarkdown, contentWidth)
 	lines := strings.Split(rendered, "\n")
 	f.lineCount = len(lines)
 	f.viewportRows = max(maxHeight-8, 3)

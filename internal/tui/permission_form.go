@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Zts0hg/foxharness/internal/permission"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -31,17 +31,17 @@ const (
 type permissionForm struct {
 	stage    permissionFormStage
 	cursor   int
-	snapshot permission.Snapshot
+	snapshot app.PermissionState
 	result   permissionFormAction
 	done     bool
 }
 
-func newPermissionForm(snapshot permission.Snapshot) *permissionForm {
+func newPermissionForm(snapshot app.PermissionState) *permissionForm {
 	f := &permissionForm{snapshot: snapshot}
 	switch snapshot.SelectedMode {
-	case permission.ModeApprove:
+	case app.PermissionModeApprove:
 		f.cursor = 1
-	case permission.ModeFullAccess:
+	case app.PermissionModeFullAccess:
 		f.cursor = 2
 	default:
 		f.cursor = 0
@@ -49,7 +49,7 @@ func newPermissionForm(snapshot permission.Snapshot) *permissionForm {
 	return f
 }
 
-func newFullAccessWarningForm(snapshot permission.Snapshot) *permissionForm {
+func newFullAccessWarningForm(snapshot app.PermissionState) *permissionForm {
 	return &permissionForm{stage: permissionFormStageFullAccessWarning, snapshot: snapshot}
 }
 

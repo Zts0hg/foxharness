@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Zts0hg/foxharness/internal/permission"
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 )
@@ -1768,7 +1768,7 @@ func (m Model) renderKeybinds(width int) string {
 	if m.collaborationMode.PlanEnabled() {
 		plan = planModeStyle.Render("[ plan mode on ]")
 	}
-	if m.permissionSnapshot.EffectiveMode == permission.ModeFullAccess {
+	if m.permissionSnapshot.EffectiveMode == app.PermissionModeFullAccess {
 		plan += " " + planModeStyle.Render("[ full access ]")
 	}
 	hint := statusFaintStyle.Render("shift + tab to cycle")

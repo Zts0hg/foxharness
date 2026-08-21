@@ -4,12 +4,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/permission"
+	"github.com/Zts0hg/foxharness/internal/app"
 )
 
 func TestPopupActionOptionsRenderVertically(t *testing.T) {
 	t.Run("full access warning", func(t *testing.T) {
-		form := newFullAccessWarningForm(permission.Snapshot{})
+		form := newFullAccessWarningForm(app.PermissionState{})
 		view := stripANSI(form.view(100))
 		assertNotSameLine(t, view, "Confirm for this session", "Confirm and remember")
 		assertNotSameLine(t, view, "Confirm and remember", "Cancel")
@@ -17,13 +17,8 @@ func TestPopupActionOptionsRenderVertically(t *testing.T) {
 
 	t.Run("tool approval", func(t *testing.T) {
 		form := newApprovalForm(permissionRequest{
-			approval: permission.ApprovalRequest{
-				Request: permission.Request{
-					ToolName: "bash",
-					Action:   "bash git status --short",
-					CWD:      "/tmp/work",
-					Risk:     permission.RiskMedium,
-				},
+			approval: app.PermissionRequest{
+				ToolName: "bash", Action: "bash git status --short", CWD: "/tmp/work", Risk: "medium",
 			},
 		})
 		view := stripANSI(form.view(100))

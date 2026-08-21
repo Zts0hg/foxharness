@@ -46,7 +46,7 @@ func TestPFTUI006NewSessionClearsSessionStateAndPreservesProcessSettings(t *test
 	if m.collaborationMode != collaboration.ModeDefault || runner.CollaborationMode() != collaboration.ModeDefault {
 		t.Fatalf("new session retained Formal Plan: model=%q runner=%q", m.collaborationMode, runner.CollaborationMode())
 	}
-	if got := runner.PermissionSnapshot(); got.SelectedMode != permission.ModeApprove || got.SessionGrantCount != 0 {
+	if got := runner.PermissionState(); got.SelectedMode != app.PermissionModeApprove || got.SessionGrantCount != 0 {
 		t.Fatalf("new session permission snapshot = %#v, want selected approve and no grants", got)
 	}
 	if m.modelName != "fake-model" || m.effortValue != "high" || m.providerProtocol != "openai" || m.sidebarVisible {
@@ -73,25 +73,25 @@ func TestPFTUI012PermissionDecisionsAndFailedPersistenceAreAtomic(t *testing.T) 
 		name     string
 		action   int
 		feedback string
-		wantKind permission.UserDecisionKind
+		wantKind app.PermissionDecision
 	}{
-		{name: "allow once", action: 0, wantKind: permission.UserAllowOnce},
-		{name: "allow session", action: 1, wantKind: permission.UserAllowSession},
-		{name: "deny", action: 2, wantKind: permission.UserDeny},
-		{name: "deny with feedback", action: 3, feedback: "use read_file", wantKind: permission.UserDenyFeedback},
+		{name: "allow once", action: 0, wantKind: app.PermissionAllowOnce},
+		{name: "allow session", action: 1, wantKind: app.PermissionAllowSession},
+		{name: "deny", action: 2, wantKind: app.PermissionDeny},
+		{name: "deny with feedback", action: 3, feedback: "use read_file", wantKind: app.PermissionDenyWithFeedback},
 	}
 	for _, tc := range decisions {
 		t.Run(tc.name, func(t *testing.T) {
-			reply := make(chan permission.UserDecision, 1)
+			reply := make(chan app.PermissionResponse, 1)
 			m := NewModel(context.Background(), newFakeRunner(), Config{})
 			m.approvalForm = &approvalForm{req: permissionRequest{
-				approval: permission.ApprovalRequest{Request: permission.Request{Action: "bash mutate"}},
+				approval: app.PermissionRequest{Action: "bash mutate"},
 				reply:    reply,
 			}, action: tc.action, feedback: []rune(tc.feedback)}
 			next, _ := m.handleApprovalDone()
 			m = next.(Model)
 			decision := <-reply
-			if decision.Kind != tc.wantKind || decision.Feedback != tc.feedback || m.approvalForm != nil {
+			if decision.Decision != tc.wantKind || decision.Feedback != tc.feedback || m.approvalForm != nil {
 				t.Fatalf("decision = %#v overlay=%#v", decision, m.approvalForm)
 			}
 		})
@@ -102,11 +102,11 @@ func TestPFTUI012PermissionDecisionsAndFailedPersistenceAreAtomic(t *testing.T) 
 		t.Fatal(err)
 	}
 	runner := newFakeRunner()
-	before := runner.PermissionSnapshot()
+	before := runner.PermissionState()
 	m := NewModel(context.Background(), runner, Config{HomeDir: homeFile})
 	next, _ := m.handleSlashCommand("/permissions approve")
 	m = next.(Model)
-	after := runner.PermissionSnapshot()
+	after := runner.PermissionState()
 	if after != before || m.status != "Permissions save failed" || !entriesContainTitle(m.entries, "error", "permissions save failed") {
 		t.Fatalf("failed persistence partially activated mode: before=%#v after=%#v status=%q entries=%#v", before, after, m.status, m.entries)
 	}
@@ -122,8 +122,8 @@ func TestPFTUI012PermissionDecisionsAndFailedPersistenceAreAtomic(t *testing.T) 
 		t.Fatal("cancelled warning did not return completion command")
 	}
 	m, _ = update(t, m, cmd())
-	if m.permissionForm != nil || runner.PermissionSnapshot().EffectiveMode == permission.ModeFullAccess {
-		t.Fatalf("cancelled warning activated mode: cmd=%v form=%#v snapshot=%#v", cmd, m.permissionForm, runner.PermissionSnapshot())
+	if m.permissionForm != nil || runner.PermissionState().EffectiveMode == app.PermissionModeFullAccess {
+		t.Fatalf("cancelled warning activated mode: cmd=%v form=%#v snapshot=%#v", cmd, m.permissionForm, runner.PermissionState())
 	}
 }
 

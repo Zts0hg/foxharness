@@ -5,8 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/permission"
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -22,8 +21,8 @@ func TestUITUI005BlockingOverlaysOwnInputAndFitConstrainedTerminal(t *testing.T)
 			marker: "Choose?",
 			install: func(m *Model) {
 				m.askForm = newAskForm(askRequest{
-					questions: []tools.Question{{Prompt: "Choose?", Options: []tools.Option{{Label: "A"}, {Label: "B"}}}},
-					reply:     make(chan answerResult, 1),
+					request: app.QuestionRequest{Questions: []app.Question{{Prompt: "Choose?", Options: []app.QuestionOption{{Label: "A"}, {Label: "B"}}}}},
+					reply:   make(chan answerResult, 1),
 				})
 			},
 		},
@@ -31,7 +30,7 @@ func TestUITUI005BlockingOverlaysOwnInputAndFitConstrainedTerminal(t *testing.T)
 			name:   "plan review",
 			marker: "Plan",
 			install: func(m *Model) {
-				m.planForm = newPlanReviewForm(planReviewRequest{planMarkdown: "# Plan\n\n1. Inspect\n2. Change", reply: make(chan planReviewResult, 1)})
+				m.planForm = newPlanReviewForm(planReviewRequest{request: app.PlanReviewRequest{PlanMarkdown: "# Plan\n\n1. Inspect\n2. Change"}, reply: make(chan planReviewResult, 1)})
 			},
 		},
 		{
@@ -39,12 +38,12 @@ func TestUITUI005BlockingOverlaysOwnInputAndFitConstrainedTerminal(t *testing.T)
 			marker: "Approve tool call",
 			install: func(m *Model) {
 				m.approvalForm = newApprovalForm(permissionRequest{
-					approval: permission.ApprovalRequest{Request: permission.Request{ToolName: "bash", Action: "printf test", CWD: "/tmp/work"}},
-					reply:    make(chan permission.UserDecision, 1),
+					approval: app.PermissionRequest{ToolName: "bash", Action: "printf test", CWD: "/tmp/work"},
+					reply:    make(chan app.PermissionResponse, 1),
 				})
 			},
 		},
-		{name: "permission", marker: "Permissions", install: func(m *Model) { m.permissionForm = newPermissionForm(permission.Snapshot{}) }},
+		{name: "permission", marker: "Permissions", install: func(m *Model) { m.permissionForm = newPermissionForm(app.PermissionState{}) }},
 		{name: "effort", marker: "Effort", install: func(m *Model) { m.effortForm = newEffortForm("openai", []string{"low", "medium", "high"}, "medium") }},
 		{
 			name:   "rewind",

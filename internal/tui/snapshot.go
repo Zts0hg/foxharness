@@ -10,8 +10,6 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/effort"
-	"github.com/Zts0hg/foxharness/internal/permission"
-	"github.com/Zts0hg/foxharness/internal/tools"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -214,21 +212,18 @@ func buildSidebarScene() Model {
 
 func buildPermissionFormScene() Model {
 	m := baseSnapshotModel()
-	m.permissionForm = newPermissionForm(permission.NewState(permission.ModeAsk, false).Snapshot())
+	m.permissionForm = newPermissionForm(app.PermissionState{
+		SelectedMode: app.PermissionModeAsk, EffectiveMode: app.PermissionModeAsk,
+	})
 	return m
 }
 
 func buildApprovalFormScene() Model {
 	m := baseSnapshotModel()
 	m.approvalForm = newApprovalForm(permissionRequest{
-		approval: permission.ApprovalRequest{
-			Request: permission.Request{
-				ToolName:  "bash",
-				Action:    "run a shell command",
-				Arguments: `{"command":"rm -rf build/"}`,
-				CWD:       "/repo",
-				Risk:      permission.RiskHigh,
-			},
+		approval: app.PermissionRequest{
+			ToolName: "bash", Action: "run a shell command",
+			Arguments: `{"command":"rm -rf build/"}`, CWD: "/repo", Risk: "high",
 		},
 	})
 	return m
@@ -237,7 +232,7 @@ func buildApprovalFormScene() Model {
 func buildPlanFormScene() Model {
 	m := baseSnapshotModel()
 	m.planForm = newPlanReviewForm(planReviewRequest{
-		planMarkdown: "# Refactor sidebar layout\n\n1. Clamp long titles to panel width\n2. Add an overflow ellipsis\n3. Cover with a golden snapshot scene",
+		request: app.PlanReviewRequest{PlanMarkdown: "# Refactor sidebar layout\n\n1. Clamp long titles to panel width\n2. Add an overflow ellipsis\n3. Cover with a golden snapshot scene"},
 	})
 	return m
 }
@@ -245,16 +240,16 @@ func buildPlanFormScene() Model {
 func buildAskFormScene() Model {
 	m := baseSnapshotModel()
 	m.askForm = newAskForm(askRequest{
-		questions: []tools.Question{
+		request: app.QuestionRequest{Questions: []app.Question{
 			{
 				Header: "Approach",
 				Prompt: "Which rendering approach should we use for snapshots?",
-				Options: []tools.Option{
+				Options: []app.QuestionOption{
 					{Label: "freeze", Description: "Faithful terminal-screenshot PNG via charmbracelet/freeze"},
 					{Label: "pure-go", Description: "Self-built ANSI-to-PNG renderer, deterministic but approximate"},
 				},
 			},
-		},
+		}},
 	})
 	return m
 }
@@ -323,4 +318,16 @@ func (snapshotRunner) Rewind(context.Context, app.RewindCommand) app.RewindOutco
 }
 func (snapshotRunner) RestoreLatestInput(context.Context) (app.RestoreInputOutcome, error) {
 	return app.RestoreInputOutcome{}, nil
+}
+func (snapshotRunner) PermissionState() app.PermissionState {
+	return app.PermissionState{SelectedMode: app.PermissionModeAsk, EffectiveMode: app.PermissionModeAsk}
+}
+func (snapshotRunner) UpdatePermissionMode(context.Context, app.PermissionModeCommand) app.PermissionState {
+	return snapshotRunner{}.PermissionState()
+}
+func (snapshotRunner) ActivateFullAccess(context.Context, app.FullAccessCommand) app.PermissionState {
+	return app.PermissionState{SelectedMode: app.PermissionModeFullAccess, EffectiveMode: app.PermissionModeFullAccess}
+}
+func (snapshotRunner) ClearPermissionGrants(context.Context) app.PermissionGrantClearOutcome {
+	return app.PermissionGrantClearOutcome{State: snapshotRunner{}.PermissionState()}
 }

@@ -4,27 +4,27 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func planFormFor(plan string) *planReviewForm {
 	return newPlanReviewForm(planReviewRequest{
-		planMarkdown: plan,
-		reply:        make(chan planReviewResult, 1),
+		request: app.PlanReviewRequest{PlanMarkdown: plan},
+		reply:   make(chan planReviewResult, 1),
 	})
 }
 
 func TestPlanReviewFormRetainsExactSourceAndApproves(t *testing.T) {
 	plan := "\n# Exact proposal\n\nNo trailing newline"
 	form := planFormFor(plan)
-	if form.req.planMarkdown != plan {
-		t.Fatalf("form source = %q, want exact %q", form.req.planMarkdown, plan)
+	if form.req.request.PlanMarkdown != plan {
+		t.Fatalf("form source = %q, want exact %q", form.req.request.PlanMarkdown, plan)
 	}
 
 	cmd := form.update(key(tea.KeyEnter))
-	if !form.done || form.cancelled || form.review.Decision != tools.PlanApproved {
-		t.Fatalf("approve state: done=%v cancelled=%v review=%#v", form.done, form.cancelled, form.review)
+	if !form.done || form.cancelled || form.response.Decision != app.PlanApproved {
+		t.Fatalf("approve state: done=%v cancelled=%v response=%#v", form.done, form.cancelled, form.response)
 	}
 	if cmd == nil {
 		t.Fatal("approve command is nil")
@@ -43,8 +43,8 @@ func TestPlanReviewFormContinuesWithOptionalFeedback(t *testing.T) {
 	if !form.done || form.cancelled {
 		t.Fatalf("continue state: done=%v cancelled=%v", form.done, form.cancelled)
 	}
-	if form.review.Decision != tools.PlanContinuePlanning || form.review.Feedback != "Please split the migration." {
-		t.Fatalf("review = %#v", form.review)
+	if form.response.Decision != app.PlanContinuePlanning || form.response.Feedback != "Please split the migration." {
+		t.Fatalf("response = %#v", form.response)
 	}
 	if cmd == nil {
 		t.Fatal("continue command is nil")
@@ -53,8 +53,8 @@ func TestPlanReviewFormContinuesWithOptionalFeedback(t *testing.T) {
 	empty := planFormFor("# Proposal")
 	empty.update(key(tea.KeyTab))
 	empty.update(key(tea.KeyEnter))
-	if empty.review.Decision != tools.PlanContinuePlanning || empty.review.Feedback != "" {
-		t.Fatalf("empty-feedback review = %#v", empty.review)
+	if empty.response.Decision != app.PlanContinuePlanning || empty.response.Feedback != "" {
+		t.Fatalf("empty-feedback response = %#v", empty.response)
 	}
 }
 
@@ -79,8 +79,8 @@ func TestPlanReviewFormScrollsRenderedMarkdown(t *testing.T) {
 func TestPlanReviewFormCancelDoesNotApprove(t *testing.T) {
 	form := planFormFor("# Proposal")
 	cmd := form.update(key(tea.KeyEsc))
-	if !form.done || !form.cancelled || form.review.Decision != "" {
-		t.Fatalf("cancel state: done=%v cancelled=%v review=%#v", form.done, form.cancelled, form.review)
+	if !form.done || !form.cancelled || form.response.Decision != "" {
+		t.Fatalf("cancel state: done=%v cancelled=%v response=%#v", form.done, form.cancelled, form.response)
 	}
 	if cmd == nil {
 		t.Fatal("cancel command is nil")

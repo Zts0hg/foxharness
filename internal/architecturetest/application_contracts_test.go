@@ -18,7 +18,7 @@ func TestApplicationContractFilesHaveOnlyApprovedDependencies(t *testing.T) {
 	approved := map[string]map[string]bool{
 		"contracts.go":         {"context": true},
 		"interactive_state.go": {"context": true, "time": true},
-		"interactions.go":      {"context": true},
+		"interactions.go":      {"context": true, "errors": true},
 		"notifications.go":     {"context": true, "reflect": true, modulePath + "/internal/runtime": true},
 	}
 

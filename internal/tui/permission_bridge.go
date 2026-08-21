@@ -4,13 +4,13 @@ import (
 	"context"
 	"strconv"
 
-	"github.com/Zts0hg/foxharness/internal/permission"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 type permissionRequest struct {
-	approval permission.ApprovalRequest
-	reply    chan permission.UserDecision
+	approval app.PermissionRequest
+	reply    chan app.PermissionResponse
 }
 
 type permissionUserMsg struct {
@@ -47,47 +47,36 @@ func (b *PermissionBridge) SetEvents(events chan<- tea.Msg) {
 	}
 }
 
-// Approve implements permission.UserApprover.
-func (b *PermissionBridge) Approve(ctx context.Context, request permission.ApprovalRequest) (permission.UserDecision, error) {
-	req := permissionRequest{approval: request, reply: make(chan permission.UserDecision, 1)}
+// RequestPermission implements app.PermissionPort.
+func (b *PermissionBridge) RequestPermission(ctx context.Context, request app.PermissionRequest) (app.PermissionResponse, error) {
+	req := permissionRequest{approval: request, reply: make(chan app.PermissionResponse, 1)}
 	select {
 	case b.requests <- req:
 	case <-ctx.Done():
-		return permission.UserDecision{}, ctx.Err()
+		return app.PermissionResponse{}, ctx.Err()
 	}
 	select {
 	case decision := <-req.reply:
 		return decision, nil
 	case <-ctx.Done():
-		return permission.UserDecision{}, ctx.Err()
+		return app.PermissionResponse{}, ctx.Err()
 	}
 }
 
-// OnReviewStart reports transient automatic review progress.
-func (b *PermissionBridge) OnReviewStart(request permission.Request) {
-	b.send(permissionReviewMsg{status: "Reviewing permission: " + request.ToolName})
-}
-
-// OnReviewRetry reports transient reviewer retry progress.
-func (b *PermissionBridge) OnReviewRetry(request permission.Request, attempt int) {
-	b.send(permissionReviewMsg{status: "Retrying permission review (attempt " + strconv.Itoa(attempt) + ")"})
-}
-
-// OnAutoApproved reports an automatic approval. It leaves a persistent
-// transcript note (not just a transient status line) so the auto-reviewer's
-// decision stays visible, the way codex records approval decisions.
-func (b *PermissionBridge) OnAutoApproved(request permission.Request, result permission.ReviewResult) {
-	b.send(permissionAutoApprovedMsg{action: request.Action})
-}
-
-// OnEscalated reports escalation to user approval.
-func (b *PermissionBridge) OnEscalated(request permission.Request, result permission.ReviewResult) {
-	b.send(permissionReviewMsg{status: "Permission review escalated: " + request.ToolName})
-}
-
-// OnPermissionStateChanged asks the TUI to refresh visible permission state.
-func (b *PermissionBridge) OnPermissionStateChanged() {
-	b.send(permissionStateChangedMsg{})
+// NotifyInteraction maps application interaction progress onto the TUI loop.
+func (b *PermissionBridge) NotifyInteraction(_ context.Context, notice app.InteractionNotice) {
+	switch notice.Kind {
+	case app.InteractionPermissionReviewStarted:
+		b.send(permissionReviewMsg{status: "Reviewing permission: " + notice.ToolName})
+	case app.InteractionPermissionReviewRetry:
+		b.send(permissionReviewMsg{status: "Retrying permission review (attempt " + strconv.Itoa(notice.Attempt) + ")"})
+	case app.InteractionPermissionAutoApproved:
+		b.send(permissionAutoApprovedMsg{action: notice.Action})
+	case app.InteractionPermissionEscalated:
+		b.send(permissionReviewMsg{status: "Permission review escalated: " + notice.ToolName})
+	case app.InteractionPermissionStateChanged:
+		b.send(permissionStateChangedMsg{})
+	}
 }
 
 func (b *PermissionBridge) send(msg tea.Msg) {
@@ -99,6 +88,9 @@ func (b *PermissionBridge) send(msg tea.Msg) {
 	default:
 	}
 }
+
+var _ app.PermissionPort = (*PermissionBridge)(nil)
+var _ app.InteractionNoticeSink = (*PermissionBridge)(nil)
 
 func listenForPermissionRequest(ctx context.Context, bridge *PermissionBridge) tea.Cmd {
 	return func() tea.Msg {

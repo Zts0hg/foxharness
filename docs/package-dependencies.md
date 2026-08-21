@@ -196,6 +196,8 @@ Autodev now owns question, answer, core-reporter, and core-result values instead
 
 `M21` moves TUI run submission and live session presentation state behind `internal/app` commands, queries, outcomes, and notifications. The TUI no longer imports engine, persisted session records, checkpoint, or compaction types for conversation rendering, model/effort/collaboration changes, manual compaction, cancellation restore, or phased rewind. Rewind availability is an explicit application-state capability so `/status` preserves the previous checkpointer-dependent value. `cmd/fox` owns the temporary presentation startup bindings while `app.RunTUI` retains legacy runtime construction until M24; this prevents the reverse `app -> tui` dependency without prematurely moving permission and tool composition scheduled for M22-M23.
 
+`M22` moves permission decisions and state, user questions, Formal Plan review, and permission-review progress behind application-owned contracts. Permission, question, and plan interactions use separate synchronous request/response ports with session/run/tool-call correlation and context cancellation; low-noise review progress uses a distinct one-way `InteractionNoticeSink`, not the canonical runtime notification stream. TUI owns Bubble Tea messages, overlays, terminal input, and queued-prompt presentation, while the temporary app facade maps the legacy permission/tool contracts. Typed-nil ports normalize to absent capabilities. Production TUI no longer imports concrete permission or tool-policy packages; only its M23 tool/composition dependency remains.
+
 Codex validates this boundary by translating TUI actions into typed `AppCommand` values such as `UserTurn`, `Compact`, `ThreadRollback`, and turn-context overrides while core session code owns history and compaction. Claude Code's `QueryEngine` explicitly owns conversation query lifecycle and session state, and its remote adapter projects typed `SDKMessage` values into REPL presentation. Claude's local REPL still contains acknowledged pre-extraction session behavior, so Fox adopts the extracted headless ownership direction rather than copying that transitional coupling. The seven M21 state edges are removed, reducing the allowlist from 39 to 32 rows at SHA-256 `17f251eee28330f907e223716e68fc98b4d1767418b045937b865a76ef37da21`.
 
 ## Allowed Dependencies
@@ -308,7 +310,8 @@ The initial allowlist contains 68 exact edges. Its latest deletion boundaries ar
 | `M19` | Feishu concrete runtime subsystem imports. |
 | `M20` | AgentOps concrete runtime subsystem imports. |
 | `M21` | TUI concrete engine, persisted-session, compaction, and checkpoint state imports. |
-| `M22`-`M23` | Remaining TUI concrete permission and tool interaction imports. |
+| `M22` | TUI concrete permission and tool-policy interaction imports. |
+| `M23` | Remaining TUI concrete tool/composition import. |
 | `M24` | Old `internal/app` assembly and presentation imports. |
 | `M25` | Old engine concrete infrastructure imports. |
 

@@ -166,4 +166,5 @@ type InteractiveApplication interface {
 	RunUseCase
 	InteractiveStateReader
 	InteractiveStateController
+	InteractivePermissionController
 }

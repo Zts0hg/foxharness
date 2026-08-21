@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Zts0hg/foxharness/internal/permission"
-	"github.com/Zts0hg/foxharness/internal/toolpolicy"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -57,21 +56,21 @@ func (f *approvalForm) submit() tea.Cmd {
 	return func() tea.Msg { return approvalDoneMsg{} }
 }
 
-func (f *approvalForm) decision() permission.UserDecision {
+func (f *approvalForm) decision() app.PermissionDecision {
 	switch f.action {
 	case 0:
-		return permission.UserDecision{Kind: permission.UserAllowOnce}
+		return app.PermissionAllowOnce
 	case 1:
-		return permission.UserDecision{Kind: permission.UserAllowSession}
+		return app.PermissionAllowSession
 	case 3:
-		return permission.UserDecision{Kind: permission.UserDenyFeedback, Feedback: strings.TrimSpace(string(f.feedback))}
+		return app.PermissionDenyWithFeedback
 	default:
-		return permission.UserDecision{Kind: permission.UserDeny}
+		return app.PermissionDeny
 	}
 }
 
 func (f *approvalForm) view(width int) string {
-	req := f.req.approval.Request
+	req := f.req.approval
 	contentWidth := max(width-inputStyle.GetHorizontalFrameSize()-2, 20)
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("Approve tool call"))
@@ -83,14 +82,14 @@ func (f *approvalForm) view(width int) string {
 	f.writeField(&b, approvalActionTitle(req), approvalActionValue(req), contentWidth)
 	f.writeField(&b, "Directory", req.CWD, contentWidth)
 	f.writeField(&b, "Scope", "Exact invocation in this session", contentWidth)
-	if req.Capabilities.Behavior == toolpolicy.BehaviorHumanOnly && req.Capabilities.Reason != "" {
-		f.writeField(&b, "Policy", req.Capabilities.Reason, contentWidth)
+	if req.PolicyReason != "" {
+		f.writeField(&b, "Policy", req.PolicyReason, contentWidth)
 	}
-	if f.req.approval.Review != nil && !suppressReviewRationale(f.req.approval.Review.Rationale, f.req.approval.ReviewerFailure) {
-		f.writeField(&b, "Review", f.req.approval.Review.Rationale, contentWidth)
+	if req.ReviewerReason != "" && !suppressReviewRationale(req.ReviewerReason, req.ReviewerFailure) {
+		f.writeField(&b, "Review", req.ReviewerReason, contentWidth)
 	}
-	if f.req.approval.ReviewerFailure != "" {
-		f.writeField(&b, "Auto-review unavailable", f.req.approval.ReviewerFailure, contentWidth)
+	if req.ReviewerFailure != "" {
+		f.writeField(&b, "Auto-review unavailable", req.ReviewerFailure, contentWidth)
 	}
 	b.WriteString(mutedStyle.Render("Choose"))
 	b.WriteString("\n")
@@ -151,21 +150,21 @@ func (f *approvalForm) renderAction(index int, label, description string) string
 	return "  " + line
 }
 
-func approvalPrompt(req permission.Request) string {
+func approvalPrompt(req app.PermissionRequest) string {
 	if req.ToolName == "bash" {
 		return "Would you like to run the following command?"
 	}
 	return "Would you like to run the following tool call?"
 }
 
-func approvalActionTitle(req permission.Request) string {
+func approvalActionTitle(req app.PermissionRequest) string {
 	if req.ToolName == "bash" {
 		return "Command"
 	}
 	return "Action"
 }
 
-func approvalActionValue(req permission.Request) string {
+func approvalActionValue(req app.PermissionRequest) string {
 	action := strings.TrimSpace(req.Action)
 	if req.ToolName == "bash" {
 		action = strings.TrimPrefix(action, "bash ")

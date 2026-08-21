@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
-	"github.com/Zts0hg/foxharness/internal/tools"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -20,9 +20,9 @@ func TestModelRendersPlanReviewInlineAndReturnsRevision(t *testing.T) {
 
 	plan := "# Exact plan\n\n- first\n- second"
 	reply := make(chan planReviewResult, 1)
-	req := planReviewRequest{planMarkdown: plan, reply: reply}
+	req := planReviewRequest{request: app.PlanReviewRequest{PlanMarkdown: plan}, reply: reply}
 	m, _ = update(t, m, planReviewMsg{req: req})
-	if m.planForm == nil || m.planForm.req.planMarkdown != plan {
+	if m.planForm == nil || m.planForm.req.request.PlanMarkdown != plan {
 		t.Fatalf("plan form = %#v, want exact source", m.planForm)
 	}
 	view := stripANSI(m.View())
@@ -51,7 +51,7 @@ func TestModelRendersPlanReviewInlineAndReturnsRevision(t *testing.T) {
 	}
 	select {
 	case result := <-reply:
-		if result.cancelled || result.review.Decision != tools.PlanContinuePlanning || result.review.Feedback != "Add rollback verification." {
+		if result.cancelled || result.response.Decision != app.PlanContinuePlanning || result.response.Feedback != "Add rollback verification." {
 			t.Fatalf("revision result = %#v", result)
 		}
 	default:
@@ -67,7 +67,7 @@ func TestModelPlanApprovalResetsSelectedModeAndContinuesRun(t *testing.T) {
 	m.running = true
 
 	reply := make(chan planReviewResult, 1)
-	m, _ = update(t, m, planReviewMsg{req: planReviewRequest{planMarkdown: "# Plan", reply: reply}})
+	m, _ = update(t, m, planReviewMsg{req: planReviewRequest{request: app.PlanReviewRequest{PlanMarkdown: "# Plan"}, reply: reply}})
 	m, cmd := update(t, m, keyEnter())
 	m, _ = update(t, m, cmd())
 
@@ -79,7 +79,7 @@ func TestModelPlanApprovalResetsSelectedModeAndContinuesRun(t *testing.T) {
 	}
 	select {
 	case result := <-reply:
-		if result.review.Decision != tools.PlanApproved || result.cancelled {
+		if result.response.Decision != app.PlanApproved || result.cancelled {
 			t.Fatalf("approval result = %#v", result)
 		}
 	default:
@@ -92,7 +92,7 @@ func TestModelPlanReviewCancelKeepsFormalMode(t *testing.T) {
 	runner.collaborationMode = collaboration.ModeFormalPlan
 	m := NewModel(context.Background(), runner, Config{PlanReviewer: NewPlanReviewer()})
 	reply := make(chan planReviewResult, 1)
-	m, _ = update(t, m, planReviewMsg{req: planReviewRequest{planMarkdown: "# Plan", reply: reply}})
+	m, _ = update(t, m, planReviewMsg{req: planReviewRequest{request: app.PlanReviewRequest{PlanMarkdown: "# Plan"}, reply: reply}})
 	m, cmd := update(t, m, key(tea.KeyEsc))
 	m, _ = update(t, m, cmd())
 

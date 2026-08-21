@@ -322,33 +322,42 @@ func (r *fakeRunner) RestoreLatestInput(context.Context) (app.RestoreInputOutcom
 	return app.RestoreInputOutcome{Attempted: true, Restored: true, Conversation: snapshotConversation(r.history), Input: target.Content}, nil
 }
 
-func (r *fakeRunner) PermissionSnapshot() permission.Snapshot {
+func (r *fakeRunner) PermissionState() app.PermissionState {
 	if r.permissionState == nil {
 		r.permissionState = permission.NewState(permission.ModeAsk, false)
 	}
-	return r.permissionState.Snapshot()
-}
-
-func (r *fakeRunner) SetPermissionMode(mode permission.Mode, remembered bool) {
-	if r.permissionState == nil {
-		r.permissionState = permission.NewState(mode, remembered)
-		return
+	snapshot := r.permissionState.Snapshot()
+	return app.PermissionState{
+		SelectedMode: app.PermissionMode(snapshot.SelectedMode), EffectiveMode: app.PermissionMode(snapshot.EffectiveMode),
+		FullAccessRemembered:   snapshot.FullAccessRemembered,
+		FullAccessNeedsWarning: snapshot.FullAccessNeedsWarning,
+		SessionGrantCount:      snapshot.SessionGrantCount,
 	}
-	r.permissionState.SetSelected(mode, remembered)
 }
 
-func (r *fakeRunner) ActivateFullAccess(remember bool) {
+func (r *fakeRunner) UpdatePermissionMode(_ context.Context, command app.PermissionModeCommand) app.PermissionState {
+	if r.permissionState == nil {
+		r.permissionState = permission.NewState(permission.Mode(command.Mode), command.FullAccessWarningRemembered)
+		return r.PermissionState()
+	}
+	r.permissionState.SetSelected(permission.Mode(command.Mode), command.FullAccessWarningRemembered)
+	return r.PermissionState()
+}
+
+func (r *fakeRunner) ActivateFullAccess(_ context.Context, command app.FullAccessCommand) app.PermissionState {
 	if r.permissionState == nil {
 		r.permissionState = permission.NewState(permission.ModeAsk, false)
 	}
-	r.permissionState.ActivateFullAccess(remember)
+	r.permissionState.ActivateFullAccess(command.Remember)
+	return r.PermissionState()
 }
 
-func (r *fakeRunner) ClearPermissionGrants() int {
+func (r *fakeRunner) ClearPermissionGrants(context.Context) app.PermissionGrantClearOutcome {
 	if r.permissionState == nil {
-		return 0
+		return app.PermissionGrantClearOutcome{State: r.PermissionState()}
 	}
-	return r.permissionState.ClearGrants()
+	cleared := r.permissionState.ClearGrants()
+	return app.PermissionGrantClearOutcome{Cleared: cleared, State: r.PermissionState()}
 }
 
 type tuiCheckpointer struct {
@@ -853,11 +862,11 @@ func TestApprovalDecisionLeavesTranscriptNote(t *testing.T) {
 	cases := []struct {
 		name     string
 		action   int
-		wantKind permission.UserDecisionKind
+		wantKind app.PermissionDecision
 		wantText string
 	}{
-		{name: "allow_once", action: 0, wantKind: permission.UserAllowOnce, wantText: "You approved"},
-		{name: "deny", action: 2, wantKind: permission.UserDeny, wantText: "You did not approve"},
+		{name: "allow_once", action: 0, wantKind: app.PermissionAllowOnce, wantText: "You approved"},
+		{name: "deny", action: 2, wantKind: app.PermissionDeny, wantText: "You did not approve"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -866,10 +875,10 @@ func TestApprovalDecisionLeavesTranscriptNote(t *testing.T) {
 			m.width = 100
 			m.height = 40
 			m.entries = nil
-			reply := make(chan permission.UserDecision, 1)
+			reply := make(chan app.PermissionResponse, 1)
 			m.approvalForm = &approvalForm{
 				req: permissionRequest{
-					approval: permission.ApprovalRequest{Request: permission.Request{Action: "bash rm -f x"}},
+					approval: app.PermissionRequest{Action: "bash rm -f x"},
 					reply:    reply,
 				},
 				action: tc.action,
@@ -880,8 +889,8 @@ func TestApprovalDecisionLeavesTranscriptNote(t *testing.T) {
 
 			select {
 			case d := <-reply:
-				if d.Kind != tc.wantKind {
-					t.Fatalf("delivered decision = %v, want %v", d.Kind, tc.wantKind)
+				if d.Decision != tc.wantKind {
+					t.Fatalf("delivered decision = %v, want %v", d.Decision, tc.wantKind)
 				}
 			default:
 				t.Fatal("no decision delivered to the coordinator")
@@ -909,7 +918,9 @@ func TestOnAutoApprovedEmitsPersistentReviewNotice(t *testing.T) {
 	events := make(chan tea.Msg, 1)
 	bridge := NewPermissionBridge()
 	bridge.SetEvents(events)
-	bridge.OnAutoApproved(permission.Request{Action: "bash rm -f x"}, permission.ReviewResult{Risk: permission.RiskLow})
+	bridge.NotifyInteraction(context.Background(), app.InteractionNotice{
+		Kind: app.InteractionPermissionAutoApproved, Action: "bash rm -f x",
+	})
 
 	select {
 	case msg := <-events:
@@ -4221,12 +4232,12 @@ func TestApprovalFormWideViewKeepsSidebarVisible(t *testing.T) {
 	runner.sessionDir = sessionDir
 	runner.memoryIndex = "Popup layout should not cover the sidebar."
 	m := NewModel(context.Background(), runner, Config{})
-	m.approvalForm = newApprovalForm(permissionRequest{approval: permission.ApprovalRequest{Request: permission.Request{
+	m.approvalForm = newApprovalForm(permissionRequest{approval: app.PermissionRequest{
 		ToolName: "bash",
 		Action:   "bash git status --short",
 		CWD:      workDir,
-		Risk:     permission.RiskLow,
-	}}})
+		Risk:     "low",
+	}})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 
 	plainView := stripANSI(m.View())
@@ -5037,7 +5048,7 @@ func TestPermissionsCommandUpdatesModeAndPersistsSettings(t *testing.T) {
 
 	next, _ := m.handleSlashCommand("/permissions approve")
 	m = next.(Model)
-	if got := runner.PermissionSnapshot().EffectiveMode; got != permission.ModeApprove {
+	if got := runner.PermissionState().EffectiveMode; got != app.PermissionModeApprove {
 		t.Fatalf("EffectiveMode = %q, want approve", got)
 	}
 	loaded, err := settings.Load(home)
@@ -5062,8 +5073,8 @@ func TestPermissionsFullAccessCommandOpensWarningAndConfirmActivates(t *testing.
 	if m.permissionForm.stage != permissionFormStageFullAccessWarning {
 		t.Fatalf("stage = %v, want full access warning", m.permissionForm.stage)
 	}
-	snap := runner.PermissionSnapshot()
-	if snap.EffectiveMode == permission.ModeFullAccess {
+	snap := runner.PermissionState()
+	if snap.EffectiveMode == app.PermissionModeFullAccess {
 		t.Fatal("Full Access activated before confirmation")
 	}
 
@@ -5072,8 +5083,8 @@ func TestPermissionsFullAccessCommandOpensWarningAndConfirmActivates(t *testing.
 		t.Fatal("full access confirmation command is nil")
 	}
 	m, _ = update(t, m, cmd())
-	snap = runner.PermissionSnapshot()
-	if snap.SelectedMode != permission.ModeFullAccess || snap.EffectiveMode != permission.ModeFullAccess {
+	snap = runner.PermissionState()
+	if snap.SelectedMode != app.PermissionModeFullAccess || snap.EffectiveMode != app.PermissionModeFullAccess {
 		t.Fatalf("snapshot = %+v, want selected/effective full access", snap)
 	}
 	loaded, err := settings.Load(home)
@@ -5108,7 +5119,7 @@ func TestPermissionsSelectorApproveMode(t *testing.T) {
 	if m.permissionForm != nil {
 		t.Fatal("permission form still open")
 	}
-	if got := runner.PermissionSnapshot().EffectiveMode; got != permission.ModeApprove {
+	if got := runner.PermissionState().EffectiveMode; got != app.PermissionModeApprove {
 		t.Fatalf("EffectiveMode = %q, want approve", got)
 	}
 	loaded, err := settings.Load(home)
@@ -5136,7 +5147,7 @@ func TestPermissionsSelectorFullAccessShowsWarningBeforeActivation(t *testing.T)
 	if m.permissionForm == nil || m.permissionForm.stage != permissionFormStageFullAccessWarning {
 		t.Fatalf("permission form = %#v, want warning stage", m.permissionForm)
 	}
-	if got := runner.PermissionSnapshot().EffectiveMode; got == permission.ModeFullAccess {
+	if got := runner.PermissionState().EffectiveMode; got == app.PermissionModeFullAccess {
 		t.Fatal("Full Access activated before warning confirmation")
 	}
 
@@ -5145,7 +5156,7 @@ func TestPermissionsSelectorFullAccessShowsWarningBeforeActivation(t *testing.T)
 		t.Fatal("warning confirmation command is nil")
 	}
 	m, _ = update(t, m, cmd())
-	if got := runner.PermissionSnapshot().EffectiveMode; got != permission.ModeFullAccess {
+	if got := runner.PermissionState().EffectiveMode; got != app.PermissionModeFullAccess {
 		t.Fatalf("EffectiveMode = %q, want full access", got)
 	}
 }
@@ -5157,8 +5168,8 @@ func TestPermissionsFullAccessRememberActivatesAndPersistsAcknowledgement(t *tes
 
 	next, _ := m.handleSlashCommand("/permissions full-access remember")
 	m = next.(Model)
-	snap := runner.PermissionSnapshot()
-	if snap.EffectiveMode != permission.ModeFullAccess {
+	snap := runner.PermissionState()
+	if snap.EffectiveMode != app.PermissionModeFullAccess {
 		t.Fatalf("EffectiveMode = %q, want full access", snap.EffectiveMode)
 	}
 	if !snap.FullAccessRemembered {
@@ -5180,8 +5191,8 @@ func TestPermissionsFullAccessConfirmActivatesWithoutRemembering(t *testing.T) {
 
 	next, _ := m.handleSlashCommand("/permissions full-access confirm")
 	m = next.(Model)
-	snap := runner.PermissionSnapshot()
-	if snap.EffectiveMode != permission.ModeFullAccess {
+	snap := runner.PermissionState()
+	if snap.EffectiveMode != app.PermissionModeFullAccess {
 		t.Fatalf("EffectiveMode = %q, want full access", snap.EffectiveMode)
 	}
 	if snap.FullAccessRemembered {
@@ -5201,7 +5212,7 @@ func TestPermissionsStatuslineIsOptionalAndRenderable(t *testing.T) {
 		t.Fatal("permissions must not be in default statusline items")
 	}
 	runner := newFakeRunner()
-	runner.SetPermissionMode(permission.ModeApprove, false)
+	runner.UpdatePermissionMode(context.Background(), app.PermissionModeCommand{Mode: app.PermissionModeApprove})
 	m := NewModel(context.Background(), runner, Config{})
 	m.statuslineItems = []string{"permissions"}
 	if got := m.renderStatuslineItem("permissions"); !strings.Contains(got, "Approve for me") {
@@ -5211,7 +5222,7 @@ func TestPermissionsStatuslineIsOptionalAndRenderable(t *testing.T) {
 
 func TestFullAccessWarningRendersAtBottom(t *testing.T) {
 	runner := newFakeRunner()
-	runner.ActivateFullAccess(false)
+	runner.ActivateFullAccess(context.Background(), app.FullAccessCommand{})
 	m := NewModel(context.Background(), runner, Config{})
 	got := m.renderKeybinds(80)
 	if !strings.Contains(got, "[ full access ]") {

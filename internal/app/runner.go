@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -1572,24 +1573,36 @@ func (a *LegacyInteractiveApplication) RestoreLatestInput(context.Context) (Rest
 	}, nil
 }
 
-/* PermissionSnapshot forwards the temporary M22 permission presentation contract. */
-func (a *LegacyInteractiveApplication) PermissionSnapshot() permission.Snapshot {
-	return a.runner.PermissionSnapshot()
+/* PermissionState returns the application-owned interactive permission snapshot. */
+func (a *LegacyInteractiveApplication) PermissionState() PermissionState {
+	return mapLegacyPermissionState(a.runner.PermissionSnapshot())
 }
 
-/* SetPermissionMode forwards the temporary M22 permission presentation contract. */
-func (a *LegacyInteractiveApplication) SetPermissionMode(mode permission.Mode, remembered bool) {
-	a.runner.SetPermissionMode(mode, remembered)
+/* UpdatePermissionMode changes the selected permission mode and returns its resulting state. */
+func (a *LegacyInteractiveApplication) UpdatePermissionMode(_ context.Context, command PermissionModeCommand) PermissionState {
+	a.runner.SetPermissionMode(permission.Mode(command.Mode), command.FullAccessWarningRemembered)
+	return a.PermissionState()
 }
 
-/* ActivateFullAccess forwards the temporary M22 permission presentation contract. */
-func (a *LegacyInteractiveApplication) ActivateFullAccess(remember bool) {
-	a.runner.ActivateFullAccess(remember)
+/* ActivateFullAccess confirms Full Access and returns its resulting state. */
+func (a *LegacyInteractiveApplication) ActivateFullAccess(_ context.Context, command FullAccessCommand) PermissionState {
+	a.runner.ActivateFullAccess(command.Remember)
+	return a.PermissionState()
 }
 
-/* ClearPermissionGrants forwards the temporary M22 permission presentation contract. */
-func (a *LegacyInteractiveApplication) ClearPermissionGrants() int {
-	return a.runner.ClearPermissionGrants()
+/* ClearPermissionGrants removes session grants and returns the resulting state. */
+func (a *LegacyInteractiveApplication) ClearPermissionGrants(context.Context) PermissionGrantClearOutcome {
+	cleared := a.runner.ClearPermissionGrants()
+	return PermissionGrantClearOutcome{Cleared: cleared, State: a.PermissionState()}
+}
+
+func mapLegacyPermissionState(snapshot permission.Snapshot) PermissionState {
+	return PermissionState{
+		SelectedMode: PermissionMode(snapshot.SelectedMode), EffectiveMode: PermissionMode(snapshot.EffectiveMode),
+		FullAccessRemembered:   snapshot.FullAccessRemembered,
+		FullAccessNeedsWarning: snapshot.FullAccessNeedsWarning,
+		SessionGrantCount:      snapshot.SessionGrantCount,
+	}
 }
 
 func mapLegacyConversation(records []session.MessageRecord) []ConversationRecord {
@@ -1711,3 +1724,204 @@ func (r *legacyNotificationReporter) notify(ctx context.Context, notification No
 
 var _ InteractiveApplication = (*LegacyInteractiveApplication)(nil)
 var _ engine.MessageDeltaReporter = (*legacyNotificationReporter)(nil)
+
+type legacyQuestionAsker struct {
+	port QuestionPort
+}
+
+func newLegacyQuestionAsker(port QuestionPort) tools.UserAsker {
+	if isNilLegacyInteraction(port) {
+		return nil
+	}
+	return &legacyQuestionAsker{port: port}
+}
+
+func (a *legacyQuestionAsker) Ask(ctx context.Context, questions []tools.Question) ([]tools.Answer, error) {
+	correlation := legacyInteractionCorrelation(ctx, "question", "")
+	request := QuestionRequest{Correlation: correlation, Questions: make([]Question, len(questions))}
+	for index, question := range questions {
+		options := make([]QuestionOption, len(question.Options))
+		for optionIndex, option := range question.Options {
+			options[optionIndex] = QuestionOption{
+				Label: option.Label, Description: option.Description, Preview: option.Preview,
+			}
+		}
+		request.Questions[index] = Question{
+			ID: fmt.Sprintf("%s:question:%d", correlation.ID, index+1), Header: question.Header,
+			Prompt: question.Prompt, Options: options, MultiSelect: question.MultiSelect,
+		}
+	}
+	response, err := a.port.AskQuestions(ctx, request)
+	if err != nil {
+		if errors.Is(err, ErrQuestionCancelled) {
+			return nil, tools.ErrUserCancelled
+		}
+		return nil, err
+	}
+	if err := validateInteractionResponse(correlation.ID, response.CorrelationID); err != nil {
+		return nil, err
+	}
+	answers := make([]tools.Answer, len(response.Answers))
+	for index, answer := range response.Answers {
+		answers[index] = tools.Answer{
+			QuestionText: answer.QuestionText, Value: answer.Value, Preview: answer.Preview, Notes: answer.Notes,
+		}
+	}
+	return answers, nil
+}
+
+type legacyPlanReviewer struct {
+	port PlanReviewPort
+}
+
+func newLegacyPlanReviewer(port PlanReviewPort) tools.PlanReviewer {
+	if isNilLegacyInteraction(port) {
+		return nil
+	}
+	return &legacyPlanReviewer{port: port}
+}
+
+func (r *legacyPlanReviewer) ReviewPlan(ctx context.Context, planMarkdown string) (tools.PlanReview, error) {
+	correlation := legacyInteractionCorrelation(ctx, "plan", "")
+	response, err := r.port.ReviewPlan(ctx, PlanReviewRequest{Correlation: correlation, PlanMarkdown: planMarkdown})
+	if err != nil {
+		if errors.Is(err, ErrPlanReviewCancelled) {
+			return tools.PlanReview{}, tools.ErrPlanReviewCancelled
+		}
+		return tools.PlanReview{}, err
+	}
+	if err := validateInteractionResponse(correlation.ID, response.CorrelationID); err != nil {
+		return tools.PlanReview{}, err
+	}
+	return tools.PlanReview{Decision: tools.PlanReviewDecision(response.Decision), Feedback: response.Feedback}, nil
+}
+
+type legacyPermissionApprover struct {
+	port PermissionPort
+}
+
+func newLegacyPermissionApprover(port PermissionPort) permission.UserApprover {
+	if isNilLegacyInteraction(port) {
+		return nil
+	}
+	return &legacyPermissionApprover{port: port}
+}
+
+func (a *legacyPermissionApprover) Approve(ctx context.Context, approval permission.ApprovalRequest) (permission.UserDecision, error) {
+	request := approval.Request
+	correlation := legacyInteractionCorrelation(ctx, "permission", request.ToolCall.ID)
+	var effects []string
+	if request.Capabilities.Effects != nil {
+		effects = make([]string, len(request.Capabilities.Effects))
+		for index, effect := range request.Capabilities.Effects {
+			effects[index] = string(effect)
+		}
+	}
+	policyReason := ""
+	if string(request.Capabilities.Behavior) == "human_only" {
+		policyReason = request.Capabilities.Reason
+	}
+	reviewerReason := ""
+	if approval.Review != nil {
+		reviewerReason = approval.Review.Rationale
+	}
+	response, err := a.port.RequestPermission(ctx, PermissionRequest{
+		Correlation: correlation, ToolName: request.ToolName, Arguments: request.Arguments,
+		Action: request.Action, Risk: string(request.Risk), Source: string(request.Source),
+		CWD: request.CWD, Workspace: request.Workspace, Effects: effects,
+		PolicyReason: policyReason, ReviewerReason: reviewerReason, ReviewerFailure: approval.ReviewerFailure,
+	})
+	if err != nil {
+		return permission.UserDecision{}, err
+	}
+	if err := validateInteractionResponse(correlation.ID, response.CorrelationID); err != nil {
+		return permission.UserDecision{}, err
+	}
+	return permission.UserDecision{
+		Kind: permission.UserDecisionKind(response.Decision), Feedback: response.Feedback,
+	}, nil
+}
+
+var legacyInteractionSequence uint64
+
+func legacyInteractionCorrelation(ctx context.Context, kind string, fallbackToolCallID string) InteractionCorrelation {
+	invocation, _ := tools.InvocationContextFrom(ctx)
+	toolCallID := invocation.ToolCallID
+	if toolCallID == "" {
+		toolCallID = fallbackToolCallID
+	}
+	id := strings.Join([]string{kind, invocation.SessionID, invocation.RunID, toolCallID}, ":")
+	if invocation.SessionID == "" && invocation.RunID == "" && toolCallID == "" {
+		id = fmt.Sprintf("%s:%d", kind, atomic.AddUint64(&legacyInteractionSequence, 1))
+	}
+	return InteractionCorrelation{
+		ID: id, SessionID: invocation.SessionID, RunID: invocation.RunID, ToolCallID: toolCallID,
+	}
+}
+
+func validateInteractionResponse(requestID string, responseID string) error {
+	if responseID != requestID {
+		return fmt.Errorf("interaction response correlation %q does not match request %q", responseID, requestID)
+	}
+	return nil
+}
+
+type legacyPermissionEventSink struct {
+	sink InteractionNoticeSink
+}
+
+func newLegacyPermissionEventSink(sink InteractionNoticeSink) *legacyPermissionEventSink {
+	if isNilLegacyInteraction(sink) {
+		sink = nil
+	}
+	return &legacyPermissionEventSink{sink: sink}
+}
+
+func isNilLegacyInteraction(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
+
+func (s *legacyPermissionEventSink) OnReviewStart(request permission.Request) {
+	s.notify(request, InteractionPermissionReviewStarted, 0)
+}
+
+func (s *legacyPermissionEventSink) OnReviewRetry(request permission.Request, attempt int) {
+	s.notify(request, InteractionPermissionReviewRetry, attempt)
+}
+
+func (s *legacyPermissionEventSink) OnAutoApproved(request permission.Request, _ permission.ReviewResult) {
+	s.notify(request, InteractionPermissionAutoApproved, 0)
+}
+
+func (s *legacyPermissionEventSink) OnEscalated(request permission.Request, _ permission.ReviewResult) {
+	s.notify(request, InteractionPermissionEscalated, 0)
+}
+
+func (s *legacyPermissionEventSink) OnPermissionStateChanged() {
+	if s == nil || s.sink == nil {
+		return
+	}
+	s.sink.NotifyInteraction(context.Background(), InteractionNotice{Kind: InteractionPermissionStateChanged})
+}
+
+func (s *legacyPermissionEventSink) notify(request permission.Request, kind InteractionNoticeKind, attempt int) {
+	if s == nil || s.sink == nil {
+		return
+	}
+	s.sink.NotifyInteraction(context.Background(), InteractionNotice{
+		Kind: kind, Correlation: legacyInteractionCorrelation(context.Background(), "permission", request.ToolCall.ID),
+		ToolName: request.ToolName, Action: request.Action, Attempt: attempt,
+	})
+}
+
+var _ permission.EventSink = (*legacyPermissionEventSink)(nil)
+var _ permission.StateChangeSink = (*legacyPermissionEventSink)(nil)

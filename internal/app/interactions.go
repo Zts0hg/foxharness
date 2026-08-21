@@ -1,6 +1,91 @@
 package app
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+/* ErrQuestionCancelled identifies a user-dismissed question interaction. */
+var ErrQuestionCancelled = errors.New("user cancelled the question prompt")
+
+/* ErrPlanReviewCancelled identifies a user-dismissed Formal Plan review. */
+var ErrPlanReviewCancelled = errors.New("user cancelled plan review")
+
+/* PermissionMode identifies the selected interactive approval policy. */
+type PermissionMode string
+
+const (
+	/* PermissionModeAsk requires an explicit user decision for reviewed calls. */
+	PermissionModeAsk PermissionMode = "ask"
+	/* PermissionModeApprove permits automatic review before user escalation. */
+	PermissionModeApprove PermissionMode = "approve"
+	/* PermissionModeFullAccess runs calls without interactive approval. */
+	PermissionModeFullAccess PermissionMode = "full_access"
+)
+
+/* PermissionState is the presentation-safe snapshot of interactive permission state. */
+type PermissionState struct {
+	SelectedMode           PermissionMode
+	EffectiveMode          PermissionMode
+	FullAccessRemembered   bool
+	FullAccessNeedsWarning bool
+	SessionGrantCount      int
+}
+
+/* PermissionModeCommand selects the future interactive permission policy. */
+type PermissionModeCommand struct {
+	Mode                        PermissionMode
+	FullAccessWarningRemembered bool
+}
+
+/* FullAccessCommand confirms activation after the presentation warning. */
+type FullAccessCommand struct {
+	Remember bool
+}
+
+/* PermissionGrantClearOutcome reports the removed grants and resulting state. */
+type PermissionGrantClearOutcome struct {
+	Cleared int
+	State   PermissionState
+}
+
+/* InteractivePermissionController exposes typed permission state and mutations. */
+type InteractivePermissionController interface {
+	PermissionState() PermissionState
+	UpdatePermissionMode(context.Context, PermissionModeCommand) PermissionState
+	ActivateFullAccess(context.Context, FullAccessCommand) PermissionState
+	ClearPermissionGrants(context.Context) PermissionGrantClearOutcome
+}
+
+/* InteractionNoticeKind identifies non-blocking presentation progress around an interaction. */
+type InteractionNoticeKind string
+
+const (
+	/* InteractionPermissionReviewStarted marks automatic review startup. */
+	InteractionPermissionReviewStarted InteractionNoticeKind = "permission_review_started"
+	/* InteractionPermissionReviewRetry marks one automatic-review retry. */
+	InteractionPermissionReviewRetry InteractionNoticeKind = "permission_review_retry"
+	/* InteractionPermissionAutoApproved records an automatic approval. */
+	InteractionPermissionAutoApproved InteractionNoticeKind = "permission_auto_approved"
+	/* InteractionPermissionEscalated marks fallback to explicit user approval. */
+	InteractionPermissionEscalated InteractionNoticeKind = "permission_escalated"
+	/* InteractionPermissionStateChanged requests a visible permission-state refresh. */
+	InteractionPermissionStateChanged InteractionNoticeKind = "permission_state_changed"
+)
+
+/* InteractionNotice is one application-owned non-blocking interaction observation. */
+type InteractionNotice struct {
+	Kind        InteractionNoticeKind
+	Correlation InteractionCorrelation
+	ToolName    string
+	Action      string
+	Attempt     int
+}
+
+/* InteractionNoticeSink consumes non-blocking interaction progress separately from request/response ports. */
+type InteractionNoticeSink interface {
+	NotifyInteraction(context.Context, InteractionNotice)
+}
 
 /* InteractionCorrelation identifies one blocking request across runtime and presentation. */
 type InteractionCorrelation struct {
@@ -35,6 +120,7 @@ type PermissionRequest struct {
 	CWD             string
 	Workspace       string
 	Effects         []string
+	PolicyReason    string
 	ReviewerReason  string
 	ReviewerFailure string
 }

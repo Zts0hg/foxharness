@@ -15,7 +15,6 @@ import (
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/effort"
-	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/settings"
 	"github.com/Zts0hg/foxharness/internal/slash"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -40,13 +39,6 @@ const (
 // Runner is the application capability set required by the TUI.
 type Runner interface {
 	app.InteractiveApplication
-}
-
-type permissionRuntime interface {
-	PermissionSnapshot() permission.Snapshot
-	SetPermissionMode(mode permission.Mode, remembered bool)
-	ActivateFullAccess(remember bool)
-	ClearPermissionGrants() int
 }
 
 // Config controls the initial TUI presentation.
@@ -260,7 +252,7 @@ type Model struct {
 	permissionBridge   *PermissionBridge
 	approvalForm       *approvalForm
 	permissionForm     *permissionForm
-	permissionSnapshot permission.Snapshot
+	permissionSnapshot app.PermissionState
 	effortForm         *effortForm
 	effortValue        string
 
@@ -1168,10 +1160,10 @@ func (m Model) handlePlanReviewDone() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	result := planReviewResult{
-		review:    m.planForm.review,
+		response:  m.planForm.response,
 		cancelled: m.planForm.cancelled,
 	}
-	if result.review.Decision == tools.PlanApproved && !result.cancelled {
+	if result.response.Decision == app.PlanApproved && !result.cancelled {
 		m.collaborationMode = collaboration.ModeDefault
 		m.runner.UpdateCollaborationMode(m.ctx, app.CollaborationCommand{Mode: string(collaboration.ModeDefault)})
 		m.status = "Plan approved; continuing in Default mode"
@@ -1194,10 +1186,16 @@ func (m Model) handleApprovalDone() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	decision := m.approvalForm.decision()
-	action := m.approvalForm.req.approval.Request.Action
-	m.approvalForm.req.reply <- decision
+	request := m.approvalForm.req.approval
+	feedback := ""
+	if decision == app.PermissionDenyWithFeedback {
+		feedback = strings.TrimSpace(string(m.approvalForm.feedback))
+	}
+	m.approvalForm.req.reply <- app.PermissionResponse{
+		CorrelationID: request.Correlation.ID, Decision: decision, Feedback: feedback,
+	}
 	m.approvalForm = nil
-	m.appendUserDecisionEntry(decision, action)
+	m.appendUserDecisionEntry(decision, request.Action)
 	m.permissionSnapshot = permissionSnapshot(m.runner)
 	next, queued := m.startQueuedPromptIfReady()
 	if m.permissionBridge != nil {
@@ -2068,7 +2066,9 @@ func (m *Model) cancelRunInteractions() {
 	}
 	if m.approvalForm != nil {
 		select {
-		case m.approvalForm.req.reply <- permission.UserDecision{Kind: permission.UserDeny}:
+		case m.approvalForm.req.reply <- app.PermissionResponse{
+			CorrelationID: m.approvalForm.req.approval.Correlation.ID, Decision: app.PermissionDeny,
+		}:
 		default:
 		}
 		m.approvalForm = nil
@@ -2727,9 +2727,9 @@ func (m Model) handlePermissionsCommand(fields []string) (tea.Model, tea.Cmd) {
 	}
 	switch strings.ToLower(fields[1]) {
 	case "ask":
-		return m.setPermissionMode(permission.ModeAsk, false, false)
+		return m.setPermissionMode(app.PermissionModeAsk, false, false)
 	case "approve":
-		return m.setPermissionMode(permission.ModeApprove, false, false)
+		return m.setPermissionMode(app.PermissionModeApprove, false, false)
 	case "full-access", "full_access":
 		confirm := len(fields) > 2 && (fields[2] == "confirm" || fields[2] == "--confirm")
 		remember := len(fields) > 2 && (fields[2] == "remember" || fields[2] == "--remember")
@@ -2739,11 +2739,11 @@ func (m Model) handlePermissionsCommand(fields []string) (tea.Model, tea.Cmd) {
 			m.status = "Full Access warning"
 			return m, nil
 		}
-		return m.setPermissionMode(permission.ModeFullAccess, remember, confirm)
+		return m.setPermissionMode(app.PermissionModeFullAccess, remember, confirm)
 	case "clear":
-		count := clearPermissionGrants(m.runner)
-		m.permissionSnapshot = permissionSnapshot(m.runner)
-		m.appendCommandEntry("Permissions", fmt.Sprintf("Cleared %d session approval(s).", count))
+		outcome := m.runner.ClearPermissionGrants(m.ctx)
+		m.permissionSnapshot = outcome.State
+		m.appendCommandEntry("Permissions", fmt.Sprintf("Cleared %d session approval(s).", outcome.Cleared))
 		m.status = "Session approvals cleared"
 		return m, nil
 	default:
@@ -2761,17 +2761,17 @@ func (m Model) handlePermissionDone() (tea.Model, tea.Cmd) {
 	m.permissionForm = nil
 	switch result {
 	case permissionFormAsk:
-		return m.setPermissionMode(permission.ModeAsk, false, false)
+		return m.setPermissionMode(app.PermissionModeAsk, false, false)
 	case permissionFormApprove:
-		return m.setPermissionMode(permission.ModeApprove, false, false)
+		return m.setPermissionMode(app.PermissionModeApprove, false, false)
 	case permissionFormFullAccessSession:
-		return m.setPermissionMode(permission.ModeFullAccess, false, true)
+		return m.setPermissionMode(app.PermissionModeFullAccess, false, true)
 	case permissionFormFullAccessRemember:
-		return m.setPermissionMode(permission.ModeFullAccess, true, true)
+		return m.setPermissionMode(app.PermissionModeFullAccess, true, true)
 	case permissionFormClear:
-		count := clearPermissionGrants(m.runner)
-		m.permissionSnapshot = permissionSnapshot(m.runner)
-		m.appendCommandEntry("Permissions", fmt.Sprintf("Cleared %d session approval(s).", count))
+		outcome := m.runner.ClearPermissionGrants(m.ctx)
+		m.permissionSnapshot = outcome.State
+		m.appendCommandEntry("Permissions", fmt.Sprintf("Cleared %d session approval(s).", outcome.Cleared))
 		m.status = "Session approvals cleared"
 		return m, nil
 	default:
@@ -2806,13 +2806,13 @@ func (m Model) handleEffortDone() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) setPermissionMode(mode permission.Mode, remember bool, confirm bool) (tea.Model, tea.Cmd) {
+func (m Model) setPermissionMode(mode app.PermissionMode, remember bool, confirm bool) (tea.Model, tea.Cmd) {
 	previous := permissionSnapshot(m.runner)
 	nextSettings := settings.PermissionSettings{
 		Mode:                        string(mode),
 		FullAccessWarningRemembered: previous.FullAccessRemembered,
 	}
-	if mode == permission.ModeFullAccess && remember {
+	if mode == app.PermissionModeFullAccess && remember {
 		nextSettings.FullAccessWarningRemembered = true
 	}
 	if err := m.savePermissionSettings(nextSettings); err != nil {
@@ -2820,13 +2820,17 @@ func (m Model) setPermissionMode(mode permission.Mode, remember bool, confirm bo
 		m.status = "Permissions save failed"
 		return m, nil
 	}
-	if mode == permission.ModeFullAccess {
-		setPermissionMode(m.runner, permission.ModeFullAccess, nextSettings.FullAccessWarningRemembered)
+	if mode == app.PermissionModeFullAccess {
+		m.runner.UpdatePermissionMode(m.ctx, app.PermissionModeCommand{
+			Mode: mode, FullAccessWarningRemembered: nextSettings.FullAccessWarningRemembered,
+		})
 		if remember || confirm {
-			activateFullAccess(m.runner, remember)
+			m.runner.ActivateFullAccess(m.ctx, app.FullAccessCommand{Remember: remember})
 		}
 	} else {
-		setPermissionMode(m.runner, mode, nextSettings.FullAccessWarningRemembered)
+		m.runner.UpdatePermissionMode(m.ctx, app.PermissionModeCommand{
+			Mode: mode, FullAccessWarningRemembered: nextSettings.FullAccessWarningRemembered,
+		})
 	}
 	m.permissionSnapshot = permissionSnapshot(m.runner)
 	m.appendCommandEntry("Permissions", m.formatPermissionsHelp())
@@ -2845,41 +2849,19 @@ func (m Model) formatPermissionsHelp() string {
 	)
 }
 
-func permissionModeLabel(mode permission.Mode) string {
+func permissionModeLabel(mode app.PermissionMode) string {
 	switch mode {
-	case permission.ModeApprove:
+	case app.PermissionModeApprove:
 		return "Approve for me"
-	case permission.ModeFullAccess:
+	case app.PermissionModeFullAccess:
 		return "Full Access"
 	default:
 		return "Ask for approval"
 	}
 }
 
-func permissionSnapshot(runner Runner) permission.Snapshot {
-	if runtime, ok := runner.(permissionRuntime); ok {
-		return runtime.PermissionSnapshot()
-	}
-	return permission.NewState(permission.ModeAsk, false).Snapshot()
-}
-
-func setPermissionMode(runner Runner, mode permission.Mode, remembered bool) {
-	if runtime, ok := runner.(permissionRuntime); ok {
-		runtime.SetPermissionMode(mode, remembered)
-	}
-}
-
-func activateFullAccess(runner Runner, remember bool) {
-	if runtime, ok := runner.(permissionRuntime); ok {
-		runtime.ActivateFullAccess(remember)
-	}
-}
-
-func clearPermissionGrants(runner Runner) int {
-	if runtime, ok := runner.(permissionRuntime); ok {
-		return runtime.ClearPermissionGrants()
-	}
-	return 0
+func permissionSnapshot(runner Runner) app.PermissionState {
+	return runner.PermissionState()
 }
 
 func (m Model) savePermissionSettings(next settings.PermissionSettings) error {
@@ -3642,14 +3624,14 @@ func (m *Model) appendEntry(role, title, body string, isError bool) {
 // appendUserDecisionEntry records a user's approval-form decision as a
 // persistent transcript note, mirroring codex's "You approved …" / "You did not
 // approve …" cells so manual decisions stay visible after the prompt closes.
-func (m *Model) appendUserDecisionEntry(decision permission.UserDecision, action string) {
+func (m *Model) appendUserDecisionEntry(decision app.PermissionDecision, action string) {
 	var kind string
-	switch decision.Kind {
-	case permission.UserAllowOnce:
+	switch decision {
+	case app.PermissionAllowOnce:
 		kind = "you-once"
-	case permission.UserAllowSession:
+	case app.PermissionAllowSession:
 		kind = "you-session"
-	case permission.UserDeny, permission.UserDenyFeedback:
+	case app.PermissionDeny, app.PermissionDenyWithFeedback:
 		kind = "you-deny"
 	default:
 		return
