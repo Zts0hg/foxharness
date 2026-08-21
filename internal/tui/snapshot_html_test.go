@@ -4,8 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/schema"
-	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/app"
 )
 
 func TestRenderSceneHTMLIsSelfContained(t *testing.T) {
@@ -39,9 +38,9 @@ func TestRenderSceneHTMLUnknownSceneErrors(t *testing.T) {
 }
 
 func TestRenderSessionHTMLRendersRecords(t *testing.T) {
-	records := []session.MessageRecord{
-		{Seq: 1, Message: schema.Message{Role: schema.RoleUser, Content: "你好，渲染真实会话"}},
-		{Seq: 2, Message: schema.Message{Role: schema.RoleAssistant, Content: "Rendering the real session now."}},
+	records := []app.ConversationRecord{
+		{Sequence: 1, Role: "user", Content: "你好，渲染真实会话"},
+		{Sequence: 2, Role: "assistant", Content: "Rendering the real session now."},
 	}
 	html := RenderSessionHTML(records, 110, 32)
 	for _, want := range []string{

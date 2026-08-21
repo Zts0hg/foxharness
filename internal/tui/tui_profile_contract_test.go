@@ -8,9 +8,9 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -227,7 +227,7 @@ func TestPFTUI014RewindActionsAndFailuresPreserveCurrentOrdering(t *testing.T) {
 
 func TestPFTUI016ReporterMapsCanonicalFactsAndStreamingStateOnce(t *testing.T) {
 	events := make(chan tea.Msg, 12)
-	reporter := &channelReporter{events: events, operationID: 42}
+	reporter := &channelNotificationSink{events: events, operationID: 42}
 	ctx := context.Background()
 	reporter.OnRunStart(ctx, "session", "run")
 	reporter.OnThinking(ctx, 1)
@@ -238,7 +238,7 @@ func TestPFTUI016ReporterMapsCanonicalFactsAndStreamingStateOnce(t *testing.T) {
 	reporter.OnMessageDelta(ctx, "lo")
 	reporter.OnMessage(ctx, "hello")
 	reporter.OnRunError(ctx, "session", "run", errors.New("failed"))
-	reporter.OnRunComplete(ctx, engine.RunResult{RunID: "run"})
+	reporter.Notify(ctx, app.Notification{Kind: app.NotificationRunCompleted, SessionID: "session", RunID: "run"})
 
 	got := make([]runEventMsg, 0, 10)
 	for i := 0; i < 10; i++ {

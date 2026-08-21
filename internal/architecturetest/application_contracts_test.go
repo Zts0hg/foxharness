@@ -16,9 +16,10 @@ import (
 func TestApplicationContractFilesHaveOnlyApprovedDependencies(t *testing.T) {
 	root := moduleRoot(t)
 	approved := map[string]map[string]bool{
-		"contracts.go":     {"context": true},
-		"interactions.go":  {"context": true},
-		"notifications.go": {"context": true, "reflect": true, modulePath + "/internal/runtime": true},
+		"contracts.go":         {"context": true},
+		"interactive_state.go": {"context": true, "time": true},
+		"interactions.go":      {"context": true},
+		"notifications.go":     {"context": true, "reflect": true, modulePath + "/internal/runtime": true},
 	}
 
 	for name, allowed := range approved {
@@ -75,7 +76,8 @@ func TestApplicationLegacyFacadeFileSetIsClosedUntilM24(t *testing.T) {
 		"autodev.go:internal/autodev", "autodev.go:internal/engine", "autodev.go:internal/llmconfig",
 		"autodev.go:internal/permission", "autodev.go:internal/provider", "autodev.go:internal/schema",
 		"autodev.go:internal/slash", "autodev.go:internal/tools", "cli.go:internal/engine",
-		"cli.go:internal/llmconfig", "cli.go:internal/session", "plan_lifecycle.go:internal/middleware",
+		"cli.go:internal/llmconfig", "cli.go:internal/session",
+		"plan_lifecycle.go:internal/middleware",
 		"plan_lifecycle.go:internal/schema", "plan_lifecycle.go:internal/tools", "runner.go:internal/automemory",
 		"runner.go:internal/checkpoint", "runner.go:internal/collaboration", "runner.go:internal/compaction",
 		"runner.go:internal/context", "runner.go:internal/engine", "runner.go:internal/llmconfig",
@@ -83,7 +85,7 @@ func TestApplicationLegacyFacadeFileSetIsClosedUntilM24(t *testing.T) {
 		"runner.go:internal/provider", "runner.go:internal/schema", "runner.go:internal/session",
 		"runner.go:internal/slash", "runner.go:internal/slash/skilltool", "runner.go:internal/subagent",
 		"runner.go:internal/tools", "tui.go:internal/permission",
-		"tui.go:internal/provider", "tui.go:internal/settings", "tui.go:internal/tui",
+		"tui.go:internal/provider", "tui.go:internal/settings",
 	}
 	if fmt.Sprint(legacy) != fmt.Sprint(want) {
 		t.Fatalf("legacy application facade imports = %v, want exact closed M24 ceiling %v", legacy, want)

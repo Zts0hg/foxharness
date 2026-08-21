@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -34,28 +34,30 @@ type fakeRunner struct {
 	workDir    string
 	model      string
 
-	runs              []string
-	runModes          []collaboration.Mode
-	runErr            error
-	runErrs           []error
-	setModelErr       error
-	newErr            error
-	nextRunID         int
-	collaborationMode collaboration.Mode
-	contextUsage      string
-	history           []session.MessageRecord
-	historyErr        error
-	truncatedSeq      int64
-	truncateErr       error
-	restoreStateSeq   int64
-	restoreStateOK    bool
-	restoreStateErr   error
-	checkpointer      checkpoint.Checkpointer
-	compactResult     *compaction.CompactResult
-	compactErr        error
-	compactInstr      string
-	memoryIndex       string
-	permissionState   *permission.State
+	runs                []string
+	runModes            []collaboration.Mode
+	runErr              error
+	runErrs             []error
+	setModelErr         error
+	newErr              error
+	nextRunID           int
+	collaborationMode   collaboration.Mode
+	contextUsage        string
+	history             []session.MessageRecord
+	historyErr          error
+	truncatedSeq        int64
+	truncateErr         error
+	restoreStateSeq     int64
+	restoreStateOK      bool
+	restoreStateErr     error
+	checkpointer        checkpoint.Checkpointer
+	compactResult       *compaction.CompactResult
+	compactErr          error
+	compactInstr        string
+	memoryIndex         string
+	permissionState     *permission.State
+	supportRestrictions bool
+	supportEffort       bool
 }
 
 // AutoMemoryIndex satisfies the Runner interface for the test double; tests that
@@ -70,7 +72,7 @@ type projectHistoryRunner struct {
 	projectHistoryErr error
 }
 
-func (r *projectHistoryRunner) ProjectInputHistory(limit int) ([]string, error) {
+func (r *projectHistoryRunner) ProjectInputHistory(_ context.Context, limit int) ([]string, error) {
 	if r.projectHistoryErr != nil {
 		return nil, r.projectHistoryErr
 	}
@@ -80,46 +82,60 @@ func (r *projectHistoryRunner) ProjectInputHistory(limit int) ([]string, error) 
 	return append([]string(nil), r.projectHistory...), nil
 }
 
-func (r *fakeRunner) RunInCollaborationMode(ctx context.Context, prompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInCollaborationMode(ctx, prompt, mode, reporter)
-}
-
-func (r *fakeRunner) runInCollaborationMode(ctx context.Context, prompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
-	r.runs = append(r.runs, prompt)
-	r.runModes = append(r.runModes, collaboration.Normalize(mode))
+func (r *fakeRunner) Run(ctx context.Context, command app.RunCommand, sink app.NotificationSink) (*app.RunOutcome, error) {
+	r.runs = append(r.runs, command.Prompt)
+	r.runModes = append(r.runModes, collaboration.Normalize(collaboration.Mode(command.CollaborationMode)))
 	r.nextRunID++
 	runID := "run-1"
 	if r.nextRunID > 1 {
 		runID = "run-2"
 	}
-	reporter.OnRunStart(ctx, r.sessionID, runID)
-	reporter.OnThinking(ctx, 1)
-	reporter.OnToolCall(ctx, "bash", `{"command":"date"}`)
-	reporter.OnToolResult(ctx, "bash", "2026年 5月17日 星期日 14时17分46秒 CST", false)
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationRunStarted, SessionID: r.sessionID, RunID: runID})
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationThinking, SessionID: r.sessionID, RunID: runID, Turn: 1})
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationToolCall, SessionID: r.sessionID, RunID: runID, Name: "bash", Content: `{"command":"date"}`})
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationToolResult, SessionID: r.sessionID, RunID: runID, Name: "bash", Content: "2026年 5月17日 星期日 14时17分46秒 CST"})
 	runErr := r.runErr
 	if len(r.runErrs) > 0 {
 		runErr = r.runErrs[0]
 		r.runErrs = r.runErrs[1:]
 	}
 	if runErr != nil {
-		reporter.OnRunError(ctx, r.sessionID, runID, runErr)
+		notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationRunError, SessionID: r.sessionID, RunID: runID, Content: runErr.Error(), IsError: true})
 		return nil, runErr
 	}
-	reporter.OnMessage(ctx, "answer: "+prompt)
-	result := &engine.RunResult{
-		FinalMessage: "answer: " + prompt,
-		SessionID:    r.sessionID,
-		RunID:        runID,
-		MetricsPath:  "/tmp/metrics.jsonl",
-		TracePath:    "/tmp/trace.jsonl",
-	}
-	reporter.OnRunComplete(ctx, *result)
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationMessage, SessionID: r.sessionID, RunID: runID, Content: "answer: " + command.Prompt})
+	result := &app.RunOutcome{FinalMessage: "answer: " + command.Prompt, SessionID: r.sessionID, RunID: runID, MetricsPath: "/tmp/metrics.jsonl", TracePath: "/tmp/trace.jsonl"}
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationRunCompleted, SessionID: r.sessionID, RunID: runID})
 	return result, nil
 }
 
-func (r *fakeRunner) NewSession(ctx context.Context) (string, error) {
+func notifyFakeRun(ctx context.Context, sink app.NotificationSink, notification app.Notification) {
+	if sink != nil {
+		sink.Notify(ctx, notification)
+	}
+}
+
+func snapshotConversation(records []session.MessageRecord) []app.ConversationRecord {
+	result := make([]app.ConversationRecord, len(records))
+	for index, record := range records {
+		calls := make([]app.ConversationToolCall, len(record.Message.ToolCalls))
+		for callIndex, call := range record.Message.ToolCalls {
+			calls[callIndex] = app.ConversationToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments)}
+		}
+		result[index] = app.ConversationRecord{
+			Sequence: record.Seq, Time: record.Time, Role: string(record.Message.Role),
+			Content: record.Message.Content, DisplayContent: record.DisplayContent,
+			ToolCallID: record.Message.ToolCallID, ToolCalls: calls,
+			IsMeta: record.IsMeta, IsCompactSummary: record.IsCompactSummary,
+			IsVisibleInTranscriptOnly: record.IsVisibleInTranscriptOnly,
+		}
+	}
+	return result
+}
+
+func (r *fakeRunner) NewSession(context.Context, app.NewSessionCommand) (app.InteractiveSessionState, error) {
 	if r.newErr != nil {
-		return "", r.newErr
+		return app.InteractiveSessionState{}, r.newErr
 	}
 	r.sessionID = "sess-new"
 	r.sessionDir = "/tmp/sess-new"
@@ -127,48 +143,45 @@ func (r *fakeRunner) NewSession(ctx context.Context) (string, error) {
 	if r.permissionState != nil {
 		r.permissionState.ClearGrants()
 	}
-	return r.sessionID, nil
+	return r.State(), nil
 }
 
-func (r *fakeRunner) SessionID() string {
-	return r.sessionID
-}
-
-func (r *fakeRunner) SessionDir() string {
-	return r.sessionDir
-}
-
-func (r *fakeRunner) WorkDir() string {
-	return r.workDir
-}
-
-func (r *fakeRunner) Model() string {
-	return r.model
-}
-
-func (r *fakeRunner) SetModel(model string) error {
+func (r *fakeRunner) UpdateModel(_ context.Context, command app.ModelCommand) (app.InteractiveSessionState, error) {
 	if r.setModelErr != nil {
-		return r.setModelErr
+		return app.InteractiveSessionState{}, r.setModelErr
 	}
-	r.model = model
-	return nil
+	r.model = command.Model
+	return r.State(), nil
 }
 
-func (r *fakeRunner) ContextUsage() string {
+func (r *fakeRunner) State() app.InteractiveSessionState {
+	usage := r.contextUsage
 	if r.contextUsage == "" {
-		return "7%"
+		usage = "7%"
 	}
-	return r.contextUsage
+	return app.InteractiveSessionState{
+		Session: app.SessionInfo{ID: r.sessionID, Directory: r.sessionDir}, WorkDir: r.workDir,
+		Model: r.model, ContextUsage: usage, CollaborationMode: string(collaboration.Normalize(r.collaborationMode)),
+		AutoMemoryIndex: r.memoryIndex,
+		RewindAvailable: r.checkpointer != nil,
+		RunCapabilities: app.RunCapabilities{ToolRestrictions: r.supportRestrictions, EffortOverrides: r.supportEffort},
+	}
 }
 
-func (r *fakeRunner) MessageHistory() ([]session.MessageRecord, error) {
+func (r *fakeRunner) SessionID() string { return r.sessionID }
+func (r *fakeRunner) Model() string     { return r.model }
+func (r *fakeRunner) CollaborationMode() collaboration.Mode {
+	return collaboration.Normalize(r.collaborationMode)
+}
+
+func (r *fakeRunner) Conversation(context.Context) ([]app.ConversationRecord, error) {
 	if r.historyErr != nil {
 		return nil, r.historyErr
 	}
-	return append([]session.MessageRecord(nil), r.history...), nil
+	return snapshotConversation(r.history), nil
 }
 
-func (r *fakeRunner) TruncateMessageHistory(seq int64) error {
+func (r *fakeRunner) truncateMessageHistory(seq int64) error {
 	if r.truncateErr != nil {
 		return r.truncateErr
 	}
@@ -183,7 +196,7 @@ func (r *fakeRunner) TruncateMessageHistory(seq int64) error {
 	return nil
 }
 
-func (r *fakeRunner) RestoreSessionStateBeforeMessage(seq int64) (bool, error) {
+func (r *fakeRunner) restoreSessionStateBeforeMessage(seq int64) (bool, error) {
 	r.restoreStateSeq = seq
 	if r.restoreStateErr != nil {
 		return false, r.restoreStateErr
@@ -191,31 +204,122 @@ func (r *fakeRunner) RestoreSessionStateBeforeMessage(seq int64) (bool, error) {
 	return r.restoreStateOK, nil
 }
 
-func (r *fakeRunner) Checkpointer() checkpoint.Checkpointer {
-	return r.checkpointer
+func (r *fakeRunner) UpdateCollaborationMode(_ context.Context, command app.CollaborationCommand) app.InteractiveSessionState {
+	r.collaborationMode = collaboration.Normalize(collaboration.Mode(command.Mode))
+	return r.State()
 }
 
-func (r *fakeRunner) CollaborationMode() collaboration.Mode {
-	return collaboration.Normalize(r.collaborationMode)
+func (r *fakeRunner) UpdateEffort(context.Context, app.EffortCommand) app.InteractiveSessionState {
+	return r.State()
 }
 
-func (r *fakeRunner) SetCollaborationMode(mode collaboration.Mode) {
-	r.collaborationMode = collaboration.Normalize(mode)
-}
-
-func (r *fakeRunner) CompactNow(ctx context.Context, customInstructions string) (*compaction.CompactResult, error) {
-	r.compactInstr = customInstructions
+func (r *fakeRunner) Compact(_ context.Context, command app.CompactCommand) (app.CompactOutcome, error) {
+	r.compactInstr = command.Instructions
 	if r.compactErr != nil {
-		return nil, r.compactErr
+		return app.CompactOutcome{}, r.compactErr
 	}
 	if r.compactResult != nil {
-		return r.compactResult, nil
+		return app.CompactOutcome{PreTokens: r.compactResult.PreTokens, PostTokens: r.compactResult.PostTokens, MessagesSummarized: r.compactResult.MessagesSummarized}, nil
 	}
-	return &compaction.CompactResult{
+	return app.CompactOutcome{
 		PreTokens:          1000,
 		PostTokens:         200,
 		MessagesSummarized: 15,
 	}, nil
+}
+
+func (r *fakeRunner) ProjectInputHistory(context.Context, int) ([]string, error) {
+	return inputHistoryFromMessageHistory(snapshotConversation(r.history)), nil
+}
+
+func (r *fakeRunner) RewindTargets(context.Context) ([]app.RewindTarget, error) {
+	if r.historyErr != nil {
+		return nil, r.historyErr
+	}
+	messages := checkpoint.SelectableMessages(r.history)
+	targets := make([]app.RewindTarget, len(messages))
+	for index, message := range messages {
+		target := app.RewindTarget{Sequence: message.Seq, Content: message.Content, Timestamp: message.Timestamp}
+		if r.checkpointer != nil {
+			stats, err := r.checkpointer.GetDiffStats(strconv.FormatInt(message.Seq, 10))
+			if err != nil {
+				target.DiffError = err.Error()
+			} else if stats != nil {
+				target.Diff = app.RewindDiff{FilesChanged: stats.FilesChanged, Insertions: stats.Insertions, Deletions: stats.Deletions, ChangedFiles: append([]string(nil), stats.ChangedFiles...)}
+			}
+		}
+		targets[index] = target
+	}
+	return targets, nil
+}
+
+func (r *fakeRunner) Rewind(_ context.Context, command app.RewindCommand) app.RewindOutcome {
+	outcome := app.RewindOutcome{}
+	if r.historyErr != nil {
+		outcome.Error = r.historyErr.Error()
+		return outcome
+	}
+	content := ""
+	for _, record := range r.history {
+		if record.Seq == command.Sequence {
+			content = strings.TrimSpace(record.HumanContent())
+			break
+		}
+	}
+	if command.Action == app.RewindBoth || command.Action == app.RewindCode {
+		if r.checkpointer != nil {
+			outcome.CodeAttempted = true
+			files, err := r.checkpointer.Rewind(strconv.FormatInt(command.Sequence, 10))
+			if err != nil {
+				outcome.CodeError = err.Error()
+				if command.Action == app.RewindCode {
+					return outcome
+				}
+			} else {
+				outcome.CodeFiles = files
+			}
+		}
+	}
+	if command.Action != app.RewindBoth && command.Action != app.RewindConversation {
+		return outcome
+	}
+	outcome.ConversationAttempted = true
+	if err := r.truncateMessageHistory(command.Sequence); err != nil {
+		outcome.ConversationError = err.Error()
+		return outcome
+	}
+	outcome.Conversation = snapshotConversation(r.history)
+	outcome.RestoredInput = content
+	outcome.SessionStateAttempted = true
+	restored, err := r.restoreSessionStateBeforeMessage(command.Sequence)
+	if err != nil {
+		outcome.SessionStateError = err.Error()
+		return outcome
+	}
+	outcome.SessionStateRestored = restored
+	return outcome
+}
+
+func (r *fakeRunner) RestoreLatestInput(context.Context) (app.RestoreInputOutcome, error) {
+	index := -1
+	var target checkpoint.SelectableMessage
+	for candidate := len(r.history) - 1; candidate >= 0; candidate-- {
+		messages := checkpoint.SelectableMessages(r.history[candidate : candidate+1])
+		if len(messages) == 0 {
+			continue
+		}
+		index = candidate
+		target = messages[0]
+		break
+	}
+	if index < 0 || !checkpoint.MessagesAfterAreOnlySynthetic(r.history, index) {
+		return app.RestoreInputOutcome{}, nil
+	}
+	outcome := app.RestoreInputOutcome{Attempted: true}
+	if err := r.truncateMessageHistory(target.Seq); err != nil {
+		return outcome, err
+	}
+	return app.RestoreInputOutcome{Attempted: true, Restored: true, Conversation: snapshotConversation(r.history), Input: target.Content}, nil
 }
 
 func (r *fakeRunner) PermissionSnapshot() permission.Snapshot {
@@ -1097,7 +1201,7 @@ func TestRunFinishedAppendsWorkedForSeparator(t *testing.T) {
 	m.running = true
 	m.runStartedAt = start
 
-	m, _ = update(t, m, runFinishedMsg{result: &engine.RunResult{RunID: "run-1"}})
+	m, _ = update(t, m, runFinishedMsg{result: &app.RunOutcome{RunID: "run-1"}})
 
 	if len(m.entries) != 1 {
 		t.Fatalf("entries len = %d, want worked-for separator: %#v", len(m.entries), m.entries)
@@ -1506,6 +1610,19 @@ func TestStatusCommandRendersGroupedOverview(t *testing.T) {
 	}
 }
 
+func TestStatusCommandReflectsRewindAvailability(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	if got := stripANSI(m.formatStatusOverview()); !regexp.MustCompile(`Rewind\s+disabled`).MatchString(got) {
+		t.Fatalf("status with no checkpointer did not disable rewind:\n%s", got)
+	}
+
+	runner.checkpointer = &tuiCheckpointer{}
+	if got := stripANSI(m.formatStatusOverview()); !regexp.MustCompile(`Rewind\s+enabled`).MatchString(got) {
+		t.Fatalf("status with checkpointer did not enable rewind:\n%s", got)
+	}
+}
+
 func TestStatusCommandReportsInlineProviderWithoutProfile(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{
@@ -1854,10 +1971,10 @@ func TestApplyThemeUpdatesOverlayStyles(t *testing.T) {
 		t.Fatalf("ask focused foreground = %q, want current accent highlight %q", got, cAccentHi)
 	}
 
-	view := selector.New([]checkpoint.SelectableMessage{{
-		Seq:     7,
-		Content: "restore this",
-	}}, &tuiCheckpointer{}).View()
+	view := selector.New([]app.RewindTarget{{
+		Sequence: 7,
+		Content:  "restore this",
+	}}).View()
 	wantTitle := lipgloss.NewStyle().Bold(true).Foreground(cAccentHi).Render("Rewind")
 	if !strings.Contains(view, wantTitle) {
 		t.Fatalf("selector title did not use current theme highlight %q:\n%s", cAccentHi, view)
@@ -2134,6 +2251,37 @@ func TestAutoRestoreOnCancel(t *testing.T) {
 	}
 	if got := string(m.input); got != "cancel me" {
 		t.Fatalf("input after auto restore = %q, want cancel me", got)
+	}
+}
+
+func TestAutoRestoreReportsFailureAfterSelectingCandidate(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "restore me"}),
+	}
+	runner.truncateErr = errors.New("history unavailable")
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = nil
+
+	m.tryAutoRestoreAfterCancel()
+
+	if !entriesContain(m.entries, "error", "history unavailable") {
+		t.Fatalf("auto restore failure was silent: %#v", m.entries)
+	}
+}
+
+func TestRewindReportsHistoryFailureAfterSelection(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(2, "run-1", schema.Message{Role: schema.RoleUser, Content: "restore me"}),
+	}
+	m := NewModel(context.Background(), runner, Config{})
+	runner.historyErr = errors.New("history unavailable")
+
+	m, _ = update(t, m, selector.ResultMsg{Action: selector.ActionRestoreConversation, MessageID: "2"})
+
+	if m.status != "Rewind failed" || !entriesContain(m.entries, "error", "history unavailable") {
+		t.Fatalf("rewind history failure = status %q entries %#v", m.status, m.entries)
 	}
 }
 
@@ -3665,8 +3813,8 @@ func TestModelQueuedPromptKeepsCollaborationModeSelectedAtSubmission(t *testing.
 	// starts. The queued submission must still use the mode selected when Enter
 	// was pressed.
 	m.collaborationMode = collaboration.ModeDefault
-	runner.SetCollaborationMode(collaboration.ModeDefault)
-	m, queuedCmd := update(t, m, runFinishedMsg{result: &engine.RunResult{RunID: "active-run"}})
+	runner.UpdateCollaborationMode(context.Background(), app.CollaborationCommand{Mode: string(collaboration.ModeDefault)})
+	m, queuedCmd := update(t, m, runFinishedMsg{result: &app.RunOutcome{RunID: "active-run"}})
 	if queuedCmd == nil {
 		t.Fatal("active run completion did not start queued prompt")
 	}
@@ -3687,7 +3835,7 @@ func TestModelPromptKeepsCollaborationModeBeforeRunCommandStarts(t *testing.T) {
 		t.Fatal("submitting prompt did not return run command")
 	}
 
-	runner.SetCollaborationMode(collaboration.ModeDefault)
+	runner.UpdateCollaborationMode(context.Background(), app.CollaborationCommand{Mode: string(collaboration.ModeDefault)})
 	_ = cmd()
 	if len(runner.runModes) != 1 || runner.runModes[0] != collaboration.ModeFormalPlan {
 		t.Fatalf("run modes = %#v, want submitted prompt frozen to Formal Plan", runner.runModes)
@@ -4871,12 +5019,14 @@ func TestRunningTickInterval(t *testing.T) {
 
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{
-		sessionID:    "sess-1",
-		sessionDir:   "/tmp/sess-1",
-		workDir:      "/tmp/work",
-		model:        "fake-model",
-		contextUsage: "7%",
-		truncatedSeq: -1,
+		sessionID:           "sess-1",
+		sessionDir:          "/tmp/sess-1",
+		workDir:             "/tmp/work",
+		model:               "fake-model",
+		contextUsage:        "7%",
+		truncatedSeq:        -1,
+		supportRestrictions: true,
+		supportEffort:       true,
 	}
 }
 

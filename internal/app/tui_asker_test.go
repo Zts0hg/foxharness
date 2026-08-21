@@ -1,14 +1,23 @@
 package app
 
-import "testing"
+import (
+	"context"
+	"testing"
 
-func TestAttachInteractiveAskerInstallsAsker(t *testing.T) {
+	"github.com/Zts0hg/foxharness/internal/tools"
+)
+
+func TestLegacyTUIBindingCanInstallAsker(t *testing.T) {
 	runner := &AgentRunner{}
-	asker := attachInteractiveAsker(runner)
-	if asker == nil {
-		t.Fatal("attachInteractiveAsker returned nil")
-	}
+	asker := testInteractiveAsker{}
+	runner.SetUserAsker(asker)
 	if runner.userAsker == nil {
-		t.Fatal("attachInteractiveAsker did not install the asker on the runner")
+		t.Fatal("legacy TUI binding did not install the asker on the runner")
 	}
+}
+
+type testInteractiveAsker struct{}
+
+func (testInteractiveAsker) Ask(context.Context, []tools.Question) ([]tools.Answer, error) {
+	return nil, nil
 }

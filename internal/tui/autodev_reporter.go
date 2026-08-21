@@ -15,12 +15,12 @@ import (
 )
 
 // TUIReporter implements autodev.Reporter over the TUI event channel. The
-// embedded channelReporter handles the shared core-event methods so core-Agent
+// embedded channelNotificationSink handles the shared core-event methods so core-Agent
 // output renders exactly like a normal interactive run; the orchestration
 // events render as system entries. Sends never block past context
 // cancellation.
 type TUIReporter struct {
-	channelReporter
+	channelNotificationSink
 	remoteMu        sync.Mutex
 	deliveredRemote map[string]struct{}
 }
@@ -32,8 +32,8 @@ func NewTUIReporter(events chan<- tea.Msg) *TUIReporter {
 
 func newTUIReporterForOperation(events chan<- tea.Msg, operationID uint64) *TUIReporter {
 	return &TUIReporter{
-		channelReporter: channelReporter{events: events, operationID: operationID},
-		deliveredRemote: make(map[string]struct{}),
+		channelNotificationSink: channelNotificationSink{events: events, operationID: operationID},
+		deliveredRemote:         make(map[string]struct{}),
 	}
 }
 

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/slash"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -141,7 +141,7 @@ func TestPFTUI005QueueWaitsWhileBlockingOverlayOwnsInput(t *testing.T) {
 		reply:     make(chan answerResult, 1),
 	})
 
-	m, queuedCmd := update(t, m, runFinishedMsg{result: &engine.RunResult{RunID: "run-with-overlay"}})
+	m, queuedCmd := update(t, m, runFinishedMsg{result: &app.RunOutcome{RunID: "run-with-overlay"}})
 	if queuedCmd != nil {
 		t.Fatal("run completion dispatched queued work while the question overlay owned input")
 	}

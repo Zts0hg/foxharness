@@ -19,7 +19,6 @@
     {"from":"internal/app","to":"internal/slash/skilltool","remove_by":"M24"},
     {"from":"internal/app","to":"internal/subagent","remove_by":"M24"},
     {"from":"internal/app","to":"internal/tools","remove_by":"M24"},
-    {"from":"internal/app","to":"internal/tui","remove_by":"M24"},
     {"from":"internal/engine","to":"internal/checkpoint","remove_by":"M25"},
     {"from":"internal/engine","to":"internal/compaction","remove_by":"M25"},
     {"from":"internal/engine","to":"internal/metrics","remove_by":"M25"},
@@ -30,14 +29,8 @@
     {"from":"internal/engine","to":"internal/toolresult","remove_by":"M25"},
     {"from":"internal/engine","to":"internal/tools","remove_by":"M25"},
     {"from":"internal/engine","to":"internal/tracing","remove_by":"M25"},
-    {"from":"internal/tui","to":"internal/checkpoint","remove_by":"M23"},
-    {"from":"internal/tui","to":"internal/compaction","remove_by":"M23"},
-    {"from":"internal/tui","to":"internal/engine","remove_by":"M23"},
     {"from":"internal/tui","to":"internal/permission","remove_by":"M23"},
-    {"from":"internal/tui","to":"internal/schema","remove_by":"M23"},
-    {"from":"internal/tui","to":"internal/session","remove_by":"M23"},
     {"from":"internal/tui","to":"internal/toolpolicy","remove_by":"M23"},
-    {"from":"internal/tui","to":"internal/tools","remove_by":"M23"},
-    {"from":"internal/tui/selector","to":"internal/checkpoint","remove_by":"M21"}
+    {"from":"internal/tui","to":"internal/tools","remove_by":"M23"}
   ]
 }

@@ -50,7 +50,7 @@ func TestUITUI005BlockingOverlaysOwnInputAndFitConstrainedTerminal(t *testing.T)
 			name:   "rewind",
 			marker: "(current)",
 			install: func(m *Model) {
-				rewind := selector.New(nil, nil)
+				rewind := selector.New(nil)
 				m.rewindSelector = &rewind
 			},
 		},

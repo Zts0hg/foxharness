@@ -142,7 +142,32 @@ func main() {
 		autodevLauncher := func(ctx context.Context, backlogPath string, reporter autodev.Reporter) error {
 			return runAutodev(ctx, autodevConfigForTUILaunch(cfg, backlogPath), reporter)
 		}
-		if err := app.RunTUI(context.Background(), cfg, onSave, autodevLauncher); err != nil {
+		permissionBridge := tui.NewPermissionBridge()
+		asker := tui.NewAsker()
+		planReviewer := tui.NewPlanReviewer()
+		var legacyRunner *app.AgentRunner
+		bindings := app.LegacyTUIBindings{
+			Approver:      permissionBridge,
+			EventSink:     permissionBridge,
+			OnReviewRetry: permissionBridge.OnReviewRetry,
+			Attach: func(runner *app.AgentRunner) {
+				legacyRunner = runner
+				runner.SetUserAsker(asker)
+				runner.SetPlanReviewer(planReviewer)
+			},
+			Start: func(ctx context.Context, application app.InteractiveApplication) error {
+				return tui.Run(ctx, application, tui.Config{
+					Model: cfg.Model, InitialPrompt: cfg.Prompt, HomeDir: homeDir,
+					EffortOverride: cfg.EffortOverride, ProviderID: cfg.ResolvedLLM.ProviderID,
+					ProviderProfileID: cfg.ResolvedLLM.SettingsProviderID,
+					ProviderProtocol:  cfg.ResolvedLLM.Protocol,
+					Registry:          legacyRunner.SlashRegistry(), Executor: legacyRunner.SlashExecutor(),
+					Asker: asker, PlanReviewer: planReviewer, Permissions: permissionBridge,
+					Autodev: autodevLauncher,
+				})
+			},
+		}
+		if err := app.RunTUI(context.Background(), cfg, onSave, bindings); err != nil {
 			exitWithError(err)
 		}
 		return
@@ -265,7 +290,7 @@ func runRender(subArgs []string, stdout io.Writer) error {
 		if loadErr != nil {
 			return loadErr
 		}
-		html = tui.RenderSessionHTML(records, width, height)
+		html = tui.RenderSessionHTML(renderConversationRecords(records), width, height)
 		defaultBase = "session"
 	} else {
 		html, err = tui.RenderSceneHTML(sceneName, width, height)
@@ -282,6 +307,24 @@ func runRender(subArgs []string, stdout io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "wrote %s\n", outPath)
 	return nil
+}
+
+func renderConversationRecords(records []session.MessageRecord) []app.ConversationRecord {
+	result := make([]app.ConversationRecord, len(records))
+	for index, record := range records {
+		calls := make([]app.ConversationToolCall, len(record.Message.ToolCalls))
+		for callIndex, call := range record.Message.ToolCalls {
+			calls[callIndex] = app.ConversationToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments)}
+		}
+		result[index] = app.ConversationRecord{
+			Sequence: record.Seq, Time: record.Time, Role: string(record.Message.Role),
+			Content: record.Message.Content, DisplayContent: record.DisplayContent,
+			ToolCallID: record.Message.ToolCallID, ToolCalls: calls,
+			IsMeta: record.IsMeta, IsCompactSummary: record.IsCompactSummary,
+			IsVisibleInTranscriptOnly: record.IsVisibleInTranscriptOnly,
+		}
+	}
+	return result
 }
 
 // loadSessionRecords loads a session's model-visible message records for

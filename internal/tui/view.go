@@ -612,7 +612,8 @@ type sidebarLayout struct {
 func (m Model) sidebarLayout(width int, height int) sidebarLayout {
 	docs := m.sidebarDocuments
 	if len(docs) == 0 {
-		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir(), m.runner.AutoMemoryIndex())
+		state := m.runner.State()
+		docs = loadSidebarDocuments(state.WorkDir, state.Session.Directory, state.AutoMemoryIndex)
 	}
 	if len(docs) == 0 {
 		return sidebarLayout{}

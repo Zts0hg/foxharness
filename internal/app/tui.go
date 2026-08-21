@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -10,20 +11,27 @@ import (
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/settings"
-	"github.com/Zts0hg/foxharness/internal/tui"
 )
+
+/* LegacyTUIBindings injects presentation-owned interaction bridges and startup into the temporary TUI facade. */
+type LegacyTUIBindings struct {
+	Approver      permission.UserApprover
+	EventSink     permission.EventSink
+	OnReviewRetry func(permission.Request, int)
+	Attach        func(*AgentRunner)
+	Start         func(context.Context, InteractiveApplication) error
+}
 
 // RunTUI starts an interactive terminal UI that keeps one session open across
 // many user-submitted runs. The onModelChange callback is invoked whenever the
 // user switches models via the /model command; it may be nil.
-func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error, autodevLauncher tui.AutodevLauncher) error {
+func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error, bindings LegacyTUIBindings) error {
 	homeDir, _ := os.UserHomeDir()
 	loadedSettings, _ := settings.Load(homeDir)
 	permissionState := permission.NewState(
 		permission.NormalizeMode(loadedSettings.TUI.Permissions.Mode),
 		loadedSettings.TUI.Permissions.FullAccessWarningRemembered,
 	)
-	permissionBridge := tui.NewPermissionBridge()
 	var runner *AgentRunner
 	reviewer := permission.NewProviderReviewer(func() provider.LLMProvider {
 		if runner == nil {
@@ -33,15 +41,15 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 		defer runner.mu.Unlock()
 		return runner.llmProvider
 	})
-	reviewer.OnRetry = permissionBridge.OnReviewRetry
+	reviewer.OnRetry = bindings.OnReviewRetry
 	coordinator := permission.NewCoordinator(permission.Config{
 		State:     permissionState,
 		Workspace: cfg.WorkDir,
 		CWD:       cfg.WorkDir,
 		Source:    permission.SourceMain,
-		Approver:  permissionBridge,
+		Approver:  bindings.Approver,
 		Reviewer:  reviewer,
-		Sink:      permissionBridge,
+		Sink:      bindings.EventSink,
 	})
 	defer coordinator.State().ClearGrants()
 	runnerCfg := agentRunnerConfigFromCLI(cfg)
@@ -56,39 +64,13 @@ func RunTUI(ctx context.Context, cfg CLIConfig, onModelChange func(string) error
 	restoreLogs := redirectTUILogs(runner.SessionDir())
 	defer restoreLogs()
 
-	asker := attachInteractiveAsker(runner)
-	planReviewer := attachInteractivePlanReviewer(runner)
-
-	return tui.Run(ctx, runner, tui.Config{
-		Model:             cfg.Model,
-		InitialPrompt:     cfg.Prompt,
-		HomeDir:           homeDir,
-		EffortOverride:    cfg.EffortOverride,
-		ProviderID:        cfg.ResolvedLLM.ProviderID,
-		ProviderProfileID: cfg.ResolvedLLM.SettingsProviderID,
-		ProviderProtocol:  cfg.ResolvedLLM.Protocol,
-		Registry:          runner.SlashRegistry(),
-		Executor:          runner.SlashExecutor(),
-		Asker:             asker,
-		PlanReviewer:      planReviewer,
-		Permissions:       permissionBridge,
-		Autodev:           autodevLauncher,
-	})
-}
-
-func attachInteractivePlanReviewer(runner *AgentRunner) *tui.PlanReviewer {
-	reviewer := tui.NewPlanReviewer()
-	runner.SetPlanReviewer(reviewer)
-	return reviewer
-}
-
-// attachInteractiveAsker creates the interactive asker, installs it on the
-// runner so the ask_user_question tool is registered for this (TUI) session, and
-// returns it for the TUI model to listen on.
-func attachInteractiveAsker(runner *AgentRunner) *tui.Asker {
-	asker := tui.NewAsker()
-	runner.SetUserAsker(asker)
-	return asker
+	if bindings.Attach != nil {
+		bindings.Attach(runner)
+	}
+	if bindings.Start == nil {
+		return errors.New("legacy TUI start binding is required")
+	}
+	return bindings.Start(ctx, NewLegacyInteractiveApplication(runner))
 }
 
 func redirectTUILogs(sessionDir string) func() {

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/app"
 )
 
 // sarasaWOFF2 is Sarasa Mono SC (OFL, see assets/README.md), embedded so HTML
@@ -33,7 +33,7 @@ func RenderSceneHTML(name string, width, height int) (string, error) {
 // RenderSessionHTML renders a real session's message records into the same
 // self-contained HTML document, so an actual conversation can be inspected the
 // way a browser would show it.
-func RenderSessionHTML(records []session.MessageRecord, width, height int) string {
+func RenderSessionHTML(records []app.ConversationRecord, width, height int) string {
 	return frameToHTML(RecolorForImage(RenderSessionANSI(records, width, height)))
 }
 

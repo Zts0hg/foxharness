@@ -194,6 +194,10 @@ Autodev now owns question, answer, core-reporter, and core-result values instead
 
 `M20` atomically cuts over AgentOpsTask while retaining its two-channel bridge, global bounded scheduling, task timeout, panic and terminal outcome handling, exact result/artifact presentation, delivery observation, incident prompt, and log-search ownership. A two-stage AgentOps execution port exposes the freshly created session before application initialization, preserving the existing session-notice-before-PLAN/TODO initialization order. `cmd/agentops` composes the target runtime with one exact task provider snapshot, a fresh Feishu-source session, the eight-tool ceiling including AgentOps-owned rooted `log_search`, one-level child execution, project/session/automemory context, automatic compaction, fire-and-forget extraction, and compatibility journals. Remote ModeAsk reuses `feishu.PermissionPort` and the gateway's single callback store with task/session/run/tool correlation. Legacy assembly is test-only. All ten M20 exceptions are removed, reducing the allowlist from 49 to 39 rows at SHA-256 `b4db0d729675d2b4424297ce56a56afe267f32ec8409882f98a4dbf101383b37`.
 
+`M21` moves TUI run submission and live session presentation state behind `internal/app` commands, queries, outcomes, and notifications. The TUI no longer imports engine, persisted session records, checkpoint, or compaction types for conversation rendering, model/effort/collaboration changes, manual compaction, cancellation restore, or phased rewind. Rewind availability is an explicit application-state capability so `/status` preserves the previous checkpointer-dependent value. `cmd/fox` owns the temporary presentation startup bindings while `app.RunTUI` retains legacy runtime construction until M24; this prevents the reverse `app -> tui` dependency without prematurely moving permission and tool composition scheduled for M22-M23.
+
+Codex validates this boundary by translating TUI actions into typed `AppCommand` values such as `UserTurn`, `Compact`, `ThreadRollback`, and turn-context overrides while core session code owns history and compaction. Claude Code's `QueryEngine` explicitly owns conversation query lifecycle and session state, and its remote adapter projects typed `SDKMessage` values into REPL presentation. Claude's local REPL still contains acknowledged pre-extraction session behavior, so Fox adopts the extracted headless ownership direction rather than copying that transitional coupling. The seven M21 state edges are removed, reducing the allowlist from 39 to 32 rows at SHA-256 `17f251eee28330f907e223716e68fc98b4d1767418b045937b865a76ef37da21`.
+
 ## Allowed Dependencies
 
 | Importer | Allowed target architecture dependencies |
@@ -303,7 +307,8 @@ The initial allowlist contains 68 exact edges. Its latest deletion boundaries ar
 | `M18` | Autodev core engine/tool bypass. |
 | `M19` | Feishu concrete runtime subsystem imports. |
 | `M20` | AgentOps concrete runtime subsystem imports. |
-| `M21`-`M23` | TUI concrete runtime, state, permission, tool, and checkpoint imports. |
+| `M21` | TUI concrete engine, persisted-session, compaction, and checkpoint state imports. |
+| `M22`-`M23` | Remaining TUI concrete permission and tool interaction imports. |
 | `M24` | Old `internal/app` assembly and presentation imports. |
 | `M25` | Old engine concrete infrastructure imports. |
 

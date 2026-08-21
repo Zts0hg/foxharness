@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -70,9 +70,9 @@ func (m Model) listView() string {
 	return strings.Join(lines, "\n")
 }
 
-func (m Model) listSummary(msg checkpoint.SelectableMessage) string {
-	if err := m.listErrors[msg.Seq]; err != nil {
-		return "Diff unavailable: " + err.Error()
+func (m Model) listSummary(msg app.RewindTarget) string {
+	if err := m.listErrors[msg.Sequence]; err != "" {
+		return "Diff unavailable: " + err
 	}
 	stats := m.statsFor(msg)
 	if stats.FilesChanged == 0 {
@@ -91,14 +91,14 @@ func (m Model) listSummary(msg checkpoint.SelectableMessage) string {
 func (m Model) previewView() string {
 	stats := m.diffStats
 	if stats == nil {
-		stats = &checkpoint.DiffStats{}
+		stats = &app.RewindDiff{}
 	}
 	lines := []string{
 		selectorTitleStyle.Render("Checkpoint preview"),
 		fmt.Sprintf("%d files changed, +%d -%d", stats.FilesChanged, stats.Insertions, stats.Deletions),
 	}
-	if m.err != nil {
-		lines = append(lines, selectorMutedStyle.Render(m.err.Error()))
+	if m.err != "" {
+		lines = append(lines, selectorMutedStyle.Render(m.err))
 	}
 	for _, file := range stats.ChangedFiles {
 		lines = append(lines, "  "+file)

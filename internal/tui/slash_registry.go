@@ -112,5 +112,5 @@ func (m Model) runPromptCommand(cmd *slash.Command, args string) (slash.Executio
 	if exec == nil {
 		exec = slash.NewExecutor()
 	}
-	return exec.Execute(context.Background(), cmd, args, m.runner.SessionID())
+	return exec.Execute(context.Background(), cmd, args, m.runner.State().Session.ID)
 }

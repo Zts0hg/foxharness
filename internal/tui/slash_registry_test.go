@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/slash"
@@ -57,35 +58,38 @@ func (r *recordingTUIForkRunner) Run(context.Context, string, string, []string) 
 	return "fork report", nil
 }
 
-func (r *restrictedFakeRunner) RunRestrictedInCollaborationMode(ctx context.Context, prompt string, allowed []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
-	r.restrictedRuns = append(r.restrictedRuns, prompt)
-	r.restrictedAllow = append([]string(nil), allowed...)
-	r.restrictedModes = append(r.restrictedModes, collaboration.Normalize(mode))
+func (r *restrictedFakeRunner) Run(ctx context.Context, command app.RunCommand, sink app.NotificationSink) (*app.RunOutcome, error) {
+	if len(command.AllowedTools) == 0 {
+		return r.fakeRunner.Run(ctx, command, sink)
+	}
+	r.restrictedRuns = append(r.restrictedRuns, command.Prompt)
+	r.restrictedAllow = append([]string(nil), command.AllowedTools...)
+	r.restrictedModes = append(r.restrictedModes, collaboration.Normalize(collaboration.Mode(command.CollaborationMode)))
 	// Emit a minimal run lifecycle through the reporter so the TUI's
 	// channelReporter pipeline completes — without delegating to the
 	// underlying fakeRunner.RunInCollaborationMode (which would mutate fakeRunner.runs and
 	// hide whether the unrestricted path was used).
 	runID := "restricted-1"
-	reporter.OnRunStart(ctx, r.fakeRunner.sessionID, runID)
-	reporter.OnMessage(ctx, "restricted answer: "+prompt)
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationRunStarted, SessionID: r.fakeRunner.sessionID, RunID: runID})
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationMessage, SessionID: r.fakeRunner.sessionID, RunID: runID, Content: "restricted answer: " + command.Prompt})
 	if r.restrictedResult != nil {
-		reporter.OnRunComplete(ctx, *r.restrictedResult)
-		return r.restrictedResult, nil
+		notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationRunCompleted, SessionID: r.fakeRunner.sessionID, RunID: r.restrictedResult.RunID})
+		return &app.RunOutcome{FinalMessage: r.restrictedResult.FinalMessage, SessionID: r.restrictedResult.SessionID, RunID: r.restrictedResult.RunID}, nil
 	}
-	res := &engine.RunResult{
-		FinalMessage: "restricted answer: " + prompt,
+	res := &app.RunOutcome{
+		FinalMessage: "restricted answer: " + command.Prompt,
 		SessionID:    r.fakeRunner.sessionID,
 		RunID:        runID,
 	}
-	reporter.OnRunComplete(ctx, *res)
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationRunCompleted, SessionID: r.fakeRunner.sessionID, RunID: runID})
 	return res, nil
 }
 
-func (r *effortFakeRunner) RunWithDisplayAndEffortInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, effort string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
-	r.effortRuns = append(r.effortRuns, prompt)
-	r.effortDisplays = append(r.effortDisplays, displayPrompt)
-	r.effortValues = append(r.effortValues, effort)
-	return r.fakeRunner.runInCollaborationMode(ctx, prompt, mode, reporter)
+func (r *effortFakeRunner) Run(ctx context.Context, command app.RunCommand, sink app.NotificationSink) (*app.RunOutcome, error) {
+	r.effortRuns = append(r.effortRuns, command.Prompt)
+	r.effortDisplays = append(r.effortDisplays, command.DisplayPrompt)
+	r.effortValues = append(r.effortValues, command.Effort)
+	return r.fakeRunner.Run(ctx, command, sink)
 }
 
 func newRegistryWithPromptCommand(t *testing.T, name, body string) *slash.Registry {
@@ -594,6 +598,7 @@ func TestModel_AllowedTools_UnsupportedRunner_ErrorsOut(t *testing.T) {
 	// command with allowed-tools must show an error rather than silently
 	// falling through to an unrestricted Run.
 	runner := newFakeRunner()
+	runner.supportRestrictions = false
 	r := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
 	r.Register(&slash.Command{
 		Type:        slash.CommandPrompt,

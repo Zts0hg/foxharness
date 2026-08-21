@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1348,3 +1349,365 @@ func formatContextUsage(used int, maxTokens int) string {
 	percent := (used*100 + maxTokens - 1) / maxTokens
 	return fmt.Sprintf("%d%%", percent)
 }
+
+/* LegacyInteractiveApplication maps the temporary AgentRunner facade to application-owned TUI capabilities. */
+type LegacyInteractiveApplication struct {
+	runner *AgentRunner
+}
+
+/* NewLegacyInteractiveApplication creates the M21 compatibility adapter for the unmigrated TUI entry. */
+func NewLegacyInteractiveApplication(runner *AgentRunner) *LegacyInteractiveApplication {
+	return &LegacyInteractiveApplication{runner: runner}
+}
+
+/* Run executes one interactive command through the legacy runner and maps observations into application notifications. */
+func (a *LegacyInteractiveApplication) Run(ctx context.Context, command RunCommand, sink NotificationSink) (*RunOutcome, error) {
+	mode := collaboration.Normalize(collaboration.Mode(command.CollaborationMode))
+	reporter := newLegacyNotificationReporter(sink)
+	result, err := a.runner.runInternal(
+		ctx,
+		command.Prompt,
+		command.DisplayPrompt,
+		command.AllowedTools,
+		collaborationModeOverride(mode),
+		command.Effort,
+		reporter,
+	)
+	if result == nil {
+		return nil, err
+	}
+	return mapLegacyRunResult(result), err
+}
+
+/* State returns a presentation-safe snapshot of the current legacy session. */
+func (a *LegacyInteractiveApplication) State() InteractiveSessionState {
+	a.runner.mu.Lock()
+	sess := a.runner.currentSession
+	state := InteractiveSessionState{
+		WorkDir: a.runner.workDir, Model: a.runner.model, Effort: a.runner.effortOverride,
+		CollaborationMode: string(collaboration.Normalize(a.runner.collaborationMode)),
+		RewindAvailable:   a.runner.checkpointer != nil,
+		RunCapabilities:   RunCapabilities{ToolRestrictions: true, EffortOverrides: true},
+	}
+	if sess != nil {
+		state.Session = SessionInfo{
+			ID: string(sess.ID), Directory: sess.RootDir, TranscriptPath: sess.TranscriptPath(),
+		}
+	}
+	a.runner.mu.Unlock()
+	state.ContextUsage = a.runner.ContextUsage()
+	state.AutoMemoryIndex = a.runner.AutoMemoryIndex()
+	return state
+}
+
+/* Conversation loads the current persisted conversation as application-owned values. */
+func (a *LegacyInteractiveApplication) Conversation(context.Context) ([]ConversationRecord, error) {
+	records, err := a.runner.MessageHistory()
+	if err != nil {
+		return nil, err
+	}
+	return mapLegacyConversation(records), nil
+}
+
+/* ProjectInputHistory loads recent project prompts using the legacy compatibility ordering. */
+func (a *LegacyInteractiveApplication) ProjectInputHistory(_ context.Context, limit int) ([]string, error) {
+	return a.runner.ProjectInputHistory(limit)
+}
+
+/* RewindTargets loads user-authored targets and their checkpoint diff summaries. */
+func (a *LegacyInteractiveApplication) RewindTargets(context.Context) ([]RewindTarget, error) {
+	records, err := a.runner.MessageHistory()
+	if err != nil {
+		return nil, err
+	}
+	messages := checkpoint.SelectableMessages(records)
+	a.runner.mu.Lock()
+	cp := a.runner.checkpointer
+	a.runner.mu.Unlock()
+	targets := make([]RewindTarget, 0, len(messages))
+	for _, message := range messages {
+		target := RewindTarget{
+			Sequence: message.Seq, Content: message.Content, Timestamp: message.Timestamp,
+			IsCurrent: message.IsCurrent,
+		}
+		if cp != nil {
+			stats, statsErr := cp.GetDiffStats(messageID(message.Seq))
+			if statsErr != nil {
+				target.DiffError = statsErr.Error()
+			} else if stats != nil {
+				target.Diff = RewindDiff{
+					FilesChanged: stats.FilesChanged, Insertions: stats.Insertions, Deletions: stats.Deletions,
+					ChangedFiles: append([]string(nil), stats.ChangedFiles...),
+				}
+			}
+		}
+		targets = append(targets, target)
+	}
+	return targets, nil
+}
+
+/* NewSession switches to a fresh CLI-source session and returns its state snapshot. */
+func (a *LegacyInteractiveApplication) NewSession(ctx context.Context, _ NewSessionCommand) (InteractiveSessionState, error) {
+	if _, err := a.runner.NewSession(ctx); err != nil {
+		return InteractiveSessionState{}, err
+	}
+	return a.State(), nil
+}
+
+/* UpdateModel changes the model used by future runs and returns the resulting state. */
+func (a *LegacyInteractiveApplication) UpdateModel(_ context.Context, command ModelCommand) (InteractiveSessionState, error) {
+	if err := a.runner.SetModel(command.Model); err != nil {
+		return InteractiveSessionState{}, err
+	}
+	return a.State(), nil
+}
+
+/* UpdateEffort changes the effort used by future runs and returns the resulting state. */
+func (a *LegacyInteractiveApplication) UpdateEffort(_ context.Context, command EffortCommand) InteractiveSessionState {
+	a.runner.SetEffortOverride(command.Effort)
+	return a.State()
+}
+
+/* UpdateCollaborationMode changes the selected mode for future runs and returns the resulting state. */
+func (a *LegacyInteractiveApplication) UpdateCollaborationMode(_ context.Context, command CollaborationCommand) InteractiveSessionState {
+	a.runner.SetCollaborationMode(collaboration.Mode(command.Mode))
+	return a.State()
+}
+
+/* Compact runs legacy manual compaction and maps its stable statistics. */
+func (a *LegacyInteractiveApplication) Compact(ctx context.Context, command CompactCommand) (CompactOutcome, error) {
+	result, err := a.runner.CompactNow(ctx, command.Instructions)
+	if result == nil {
+		return CompactOutcome{}, err
+	}
+	return CompactOutcome{
+		PreTokens: result.PreTokens, PostTokens: result.PostTokens,
+		MessagesSummarized: result.MessagesSummarized,
+	}, err
+}
+
+/* Rewind preserves the legacy code, conversation, and session-state restore ordering. */
+func (a *LegacyInteractiveApplication) Rewind(_ context.Context, command RewindCommand) RewindOutcome {
+	outcome := RewindOutcome{}
+	records, err := a.runner.MessageHistory()
+	if err != nil {
+		outcome.Error = err.Error()
+		return outcome
+	}
+	content := legacyMessageContentBySequence(records, command.Sequence)
+
+	if command.Action == RewindBoth || command.Action == RewindCode {
+		a.runner.mu.Lock()
+		cp := a.runner.checkpointer
+		a.runner.mu.Unlock()
+		if cp != nil {
+			outcome.CodeAttempted = true
+			files, rewindErr := cp.Rewind(messageID(command.Sequence))
+			if rewindErr != nil {
+				outcome.CodeError = rewindErr.Error()
+				if command.Action == RewindCode {
+					return outcome
+				}
+			} else {
+				outcome.CodeFiles = append([]string(nil), files...)
+			}
+		}
+	}
+
+	if command.Action != RewindBoth && command.Action != RewindConversation {
+		return outcome
+	}
+	outcome.ConversationAttempted = true
+	if err := a.runner.TruncateMessageHistory(command.Sequence); err != nil {
+		outcome.ConversationError = err.Error()
+		return outcome
+	}
+	records, err = a.runner.MessageHistory()
+	if err != nil {
+		outcome.ConversationError = err.Error()
+		return outcome
+	}
+	outcome.Conversation = mapLegacyConversation(records)
+	outcome.RestoredInput = content
+	outcome.SessionStateAttempted = true
+	restored, err := a.runner.RestoreSessionStateBeforeMessage(command.Sequence)
+	if err != nil {
+		outcome.SessionStateError = err.Error()
+		return outcome
+	}
+	outcome.SessionStateRestored = restored
+	return outcome
+}
+
+/* RestoreLatestInput restores the latest cancellable user input when only synthetic records follow it. */
+func (a *LegacyInteractiveApplication) RestoreLatestInput(context.Context) (RestoreInputOutcome, error) {
+	records, err := a.runner.MessageHistory()
+	if err != nil {
+		return RestoreInputOutcome{}, nil
+	}
+	index := -1
+	var target checkpoint.SelectableMessage
+	for candidate := len(records) - 1; candidate >= 0; candidate-- {
+		messages := checkpoint.SelectableMessages(records[candidate : candidate+1])
+		if len(messages) == 0 {
+			continue
+		}
+		index = candidate
+		target = messages[0]
+		break
+	}
+	if index < 0 || !checkpoint.MessagesAfterAreOnlySynthetic(records, index) {
+		return RestoreInputOutcome{}, nil
+	}
+	outcome := RestoreInputOutcome{Attempted: true}
+	if err := a.runner.TruncateMessageHistory(target.Seq); err != nil {
+		return outcome, err
+	}
+	records, err = a.runner.MessageHistory()
+	if err != nil {
+		return outcome, err
+	}
+	return RestoreInputOutcome{
+		Attempted: true, Restored: true, Conversation: mapLegacyConversation(records), Input: target.Content,
+	}, nil
+}
+
+/* PermissionSnapshot forwards the temporary M22 permission presentation contract. */
+func (a *LegacyInteractiveApplication) PermissionSnapshot() permission.Snapshot {
+	return a.runner.PermissionSnapshot()
+}
+
+/* SetPermissionMode forwards the temporary M22 permission presentation contract. */
+func (a *LegacyInteractiveApplication) SetPermissionMode(mode permission.Mode, remembered bool) {
+	a.runner.SetPermissionMode(mode, remembered)
+}
+
+/* ActivateFullAccess forwards the temporary M22 permission presentation contract. */
+func (a *LegacyInteractiveApplication) ActivateFullAccess(remember bool) {
+	a.runner.ActivateFullAccess(remember)
+}
+
+/* ClearPermissionGrants forwards the temporary M22 permission presentation contract. */
+func (a *LegacyInteractiveApplication) ClearPermissionGrants() int {
+	return a.runner.ClearPermissionGrants()
+}
+
+func mapLegacyConversation(records []session.MessageRecord) []ConversationRecord {
+	result := make([]ConversationRecord, len(records))
+	for index, record := range records {
+		calls := make([]ConversationToolCall, len(record.Message.ToolCalls))
+		for callIndex, call := range record.Message.ToolCalls {
+			calls[callIndex] = ConversationToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments)}
+		}
+		result[index] = ConversationRecord{
+			Sequence: record.Seq, Time: record.Time, Role: string(record.Message.Role),
+			Content: record.Message.Content, DisplayContent: record.DisplayContent,
+			ToolCallID: record.Message.ToolCallID, ToolCalls: calls,
+			IsMeta: record.IsMeta, IsCompactSummary: record.IsCompactSummary,
+			IsVisibleInTranscriptOnly: record.IsVisibleInTranscriptOnly,
+		}
+	}
+	return result
+}
+
+func mapLegacyRunResult(result *engine.RunResult) *RunOutcome {
+	var warnings []Warning
+	if result.TelemetryWarnings != nil {
+		warnings = make([]Warning, len(result.TelemetryWarnings))
+		for index, warning := range result.TelemetryWarnings {
+			warnings[index] = Warning{Sink: warning.Sink, Operation: warning.Operation, Error: warning.Error}
+		}
+	}
+	return &RunOutcome{
+		SessionID: result.SessionID, RunID: result.RunID, FinalMessage: result.FinalMessage,
+		MetricsPath: result.MetricsPath, TracePath: result.TracePath, Warnings: warnings,
+	}
+}
+
+func legacyMessageContentBySequence(records []session.MessageRecord, sequence int64) string {
+	for _, record := range records {
+		if record.Seq == sequence {
+			return strings.TrimSpace(record.HumanContent())
+		}
+	}
+	return ""
+}
+
+func messageID(sequence int64) string {
+	return strconv.FormatInt(sequence, 10)
+}
+
+type legacyNotificationReporter struct {
+	sink      NotificationSink
+	mu        sync.Mutex
+	sequence  int
+	sessionID string
+	runID     string
+}
+
+func newLegacyNotificationReporter(sink NotificationSink) engine.Reporter {
+	if isNilNotificationSink(sink) {
+		return nil
+	}
+	return &legacyNotificationReporter{sink: sink}
+}
+
+func (r *legacyNotificationReporter) OnRunStart(ctx context.Context, sessionID string, runID string) {
+	r.mu.Lock()
+	r.sessionID, r.runID = sessionID, runID
+	r.mu.Unlock()
+	r.notify(ctx, Notification{Kind: NotificationRunStarted, SessionID: sessionID, RunID: runID})
+}
+
+func (r *legacyNotificationReporter) OnThinking(ctx context.Context, turn int) {
+	r.notify(ctx, Notification{Kind: NotificationThinking, Turn: turn})
+}
+
+func (r *legacyNotificationReporter) OnCompaction(ctx context.Context, scope string) {
+	r.notify(ctx, Notification{Kind: NotificationContextCompacted, Phase: scope})
+}
+
+func (r *legacyNotificationReporter) OnToolCall(ctx context.Context, name string, arguments string) {
+	r.notify(ctx, Notification{Kind: NotificationToolCall, Name: name, Content: arguments})
+}
+
+func (r *legacyNotificationReporter) OnToolResult(ctx context.Context, name string, result string, isError bool) {
+	r.notify(ctx, Notification{Kind: NotificationToolResult, Name: name, Content: result, IsError: isError})
+}
+
+func (r *legacyNotificationReporter) OnMessage(ctx context.Context, content string) {
+	r.notify(ctx, Notification{Kind: NotificationMessage, Content: content})
+}
+
+func (r *legacyNotificationReporter) OnMessageDelta(ctx context.Context, content string) {
+	r.notify(ctx, Notification{Kind: NotificationMessageDelta, Content: content})
+}
+
+func (r *legacyNotificationReporter) OnRunComplete(ctx context.Context, result engine.RunResult) {
+	r.notify(ctx, Notification{Kind: NotificationRunCompleted, RunID: result.RunID})
+}
+
+func (r *legacyNotificationReporter) OnRunError(ctx context.Context, sessionID string, runID string, err error) {
+	content := ""
+	if err != nil {
+		content = err.Error()
+	}
+	r.notify(ctx, Notification{Kind: NotificationRunError, SessionID: sessionID, RunID: runID, Content: content, IsError: true})
+}
+
+func (r *legacyNotificationReporter) notify(ctx context.Context, notification Notification) {
+	r.mu.Lock()
+	r.sequence++
+	notification.Sequence = r.sequence
+	if notification.SessionID == "" {
+		notification.SessionID = r.sessionID
+	}
+	if notification.RunID == "" {
+		notification.RunID = r.runID
+	}
+	r.mu.Unlock()
+	r.sink.Notify(ctx, notification)
+}
+
+var _ InteractiveApplication = (*LegacyInteractiveApplication)(nil)
+var _ engine.MessageDeltaReporter = (*legacyNotificationReporter)(nil)

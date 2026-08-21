@@ -14,6 +14,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/automemory"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
+	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/memory"
 	"github.com/Zts0hg/foxharness/internal/permission"
@@ -22,6 +23,13 @@ import (
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
+
+func TestLegacyRunResultMappingPreservesAbsentWarnings(t *testing.T) {
+	got := mapLegacyRunResult(&engine.RunResult{})
+	if got.Warnings != nil {
+		t.Fatalf("warnings = %#v, want nil", got.Warnings)
+	}
+}
 
 type blockingLLMProvider struct {
 	entered chan struct{}

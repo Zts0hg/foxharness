@@ -11,15 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
-	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
-	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/effort"
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/permission"
-	"github.com/Zts0hg/foxharness/internal/schema"
-	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/settings"
 	"github.com/Zts0hg/foxharness/internal/slash"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -41,27 +37,9 @@ const (
 	maxShellCommandOutputBytes = tools.MaxBashOutputBytes
 )
 
-// Runner is the app-facing runtime required by the TUI. It is intentionally
-// small so tests can exercise the UI without calling a real model.
+// Runner is the application capability set required by the TUI.
 type Runner interface {
-	RunInCollaborationMode(ctx context.Context, prompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
-	NewSession(ctx context.Context) (string, error)
-	SessionID() string
-	SessionDir() string
-	WorkDir() string
-	// AutoMemoryIndex returns the merged two-tier persistent memory index
-	// (descriptions only) for sidebar display, or "" when no store is wired.
-	AutoMemoryIndex() string
-	Model() string
-	SetModel(model string) error
-	ContextUsage() string
-	MessageHistory() ([]session.MessageRecord, error)
-	TruncateMessageHistory(seq int64) error
-	RestoreSessionStateBeforeMessage(seq int64) (bool, error)
-	Checkpointer() checkpoint.Checkpointer
-	CollaborationMode() collaboration.Mode
-	SetCollaborationMode(mode collaboration.Mode)
-	CompactNow(ctx context.Context, customInstructions string) (*compaction.CompactResult, error)
+	app.InteractiveApplication
 }
 
 type permissionRuntime interface {
@@ -69,10 +47,6 @@ type permissionRuntime interface {
 	SetPermissionMode(mode permission.Mode, remembered bool)
 	ActivateFullAccess(remember bool)
 	ClearPermissionGrants() int
-}
-
-type effortRuntime interface {
-	SetEffortOverride(value string)
 }
 
 // Config controls the initial TUI presentation.
@@ -276,7 +250,6 @@ type Model struct {
 	themeName       string
 	statuslineItems []string
 
-	checkpointer   checkpoint.Checkpointer
 	rewindSelector *selector.Model
 
 	asker   *Asker
@@ -308,9 +281,10 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	runtimeState := runner.State()
 	modelName := cfg.Model
 	if modelName == "" {
-		modelName = runner.Model()
+		modelName = runtimeState.Model
 	}
 	entries, inputHistory, status := initialSessionState(runner)
 	themeName := defaultThemeName
@@ -356,7 +330,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		historyIndex:       -1,
 		slashSelection:     -1,
 		fileSelection:      -1,
-		fileMentions:       loadFileMentions(runner.WorkDir()),
+		fileMentions:       loadFileMentions(runtimeState.WorkDir),
 		status:             status,
 		homeDir:            cfg.HomeDir,
 		providerID:         cfg.ProviderID,
@@ -365,13 +339,12 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		effortValue:        effortValue,
 		themeName:          themeName,
 		statuslineItems:    statuslineItems,
-		sessionID:          runner.SessionID(),
+		sessionID:          runtimeState.Session.ID,
 		modelName:          modelName,
-		project:            projectFolderName(runner.WorkDir()),
-		gitBranch:          gitBranchForWorkDir(runner.WorkDir()),
-		contextUsage:       normalizeContextUsage(runner.ContextUsage()),
-		collaborationMode:  collaboration.Normalize(runner.CollaborationMode()),
-		checkpointer:       runner.Checkpointer(),
+		project:            projectFolderName(runtimeState.WorkDir),
+		gitBranch:          gitBranchForWorkDir(runtimeState.WorkDir),
+		contextUsage:       normalizeContextUsage(runtimeState.ContextUsage),
+		collaborationMode:  collaboration.Normalize(collaboration.Mode(runtimeState.CollaborationMode)),
 		asker:              cfg.Asker,
 		planReviewer:       cfg.PlanReviewer,
 		permissionBridge:   cfg.Permissions,
@@ -381,7 +354,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		sidebarVisible:     true,
 		terminalFocused:    true,
 		sidebarFocusIndex:  -1,
-		sidebarDocuments:   loadSidebarDocuments(runner.WorkDir(), runner.SessionDir(), runner.AutoMemoryIndex()),
+		sidebarDocuments:   loadSidebarDocuments(runtimeState.WorkDir, runtimeState.Session.Directory, runtimeState.AutoMemoryIndex),
 	}
 }
 
@@ -573,9 +546,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendEntry("error", "new session failed", msg.err.Error(), true)
 			return m, nil
 		}
-		m.sessionID = msg.sessionID
-		m.refreshRuntimeInfo()
-		m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir(), m.runner.AutoMemoryIndex())
+		m.applyRuntimeState(msg.state)
+		m.sidebarDocuments = loadSidebarDocuments(msg.state.WorkDir, msg.state.Session.Directory, msg.state.AutoMemoryIndex)
 		m.clampSidebarScrollOffsets()
 		m.status = "New session ready"
 		m.entries = nil
@@ -585,17 +557,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resetHistoryNavigation()
 		m.scrollOffset = 0
 		m.appendCommandEntry("New session", formatSessionRows(
-			msg.sessionID,
-			m.runner.SessionDir(),
-			m.runner.WorkDir(),
-			m.runner.Model(),
+			msg.state.Session.ID,
+			msg.state.Session.Directory,
+			msg.state.WorkDir,
+			msg.state.Model,
 		))
 		return m, nil
 
 	case runningTickMsg:
 		m.spinnerFrame++
 		if m.spinnerFrame%4 == 0 {
-			m.sidebarDocuments = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir(), m.runner.AutoMemoryIndex())
+			state := m.runner.State()
+			m.sidebarDocuments = loadSidebarDocuments(state.WorkDir, state.Session.Directory, state.AutoMemoryIndex)
 		}
 		m.clampSidebarScrollOffsets()
 		return m, runningTickCmd()
@@ -1111,7 +1084,8 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 
 	docs := m.sidebarDocuments
 	if len(docs) == 0 {
-		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir(), m.runner.AutoMemoryIndex())
+		state := m.runner.State()
+		docs = loadSidebarDocuments(state.WorkDir, state.Session.Directory, state.AutoMemoryIndex)
 	}
 	heights := sidebarBoxHeights(sidebarDocumentAreaHeight(contentHeight, len(docs)), len(docs))
 	top := 0
@@ -1135,7 +1109,8 @@ func (m Model) sidebarIndexAt(x int, y int) (int, bool) {
 func (m *Model) clampSidebarScrollOffsets() {
 	docs := m.sidebarDocuments
 	if len(docs) == 0 {
-		docs = loadSidebarDocuments(m.runner.WorkDir(), m.runner.SessionDir(), m.runner.AutoMemoryIndex())
+		state := m.runner.State()
+		docs = loadSidebarDocuments(state.WorkDir, state.Session.Directory, state.AutoMemoryIndex)
 	}
 	if !m.shouldRenderSidebar() || len(docs) == 0 {
 		for i := range m.sidebarScrollOffsets {
@@ -1198,7 +1173,7 @@ func (m Model) handlePlanReviewDone() (tea.Model, tea.Cmd) {
 	}
 	if result.review.Decision == tools.PlanApproved && !result.cancelled {
 		m.collaborationMode = collaboration.ModeDefault
-		m.runner.SetCollaborationMode(collaboration.ModeDefault)
+		m.runner.UpdateCollaborationMode(m.ctx, app.CollaborationCommand{Mode: string(collaboration.ModeDefault)})
 		m.status = "Plan approved; continuing in Default mode"
 	} else if result.cancelled {
 		m.status = "Plan review cancelled; Formal Plan remains active"
@@ -1902,7 +1877,7 @@ func (m Model) toggleFormalPlan() (tea.Model, tea.Cmd) {
 
 func (m Model) selectCollaborationMode(mode collaboration.Mode) (tea.Model, tea.Cmd) {
 	m.collaborationMode = collaboration.Normalize(mode)
-	m.runner.SetCollaborationMode(m.collaborationMode)
+	m.runner.UpdateCollaborationMode(m.ctx, app.CollaborationCommand{Mode: string(m.collaborationMode)})
 	if m.collaborationMode == collaboration.ModeFormalPlan {
 		if m.running {
 			m.status = "Plan mode enabled for next run"
@@ -2041,7 +2016,7 @@ func (m Model) submitBangCommand(text string) (tea.Model, tea.Cmd) {
 
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
-	return m, runShellCommandCmd(runCtx, m.runner.WorkDir(), command, operationID)
+	return m, runShellCommandCmd(runCtx, m.runner.State().WorkDir, command, operationID)
 }
 
 func (m Model) startPrompt(text string) (tea.Model, tea.Cmd) {
@@ -2510,7 +2485,7 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 		return m.openRewindSelector()
 	case "/model":
 		if len(fields) == 1 {
-			m.appendCommandEntry("Model", fmt.Sprintf("Current model: %s\nUsage: /model <model_name>", m.runner.Model()))
+			m.appendCommandEntry("Model", fmt.Sprintf("Current model: %s\nUsage: /model <model_name>", m.runner.State().Model))
 			m.status = "Model"
 			return m, nil
 		}
@@ -2520,13 +2495,13 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		modelName := strings.TrimSpace(fields[1])
-		if err := m.runner.SetModel(modelName); err != nil {
+		state, err := m.runner.UpdateModel(m.ctx, app.ModelCommand{Model: modelName})
+		if err != nil {
 			m.appendEntry("error", "model switch failed", err.Error(), true)
 			m.status = "Model switch failed"
 			return m, nil
 		}
-		m.modelName = m.runner.Model()
-		m.refreshRuntimeInfo()
+		m.applyRuntimeState(state)
 		m.appendCommandEntry("Model", fmt.Sprintf("Switched model to %s", m.modelName))
 		m.status = fmt.Sprintf("Model switched to %s", m.modelName)
 		return m, nil
@@ -2821,13 +2796,11 @@ func (m Model) handleEffortDone() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.effortValue = value
-	if runtime, ok := m.runner.(effortRuntime); ok {
-		if value == effort.Auto {
-			runtime.SetEffortOverride("")
-		} else {
-			runtime.SetEffortOverride(value)
-		}
+	configuredEffort := value
+	if value == effort.Auto {
+		configuredEffort = ""
 	}
+	m.runner.UpdateEffort(m.ctx, app.EffortCommand{Effort: configuredEffort})
 	m.appendCommandEntry("Effort", fmt.Sprintf("Effort set to %s for %s", value, m.providerProtocol))
 	m.status = fmt.Sprintf("Effort set to %s", value)
 	return m, nil
@@ -2962,18 +2935,17 @@ func (m Model) openRewindSelector() (tea.Model, tea.Cmd) {
 		m.status = "Rewind unavailable while a run is active"
 		return m, nil
 	}
-	records, err := m.runner.MessageHistory()
+	messages, err := m.runner.RewindTargets(m.ctx)
 	if err != nil {
 		m.appendEntry("error", "rewind", err.Error(), true)
 		m.status = "Rewind unavailable"
 		return m, nil
 	}
-	messages := checkpoint.SelectableMessages(records)
 	if len(messages) == 0 {
 		m.status = "No rewind targets"
 		return m, nil
 	}
-	model := selector.New(messages, m.checkpointer)
+	model := selector.New(messages)
 	m.rewindSelector = &model
 	m.status = "Rewind"
 	return m, nil
@@ -3000,7 +2972,7 @@ func (m Model) executePromptCommand(cmd *slash.Command, args string, displayProm
 	m.status = "Preparing skill " + cmd.Name
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
-	sessionID := m.runner.SessionID()
+	sessionID := m.runner.State().Session.ID
 	return m, executePromptCommandCmd(runCtx, exec, cmd, args, sessionID, displayPrompt, m.collaborationMode, operationID)
 }
 
@@ -3129,8 +3101,8 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPromp
 	}
 
 	if len(result.AllowedTools) > 0 {
-		rr, ok := m.runner.(restrictedRunner)
-		if !ok {
+		capabilities := m.runner.State().RunCapabilities
+		if !capabilities.ToolRestrictions {
 			m.running = false
 			m.runStartedAt = time.Time{}
 			m.cancelRun = nil
@@ -3140,113 +3112,38 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPromp
 		}
 		m.status = "Running (restricted)"
 		allowedCopy := append([]string(nil), result.AllowedTools...)
-		if runEffort != "" {
-			effortRunner, ok := rr.(restrictedEffortRunner)
-			if !ok {
-				m.running = false
-				m.runStartedAt = time.Time{}
-				m.cancelRun = nil
-				m.appendEntry("error", "command", "Runner does not support effort override with allowed-tools; aborting to avoid silent escape.", true)
-				m.status = "Effort run unsupported"
-				return m, nil
-			}
-			return m, runRestrictedPromptCmdWithEffort(runCtx, effortRunner, text, displayPrompt, allowedCopy, runEffort, mode, result.AfterHook, operationID, m.events)
-		}
-		return m, runRestrictedPromptCmd(runCtx, rr, text, displayPrompt, allowedCopy, mode, result.AfterHook, operationID, m.events)
-	}
-	m.status = "Running"
-	if runEffort != "" {
-		effortRunner, ok := m.runner.(effortRunner)
-		if !ok {
+		if runEffort != "" && !capabilities.EffortOverrides {
 			m.running = false
 			m.runStartedAt = time.Time{}
 			m.cancelRun = nil
-			m.appendEntry("error", "command", "Runner does not support effort override; aborting to avoid silently ignoring command effort.", true)
+			m.appendEntry("error", "command", "Runner does not support effort override with allowed-tools; aborting to avoid silent escape.", true)
 			m.status = "Effort run unsupported"
 			return m, nil
 		}
-		return m, runPromptCmdWithEffortAndAfter(runCtx, effortRunner, text, displayPrompt, runEffort, mode, result.AfterHook, operationID, m.events)
+		return m, runApplicationCmd(runCtx, m.runner, app.RunCommand{
+			Prompt: text, DisplayPrompt: displayPrompt, AllowedTools: allowedCopy,
+			Effort: runEffort, CollaborationMode: string(mode),
+		}, result.AfterHook, operationID, m.events)
 	}
-	return m, runPromptCmdWithAfter(runCtx, m.runner, text, displayPrompt, mode, result.AfterHook, operationID, m.events)
-}
-
-// restrictedRunner is the optional interface a Runner implements to
-// support per-prompt tool restrictions. The production *AgentRunner
-// satisfies it; test mocks may omit it and the TUI degrades gracefully
-// to a hard error so allowed-tools is never silently ignored.
-type restrictedRunner interface {
-	RunRestrictedInCollaborationMode(ctx context.Context, prompt string, allowedTools []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
-}
-
-type restrictedDisplayRunner interface {
-	RunRestrictedWithDisplayInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, allowedTools []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
-}
-
-type effortRunner interface {
-	RunWithDisplayAndEffortInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, effort string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
-}
-
-type restrictedEffortRunner interface {
-	RunRestrictedWithDisplayAndEffortInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, allowedTools []string, effort string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
-}
-
-type collaborationDisplayRunner interface {
-	RunWithDisplayInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error)
-}
-
-type projectInputHistoryRunner interface {
-	ProjectInputHistory(limit int) ([]string, error)
-}
-
-func runRestrictedPromptCmd(ctx context.Context, runner restrictedRunner, prompt string, displayPrompt string, allowed []string, mode collaboration.Mode, afterHook func(context.Context), operationID uint64, events chan<- tea.Msg) tea.Cmd {
-	return func() tea.Msg {
-		reporter := &channelReporter{events: events, operationID: operationID}
-		var result *engine.RunResult
-		var err error
-		if displayRunner, ok := runner.(restrictedDisplayRunner); ok && strings.TrimSpace(displayPrompt) != "" {
-			result, err = displayRunner.RunRestrictedWithDisplayInCollaborationMode(ctx, prompt, displayPrompt, allowed, mode, reporter)
-		} else {
-			result, err = runner.RunRestrictedInCollaborationMode(ctx, prompt, allowed, mode, reporter)
-		}
-		if afterHook != nil {
-			afterHook(ctx)
-		}
-		return runFinishedMsg{operationID: operationID, result: result, err: err}
+	m.status = "Running"
+	if runEffort != "" && !m.runner.State().RunCapabilities.EffortOverrides {
+		m.running = false
+		m.runStartedAt = time.Time{}
+		m.cancelRun = nil
+		m.appendEntry("error", "command", "Runner does not support effort override; aborting to avoid silently ignoring command effort.", true)
+		m.status = "Effort run unsupported"
+		return m, nil
 	}
+	return m, runApplicationCmd(runCtx, m.runner, app.RunCommand{
+		Prompt: text, DisplayPrompt: displayPrompt, Effort: runEffort,
+		CollaborationMode: string(mode),
+	}, result.AfterHook, operationID, m.events)
 }
 
-func runRestrictedPromptCmdWithEffort(ctx context.Context, runner restrictedEffortRunner, prompt string, displayPrompt string, allowed []string, effort string, mode collaboration.Mode, afterHook func(context.Context), operationID uint64, events chan<- tea.Msg) tea.Cmd {
+func runApplicationCmd(ctx context.Context, runner Runner, command app.RunCommand, afterHook func(context.Context), operationID uint64, events chan<- tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		reporter := &channelReporter{events: events, operationID: operationID}
-		result, err := runner.RunRestrictedWithDisplayAndEffortInCollaborationMode(ctx, prompt, displayPrompt, allowed, effort, mode, reporter)
-		if afterHook != nil {
-			afterHook(ctx)
-		}
-		return runFinishedMsg{operationID: operationID, result: result, err: err}
-	}
-}
-
-func runPromptCmdWithAfter(ctx context.Context, runner Runner, prompt string, displayPrompt string, mode collaboration.Mode, afterHook func(context.Context), operationID uint64, events chan<- tea.Msg) tea.Cmd {
-	return func() tea.Msg {
-		reporter := &channelReporter{events: events, operationID: operationID}
-		var result *engine.RunResult
-		var err error
-		if displayRunner, ok := runner.(collaborationDisplayRunner); ok && strings.TrimSpace(displayPrompt) != "" {
-			result, err = displayRunner.RunWithDisplayInCollaborationMode(ctx, prompt, displayPrompt, mode, reporter)
-		} else {
-			result, err = runner.RunInCollaborationMode(ctx, prompt, mode, reporter)
-		}
-		if afterHook != nil {
-			afterHook(ctx)
-		}
-		return runFinishedMsg{operationID: operationID, result: result, err: err}
-	}
-}
-
-func runPromptCmdWithEffortAndAfter(ctx context.Context, runner effortRunner, prompt string, displayPrompt string, effort string, mode collaboration.Mode, afterHook func(context.Context), operationID uint64, events chan<- tea.Msg) tea.Cmd {
-	return func() tea.Msg {
-		reporter := &channelReporter{events: events, operationID: operationID}
-		result, err := runner.RunWithDisplayAndEffortInCollaborationMode(ctx, prompt, displayPrompt, effort, mode, reporter)
+		sink := &channelNotificationSink{events: events, operationID: operationID}
+		result, err := runner.Run(ctx, command, sink)
 		if afterHook != nil {
 			afterHook(ctx)
 		}
@@ -3268,42 +3165,43 @@ func (m Model) handleSelectorResult(msg selector.ResultMsg) (tea.Model, tea.Cmd)
 		return m, nil
 	}
 
-	records, err := m.runner.MessageHistory()
-	if err != nil {
-		m.appendEntry("error", "rewind", err.Error(), true)
+	action := app.RewindBoth
+	switch msg.Action {
+	case selector.ActionRestoreConversation:
+		action = app.RewindConversation
+	case selector.ActionRestoreCode:
+		action = app.RewindCode
+	}
+	outcome := m.runner.Rewind(m.ctx, app.RewindCommand{Sequence: seq, Action: action})
+	if outcome.Error != "" {
+		m.appendEntry("error", "rewind", outcome.Error, true)
 		m.status = "Rewind failed"
 		return m, nil
 	}
-	content := messageContentBySeq(records, seq)
-
-	if msg.Action == selector.ActionRestoreBoth || msg.Action == selector.ActionRestoreCode {
-		if m.checkpointer != nil {
-			files, err := m.checkpointer.Rewind(msg.MessageID)
-			if err != nil {
-				m.appendEntry("error", "rewind files", err.Error(), true)
-				m.status = "Code restore failed"
-				if msg.Action == selector.ActionRestoreCode {
-					return m, nil
-				}
-			} else {
-				m.appendCommandEntry("Rewind files", fmt.Sprintf("Restored %d file%s.", len(files), pluralS(len(files))))
+	if outcome.CodeAttempted {
+		if outcome.CodeError != "" {
+			m.appendEntry("error", "rewind files", outcome.CodeError, true)
+			m.status = "Code restore failed"
+			if action == app.RewindCode {
+				return m, nil
 			}
+		} else {
+			m.appendCommandEntry("Rewind files", fmt.Sprintf("Restored %d file%s.", len(outcome.CodeFiles), pluralS(len(outcome.CodeFiles))))
 		}
 	}
-
-	if msg.Action == selector.ActionRestoreBoth || msg.Action == selector.ActionRestoreConversation {
-		if err := m.restoreConversation(seq, content); err != nil {
-			m.appendEntry("error", "rewind conversation", err.Error(), true)
+	if outcome.ConversationAttempted {
+		if outcome.ConversationError != "" {
+			m.appendEntry("error", "rewind conversation", outcome.ConversationError, true)
 			m.status = "Conversation restore failed"
 			return m, nil
 		}
-		restored, err := m.runner.RestoreSessionStateBeforeMessage(seq)
-		if err != nil {
-			m.appendEntry("error", "rewind session state", err.Error(), true)
+		m.restoreConversationView(outcome.Conversation, outcome.RestoredInput)
+		if outcome.SessionStateError != "" {
+			m.appendEntry("error", "rewind session state", outcome.SessionStateError, true)
 			m.status = "Session state restore failed"
 			return m, nil
 		}
-		if restored {
+		if outcome.SessionStateRestored {
 			m.appendCommandEntry("Rewind session state", "Restored PLAN.md and TODO.md.")
 		} else {
 			m.appendCommandEntry("Rewind session state", "No PLAN.md/TODO.md snapshot found.")
@@ -3314,14 +3212,7 @@ func (m Model) handleSelectorResult(msg selector.ResultMsg) (tea.Model, tea.Cmd)
 	return m, nil
 }
 
-func (m *Model) restoreConversation(seq int64, content string) error {
-	if err := m.runner.TruncateMessageHistory(seq); err != nil {
-		return err
-	}
-	records, err := m.runner.MessageHistory()
-	if err != nil {
-		return err
-	}
+func (m *Model) restoreConversationView(records []app.ConversationRecord, content string) {
 	m.entries = entriesFromMessageHistory(records)
 	m.cachedLayout = nil
 	if len(m.entries) == 0 {
@@ -3334,41 +3225,20 @@ func (m *Model) restoreConversation(seq int64, content string) error {
 	m.resetHistoryNavigation()
 	m.resetCompletions()
 	m.scrollOffset = 0
-	return nil
-}
-
-func messageContentBySeq(records []session.MessageRecord, seq int64) string {
-	for _, record := range records {
-		if record.Seq == seq {
-			return strings.TrimSpace(record.HumanContent())
-		}
-	}
-	return ""
 }
 
 func (m *Model) tryAutoRestoreAfterCancel() {
-	records, err := m.runner.MessageHistory()
+	outcome, err := m.runner.RestoreLatestInput(m.ctx)
 	if err != nil {
-		return
-	}
-	index := -1
-	var target checkpoint.SelectableMessage
-	for i := len(records) - 1; i >= 0; i-- {
-		messages := checkpoint.SelectableMessages(records[i : i+1])
-		if len(messages) == 0 {
-			continue
+		if outcome.Attempted {
+			m.appendEntry("error", "auto restore", err.Error(), true)
 		}
-		index = i
-		target = messages[0]
-		break
-	}
-	if index < 0 || !checkpoint.MessagesAfterAreOnlySynthetic(records, index) {
 		return
 	}
-	if err := m.restoreConversation(target.Seq, target.Content); err != nil {
-		m.appendEntry("error", "auto restore", err.Error(), true)
+	if !outcome.Restored {
 		return
 	}
+	m.restoreConversationView(outcome.Conversation, outcome.Input)
 	m.status = "Cancelled; restored input"
 }
 
@@ -3488,13 +3358,14 @@ func formatSessionRows(sessionID, sessionDir, workDir, model string) string {
 
 func (m Model) formatStatusOverview() string {
 	provider, profile := m.providerStatusFields()
+	state := m.runner.State()
 	groups := []statusGroup{
 		{
 			name: "Session",
 			rows: []statusRow{
-				{label: "ID", value: unavailableIfEmpty(m.runner.SessionID())},
-				{label: "Dir", value: unavailableIfEmpty(m.runner.SessionDir())},
-				{label: "Workdir", value: unavailableIfEmpty(m.runner.WorkDir())},
+				{label: "ID", value: unavailableIfEmpty(state.Session.ID)},
+				{label: "Dir", value: unavailableIfEmpty(state.Session.Directory)},
+				{label: "Workdir", value: unavailableIfEmpty(state.WorkDir)},
 				{label: "Git", value: unavailableIfEmpty(m.gitBranch)},
 			},
 		},
@@ -3503,7 +3374,7 @@ func (m Model) formatStatusOverview() string {
 			rows: []statusRow{
 				{label: "Provider", value: provider},
 				{label: "Profile", value: profile},
-				{label: "Model", value: unavailableIfEmpty(m.runner.Model())},
+				{label: "Model", value: unavailableIfEmpty(state.Model)},
 				{label: "Plan Mode", value: onOff(m.collaborationMode.PlanEnabled())},
 			},
 		},
@@ -3528,7 +3399,7 @@ func (m Model) formatStatusOverview() string {
 		{
 			name: "Capabilities",
 			rows: []statusRow{
-				{label: "Rewind", value: enabledDisabled(m.checkpointer != nil)},
+				{label: "Rewind", value: enabledDisabled(state.RewindAvailable)},
 				{label: "File Slash", value: enabledDisabled(m.slashRegistry != nil)},
 				{label: "Ask User", value: enabledDisabled(m.asker != nil)},
 			},
@@ -3626,7 +3497,7 @@ func onOff(enabled bool) string {
 }
 
 func initialSessionState(runner Runner) ([]entry, []string, string) {
-	records, err := runner.MessageHistory()
+	records, err := runner.Conversation(context.Background())
 	if err != nil {
 		return []entry{
 			sessionStartedEntry(),
@@ -3645,15 +3516,11 @@ func initialSessionState(runner Runner) ([]entry, []string, string) {
 	if len(entries) == 0 {
 		return []entry{sessionStartedEntry()}, inputHistory, "Ready"
 	}
-	return entries, inputHistory, "Resumed session: " + runner.SessionID()
+	return entries, inputHistory, "Resumed session: " + runner.State().Session.ID
 }
 
 func projectInputHistoryOrFallback(runner Runner, fallback []string) []string {
-	phr, ok := runner.(projectInputHistoryRunner)
-	if !ok {
-		return fallback
-	}
-	history, err := phr.ProjectInputHistory(inputHistoryLimit)
+	history, err := runner.ProjectInputHistory(context.Background(), inputHistoryLimit)
 	if err != nil {
 		return fallback
 	}
@@ -3669,14 +3536,14 @@ func sessionStartedEntry() entry {
 	}
 }
 
-func entriesFromMessageHistory(records []session.MessageRecord) []entry {
+func entriesFromMessageHistory(records []app.ConversationRecord) []entry {
 	entries := make([]entry, 0, len(records))
 	toolNames := make(map[string]string)
 	for _, record := range records {
-		msg := record.Message
+		role := record.Role
 		when := historyEntryTime(record.Time)
 		switch {
-		case msg.Role == schema.RoleUser && msg.ToolCallID == "":
+		case role == "user" && record.ToolCallID == "":
 			content := record.HumanContent()
 			if !isRenderableHistoryContent(content) {
 				continue
@@ -3687,16 +3554,16 @@ func entriesFromMessageHistory(records []session.MessageRecord) []entry {
 				body:  content,
 				time:  when,
 			})
-		case msg.Role == schema.RoleAssistant:
-			if strings.TrimSpace(msg.Content) != "" {
+		case role == "assistant":
+			if strings.TrimSpace(record.Content) != "" {
 				entries = append(entries, entry{
 					role:  "assistant",
 					title: "foxharness",
-					body:  msg.Content,
+					body:  record.Content,
 					time:  when,
 				})
 			}
-			for _, call := range msg.ToolCalls {
+			for _, call := range record.ToolCalls {
 				toolNames[call.ID] = call.Name
 				entries = append(entries, entry{
 					role:  "tool",
@@ -3705,15 +3572,15 @@ func entriesFromMessageHistory(records []session.MessageRecord) []entry {
 					time:  when,
 				})
 			}
-		case msg.ToolCallID != "":
-			toolName := toolNames[msg.ToolCallID]
+		case record.ToolCallID != "":
+			toolName := toolNames[record.ToolCallID]
 			if toolName == "" {
 				toolName = "tool"
 			}
 			entries = appendTranscriptEntry(entries, entry{
 				role:  "tool",
 				title: "result " + toolName,
-				body:  msg.Content,
+				body:  record.Content,
 				time:  when,
 			})
 		}
@@ -3721,12 +3588,11 @@ func entriesFromMessageHistory(records []session.MessageRecord) []entry {
 	return entries
 }
 
-func inputHistoryFromMessageHistory(records []session.MessageRecord) []string {
+func inputHistoryFromMessageHistory(records []app.ConversationRecord) []string {
 	history := make([]string, 0, len(records))
 	for _, record := range records {
-		msg := record.Message
 		content := record.HumanContent()
-		if msg.Role != schema.RoleUser || msg.ToolCallID != "" || !isRenderableHistoryContent(content) {
+		if record.Role != "user" || record.ToolCallID != "" || !isRenderableHistoryContent(content) {
 			continue
 		}
 		text := strings.TrimSpace(content)
@@ -3999,17 +3865,17 @@ type runEventMsg struct {
 
 type runFinishedMsg struct {
 	operationID uint64
-	result      *engine.RunResult
+	result      *app.RunOutcome
 	err         error
 }
 
 type newSessionFinishedMsg struct {
-	sessionID string
-	err       error
+	state app.InteractiveSessionState
+	err   error
 }
 
 type compactFinishedMsg struct {
-	result *compaction.CompactResult
+	result *app.CompactOutcome
 	err    error
 }
 
@@ -4020,11 +3886,9 @@ type shellCommandFinishedMsg struct {
 }
 
 func runPromptCmd(ctx context.Context, runner Runner, prompt string, mode collaboration.Mode, operationID uint64, events chan<- tea.Msg) tea.Cmd {
-	return func() tea.Msg {
-		reporter := &channelReporter{events: events, operationID: operationID}
-		result, err := runner.RunInCollaborationMode(ctx, prompt, mode, reporter)
-		return runFinishedMsg{operationID: operationID, result: result, err: err}
-	}
+	return runApplicationCmd(ctx, runner, app.RunCommand{
+		Prompt: prompt, CollaborationMode: string(mode),
+	}, nil, operationID, events)
 }
 
 func runShellCommandCmd(ctx context.Context, workDir string, command string, operationID uint64) tea.Cmd {
@@ -4088,14 +3952,14 @@ func shellCommandTruncationMarker() string {
 
 func newSessionCmd(ctx context.Context, runner Runner) tea.Cmd {
 	return func() tea.Msg {
-		sessionID, err := runner.NewSession(ctx)
-		return newSessionFinishedMsg{sessionID: sessionID, err: err}
+		state, err := runner.NewSession(ctx, app.NewSessionCommand{})
+		return newSessionFinishedMsg{state: state, err: err}
 	}
 }
 
 func compactNowCmd(ctx context.Context, runner Runner, customInstructions string) tea.Cmd {
 	return func() tea.Msg {
-		result, err := runner.CompactNow(ctx, customInstructions)
-		return compactFinishedMsg{result: result, err: err}
+		result, err := runner.Compact(ctx, app.CompactCommand{Instructions: customInstructions})
+		return compactFinishedMsg{result: &result, err: err}
 	}
 }
