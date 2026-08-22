@@ -47,6 +47,15 @@ When the argument identifies an existing feature:
 4. Load the existing `requirements.md`.
 5. Legacy feature: if only `spec.md` exists, extract candidate entries from it, mark them `open`, and require user confirmation before they become authoritative.
 
+## Consult Project Profile
+
+Before discussing and finalizing requirements, read the project profile under `.codexspec/profile/` when it exists so the confirmed `requirements.md` is a synthesis that already accounts for accumulated project knowledge. Each category is a directory holding one record per file:
+
+- `constraints/` first — the project's hard prohibitions (highest weight); requirements MUST NOT contradict them.
+- `pitfalls/`, `conventions/`, `decisions/`, `strategies/`, `runbooks/` — read the records relevant to this feature's area, to avoid re-hitting known traps, to follow established conventions, to reuse past cross-feature/architectural decisions rather than re-litigating them, and to apply proven strategies and procedures.
+
+Each record carries a `status` (`candidate` or `vetted`); weight `candidate` entries with appropriate caution. Fold what is relevant into the discussion and the resulting entries; cite a profile record as evidence when it materially shapes a decision. This is the single point where the profile enters the SDD pipeline — downstream stages keep `requirements.md` as authority and do not re-read the profile. Degrade silently when the profile is absent or empty (nothing to apply); never block on it.
+
 ## Discussion Rules
 
 - Ask one material question at a time.
@@ -104,3 +113,14 @@ Report:
 - Confirmed IDs
 - Open IDs and whether they block specification generation
 - Next command: `$codexspec:generate-spec <feature-dir>`
+
+## Auto-Next Chain Advance
+
+Read `workflow.auto_next` from `.codexspec/config.yml` (default `false`; only the literal value `true` enables it).
+
+When `workflow.auto_next` is `true` AND discovery is complete — the Completion criteria above are met and the user has explicitly confirmed the final stage summary (not each intermediate topic confirmation) — advance the chain automatically:
+
+1. Emit exactly one notice line, in the interaction language, e.g. `auto_next: requirements confirmed → invoking $codexspec:generate-spec <feature-dir>`.
+2. Invoke `$codexspec:generate-spec <feature-dir>` exactly once, then end this command.
+
+Do not auto-advance on intermediate topic confirmations, or when `workflow.auto_next` is disabled (absent, `false`, or non-`true`); in those cases report normally and hand off to the next command manually. This advances the chain and does not modify the Completion report.
