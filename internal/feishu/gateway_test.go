@@ -9,6 +9,21 @@ import (
 	"github.com/Zts0hg/foxharness/internal/approval"
 )
 
+func TestGatewayWithDeliveryStoreTreatsTypedNilAsAbsent(t *testing.T) {
+	gateway := NewGateway("token", "encrypt", make(chan Task, 1), approval.NewStore())
+	var store *memoryDeliveryStore
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("WithDeliveryStore() installed typed-nil store: %v", recovered)
+		}
+	}()
+	gateway.WithDeliveryStore(store)
+	accepted, err := gateway.reserveDelivery(context.Background(), "message-1")
+	if err != nil || !accepted {
+		t.Fatalf("reserveDelivery() = %v/%v, want default in-memory acceptance", accepted, err)
+	}
+}
+
 func TestGatewayServerUsesDefensiveTimeoutsAndPrivateMux(t *testing.T) {
 	gateway := NewGateway("token", "encrypt", make(chan Task), approval.NewStore())
 	server := gateway.Server(":0")

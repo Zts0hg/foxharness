@@ -73,7 +73,7 @@ func NewGateway(verificationToken, encryptKey string, tasks chan<- Task, approva
 
 // WithDeliveryStore installs the durable message acceptance authority.
 func (g *Gateway) WithDeliveryStore(store DeliveryStore) *Gateway {
-	if store != nil {
+	if !isNilDependency(store) {
 		g.deliveryStore = store
 	}
 	return g
