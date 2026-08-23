@@ -100,6 +100,7 @@ func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 			scheduler.enqueue(ctx, task)
 			if ctx.Err() != nil {
 				scheduler.cancelAll(ctx.Err())
+				r.cancelBufferedTasks(taskInput, ctx.Err())
 				taskInput = nil
 				cancellation = nil
 				cancelling = true

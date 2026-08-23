@@ -445,6 +445,66 @@ func TestDVFEI006RunnerCancelsEveryBufferedAcceptedTask(t *testing.T) {
 	}
 }
 
+type cancelOnSecondDoneContext struct {
+	mu        sync.Mutex
+	done      chan struct{}
+	doneCalls int
+	cancelled bool
+}
+
+func newCancelOnSecondDoneContext() *cancelOnSecondDoneContext {
+	return &cancelOnSecondDoneContext{done: make(chan struct{})}
+}
+
+func (*cancelOnSecondDoneContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+func (c *cancelOnSecondDoneContext) Done() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.doneCalls++
+	if c.doneCalls == 2 && !c.cancelled {
+		close(c.done)
+		c.cancelled = true
+	}
+	return c.done
+}
+
+func (c *cancelOnSecondDoneContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cancelled {
+		return context.Canceled
+	}
+	return nil
+}
+
+func (*cancelOnSecondDoneContext) Value(any) any { return nil }
+
+func TestDVFEI006RunnerDrainsBufferedTasksWhenCancellationRacesWithReceive(t *testing.T) {
+	messenger := &recordingTextMessenger{}
+	var started atomic.Int32
+	runner := &Runner{messenger: messenger, runTask: func(context.Context, Task) {
+		started.Add(1)
+	}}
+	tasks := make(chan Task, 3)
+	for _, id := range []string{"race-1", "race-2", "race-3"} {
+		tasks <- Task{TaskID: id, ChatID: "chat", SenderID: "sender"}
+	}
+	close(tasks)
+
+	runner.Start(newCancelOnSecondDoneContext(), tasks)
+
+	if got := started.Load(); got != 0 {
+		t.Fatalf("buffered tasks started during cancellation race = %d, want 0", got)
+	}
+	got := strings.Join(messenger.texts, "\n")
+	for _, id := range []string{"race-1", "race-2", "race-3"} {
+		if !strings.Contains(got, id) {
+			t.Fatalf("buffered cancellation messages = %q, missing correlated terminal message for %s", got, id)
+		}
+	}
+}
+
 func TestDVFEI007ApprovalResolutionIsNonBlockingAndExactlyOnce(t *testing.T) {
 	store := approval.NewStore()
 	sendEntered := make(chan struct{})
