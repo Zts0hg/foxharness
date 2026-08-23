@@ -13,6 +13,24 @@ import (
 	"github.com/Zts0hg/foxharness/internal/testsupport/runtimecontract"
 )
 
+func TestTargetRejectsNilModelRunInvoker(t *testing.T) {
+	eng := NewAgentEngine(nilModelRunInvoker{}, &recordingTargetToolExecutor{}, &targetTestConversation{}, targetTestPolicy{}, nil)
+
+	outcome, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 1})
+	if err == nil || !strings.Contains(err.Error(), "model invoker returned nil run invoker") {
+		t.Fatalf("Run() error = %v, want nil model-run collaborator error", err)
+	}
+	if outcome.ErrorKind != "provider" {
+		t.Fatalf("Run() outcome = %#v, want provider error kind", outcome)
+	}
+}
+
+type nilModelRunInvoker struct{}
+
+func (nilModelRunInvoker) StartRun(context.Context) (ModelRunInvoker, error) {
+	return nil, nil
+}
+
 func TestTargetContractAdapterRunsM04Scenarios(t *testing.T) {
 	for _, testCase := range []runtimeTurnTestCase{
 		{name: "RT-001 tool-free completion", scenario: runtimeTurnToolFreeScenario()},

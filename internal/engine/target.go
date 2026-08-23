@@ -347,6 +347,9 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 	if err != nil {
 		return e.fail(emit, RunOutcome{}, "provider", fmt.Errorf("模型生成失败: %w", err))
 	}
+	if modelRun == nil {
+		return e.fail(emit, RunOutcome{}, "provider", errors.New("model invoker returned nil run invoker"))
+	}
 	outcome := RunOutcome{}
 	emitModelFact := func(fact ModelFact) {
 		if fact.Kind == ModelFactMessageDelta && fact.Content != "" {
