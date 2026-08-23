@@ -113,6 +113,50 @@ func TestWorktreeCreateReattachesExistingBranchWithoutDir(t *testing.T) {
 	}
 }
 
+func TestWorktreeCreateResumeRejectsMalformedLedgerPathComponents(t *testing.T) {
+	tests := []struct {
+		name string
+		item LedgerItem
+	}{
+		{
+			name: "slug-traversal",
+			item: LedgerItem{
+				Slug:   "../../outside",
+				Status: StatusInProgress,
+				Branch: "topic",
+			},
+		},
+		{
+			name: "auto-branch-traversal",
+			item: LedgerItem{
+				Slug:   "safe",
+				Status: StatusInProgress,
+				Branch: "auto/../../outside",
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			git := &fakeGit{}
+			mgr := NewWorktreeManager(git, repoRoot, "../wt-malformed", "main", "origin")
+
+			wt, err := mgr.Create(context.Background(), tc.item)
+			if err == nil {
+				t.Fatalf("Create returned %+v, want malformed ledger path components rejected", wt)
+			}
+			if !strings.Contains(err.Error(), "invalid") {
+				t.Fatalf("Create error = %v, want invalid ledger state", err)
+			}
+			for _, call := range git.calls {
+				if strings.HasPrefix(call, "worktree add") {
+					t.Fatalf("git calls = %v, want no worktree add after malformed ledger state", git.calls)
+				}
+			}
+		})
+	}
+}
+
 func TestWorktreeCreateSuffixesLeftoverPath(t *testing.T) {
 	repoRoot := t.TempDir()
 	base := filepath.Join(filepath.Dir(repoRoot), "wt-leftover")

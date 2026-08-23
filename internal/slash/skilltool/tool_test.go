@@ -244,6 +244,28 @@ func TestSkillTool_Execute_InlineAllowedToolsRefused(t *testing.T) {
 	}
 }
 
+func TestSkillTool_Execute_InlineExplicitEmptyAllowedToolsRefused(t *testing.T) {
+	cmd := &slash.Command{
+		Type:    slash.CommandPrompt,
+		Name:    "scan",
+		Content: "Scan body",
+		Frontmatter: slash.Frontmatter{
+			UserInvocable: true,
+			AllowedTools:  []string{},
+			// Context defaults to inline; explicit empty still means a restriction.
+		},
+	}
+	tool := NewSkillTool(newRegistryWithSkill(t, cmd), slash.NewExecutor(), func() string { return "" })
+	args, _ := json.Marshal(map[string]string{"name": "scan", "arguments": ""})
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil {
+		t.Fatal("expected inline+explicit-empty allowed-tools to be refused for model invocation")
+	}
+	if !strings.Contains(err.Error(), "context: fork") {
+		t.Errorf("refusal must hint at fork mode: %v", err)
+	}
+}
+
 func TestSkillTool_Execute_InlineAllowedToolsRefusedBeforePipeline(t *testing.T) {
 	wd := t.TempDir()
 	beforeMarker := wd + "/before.touched"

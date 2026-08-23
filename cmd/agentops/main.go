@@ -40,6 +40,7 @@ const defaultShutdownTimeout = 30 * time.Second
 
 type gatewayService interface {
 	Listen(string) error
+	StopAccepting(context.Context) error
 	Shutdown(context.Context) error
 }
 
@@ -131,19 +132,29 @@ func serve(
 	case <-signalCtx.Done():
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancelShutdown()
-		shutdownErr := gateway.Shutdown(shutdownCtx)
-		listenErr, listenerStopped := waitForListenResult(shutdownCtx, listenResult)
+		admissionErr := gateway.StopAccepting(shutdownCtx)
+		listenerCtx := shutdownCtx
+		var cancelListener context.CancelFunc
+		if shutdownCtx.Err() != nil {
+			listenerCtx, cancelListener = context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancelListener()
+		}
+		shutdownErr := gateway.Shutdown(listenerCtx)
+		listenErr, listenerStopped := waitForListenResult(listenerCtx, listenResult)
+		waitCtx := listenerCtx
+		var cancelWait context.CancelFunc
 		if !listenerStopped {
-			cancelRunner()
-			return errors.Join(shutdownErr, listenErr)
+			waitCtx, cancelWait = context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancelWait()
 		}
 		close(feishuTasks)
 		cancelRunner()
 		return errors.Join(
+			admissionErr,
 			shutdownErr,
 			listenErr,
-			waitForCompletion(shutdownCtx, "AgentOps bridge", bridgeDone),
-			waitForCompletion(shutdownCtx, "AgentOps runner", runnerDone),
+			waitForCompletion(waitCtx, "AgentOps bridge", bridgeDone),
+			waitForCompletion(waitCtx, "AgentOps runner", runnerDone),
 		)
 	}
 }

@@ -36,6 +36,7 @@ const defaultShutdownTimeout = 30 * time.Second
 
 type gatewayService interface {
 	Listen(string) error
+	StopAccepting(context.Context) error
 	Shutdown(context.Context) error
 }
 
@@ -115,17 +116,25 @@ func serve(
 	case <-signalCtx.Done():
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancelShutdown()
-		shutdownErr := gateway.Shutdown(shutdownCtx)
-		listenErr, listenerStopped := waitForListenResult(shutdownCtx, listenResult)
+		admissionErr := gateway.StopAccepting(shutdownCtx)
+		listenerCtx := shutdownCtx
+		var cancelListener context.CancelFunc
+		if shutdownCtx.Err() != nil {
+			listenerCtx, cancelListener = context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancelListener()
+		}
+		shutdownErr := gateway.Shutdown(listenerCtx)
+		listenErr, listenerStopped := waitForListenResult(listenerCtx, listenResult)
+		waitCtx := listenerCtx
+		var cancelWait context.CancelFunc
 		if !listenerStopped {
-			cancelRunner()
-			runnerErr := waitForCompletion(shutdownCtx, "runner", runnerDone)
-			return errors.Join(shutdownErr, listenErr, runnerErr)
+			waitCtx, cancelWait = context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancelWait()
 		}
 		close(tasks)
 		cancelRunner()
-		runnerErr := waitForCompletion(shutdownCtx, "runner", runnerDone)
-		return errors.Join(shutdownErr, listenErr, runnerErr)
+		runnerErr := waitForCompletion(waitCtx, "runner", runnerDone)
+		return errors.Join(admissionErr, shutdownErr, listenErr, runnerErr)
 	}
 }
 

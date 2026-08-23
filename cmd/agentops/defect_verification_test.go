@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -127,6 +128,70 @@ func TestDVAOP002ProductionEntryCoordinatesShutdownAndTwoChannelDrain(t *testing
 	}
 }
 
+func TestDVAOP002ShutdownTimeoutStillDrainsAcceptedWork(t *testing.T) {
+	recorder := &agentOpsShutdownRecorder{}
+	gateway := &stuckRecordingAgentOpsGateway{
+		recorder:  recorder,
+		listening: make(chan struct{}),
+	}
+	runner := &recordingAgentOpsRunner{recorder: recorder}
+	feishuTasks := make(chan feishu.Task, 1)
+	feishuTasks <- feishu.Task{TaskID: "accepted", ChatID: "chat", SenderID: "sender", MessageID: "message", Text: "inspect"}
+	signalCtx, cancelSignal := context.WithCancel(context.Background())
+	serveResult := make(chan error, 1)
+	go func() {
+		serveResult <- serve(signalCtx, gateway, runner, feishuTasks, ":0", 20*time.Millisecond)
+	}()
+	<-gateway.listening
+	cancelSignal()
+	if err := <-serveResult; !strings.Contains(fmt.Sprint(err), "wait for AgentOps listener") {
+		t.Fatalf("serve() error = %v, want listener shutdown timeout", err)
+	}
+	if got, want := recorder.snapshot(), []string{
+		"http-shutdown",
+		"runner-cancelled",
+		"task-accepted",
+		"runner-input-closed",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("shutdown-timeout order = %#v, want %#v", got, want)
+	}
+}
+
+func TestDVAOP002StopAcceptingErrorStillDrainsAcceptedWork(t *testing.T) {
+	recorder := &agentOpsShutdownRecorder{}
+	gateway := &recordingAgentOpsGateway{
+		recorder:  recorder,
+		listening: make(chan struct{}),
+		shutdown:  make(chan struct{}),
+		stopErr:   errors.New("stop accepting AgentOps deliveries"),
+	}
+	runner := &recordingAgentOpsRunner{recorder: recorder}
+	feishuTasks := make(chan feishu.Task, 1)
+	feishuTasks <- feishu.Task{TaskID: "accepted", ChatID: "chat", SenderID: "sender", MessageID: "message", Text: "inspect"}
+	signalCtx, cancelSignal := context.WithCancel(context.Background())
+	serveResult := make(chan error, 1)
+	go func() {
+		serveResult <- serve(signalCtx, gateway, runner, feishuTasks, ":0", time.Second)
+	}()
+	<-gateway.listening
+	cancelSignal()
+	if err := <-serveResult; !strings.Contains(fmt.Sprint(err), "stop accepting AgentOps deliveries") {
+		t.Fatalf("serve() error = %v, want StopAccepting failure", err)
+	}
+	got := recorder.snapshot()
+	for _, required := range []string{"http-shutdown", "listener-stopped", "runner-cancelled", "task-accepted", "runner-input-closed"} {
+		if !containsAgentOpsShutdownEvent(got, required) {
+			t.Fatalf("StopAccepting failure order = %#v, missing %s", got, required)
+		}
+	}
+	if len(got) < 2 {
+		t.Fatalf("StopAccepting failure order = %#v, want accepted task and input close events", got)
+	}
+	if got[len(got)-2] != "task-accepted" || got[len(got)-1] != "runner-input-closed" {
+		t.Fatalf("StopAccepting failure terminal order = %#v, want accepted task before runner input closes", got)
+	}
+}
+
 func TestDVAOP005ProductionEntryComposesDeliveryFailureObserver(t *testing.T) {
 	source := readAgentOpsMain(t)
 	for _, required := range []string{
@@ -160,6 +225,7 @@ type recordingAgentOpsGateway struct {
 	recorder  *agentOpsShutdownRecorder
 	listening chan struct{}
 	shutdown  chan struct{}
+	stopErr   error
 }
 
 func (g *recordingAgentOpsGateway) Listen(string) error {
@@ -175,6 +241,25 @@ func (g *recordingAgentOpsGateway) Shutdown(context.Context) error {
 	return nil
 }
 
+func (g *recordingAgentOpsGateway) StopAccepting(context.Context) error { return g.stopErr }
+
+type stuckRecordingAgentOpsGateway struct {
+	recorder  *agentOpsShutdownRecorder
+	listening chan struct{}
+}
+
+func (g *stuckRecordingAgentOpsGateway) Listen(string) error {
+	close(g.listening)
+	select {}
+}
+
+func (g *stuckRecordingAgentOpsGateway) Shutdown(context.Context) error {
+	g.recorder.add("http-shutdown")
+	return nil
+}
+
+func (*stuckRecordingAgentOpsGateway) StopAccepting(context.Context) error { return nil }
+
 type recordingAgentOpsRunner struct {
 	recorder *agentOpsShutdownRecorder
 }
@@ -188,6 +273,15 @@ func (r *recordingAgentOpsRunner) Start(ctx context.Context, tasks <-chan agento
 		}
 	}
 	r.recorder.add("runner-input-closed")
+}
+
+func containsAgentOpsShutdownEvent(events []string, want string) bool {
+	for _, event := range events {
+		if event == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestDVAOPApprovalReusesAuthenticatedExactlyOnceStore(t *testing.T) {

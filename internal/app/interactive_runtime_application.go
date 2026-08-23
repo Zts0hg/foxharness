@@ -5,13 +5,17 @@ import (
 	"errors"
 	"reflect"
 	"sync"
+	"time"
 
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 )
 
+const interactiveSessionCloseTimeout = 5 * time.Second
+
 /* InteractiveRuntimeBinding groups the mechanism capabilities owned by one live runtime session. */
 type InteractiveRuntimeBinding struct {
 	Session             RuntimeSession
+	Commit              func()
 	State               func() InteractiveSessionState
 	Conversation        func(context.Context) ([]ConversationRecord, error)
 	ProjectInputHistory func(context.Context, int) ([]string, error)
@@ -72,6 +76,9 @@ func NewInteractiveRuntimeApplication(config InteractiveRuntimeApplicationConfig
 		normalize = func(value string) string { return value }
 	}
 	defaultMode := normalize(config.CollaborationMode)
+	if config.Initial.Commit != nil {
+		config.Initial.Commit()
+	}
 	return &InteractiveRuntimeApplication{
 		binding: config.Initial, newSession: config.NewSession, runSpec: cloneRunSpec(config.RunSpec),
 		model: config.Model, effort: config.Effort, collaborationMode: defaultMode,
@@ -166,24 +173,35 @@ func (a *InteractiveRuntimeApplication) NewSession(ctx context.Context, _ NewSes
 		return InteractiveSessionState{}, err
 	}
 	if isNilRuntimeSession(next.Session) || next.State == nil {
-		if next.Close != nil {
-			_ = next.Close(ctx)
-		}
+		_ = closeInteractiveReplacement(next)
 		return InteractiveSessionState{}, errors.New("interactive new-session factory returned an invalid binding")
 	}
 
-	a.mu.Lock()
 	previous := a.binding
+	if previous.Close != nil {
+		if err := previous.Close(ctx); err != nil {
+			cleanupErr := closeInteractiveReplacement(next)
+			return a.State(), errors.Join(err, cleanupErr)
+		}
+	}
+	if next.Commit != nil {
+		next.Commit()
+	}
+	a.mu.Lock()
 	a.binding = next
 	a.collaborationMode = a.defaultCollaboration
 	a.mu.Unlock()
-	if previous.Close != nil {
-		if err := previous.Close(ctx); err != nil {
-			return a.State(), err
-		}
-	}
 	a.permissions.ClearPermissionGrants(ctx)
 	return a.State(), nil
+}
+
+func closeInteractiveReplacement(binding InteractiveRuntimeBinding) error {
+	if binding.Close == nil {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), interactiveSessionCloseTimeout)
+	defer cancel()
+	return binding.Close(cleanupCtx)
 }
 
 /* UpdateModel changes the model used by future runs after composition validation succeeds. */

@@ -44,6 +44,14 @@ const maxWorktreeCandidates = 100
 // retains branches after success, so a reset ledger replays into existing
 // auto/* branches) advances to the next pair (Edge Cases).
 func (m *WorktreeManager) Create(ctx context.Context, item LedgerItem) (Worktree, error) {
+	if err := validateLedgerPathComponent("slug", item.Slug); err != nil {
+		return Worktree{}, fmt.Errorf("invalid worktree item %q: %w", item.Slug, err)
+	}
+	if item.Branch != "" {
+		if err := validateLedgerBranch(item.Branch); err != nil {
+			return Worktree{}, fmt.Errorf("invalid worktree item %q: %w", item.Slug, err)
+		}
+	}
 	root := m.resolvedWorktreeRoot()
 
 	if item.Status == StatusInProgress && item.Branch != "" {
@@ -105,7 +113,11 @@ func (m *WorktreeManager) resume(ctx context.Context, root string, item LedgerIt
 		_, _ = m.git.Run(ctx, m.repoRoot, "worktree", "prune")
 	}
 
-	path = filepath.Join(root, dirNameForBranch(item.Branch, item.Slug))
+	name := dirNameForBranch(item.Branch, item.Slug)
+	if err := validateLedgerPathComponent("worktree directory", name); err != nil {
+		return Worktree{}, fmt.Errorf("reattach worktree for %s: %w", item.Slug, err)
+	}
+	path = filepath.Join(root, name)
 	result, runErr := m.git.Run(ctx, m.repoRoot, "worktree", "add", path, item.Branch)
 	if _, err := strictCommandStdout(result, runErr); err != nil {
 		return Worktree{}, fmt.Errorf("reattach worktree for %s: %w (%s)", item.Slug, err, result.Output())

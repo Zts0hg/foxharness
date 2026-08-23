@@ -104,6 +104,25 @@ Body`)
 	}
 }
 
+func TestParseFrontmatter_AllowedToolsExplicitEmptyPreserved(t *testing.T) {
+	input := []byte(`---
+allowed-tools: []
+context: "fork"
+---
+Body`)
+
+	fm, body, err := ParseFrontmatter(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fm.AllowedTools == nil || len(fm.AllowedTools) != 0 {
+		t.Fatalf("AllowedTools = %#v, want explicit empty deny-all slice", fm.AllowedTools)
+	}
+	if strings.TrimSpace(body) != "Body" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
 func TestParseFrontmatter_NoFrontmatter(t *testing.T) {
 	input := []byte("Just body content\nwith no frontmatter")
 	fm, body, err := ParseFrontmatter(input)

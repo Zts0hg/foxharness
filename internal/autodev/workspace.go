@@ -16,9 +16,12 @@ var featureNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // Both roots retain directory handles, while explicit Lstat checks reject
 // symlinks and special files that os.Root containment alone permits.
 type featureWorkspace struct {
-	workRoot    *os.Root
-	featureRoot *os.Root
-	featureDir  string
+	workRoot     *os.Root
+	codexRoot    *os.Root
+	specsRoot    *os.Root
+	featureRoot  *os.Root
+	featureDir   string
+	openArtifact func(string) (*os.File, error)
 }
 
 var authoritativeArtifactNames = []string{
@@ -60,25 +63,54 @@ func openFeatureWorkspace(workDir, featureDir string, create bool) (*featureWork
 		return nil, fmt.Errorf("open worktree root: %w", err)
 	}
 	w := &featureWorkspace{workRoot: workRoot, featureDir: featureDir}
-	for _, dir := range []string{".codexspec", ".codexspec/specs", featureDir} {
-		if err := ensureRootedDirectory(workRoot, dir, create); err != nil {
+	featureName := strings.TrimPrefix(featureDir, ".codexspec/specs/")
+	steps := []struct {
+		parent **os.Root
+		name   string
+		target **os.Root
+	}{
+		{parent: &w.workRoot, name: ".codexspec", target: &w.codexRoot},
+		{parent: &w.codexRoot, name: "specs", target: &w.specsRoot},
+		{parent: &w.specsRoot, name: featureName, target: &w.featureRoot},
+	}
+	for _, step := range steps {
+		if err := ensureRootedDirectory(*step.parent, step.name, create); err != nil {
 			_ = w.Close()
 			return nil, fmt.Errorf("open feature workspace %q: %w", featureDir, err)
 		}
+		opened, err := openVerifiedRoot(*step.parent, step.name, nil)
+		if err != nil {
+			_ = w.Close()
+			return nil, fmt.Errorf("open feature workspace %q: %w", featureDir, err)
+		}
+		*step.target = opened
 	}
-	featureRoot, err := workRoot.OpenRoot(featureDir)
-	if err != nil {
-		_ = w.Close()
-		return nil, fmt.Errorf("open feature workspace %q: %w", featureDir, err)
-	}
-	w.featureRoot = featureRoot
-	// Recheck after opening so a component swap cannot silently turn the
-	// persisted feature binding into a symlink-backed workspace.
-	if err := ensureRootedDirectory(workRoot, featureDir, false); err != nil {
-		_ = w.Close()
-		return nil, fmt.Errorf("open feature workspace %q: %w", featureDir, err)
-	}
+	w.openArtifact = w.featureRoot.Open
 	return w, nil
+}
+
+func openVerifiedRoot(parent *os.Root, name string, afterOpen func() error) (*os.Root, error) {
+	expected, err := parent.Lstat(name)
+	if err != nil {
+		return nil, fmt.Errorf("inspect directory %s: %w", name, err)
+	}
+	opened, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, fmt.Errorf("open directory %s: %w", name, err)
+	}
+	if afterOpen != nil {
+		if err := afterOpen(); err != nil {
+			_ = opened.Close()
+			return nil, err
+		}
+	}
+	openedInfo, openErr := opened.Stat(".")
+	current, currentErr := parent.Lstat(name)
+	if openErr != nil || currentErr != nil || !os.SameFile(expected, openedInfo) || !os.SameFile(openedInfo, current) {
+		_ = opened.Close()
+		return nil, fmt.Errorf("directory %s changed while opening: %w", name, errors.Join(openErr, currentErr))
+	}
+	return opened, nil
 }
 
 func ensureRootedDirectory(root *os.Root, name string, create bool) error {
@@ -106,6 +138,14 @@ func (w *featureWorkspace) Close() error {
 	if w.featureRoot != nil {
 		errs = append(errs, w.featureRoot.Close())
 		w.featureRoot = nil
+	}
+	if w.specsRoot != nil {
+		errs = append(errs, w.specsRoot.Close())
+		w.specsRoot = nil
+	}
+	if w.codexRoot != nil {
+		errs = append(errs, w.codexRoot.Close())
+		w.codexRoot = nil
 	}
 	if w.workRoot != nil {
 		errs = append(errs, w.workRoot.Close())
@@ -139,10 +179,11 @@ func (w *featureWorkspace) regularInfo(name string) (os.FileInfo, error) {
 }
 
 func (w *featureWorkspace) readRegular(name string) ([]byte, error) {
-	if _, err := w.regularInfo(name); err != nil {
+	expected, err := w.regularInfo(name)
+	if err != nil {
 		return nil, err
 	}
-	f, err := w.featureRoot.Open(name)
+	f, err := w.openArtifact(name)
 	if err != nil {
 		return nil, err
 	}
@@ -154,17 +195,22 @@ func (w *featureWorkspace) readRegular(name string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("artifact %s/%s changed to a non-regular file", w.featureDir, name)
 	}
-	if _, err := w.regularInfo(name); err != nil {
+	current, err := w.regularInfo(name)
+	if err != nil {
 		return nil, err
+	}
+	if !os.SameFile(expected, info) || !os.SameFile(info, current) {
+		return nil, fmt.Errorf("artifact %s/%s changed while opening", w.featureDir, name)
 	}
 	return io.ReadAll(f)
 }
 
 func (w *featureWorkspace) regularSize(name string) (int64, error) {
-	if _, err := w.regularInfo(name); err != nil {
+	expected, err := w.regularInfo(name)
+	if err != nil {
 		return 0, err
 	}
-	f, err := w.featureRoot.Open(name)
+	f, err := w.openArtifact(name)
 	if err != nil {
 		return 0, err
 	}
@@ -176,8 +222,12 @@ func (w *featureWorkspace) regularSize(name string) (int64, error) {
 	if !info.Mode().IsRegular() {
 		return 0, fmt.Errorf("artifact %s/%s changed to a non-regular file", w.featureDir, name)
 	}
-	if _, err := w.regularInfo(name); err != nil {
+	current, err := w.regularInfo(name)
+	if err != nil {
 		return 0, err
+	}
+	if !os.SameFile(expected, info) || !os.SameFile(info, current) {
+		return 0, fmt.Errorf("artifact %s/%s changed while opening", w.featureDir, name)
 	}
 	return info.Size(), nil
 }

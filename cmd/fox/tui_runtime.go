@@ -361,7 +361,7 @@ func (c *tuiRuntimeComposition) newModel(_ context.Context, assembly foxruntime.
 	if err != nil {
 		return nil, err
 	}
-	return journal.WrapModel(modelinvoke.New(modelProvider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker})), nil
+	return journal.WrapModel(modelinvoke.New(modelProvider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker, Streaming: true})), nil
 }
 
 func (c *tuiRuntimeComposition) newTools(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {
@@ -504,6 +504,7 @@ func (c *tuiRuntimeComposition) newContext(_ context.Context, assembly foxruntim
 		WithInteractiveAsk(true).
 		WithMemory(resource.memory.WorkingMemoryPath()).
 		WithAutoMemory(c.autoMemory, automemory.MainMemoryGuidance).
+		WithToolCapabilities(assembly.AllowedTools).
 		WithSkillList(func() string {
 			window := compaction.NewModelRegistry().Lookup(assembly.Run.Model)
 			return skilltool.FormatSkillsWithinBudget(c.registry.ModelInvocable(), window)
@@ -516,12 +517,14 @@ func (c *tuiRuntimeComposition) bind(agentSession *foxruntime.AgentSession) (app
 	if err != nil {
 		return app.InteractiveRuntimeBinding{}, err
 	}
-	c.mu.Lock()
-	c.current = agentSession
-	c.mu.Unlock()
 	return app.InteractiveRuntimeBinding{
 		Session: agentSession,
-		State:   func() app.InteractiveSessionState { return c.sessionState(resource) },
+		Commit: func() {
+			c.mu.Lock()
+			c.current = agentSession
+			c.mu.Unlock()
+		},
+		State: func() app.InteractiveSessionState { return c.sessionState(resource) },
 		Conversation: func(context.Context) ([]app.ConversationRecord, error) {
 			records, err := session.NewMessageLog(resource.stored).LoadRecords()
 			return mapTUIConversation(records), err

@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/session"
 )
+
+const terminalObserverTimeout = 5 * time.Second
 
 /* RunAssembly is the immutable identity and policy snapshot supplied to one run factory. */
 type RunAssembly struct {
@@ -139,7 +142,9 @@ func (s *AgentSession) finishRun(scope *RunScope, observer *runtimeObserver, res
 		}
 		runErr = errors.Join(runErr, fmt.Errorf("finish runtime run: %w", finishErr))
 	}
-	observer.finish(context.WithoutCancel(scope.Context()), runErr, finishErr != nil)
+	terminalCtx, cancel := context.WithTimeout(context.WithoutCancel(scope.Context()), terminalObserverTimeout)
+	observer.finish(terminalCtx, runErr, finishErr != nil)
+	cancel()
 	result = observer.result(result.Outcome)
 	return result, runErr
 }
@@ -383,7 +388,7 @@ func (o *runtimeObserver) result(outcome engine.RunOutcome) RunResult {
 }
 
 func cloneRunAssembly(request RunAssembly) RunAssembly {
-	request.AllowedTools = append([]string(nil), request.AllowedTools...)
+	request.AllowedTools = cloneToolNames(request.AllowedTools)
 	return request
 }
 

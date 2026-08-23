@@ -2,16 +2,20 @@ package shellcmd
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
 	"sync"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/processtree"
 	"github.com/Zts0hg/foxharness/internal/toolresult"
 )
 
 const (
-	defaultTimeout = 30 * time.Second
-	MaxOutputBytes = toolresult.MaxToolResultBytes
+	defaultTimeout     = 30 * time.Second
+	processReapTimeout = 5 * time.Second
+	MaxOutputBytes     = toolresult.MaxToolResultBytes
 )
 
 /* Result captures a local shell process result before caller-specific formatting. */
@@ -25,21 +29,48 @@ type Result struct {
 
 /* Run executes command with bash in workDir and returns combined stdout/stderr. */
 func Run(ctx context.Context, workDir, command string, timeout time.Duration) Result {
+	return run(ctx, workDir, command, timeout, startProcessTree)
+}
+
+func startProcessTree(cmd *exec.Cmd) (processtree.Tree, error) { return processtree.Start(cmd) }
+
+func run(ctx context.Context, workDir, command string, timeout time.Duration, start func(*exec.Cmd) (processtree.Tree, error)) Result {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", command)
+	cmd := exec.Command("bash", "-c", command)
 	cmd.Dir = workDir
-	ConfigureCommand(cmd)
 
 	output := newBoundedOutput(MaxOutputBytes)
 	cmd.Stdout = output
 	cmd.Stderr = output
 
-	err := cmd.Run()
+	tree, err := start(cmd)
+	if err != nil {
+		return Result{Output: output.String(), Truncated: output.Truncated(), Err: err}
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- cmd.Wait() }()
+	var cleanupErr error
+	select {
+	case err = <-wait:
+	case <-timeoutCtx.Done():
+		cleanupErr = tree.Signal(true)
+		select {
+		case <-wait:
+			err = timeoutCtx.Err()
+		case <-time.After(processReapTimeout):
+			err = timeoutCtx.Err()
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("shell process tree was not reaped within %s", processReapTimeout))
+		}
+	}
+	cleanupErr = errors.Join(cleanupErr, tree.Close(processReapTimeout))
+	if cleanupErr != nil {
+		err = errors.Join(err, cleanupErr)
+	}
 	result := Result{
 		Output:    output.String(),
 		Truncated: output.Truncated(),
@@ -47,9 +78,10 @@ func Run(ctx context.Context, workDir, command string, timeout time.Duration) Re
 	}
 	if timeoutCtx.Err() == context.DeadlineExceeded {
 		result.TimedOut = true
-		result.Err = timeoutCtx.Err()
+		result.Err = errors.Join(result.Err, timeoutCtx.Err())
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
 		result.ExitCode = exitErr.ExitCode()
 	}
 	return result

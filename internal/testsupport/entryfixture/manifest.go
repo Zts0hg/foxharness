@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,7 +44,15 @@ type Fixture struct {
 
 /* Load reads a fixture manifest from root. */
 func Load(root string) (*Manifest, error) {
-	data, err := os.ReadFile(filepath.Join(root, ManifestFilename))
+	file, err := secureOpenFixture(root, ManifestFilename)
+	if err != nil {
+		return nil, fmt.Errorf("read fixture manifest: %w", err)
+	}
+	data, err := io.ReadAll(file)
+	closeErr := file.Close()
+	if err == nil {
+		err = closeErr
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read fixture manifest: %w", err)
 	}
@@ -62,16 +71,25 @@ func (m *Manifest) Verify(root string) error {
 	if err := m.validate(); err != nil {
 		return err
 	}
+	authority, err := os.OpenRoot(root)
+	if err != nil {
+		return fmt.Errorf("open fixture authority: %w", err)
+	}
+	defer authority.Close()
 	listed := make(map[string]struct{}, len(m.Fixtures))
 	for _, fixture := range m.Fixtures {
 		listed[filepath.ToSlash(filepath.Clean(filepath.FromSlash(fixture.Path)))] = struct{}{}
-		path, err := secureExistingFile(root, fixture.Path)
+		file, err := secureOpenFixtureAt(authority, fixture.Path)
 		if err != nil {
 			return fmt.Errorf("fixture %q: %w", fixture.Path, err)
 		}
-		data, err := os.ReadFile(path)
+		data, err := io.ReadAll(file)
+		closeErr := file.Close()
 		if err != nil {
 			return fmt.Errorf("read fixture %q: %w", fixture.Path, err)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close fixture %q: %w", fixture.Path, closeErr)
 		}
 		sum := sha256.Sum256(data)
 		actual := hex.EncodeToString(sum[:])
@@ -79,18 +97,14 @@ func (m *Manifest) Verify(root string) error {
 			return fmt.Errorf("fixture %q sha256 mismatch: got %s want %s", fixture.Path, actual, fixture.SHA256)
 		}
 	}
-	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	return fs.WalkDir(authority.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("walk fixture authority: %w", walkErr)
 		}
 		if entry.IsDir() {
 			return nil
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return fmt.Errorf("resolve fixture authority entry: %w", err)
-		}
-		relative = filepath.ToSlash(relative)
+		relative := filepath.ToSlash(path)
 		if relative == ManifestFilename {
 			return nil
 		}
@@ -106,10 +120,16 @@ func (m *Manifest) Verify(root string) error {
 
 /* CopyFixture copies one fixture file into a test-owned destination root. */
 func CopyFixture(root, relativePath, destinationRoot string) (string, error) {
-	source, err := secureExistingFile(root, relativePath)
+	authority, err := os.OpenRoot(root)
+	if err != nil {
+		return "", fmt.Errorf("open fixture authority: %w", err)
+	}
+	defer authority.Close()
+	in, err := secureOpenFixtureAt(authority, relativePath)
 	if err != nil {
 		return "", err
 	}
+	defer in.Close()
 	rel, err := cleanRelativePath(relativePath)
 	if err != nil {
 		return "", err
@@ -121,11 +141,6 @@ func CopyFixture(root, relativePath, destinationRoot string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return "", fmt.Errorf("create fixture destination: %w", err)
 	}
-	in, err := os.Open(source)
-	if err != nil {
-		return "", fmt.Errorf("open fixture source: %w", err)
-	}
-	defer in.Close()
 	out, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("create fixture copy: %w", err)
@@ -240,33 +255,32 @@ func cleanRelativePath(path string) (string, error) {
 	return clean, nil
 }
 
-func secureExistingFile(root, relativePath string) (string, error) {
+func secureOpenFixture(root, relativePath string) (*os.File, error) {
+	openedRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, fmt.Errorf("open fixture root: %w", err)
+	}
+	defer openedRoot.Close()
+	return secureOpenFixtureAt(openedRoot, relativePath)
+}
+
+func secureOpenFixtureAt(root *os.Root, relativePath string) (*os.File, error) {
 	rel, err := cleanRelativePath(relativePath)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(root)
+	file, err := root.Open(rel)
 	if err != nil {
-		return "", fmt.Errorf("resolve fixture root: %w", err)
+		return nil, fmt.Errorf("open fixture: %w", err)
 	}
-	candidate := filepath.Join(resolvedRoot, rel)
-	resolved, err := filepath.EvalSymlinks(candidate)
+	info, err := file.Stat()
 	if err != nil {
-		return "", fmt.Errorf("resolve fixture path: %w", err)
-	}
-	relToRoot, err := filepath.Rel(resolvedRoot, resolved)
-	if err != nil {
-		return "", fmt.Errorf("compare fixture path: %w", err)
-	}
-	if relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("fixture path resolves outside its root: %q", relativePath)
-	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return "", fmt.Errorf("stat fixture: %w", err)
+		_ = file.Close()
+		return nil, fmt.Errorf("stat fixture: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("fixture is not a regular file: %q", relativePath)
+		_ = file.Close()
+		return nil, fmt.Errorf("fixture is not a regular file: %q", relativePath)
 	}
-	return resolved, nil
+	return file, nil
 }

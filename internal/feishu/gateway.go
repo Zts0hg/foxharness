@@ -18,6 +18,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
@@ -38,6 +39,12 @@ type Gateway struct {
 	approvalStore     *approval.Store
 	deliveryStore     DeliveryStore
 	server            *http.Server
+	admissionMu       sync.Mutex
+	admissionClosed   bool
+	activeDeliveries  int
+	admissionDrained  chan struct{}
+	admissionAbort    chan struct{}
+	admissionAborted  bool
 }
 
 const (
@@ -46,6 +53,7 @@ const (
 	defaultWriteTimeout      = 60 * time.Second
 	defaultIdleTimeout       = 120 * time.Second
 	approvalCallbackMaxBytes = 64 << 10
+	deliveryRollbackTimeout  = 5 * time.Second
 )
 
 // NewGateway creates a Gateway that validates incoming events with the given
@@ -58,6 +66,8 @@ func NewGateway(verificationToken, encryptKey string, tasks chan<- Task, approva
 		tasks:             tasks,
 		approvalStore:     approvalStore,
 		deliveryStore:     newMemoryDeliveryStore(),
+		admissionDrained:  make(chan struct{}),
+		admissionAbort:    make(chan struct{}),
 	}
 }
 
@@ -86,33 +96,47 @@ func (g *Gateway) Server(addr string) *http.Server {
 	handler := dispatcher.NewEventDispatcher(g.verificationToken, g.encryptKey)
 
 	handler.OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
+		abortDelivery, ok := g.beginDelivery()
+		if !ok {
+			return errors.New("Feishu gateway is shutting down")
+		}
+		defer g.finishDelivery()
+
 		task, err := taskFromMessageEvent(event)
 		if err != nil {
 			log.Printf("[Feishu Gateway] ignore message event: %v", err)
 			return nil
 		}
-		accepted, err := g.deliveryStore.Reserve(task.MessageID)
-		if err != nil {
+		deliveryCtx, cancelDelivery := context.WithCancel(ctx)
+		defer cancelDelivery()
+		go cancelDeliveryOnAbort(deliveryCtx, cancelDelivery, abortDelivery)
+		accepted, err := g.reserveDelivery(deliveryCtx, task.MessageID)
+		if err != nil && !accepted {
 			return fmt.Errorf("reserve Feishu delivery %s: %w", task.MessageID, err)
 		}
 		if !accepted {
 			log.Printf("[Feishu Gateway] duplicate message ignored: %s", task.MessageID)
 			return nil
 		}
+		if err != nil && deliveryCtx.Err() != nil {
+			return g.rollbackDelivery(task.MessageID, errors.Join(errors.New("Feishu gateway is shutting down"), err))
+		}
+		if err != nil {
+			log.Printf("[Feishu Gateway] accepted delivery %s with post-commit store error: %v", task.MessageID, err)
+		}
+		if err := g.rollbackIfDeliveryAborted(abortDelivery, task.MessageID); err != nil {
+			return err
+		}
 
 		select {
 		case g.tasks <- task:
 			return nil
+		case <-abortDelivery:
+			return g.rollbackDelivery(task.MessageID, errors.New("Feishu gateway is shutting down"))
 		case <-ctx.Done():
-			if releaseErr := g.deliveryStore.Release(task.MessageID); releaseErr != nil {
-				return errors.Join(ctx.Err(), fmt.Errorf("rollback Feishu delivery %s: %w", task.MessageID, releaseErr))
-			}
-			return ctx.Err()
+			return g.rollbackDelivery(task.MessageID, ctx.Err())
 		default:
-			if releaseErr := g.deliveryStore.Release(task.MessageID); releaseErr != nil {
-				return errors.Join(errors.New("Feishu task queue unavailable"), fmt.Errorf("rollback Feishu delivery %s: %w", task.MessageID, releaseErr))
-			}
-			return errors.New("Feishu task queue unavailable")
+			return g.rollbackDelivery(task.MessageID, errors.New("Feishu task queue unavailable"))
 		}
 	})
 
@@ -129,6 +153,103 @@ func (g *Gateway) Server(addr string) *http.Server {
 		ReadTimeout:       defaultReadTimeout,
 		WriteTimeout:      defaultWriteTimeout,
 		IdleTimeout:       defaultIdleTimeout,
+	}
+}
+
+// StopAccepting prevents future message events from reserving or enqueueing
+// work and waits until already-started delivery handlers have returned.
+func (g *Gateway) StopAccepting(ctx context.Context) error {
+	g.admissionMu.Lock()
+	if !g.admissionClosed {
+		g.admissionClosed = true
+		if g.activeDeliveries == 0 {
+			close(g.admissionDrained)
+		}
+	}
+	done := g.admissionDrained
+	g.admissionMu.Unlock()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		g.abortDeliveries()
+		<-done
+		return ctx.Err()
+	}
+}
+
+func (g *Gateway) abortDeliveries() {
+	g.admissionMu.Lock()
+	defer g.admissionMu.Unlock()
+	if !g.admissionAborted {
+		g.admissionAborted = true
+		close(g.admissionAbort)
+	}
+}
+
+func (g *Gateway) beginDelivery() (<-chan struct{}, bool) {
+	g.admissionMu.Lock()
+	defer g.admissionMu.Unlock()
+	if g.admissionClosed {
+		return nil, false
+	}
+	g.activeDeliveries++
+	return g.admissionAbort, true
+}
+
+func (g *Gateway) finishDelivery() {
+	g.admissionMu.Lock()
+	defer g.admissionMu.Unlock()
+	g.activeDeliveries--
+	if g.admissionClosed && g.activeDeliveries == 0 {
+		close(g.admissionDrained)
+	}
+}
+
+func (g *Gateway) rollbackIfDeliveryAborted(abortDelivery <-chan struct{}, messageID string) error {
+	select {
+	case <-abortDelivery:
+		return g.rollbackDelivery(messageID, errors.New("Feishu gateway is shutting down"))
+	default:
+		return nil
+	}
+}
+
+func (g *Gateway) rollbackDelivery(messageID string, cause error) error {
+	rollbackCtx, cancelRollback := context.WithTimeout(context.Background(), deliveryRollbackTimeout)
+	defer cancelRollback()
+	if releaseErr := g.releaseDelivery(rollbackCtx, messageID); releaseErr != nil {
+		return errors.Join(cause, fmt.Errorf("rollback Feishu delivery %s: %w", messageID, releaseErr))
+	}
+	return cause
+}
+
+func (g *Gateway) reserveDelivery(ctx context.Context, messageID string) (bool, error) {
+	if store, ok := g.deliveryStore.(contextDeliveryStore); ok {
+		return store.ReserveContext(ctx, messageID)
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return g.deliveryStore.Reserve(messageID)
+}
+
+func (g *Gateway) releaseDelivery(ctx context.Context, messageID string) error {
+	if store, ok := g.deliveryStore.(contextDeliveryStore); ok {
+		return store.ReleaseContext(ctx, messageID)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return g.deliveryStore.Release(messageID)
+}
+
+func cancelDeliveryOnAbort(ctx context.Context, cancel context.CancelFunc, abort <-chan struct{}) {
+	select {
+	case <-abort:
+		cancel()
+	case <-ctx.Done():
 	}
 }
 

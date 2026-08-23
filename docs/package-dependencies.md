@@ -18,9 +18,11 @@ flowchart TD
     APP --> RUNTIME[internal/runtime]
 
     BEN[internal/benchmark] --> RUNTIME
+    BEN --> PROCESSTREE[internal/processtree]
     BENCHCMD[cmd/bench] --> BEN
     BENCHCMD --> RUNTIME
     AUT[internal/autodev] --> RUNTIME
+    AUT --> PROCESSTREE
     FOX --> AUT
     TUI -. injected launch .-> AUT
 
@@ -43,7 +45,11 @@ flowchart TD
     TOOLRUNTIME --> TOOLRESULT[internal/toolresult]
     REGISTRYEXEC[internal/registryexec] --> TOOLEXEC
     REGISTRYEXEC --> TOOLS
+    REGISTRYEXEC --> TOOLPROTOCOL
     TOOLS[internal/tools] --> TOOLPROTOCOL[internal/toolprotocol]
+    TOOLS --> PROCESSTREE
+    SHELLCMD[internal/shellcmd] --> PROCESSTREE
+    SLASH[internal/slash] --> TOOLPROTOCOL
     SUB --> TOOLPROTOCOL
     MODELINVOKE[internal/modelinvoke] --> ENGINE
     MODELINVOKE --> PROVIDER[internal/provider]
@@ -87,9 +93,11 @@ The diagram is a directed acyclic graph, not a rule that every execution path mu
 | `internal/engine` | Infrastructure-independent run/turn transitions and consumer-owned model, tool, conversation, policy, and observer ports. |
 | `internal/toolexec` | Immutable resolved capability snapshots, parallel/exclusive batch scheduling, cancellation completion, and ordered structured tool results. It does not own catalogs, permissions, session persistence, or presentation. |
 | `internal/toolruntime` | Run-local composition of constrained tool execution with the compatibility-preserving full, model-preview, observer-preview, and persisted-artifact result forms. It does not discover tools, decide permissions, or commit conversation state. |
-| `internal/registryexec` | Adaptation of an existing concrete tool registry into an immutable runtime-constrained capability list, including optional run-context and completed-result hooks. It does not select a profile or concrete tool set. |
+| `internal/registryexec` | Adaptation of an existing concrete tool registry into an immutable runtime-constrained capability list, including optional run-context, effective-capability context propagation, and completed-result hooks. It does not select a profile or concrete tool set. |
 | `internal/toolprotocol` | Narrow tool-invocation lineage, effective-capability snapshot, and structured execution-result values shared without importing the concrete tool registry. |
+| `internal/slash` | Slash command parsing and execution planning, including inline/fork dispatch over consumer-owned runners and inherited effective-capability snapshots. It does not own runtime, profiles, or concrete child execution. |
 | `internal/modelinvoke` | Provider transport adaptation, response/error normalization, invocation options, and per-run model-call lifecycle hooks for `engine.ModelInvoker`. It does not own turns, context, or provider configuration. |
+| `internal/processtree` | Platform process-tree containment and bounded terminal cleanup. Windows commands are suspended until assigned to a kill-on-close Job Object; callers retain command-specific timeout, output, and outcome policy. |
 | `internal/runtimecompaction` | Translation of concrete compaction mechanics into runtime-owned durable-state and run-local projection proposals plus blocking-budget decisions. It never commits compact state. |
 | `internal/runtimejournal` | Run-scoped compatibility persistence for non-authoritative transcript, metrics, and tracing artifacts around runtime facts and model/tool mechanisms. It never owns conversation recovery or terminal outcome policy. |
 | `internal/turnpolicy` | Immutable factories for run-scoped recovery, reminder, completion, and TODO decisions. Runtime supplies already-bound queries; this package does not read persistence, select tools, emit telemetry, or own conversation state. |
@@ -242,8 +250,10 @@ Codex validates this boundary by translating TUI actions into typed `AppCommand`
 | `internal/app` | `internal/runtime` through application use cases and mapping code. Application DTOs and ports are app-owned. |
 | TUI, CLI, Feishu, AgentOps adapters | `internal/app` plus adapter-local presentation/transport helpers and independently owned control-plane values. They do not operate concrete runtime subsystems. |
 | `internal/benchmark`, `internal/autodev` | `internal/runtime` as privileged control clients plus their own evaluation or deterministic control-plane mechanisms. |
+| `internal/benchmark`, `internal/autodev`, `internal/tools`, `internal/shellcmd` | `internal/processtree` for the shared platform containment mechanism; each caller retains its own timeout, output, and outcome policy. |
 | `internal/subagent` | Its own `Runner` port and protocol/value packages required for model-facing request adaptation. It does not import runtime. |
 | `internal/childruntime` | Runtime and the focused provider, tool, permission, runtime prompt collection, compaction, memory, and process-cleanup mechanisms required only to compose `ChildRun`. |
+| `internal/registryexec`, `internal/slash`, `internal/subagent`, and `internal/tools` | `internal/toolprotocol` only for narrow run/tool-call lineage, effective-capability snapshot propagation, and structured tool result values. |
 | `cmd/*` | Relevant adapters, runtime constructors, consumer ports, and concrete implementations only for construction and startup. |
 
 An interface belongs to the package that consumes it. Concrete provider, tool, compaction, persistence, memory, and telemetry implementations satisfy those interfaces through composition; their packages do not force inward packages to import outward implementations.

@@ -18,6 +18,7 @@ import (
 type Config struct {
 	OnSuccess       func()
 	IsPromptTooLong func(error) bool
+	Streaming       bool
 }
 
 /* Invoker creates isolated target-engine model runs over one provider transport. */
@@ -40,20 +41,15 @@ func (i *Invoker) StartRun(context.Context) (engine.ModelRunInvoker, error) {
 }
 
 type runInvoker struct {
-	provider provider.LLMProvider
-	config   Config
+	provider          provider.LLMProvider
+	config            Config
+	streamingDisabled bool
 }
 
-func (i *runInvoker) Invoke(ctx context.Context, request engine.RunContext, _ engine.ModelFactEmitter) (engine.ModelResult, error) {
+func (i *runInvoker) Invoke(ctx context.Context, request engine.RunContext, emit engine.ModelFactEmitter) (engine.ModelResult, error) {
 	messages := cloneMessages(request.Messages)
 	definitions := cloneDefinitions(request.ToolDefinitions)
-	var response *provider.GenerateResponse
-	var err error
-	if optionsProvider, ok := i.provider.(provider.OptionsGenerator); ok {
-		response, err = optionsProvider.GenerateWithOptions(ctx, messages, definitions, provider.GenerateOptions{Effort: request.Effort})
-	} else {
-		response, err = i.provider.Generate(ctx, messages, definitions)
-	}
+	response, err := i.generate(ctx, messages, definitions, provider.GenerateOptions{Effort: request.Effort}, emit)
 	if err != nil {
 		isPromptTooLong := i.config.IsPromptTooLong
 		if isPromptTooLong == nil {
@@ -78,6 +74,45 @@ func (i *runInvoker) Invoke(ctx context.Context, request engine.RunContext, _ en
 		i.config.OnSuccess()
 	}
 	return engine.ModelResult{Message: message, FinishReason: finishReason, Usage: response.Usage}, nil
+}
+
+func (i *runInvoker) generate(
+	ctx context.Context,
+	messages []schema.Message,
+	definitions []schema.ToolDefinition,
+	options provider.GenerateOptions,
+	emit engine.ModelFactEmitter,
+) (*provider.GenerateResponse, error) {
+	if i.config.Streaming && !i.streamingDisabled {
+		if streamer, ok := i.provider.(provider.StreamGenerator); ok {
+			emittedDelta := false
+			response, err := streamer.GenerateStream(ctx, messages, definitions, options, provider.StreamCallbacks{
+				OnTextDelta: func(delta string) {
+					emittedDelta = true
+					if emit != nil {
+						emit(engine.ModelFact{Kind: engine.ModelFactMessageDelta, Content: delta})
+					}
+				},
+			})
+			if err == nil || emittedDelta {
+				return response, err
+			}
+			switch {
+			case provider.IsEmptyStream(err), provider.IsStreamingUnsupported(err):
+				i.streamingDisabled = true
+			case provider.IsRetryableProviderError(ctx, err):
+			default:
+				return response, err
+			}
+		}
+	}
+	if optionsProvider, ok := i.provider.(provider.OptionsGenerator); ok {
+		return optionsProvider.GenerateWithOptions(ctx, messages, definitions, options)
+	}
+	if options.Effort != "" {
+		return nil, errors.New("provider does not support effort options")
+	}
+	return i.provider.Generate(ctx, messages, definitions)
 }
 
 type promptTooLongError struct {

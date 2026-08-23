@@ -109,7 +109,7 @@ func newCLIApplicationWithProvider(ctx context.Context, config foxConfig, modelP
 			if err != nil {
 				return nil, err
 			}
-			base := modelinvoke.New(modelProvider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker})
+			base := modelinvoke.New(modelProvider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker, Streaming: true})
 			return journal.WrapModel(base), nil
 		},
 		NewTools: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {

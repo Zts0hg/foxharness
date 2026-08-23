@@ -164,6 +164,9 @@ type uiAgentOpsImmediateGateway struct{ listenErr error }
 
 func (g *uiAgentOpsImmediateGateway) Listen(string) error          { return g.listenErr }
 func (*uiAgentOpsImmediateGateway) Shutdown(context.Context) error { return nil }
+func (*uiAgentOpsImmediateGateway) StopAccepting(context.Context) error {
+	return nil
+}
 
 type uiAgentOpsDrainingRunner struct{ returned bool }
 

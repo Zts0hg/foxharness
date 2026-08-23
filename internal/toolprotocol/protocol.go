@@ -15,7 +15,7 @@ type Invocation struct {
 
 /* WithCapabilities returns a context carrying one immutable effective tool snapshot. */
 func WithCapabilities(ctx context.Context, allowed []string) context.Context {
-	return context.WithValue(ctx, capabilityContextKey{}, append([]string(nil), allowed...))
+	return context.WithValue(ctx, capabilityContextKey{}, cloneStrings(allowed))
 }
 
 /* CapabilitiesFromContext returns a defensive copy of the effective tool snapshot. */
@@ -24,7 +24,7 @@ func CapabilitiesFromContext(ctx context.Context) []string {
 		return nil
 	}
 	allowed, _ := ctx.Value(capabilityContextKey{}).([]string)
-	return append([]string(nil), allowed...)
+	return cloneStrings(allowed)
 }
 
 /* HasCapabilities reports whether an outer executor already supplied an authoritative snapshot. */
@@ -64,4 +64,11 @@ func FromContext(ctx context.Context) (Invocation, bool) {
 	}
 	invocation, ok := ctx.Value(invocationContextKey{}).(Invocation)
 	return invocation, ok
+}
+
+func cloneStrings(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	return append([]string{}, values...)
 }

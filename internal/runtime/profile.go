@@ -214,7 +214,7 @@ func (p Profile) Resolve(spec RunSpec) (ResolvedRunSpec, error) {
 			MaxTurns: maxTurns, TaskTimeout: taskTimeout, Thinking: thinking, ReadOnly: readOnly,
 			AllowedTools: strings.Join(tools, ","), DelegationDepth: depth,
 		},
-		tools:           append([]string(nil), tools...),
+		tools:           cloneToolNames(tools),
 		observer:        spec.Observer,
 		permission:      spec.Permission,
 		childPermission: cloneChildPermissionRequest(spec.childPermission),
@@ -228,7 +228,7 @@ func (s ResolvedRunSpec) Snapshot() RunSnapshot {
 
 /* AllowedTools returns a defensive copy of the effective capability names. */
 func (s ResolvedRunSpec) AllowedTools() []string {
-	return append([]string(nil), s.tools...)
+	return cloneToolNames(s.tools)
 }
 
 /* Observer returns the run-scoped observer supplied by the caller. */
@@ -323,7 +323,7 @@ func resolveDelegationDepth(snapshot ProfileSnapshot, requested *int) (int, erro
 
 func narrowTools(ceiling, requested []string) ([]string, error) {
 	if requested == nil {
-		return append([]string(nil), ceiling...), nil
+		return cloneToolNames(ceiling), nil
 	}
 	allowed := make(map[string]struct{}, len(ceiling))
 	for _, name := range ceiling {
@@ -342,4 +342,11 @@ func narrowTools(ceiling, requested []string) ([]string, error) {
 		}
 	}
 	return result, nil
+}
+
+func cloneToolNames(tools []string) []string {
+	if tools == nil {
+		return nil
+	}
+	return append([]string{}, tools...)
 }

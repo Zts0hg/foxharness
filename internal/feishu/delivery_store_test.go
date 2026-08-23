@@ -1,6 +1,8 @@
 package feishu
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/approval"
 )
@@ -75,6 +78,42 @@ func TestFileDeliveryStoreConcurrentReservationHasOneWinner(t *testing.T) {
 	}
 }
 
+func TestFileDeliveryStoreConcurrentIndependentInstancesHaveOneWinner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deliveries.json")
+	const callers = 64
+	stores := make([]*FileDeliveryStore, callers)
+	for i := range stores {
+		store, err := NewFileDeliveryStore(path)
+		if err != nil {
+			t.Fatalf("NewFileDeliveryStore() error = %v", err)
+		}
+		stores[i] = store
+	}
+
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	var accepted atomic.Int32
+	wait.Add(callers)
+	for _, store := range stores {
+		go func(store *FileDeliveryStore) {
+			defer wait.Done()
+			<-start
+			won, reserveErr := store.Reserve("message-1")
+			if reserveErr != nil {
+				t.Errorf("Reserve() error = %v", reserveErr)
+			}
+			if won {
+				accepted.Add(1)
+			}
+		}(store)
+	}
+	close(start)
+	wait.Wait()
+	if got := accepted.Load(); got != 1 {
+		t.Fatalf("accepted callers = %d, want 1", got)
+	}
+}
+
 func TestFileDeliveryStoreFailsClosedOnCorruptAuthority(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "deliveries.json")
 	if err := os.WriteFile(path, []byte("not-json"), 0o600); err != nil {
@@ -86,6 +125,36 @@ func TestFileDeliveryStoreFailsClosedOnCorruptAuthority(t *testing.T) {
 	}
 	if accepted, err := store.Reserve("message-1"); err == nil || accepted {
 		t.Fatalf("Reserve() = %v, %v; want fail-closed", accepted, err)
+	}
+}
+
+func TestFileDeliveryStoreReportsAcceptedWhenCommitIsVisibleBeforePostCommitError(t *testing.T) {
+	commitErr := errors.New("sync committed delivery store")
+	previous := commitDeliveryStoreFileFunc
+	commitDeliveryStoreFileFunc = func(temporaryPath, targetPath string) (bool, error) {
+		if err := os.Rename(temporaryPath, targetPath); err != nil {
+			return false, err
+		}
+		return true, commitErr
+	}
+	defer func() { commitDeliveryStoreFileFunc = previous }()
+
+	path := filepath.Join(t.TempDir(), "deliveries.json")
+	store, err := NewFileDeliveryStore(path)
+	if err != nil {
+		t.Fatalf("NewFileDeliveryStore() error = %v", err)
+	}
+	accepted, err := store.Reserve("message-1")
+	if !accepted || !errors.Is(err, commitErr) {
+		t.Fatalf("Reserve() = %v, %v; want accepted post-commit error %v", accepted, err, commitErr)
+	}
+
+	restarted, err := NewFileDeliveryStore(path)
+	if err != nil {
+		t.Fatalf("restart NewFileDeliveryStore() error = %v", err)
+	}
+	if accepted, err := restarted.Reserve("message-1"); err != nil || accepted {
+		t.Fatalf("restart Reserve() = %v, %v; want persisted duplicate", accepted, err)
 	}
 }
 
@@ -113,6 +182,273 @@ func TestGatewayRollsBackReservationWhenEnqueueIsUnavailable(t *testing.T) {
 	if task := <-received; task.MessageID != "message-1" {
 		t.Fatalf("retry task = %#v", task)
 	}
+}
+
+func TestGatewayStopAcceptingPreventsReservationAndEnqueue(t *testing.T) {
+	tasks := make(chan Task, 1)
+	store := &countingDeliveryStore{}
+	gateway := NewGateway("token", "", tasks, approval.NewStore()).WithDeliveryStore(store)
+	handler := gateway.Server(":0").Handler
+	if err := gateway.StopAccepting(context.Background()); err != nil {
+		t.Fatalf("StopAccepting() error = %v", err)
+	}
+
+	response := postMessageEvent(t, handler, "event-1", "message-1", true)
+	if response.Code == http.StatusOK {
+		t.Fatalf("post-shutdown status = 200, want rejected delivery")
+	}
+	if calls := store.reserveCalls.Load(); calls != 0 {
+		t.Fatalf("Reserve() calls after StopAccepting = %d, want 0", calls)
+	}
+	select {
+	case task := <-tasks:
+		t.Fatalf("post-shutdown task enqueued: %#v", task)
+	default:
+	}
+}
+
+func TestGatewayStopAcceptingTimeoutWaitsForActiveDeliveryAndRollsBack(t *testing.T) {
+	tasks := make(chan Task, 1)
+	store := &blockingReserveDeliveryStore{
+		enteredReserve: make(chan struct{}),
+		releaseReserve: make(chan struct{}),
+		released:       make(chan string, 1),
+	}
+	gateway := NewGateway("token", "", tasks, approval.NewStore()).WithDeliveryStore(store)
+	handler := gateway.Server(":0").Handler
+
+	responseDone := make(chan int, 1)
+	go func() {
+		responseDone <- postMessageEvent(t, handler, "event-1", "message-1", true).Code
+	}()
+	<-store.enteredReserve
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopCtx, cancelStop := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancelStop()
+		stopDone <- gateway.StopAccepting(stopCtx)
+	}()
+
+	select {
+	case err := <-stopDone:
+		t.Fatalf("StopAccepting() returned before active delivery exited: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(store.releaseReserve)
+
+	if err := <-stopDone; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("StopAccepting() error = %v, want deadline evidence after active delivery rollback", err)
+	}
+	if status := <-responseDone; status == http.StatusOK {
+		t.Fatalf("active delivery status = 200, want shutdown rejection after rollback")
+	}
+	select {
+	case messageID := <-store.released:
+		if messageID != "message-1" {
+			t.Fatalf("released message ID = %q, want message-1", messageID)
+		}
+	default:
+		t.Fatal("active delivery was not rolled back after StopAccepting timeout")
+	}
+	select {
+	case task := <-tasks:
+		t.Fatalf("active delivery enqueued after StopAccepting timeout: %#v", task)
+	default:
+	}
+}
+
+func TestGatewayStopAcceptingTimeoutCancelsContextAwareReservation(t *testing.T) {
+	tasks := make(chan Task, 1)
+	store := &contextAwareBlockingDeliveryStore{
+		enteredReserve: make(chan struct{}),
+		releaseReserve: make(chan struct{}),
+		released:       make(chan string, 1),
+	}
+	t.Cleanup(func() {
+		store.releaseOnce.Do(func() { close(store.releaseReserve) })
+	})
+	gateway := NewGateway("token", "", tasks, approval.NewStore()).WithDeliveryStore(store)
+	handler := gateway.Server(":0").Handler
+
+	responseDone := make(chan int, 1)
+	go func() {
+		responseDone <- postMessageEvent(t, handler, "event-1", "message-1", true).Code
+	}()
+	<-store.enteredReserve
+
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancelStop()
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- gateway.StopAccepting(stopCtx) }()
+
+	select {
+	case err := <-stopDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("StopAccepting() error = %v, want deadline evidence", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		store.releaseOnce.Do(func() { close(store.releaseReserve) })
+		t.Fatal("StopAccepting() did not return after cancelling a context-aware reservation")
+	}
+	if status := <-responseDone; status == http.StatusOK {
+		t.Fatalf("active delivery status = 200, want shutdown rejection after reservation cancellation")
+	}
+	select {
+	case messageID := <-store.released:
+		if messageID != "message-1" {
+			t.Fatalf("released message ID = %q, want message-1", messageID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("context-aware cancelled delivery did not roll back")
+	}
+	select {
+	case task := <-tasks:
+		t.Fatalf("cancelled delivery enqueued after StopAccepting timeout: %#v", task)
+	default:
+	}
+}
+
+func TestGatewayQueueUnavailableRollbackUsesContextAwareRelease(t *testing.T) {
+	tasks := make(chan Task)
+	store := &blockingLegacyReleaseDeliveryStore{
+		releaseCalled:        make(chan struct{}),
+		releaseUnblock:       make(chan struct{}),
+		releaseContextCalled: make(chan context.Context, 1),
+	}
+	t.Cleanup(func() {
+		store.releaseOnce.Do(func() { close(store.releaseUnblock) })
+	})
+	gateway := NewGateway("token", "", tasks, approval.NewStore()).WithDeliveryStore(store)
+	handler := gateway.Server(":0").Handler
+
+	responseDone := make(chan int, 1)
+	go func() {
+		responseDone <- postMessageEvent(t, handler, "event-1", "message-1", true).Code
+	}()
+
+	select {
+	case <-store.releaseContextCalled:
+	case <-store.releaseCalled:
+		store.releaseOnce.Do(func() { close(store.releaseUnblock) })
+		t.Fatal("queue-unavailable rollback used blocking Release instead of context-aware ReleaseContext")
+	case <-time.After(200 * time.Millisecond):
+		store.releaseOnce.Do(func() { close(store.releaseUnblock) })
+		t.Fatal("queue-unavailable rollback did not reach a release path")
+	}
+	select {
+	case status := <-responseDone:
+		if status == http.StatusOK {
+			t.Fatalf("queue-unavailable status = 200, want rejection")
+		}
+	case <-time.After(200 * time.Millisecond):
+		store.releaseOnce.Do(func() { close(store.releaseUnblock) })
+		t.Fatal("queue-unavailable rollback did not complete")
+	}
+}
+
+func TestGatewayEnqueuesAcceptedDeliveryWhenStoreReportsPostCommitError(t *testing.T) {
+	tasks := make(chan Task, 1)
+	storeErr := errors.New("unlock delivery store after commit")
+	gateway := NewGateway("token", "", tasks, approval.NewStore()).WithDeliveryStore(postCommitErrorDeliveryStore{err: storeErr})
+	handler := gateway.Server(":0").Handler
+
+	response := postMessageEvent(t, handler, "event-1", "message-1", true)
+	if response.Code != http.StatusOK {
+		t.Fatalf("post-commit reserve error status = %d body=%q, want 200", response.Code, response.Body.String())
+	}
+	select {
+	case task := <-tasks:
+		if task.MessageID != "message-1" {
+			t.Fatalf("task = %#v, want message-1", task)
+		}
+	default:
+		t.Fatal("accepted delivery was not enqueued after post-commit store error")
+	}
+}
+
+type postCommitErrorDeliveryStore struct {
+	err error
+}
+
+func (s postCommitErrorDeliveryStore) Reserve(string) (bool, error) { return true, s.err }
+func (postCommitErrorDeliveryStore) Release(string) error           { return nil }
+
+type blockingReserveDeliveryStore struct {
+	enteredReserve chan struct{}
+	releaseReserve chan struct{}
+	released       chan string
+}
+
+func (s *blockingReserveDeliveryStore) Reserve(string) (bool, error) {
+	close(s.enteredReserve)
+	<-s.releaseReserve
+	return true, nil
+}
+
+func (s *blockingReserveDeliveryStore) Release(messageID string) error {
+	s.released <- messageID
+	return nil
+}
+
+type contextAwareBlockingDeliveryStore struct {
+	enteredReserve chan struct{}
+	releaseReserve chan struct{}
+	releaseOnce    sync.Once
+	released       chan string
+	enterOnce      sync.Once
+}
+
+func (s *contextAwareBlockingDeliveryStore) Reserve(string) (bool, error) {
+	s.enterOnce.Do(func() { close(s.enteredReserve) })
+	<-s.releaseReserve
+	return true, nil
+}
+
+func (s *contextAwareBlockingDeliveryStore) ReserveContext(ctx context.Context, messageID string) (bool, error) {
+	s.enterOnce.Do(func() { close(s.enteredReserve) })
+	select {
+	case <-s.releaseReserve:
+		return true, nil
+	case <-ctx.Done():
+		return true, ctx.Err()
+	}
+}
+
+func (s *contextAwareBlockingDeliveryStore) Release(string) error {
+	s.releaseOnce.Do(func() { close(s.releaseReserve) })
+	return nil
+}
+
+func (s *contextAwareBlockingDeliveryStore) ReleaseContext(_ context.Context, messageID string) error {
+	s.released <- messageID
+	return nil
+}
+
+type blockingLegacyReleaseDeliveryStore struct {
+	releaseOnce          sync.Once
+	releaseCalled        chan struct{}
+	releaseUnblock       chan struct{}
+	releaseContextCalled chan context.Context
+}
+
+func (*blockingLegacyReleaseDeliveryStore) Reserve(string) (bool, error) {
+	return true, nil
+}
+
+func (s *blockingLegacyReleaseDeliveryStore) ReserveContext(context.Context, string) (bool, error) {
+	return true, nil
+}
+
+func (s *blockingLegacyReleaseDeliveryStore) Release(string) error {
+	s.releaseOnce.Do(func() { close(s.releaseCalled) })
+	<-s.releaseUnblock
+	return nil
+}
+
+func (s *blockingLegacyReleaseDeliveryStore) ReleaseContext(ctx context.Context, _ string) error {
+	s.releaseContextCalled <- ctx
+	return nil
 }
 
 type stringReadCloser struct{ *strings.Reader }

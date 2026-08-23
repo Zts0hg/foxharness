@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/Zts0hg/foxharness/internal/processtree"
 )
 
 const (
@@ -105,10 +107,10 @@ func runSupervisedCommand(ctx context.Context, dir, name string, args ...string)
 	}
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	configureCommandProcess(cmd)
 	stdout, stderr := &boundedCommandStream{}, &boundedCommandStream{}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	if err := cmd.Start(); err != nil {
+	tree, err := processtree.Start(cmd)
+	if err != nil {
 		return commandResult(stdout, stderr, -1), err
 	}
 	wait := make(chan error, 1)
@@ -117,19 +119,19 @@ func runSupervisedCommand(ctx context.Context, dir, name string, args ...string)
 	var waitErr error
 	select {
 	case waitErr = <-wait:
-		cleanupErr := signalCommandProcessTree(cmd, true)
+		cleanupErr := tree.Close(commandReapTimeout)
 		return commandResult(stdout, stderr, exitCode(waitErr)), errors.Join(waitErr, cleanupErr)
 	case <-ctx.Done():
-		cleanupErr := signalCommandProcessTree(cmd, false)
+		cleanupErr := tree.Signal(false)
 		timer := time.NewTimer(commandTerminateGrace)
 		select {
 		case waitErr = <-wait:
 			if !timer.Stop() {
 				<-timer.C
 			}
-			cleanupErr = errors.Join(cleanupErr, signalCommandProcessTree(cmd, true))
+			cleanupErr = errors.Join(cleanupErr, tree.Signal(true))
 		case <-timer.C:
-			cleanupErr = errors.Join(cleanupErr, signalCommandProcessTree(cmd, true))
+			cleanupErr = errors.Join(cleanupErr, tree.Signal(true))
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), commandReapTimeout)
 			defer cancel()
 			select {
@@ -139,6 +141,7 @@ func runSupervisedCommand(ctx context.Context, dir, name string, args ...string)
 					fmt.Errorf("command process tree was not reaped within %s", commandReapTimeout))
 			}
 		}
+		cleanupErr = errors.Join(cleanupErr, tree.Close(commandReapTimeout))
 		return commandResult(stdout, stderr, exitCode(waitErr)), errors.Join(ctx.Err(), cleanupErr)
 	}
 }

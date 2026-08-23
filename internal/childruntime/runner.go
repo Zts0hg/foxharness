@@ -62,7 +62,7 @@ type Runner struct {
 
 /* New freezes caller-owned configuration for future synchronous invocations. */
 func New(config Config) *Runner {
-	config.ParentTools = append([]string(nil), config.ParentTools...)
+	config.ParentTools = cloneToolNames(config.ParentTools)
 	if config.ParentProfile == "" {
 		config.ParentProfile = CLIExec
 	}
@@ -88,12 +88,31 @@ func (r *Runner) PermissionEnforced() bool {
 	return r != nil && r.config.Permission != nil
 }
 
+/* DelegationAllowed distinguishes profiles that intentionally run without a human coordinator from missing required coordination. */
+func (r *Runner) DelegationAllowed() bool {
+	if r == nil {
+		return false
+	}
+	if r.config.Permission != nil {
+		return true
+	}
+	switch r.config.ParentProfile {
+	case CLIExec, AutodevPipeline:
+		return true
+	default:
+		return false
+	}
+}
+
 /* Run resolves model-facing input and delegates all lifecycle work to runtime.ChildRunner. */
 func (r *Runner) Run(ctx context.Context, request subagent.Request) (*subagent.Result, error) {
 	if r == nil {
 		return nil, errors.New("child runtime runner is required")
 	}
-	request.AllowedTools = append([]string(nil), request.AllowedTools...)
+	if !r.DelegationAllowed() {
+		return nil, errors.New("child runtime permission policy is unavailable")
+	}
+	request.AllowedTools = cloneToolNames(request.AllowedTools)
 	if request.Depth == 0 {
 		request.Depth = 1
 	}
@@ -199,7 +218,7 @@ type providerMetadata interface {
 
 func (r *Runner) parentTools() ([]string, error) {
 	if r.config.ParentTools != nil {
-		return append([]string(nil), r.config.ParentTools...), nil
+		return cloneToolNames(r.config.ParentTools), nil
 	}
 	profile, err := foxruntime.ResolveProfile(foxruntime.ProfileName(r.config.ParentProfile))
 	if err != nil {
@@ -233,6 +252,9 @@ func (r *Runner) buildRegistry(store *session.FileStore, assembly foxruntime.Run
 	registry = tools.NewFilteredRegistry(registry, assembly.AllowedTools)
 	scope, ok := assembly.Permission.(*permissionScope)
 	if !ok || scope == nil || scope.coordinator == nil {
+		if r.DelegationAllowed() && !r.PermissionEnforced() {
+			return registry, nil
+		}
 		return nil, errors.New("child runtime permission scope is required")
 	}
 	return permission.DecorateRegistry(registry, scope.coordinator, scope.evidenceProvider(store, assembly)), nil
@@ -259,7 +281,7 @@ func (s *permissionScope) ChildScope(_ context.Context, request foxruntime.Child
 	if s.leaf {
 		return nil, errors.New("child permission scope cannot delegate")
 	}
-	request.AllowedTools = append([]string(nil), request.AllowedTools...)
+	request.AllowedTools = cloneToolNames(request.AllowedTools)
 	return &permissionScope{
 		coordinator: s.coordinator.WithSource(permission.SourceSubagent), parent: s.parent,
 		request: &request, leaf: true,
@@ -325,6 +347,13 @@ func adaptStatus(status foxruntime.ChildOutcomeStatus) subagent.OutcomeStatus {
 	default:
 		return subagent.OutcomeFailed
 	}
+}
+
+func cloneToolNames(tools []string) []string {
+	if tools == nil {
+		return nil
+	}
+	return append([]string{}, tools...)
 }
 
 var _ subagent.Runner = (*Runner)(nil)

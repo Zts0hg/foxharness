@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/Zts0hg/foxharness/internal/processtree"
 )
 
 const (
@@ -29,6 +31,7 @@ type BashProcessSupervisor struct {
 
 type supervisedBashProcess struct {
 	cmd        *exec.Cmd
+	tree       processtree.Tree
 	done       chan struct{}
 	waitErr    error
 	cleanupErr error
@@ -49,7 +52,6 @@ func (s *BashProcessSupervisor) Run(ctx context.Context, workDir, command string
 
 	cmd := exec.CommandContext(context.Background(), "bash", "-c", command)
 	cmd.Dir = workDir
-	configureShellCommand(cmd)
 	output := newBoundedOutput(MaxBashOutputBytes)
 	cmd.Stdout = output
 	cmd.Stderr = output
@@ -64,11 +66,13 @@ func (s *BashProcessSupervisor) Run(ctx context.Context, workDir, command string
 	if s.beforeStart != nil {
 		s.beforeStart(len(s.active))
 	}
-	if err := cmd.Start(); err != nil {
+	tree, err := processtree.Start(cmd)
+	if err != nil {
 		delete(s.active, process)
 		s.mu.Unlock()
 		return BashCommandResult{Err: err}
 	}
+	process.tree = tree
 	s.mu.Unlock()
 
 	go s.wait(process)
@@ -80,7 +84,7 @@ func (s *BashProcessSupervisor) Run(ctx context.Context, workDir, command string
 		// A cancelled tool must stop producing side effects immediately. A TERM
 		// grace period lets descendants that ignore TERM continue mutating the
 		// workspace after the runtime has already cancelled the call.
-		_ = signalShellProcessTree(cmd, true)
+		_ = process.tree.Signal(true)
 		timer := time.NewTimer(bashReapTimeout)
 		select {
 		case <-process.done:
@@ -114,7 +118,7 @@ func (s *BashProcessSupervisor) Run(ctx context.Context, workDir, command string
 
 func (s *BashProcessSupervisor) wait(process *supervisedBashProcess) {
 	process.waitErr = process.cmd.Wait()
-	process.cleanupErr = signalShellProcessTree(process.cmd, true)
+	process.cleanupErr = process.tree.Close(bashReapTimeout)
 	s.mu.Lock()
 	delete(s.active, process)
 	close(process.done)
@@ -134,7 +138,7 @@ func (s *BashProcessSupervisor) Cleanup(ctx context.Context) error {
 
 	var cleanupErr error
 	for _, process := range processes {
-		cleanupErr = errors.Join(cleanupErr, signalShellProcessTree(process.cmd, false))
+		cleanupErr = errors.Join(cleanupErr, process.tree.Signal(false))
 	}
 	grace := time.NewTimer(bashTerminateGrace)
 	defer grace.Stop()
@@ -146,7 +150,7 @@ func (s *BashProcessSupervisor) Cleanup(ctx context.Context) error {
 		return errors.Join(cleanupErr, ctx.Err())
 	}
 	for _, process := range processes {
-		cleanupErr = errors.Join(cleanupErr, signalShellProcessTree(process.cmd, true))
+		cleanupErr = errors.Join(cleanupErr, process.tree.Signal(true))
 	}
 	select {
 	case <-allSupervisedProcessesDone(processes):

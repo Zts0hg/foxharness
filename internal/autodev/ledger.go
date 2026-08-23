@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -317,6 +318,14 @@ func validateLedgerItems(items []*LedgerItem, version int) error {
 		if item == nil {
 			return invalidLedgerItem(version, nil, "item is null")
 		}
+		if err := validateLedgerPathComponent("slug", item.Slug); err != nil {
+			return invalidLedgerItem(version, item, err.Error())
+		}
+		if item.Branch != "" {
+			if err := validateLedgerBranch(item.Branch); err != nil {
+				return invalidLedgerItem(version, item, err.Error())
+			}
+		}
 		if item.FeatureDir != "" {
 			if err := validateFeatureDir(item.FeatureDir); err != nil {
 				return invalidLedgerItem(version, item, err.Error())
@@ -422,6 +431,56 @@ func validateLedgerItems(items []*LedgerItem, version int) error {
 			}
 		default:
 			return invalidLedgerItem(version, item, fmt.Sprintf("unknown status %q", item.Status))
+		}
+	}
+	return nil
+}
+
+func validateLedgerPathComponent(field, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is empty", field)
+	}
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("%s %q is not normalized", field, value)
+	}
+	if strings.Contains(value, "/") || strings.Contains(value, `\`) || filepath.IsAbs(value) {
+		return fmt.Errorf("%s %q must be a single relative path component", field, value)
+	}
+	if value == "." || value == ".." || filepath.Clean(value) != value {
+		return fmt.Errorf("%s %q is not a normalized path component", field, value)
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%s %q contains a control character", field, value)
+		}
+	}
+	return nil
+}
+
+func validateLedgerBranch(branch string) error {
+	if strings.TrimSpace(branch) != branch {
+		return fmt.Errorf("branch %q is not normalized", branch)
+	}
+	if strings.Contains(branch, `\`) || path.IsAbs(branch) {
+		return fmt.Errorf("branch %q is not a normalized relative ref", branch)
+	}
+	if path.Clean(branch) != branch {
+		return fmt.Errorf("branch %q is not a normalized relative ref", branch)
+	}
+	for _, part := range strings.Split(branch, "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("branch %q contains a malformed path segment", branch)
+		}
+	}
+	for _, r := range branch {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("branch %q contains a control character", branch)
+		}
+	}
+	if strings.HasPrefix(branch, "auto/") {
+		suffix := strings.TrimPrefix(branch, "auto/")
+		if err := validateLedgerPathComponent("branch suffix", suffix); err != nil {
+			return err
 		}
 	}
 	return nil

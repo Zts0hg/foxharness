@@ -383,7 +383,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 				emit(Fact{Kind: FactContextCompacted, Turn: turn, Phase: PhaseThinking, Name: compaction.Trigger})
 			}
 			thinkingContext.ToolDefinitions = nil
-			thinking, err := modelRun.Invoke(ctx, thinkingContext, emitModelFact)
+			thinking, err := modelRun.Invoke(ctx, thinkingContext, func(ModelFact) {})
 			if err != nil {
 				return e.fail(emit, outcome, "provider", fmt.Errorf("模型生成失败: %w", err))
 			}

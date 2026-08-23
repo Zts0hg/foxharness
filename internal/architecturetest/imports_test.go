@@ -191,6 +191,20 @@ func TestOnlyAuthorizedRuntimeClientsHaveProductionImports(t *testing.T) {
 	}
 }
 
+func TestOnlyDocumentedToolProtocolConsumersImportProtocol(t *testing.T) {
+	root := moduleRoot(t)
+	var callers []string
+	for _, edge := range productionImportEdges(t, root) {
+		if edge.To == "internal/toolprotocol" {
+			callers = append(callers, edge.From)
+		}
+	}
+	want := []string{"internal/registryexec", "internal/slash", "internal/subagent", "internal/tools"}
+	if fmt.Sprint(callers) != fmt.Sprint(want) {
+		t.Fatalf("toolprotocol production consumers = %v, want documented consumers %v", callers, want)
+	}
+}
+
 func moduleRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)

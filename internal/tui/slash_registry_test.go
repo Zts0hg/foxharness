@@ -58,11 +58,11 @@ func (r *recordingTUIForkRunner) Run(context.Context, string, string, []string) 
 }
 
 func (r *restrictedFakeRunner) Run(ctx context.Context, command app.RunCommand, sink app.NotificationSink) (*app.RunOutcome, error) {
-	if len(command.AllowedTools) == 0 {
+	if command.AllowedTools == nil {
 		return r.fakeRunner.Run(ctx, command, sink)
 	}
 	r.restrictedRuns = append(r.restrictedRuns, command.Prompt)
-	r.restrictedAllow = append([]string(nil), command.AllowedTools...)
+	r.restrictedAllow = append([]string{}, command.AllowedTools...)
 	r.restrictedModes = append(r.restrictedModes, collaboration.Normalize(collaboration.Mode(command.CollaborationMode)))
 	// Emit a minimal run lifecycle through the reporter so the TUI's
 	// channelReporter pipeline completes — without delegating to the
@@ -472,6 +472,36 @@ func TestModel_AllowedTools_RoutesToRunRestricted(t *testing.T) {
 		t.Errorf("collaboration modes = %v, want Formal Plan", runner.restrictedModes)
 	}
 	// Regular Run path must NOT be called when restriction applies.
+	if len(runner.fakeRunner.runs) != 0 {
+		t.Errorf("unrestricted Run should not be called, got %v", runner.fakeRunner.runs)
+	}
+}
+
+func TestModel_ExplicitEmptyAllowedTools_RoutesToRunRestricted(t *testing.T) {
+	runner := &restrictedFakeRunner{fakeRunner: newFakeRunner()}
+	r := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
+	r.Register(&slash.Command{
+		Type:        slash.CommandPrompt,
+		Name:        "denyall",
+		Description: "denyall",
+		Source:      slash.SourceProject,
+		Content:     "Run without tools",
+		Frontmatter: slash.Frontmatter{
+			UserInvocable: true,
+			AllowedTools:  []string{},
+		},
+	})
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(r, slash.NewExecutor())
+
+	m, _ = update(t, m, keyRunes("/denyall"))
+	m = drivePromptCommand(t, m)
+
+	if len(runner.restrictedRuns) != 1 {
+		t.Fatalf("expected restricted run for explicit empty allowed-tools, got %d; unrestricted=%v status=%q", len(runner.restrictedRuns), runner.fakeRunner.runs, m.status)
+	}
+	if runner.restrictedAllow == nil || len(runner.restrictedAllow) != 0 {
+		t.Fatalf("allowedTools = %#v, want explicit empty deny-all slice", runner.restrictedAllow)
+	}
 	if len(runner.fakeRunner.runs) != 0 {
 		t.Errorf("unrestricted Run should not be called, got %v", runner.fakeRunner.runs)
 	}

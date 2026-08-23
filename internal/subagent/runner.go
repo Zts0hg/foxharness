@@ -91,5 +91,6 @@ func NewInvocationID() string { return newChildInvocationID() }
 /* Runner is the consumer-owned child execution capability used by invocation adapters. */
 type Runner interface {
 	Run(context.Context, Request) (*Result, error)
+	DelegationAllowed() bool
 	PermissionEnforced() bool
 }

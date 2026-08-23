@@ -117,8 +117,8 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (string, error)
 	if input.Task == "" {
 		return "", fmt.Errorf("task 不能为空")
 	}
-	if t.runner == nil || !t.runner.PermissionEnforced() {
-		return "", fmt.Errorf("delegate_task requires child permission coordination")
+	if t.runner == nil || !t.runner.DelegationAllowed() {
+		return "", fmt.Errorf("delegate_task is unavailable under the parent permission policy")
 	}
 
 	readOnly := true

@@ -83,6 +83,30 @@ func TestRuntimeHarnessRunAssemblesFrozenDependenciesAndLifecycle(t *testing.T) 
 	}
 }
 
+func TestRuntimeHarnessRunPreservesExplicitEmptyAllowedTools(t *testing.T) {
+	store := newLifecycleStore()
+	var assembled []RunAssembly
+	harness, err := NewRuntimeHarness(store, successfulHarnessDependencies(&assembled))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentSession, err := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agentSession.Run(context.Background(), RunSpec{Prompt: "inspect", AllowedTools: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(assembled) == 0 {
+		t.Fatal("expected runtime assembly calls")
+	}
+	for _, request := range assembled {
+		if request.AllowedTools == nil || len(request.AllowedTools) != 0 {
+			t.Fatalf("assembly tools = %#v, want explicit empty deny-all slice", request.AllowedTools)
+		}
+	}
+}
+
 func TestRuntimeHarnessArtifactAndTelemetryFailuresAreWarnings(t *testing.T) {
 	store := newLifecycleStore()
 	dependencies := successfulHarnessDependencies(nil)
@@ -176,6 +200,20 @@ func TestRuntimeHarnessAuthoritativeMessageFailureIsTerminalAndFinishesRun(t *te
 	}
 	if store.finishCount() != 1 {
 		t.Fatalf("finish count = %d, want 1", store.finishCount())
+	}
+}
+
+func TestRuntimeHarnessTerminalObserverUsesFreshBoundedContext(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store, successfulHarnessDependencies(nil))
+	agentSession, _ := harness.CreateSession(context.Background(), TUIInteractive, SessionOptions{WorkDir: "/workspace"})
+	observer := &terminalContextObserver{}
+
+	if _, err := agentSession.Run(context.Background(), RunSpec{Prompt: "inspect", Observer: observer}); err != nil {
+		t.Fatal(err)
+	}
+	if !observer.terminalDeadline {
+		t.Fatal("terminal observer context has no bounded deadline")
 	}
 }
 
@@ -455,6 +493,17 @@ func (runtimeContextCollector) Collect(context.Context, ContextCollectionRequest
 type recordingRunObserver struct {
 	mu    sync.Mutex
 	facts []RuntimeFact
+}
+
+type terminalContextObserver struct {
+	terminalDeadline bool
+}
+
+func (o *terminalContextObserver) ObserveRunFact(ctx context.Context, fact RuntimeFact) {
+	if fact.Fact.Kind != engine.FactRunCompleted && fact.Fact.Kind != engine.FactRunError {
+		return
+	}
+	_, o.terminalDeadline = ctx.Deadline()
 }
 
 func (o *recordingRunObserver) ObserveRunFact(_ context.Context, fact RuntimeFact) {

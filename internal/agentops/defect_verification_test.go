@@ -62,18 +62,20 @@ func TestDVAOP002RunnerWaitsForAcceptedWork(t *testing.T) {
 	}
 }
 
-func TestDVAOP002AcceptedPermitWaiterReachesCancellationHandling(t *testing.T) {
+func TestDVAOP002AcceptedPermitWaiterIsCancelledWithoutStarting(t *testing.T) {
 	firstStarted := make(chan struct{})
-	secondContextError := make(chan error, 1)
+	var secondStarted atomic.Bool
+	observer := &recordingAgentOpsTaskOutcomeObserver{}
 	runner := &Runner{
-		maxConcurrentTasks: 1,
+		maxConcurrentTasks:  1,
+		taskOutcomeObserver: observer,
 		runTask: func(ctx context.Context, task Task) error {
 			if task.TaskID == "first" {
 				close(firstStarted)
 				<-ctx.Done()
 				return ctx.Err()
 			}
-			secondContextError <- ctx.Err()
+			secondStarted.Store(true)
 			return ctx.Err()
 		},
 	}
@@ -95,8 +97,15 @@ func TestDVAOP002AcceptedPermitWaiterReachesCancellationHandling(t *testing.T) {
 	cancel()
 	close(tasks)
 	<-returned
-	if err := <-secondContextError; !errors.Is(err, context.Canceled) {
-		t.Fatalf("accepted waiter context error = %v, want cancellation handling", err)
+	if secondStarted.Load() {
+		t.Fatal("accepted permit waiter started after process cancellation")
+	}
+	seen := make(map[string]TaskOutcome)
+	for _, outcome := range observer.snapshot() {
+		seen[outcome.TaskID] = outcome
+	}
+	if got := seen["second"]; got.Status != TaskOutcomeCancelled || got.Reason != TaskOutcomeReasonCancellation {
+		t.Fatalf("second outcome = %#v, want correlated cancellation without execution", got)
 	}
 }
 
@@ -267,8 +276,9 @@ func (o *blockingAgentOpsTaskOutcomeObserver) ObserveTaskOutcome(outcome TaskOut
 
 func TestDVAOP005DeliveryFailuresAreTypedBoundedAndNonRecursive(t *testing.T) {
 	observer := &recordingAgentOpsDeliveryFailureObserver{}
+	outcomeObserver := &recordingAgentOpsTaskOutcomeObserver{}
 	messenger := &scriptedAgentOpsMessenger{
-		errors: []error{errors.New("session delivery failed"), errors.New("final delivery failed"), errors.New("fallback delivery failed")},
+		errors: []error{errors.New("session delivery failed"), errors.New("final delivery failed")},
 	}
 	application := &recordingAgentOpsApplication{outcome: &app.RunOutcome{
 		SessionID: "session", RunID: "run", FinalMessage: strings.Repeat("x", 6000),
@@ -280,11 +290,12 @@ func TestDVAOP005DeliveryFailuresAreTypedBoundedAndNonRecursive(t *testing.T) {
 	}}
 	runner := NewRunner(factory, messenger).
 		WithDeliveryFailureObserver(observer)
+	runner.taskOutcomeObserver = outcomeObserver
 	runner.Run(context.Background(), Task{TaskID: "delivery", ChatID: "chat", SenderID: "sender", Text: "incident"})
 
 	texts := messenger.snapshot()
-	if len(texts) != 3 {
-		t.Fatalf("delivery attempts = %d, want initial, final, fallback", len(texts))
+	if len(texts) != 2 {
+		t.Fatalf("delivery attempts = %d, want initial and final only", len(texts))
 	}
 	if runes := len([]rune(texts[1])); runes > maxAgentOpsTextRunes {
 		t.Fatalf("final delivery runes = %d, want <= %d", runes, maxAgentOpsTextRunes)
@@ -292,12 +303,9 @@ func TestDVAOP005DeliveryFailuresAreTypedBoundedAndNonRecursive(t *testing.T) {
 	if !strings.Contains(texts[1], "已截断") {
 		t.Fatalf("bounded final delivery lacks truncation marker: %q", texts[1])
 	}
-	if !strings.Contains(texts[2], "AgentOps 任务失败") {
-		t.Fatalf("fallback text = %q", texts[2])
-	}
 	failures := observer.snapshot()
-	if len(failures) != 3 {
-		t.Fatalf("delivery failures = %#v, want session, final, and non-recursive failure attempts", failures)
+	if len(failures) != 2 {
+		t.Fatalf("delivery failures = %#v, want session and final records", failures)
 	}
 	if failures[0].TaskID != "delivery" || failures[0].ChatID != "chat" || failures[0].Stage != DeliveryStageSession || !strings.Contains(failures[0].Cause.Error(), "session delivery failed") {
 		t.Fatalf("session failure = %#v, want correlated typed record", failures[0])
@@ -305,8 +313,9 @@ func TestDVAOP005DeliveryFailuresAreTypedBoundedAndNonRecursive(t *testing.T) {
 	if failures[1].Stage != DeliveryStageFinal || !strings.Contains(failures[1].Cause.Error(), "final delivery failed") {
 		t.Fatalf("final failure = %#v, want correlated typed record", failures[1])
 	}
-	if failures[2].Stage != DeliveryStageFailure || !strings.Contains(failures[2].Cause.Error(), "fallback delivery failed") {
-		t.Fatalf("failure delivery = %#v, want one observed attempt", failures[2])
+	outcomes := outcomeObserver.snapshot()
+	if len(outcomes) != 1 || outcomes[0].Status != TaskOutcomeCompleted || outcomes[0].Reason != TaskOutcomeReasonCompleted {
+		t.Fatalf("outcomes = %#v, want completed task despite delivery failures", outcomes)
 	}
 }
 

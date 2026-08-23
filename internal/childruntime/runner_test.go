@@ -60,6 +60,73 @@ func TestRunnerExecutesThroughRuntimeChildProfile(t *testing.T) {
 	}
 }
 
+func TestCLIExecRunnerExecutesWithoutPermissionCoordinator(t *testing.T) {
+	homeDir := t.TempDir()
+	workDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	model := &captureProvider{}
+	runner := New(Config{
+		Provider: model, WorkDir: workDir, ParentProfile: CLIExec,
+	})
+
+	result, err := runner.Run(context.Background(), subagent.Request{
+		ParentSessionID: "parent-session", ParentRunID: "parent-run", DelegationID: "tool-call",
+		Task: "inspect", ReadOnly: true, Depth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != subagent.OutcomeSucceeded || result.Report != "child report" {
+		t.Fatalf("child outcome = %#v", result)
+	}
+	if len(model.tools) != 2 || model.tools[0].Name != "bash" || model.tools[1].Name != "read_file" {
+		t.Fatalf("child tools = %#v", model.tools)
+	}
+}
+
+func TestRunnerPreservesExplicitEmptyParentTools(t *testing.T) {
+	homeDir := t.TempDir()
+	workDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	model := &captureProvider{}
+	runner := New(Config{
+		Provider: model, WorkDir: workDir, ParentProfile: CLIExec,
+		ParentTools: []string{},
+	})
+
+	result, err := runner.Run(context.Background(), subagent.Request{
+		ParentSessionID: "parent-session", ParentRunID: "parent-run", DelegationID: "tool-call",
+		Task: "inspect", ReadOnly: false, Depth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != subagent.OutcomeSucceeded || result.Report != "child report" {
+		t.Fatalf("child outcome = %#v", result)
+	}
+	if len(model.tools) != 0 {
+		t.Fatalf("child tools = %#v, want no tools from explicit empty parent ceiling", model.tools)
+	}
+}
+
+func TestDelegationPolicyAllowsOnlyProfilesWithSatisfiedPermissionSemantics(t *testing.T) {
+	for _, test := range []struct {
+		profile ParentProfile
+		want    bool
+	}{
+		{profile: CLIExec, want: true},
+		{profile: AutodevPipeline, want: true},
+		{profile: TUIInteractive, want: false},
+		{profile: FeishuRemote, want: false},
+		{profile: AgentOpsTask, want: false},
+	} {
+		runner := New(Config{ParentProfile: test.profile})
+		if got := runner.DelegationAllowed(); got != test.want {
+			t.Fatalf("profile %s DelegationAllowed() = %t, want %t", test.profile, got, test.want)
+		}
+	}
+}
+
 func TestRunnerNormalizesRejectedRequestBeforeAgentResolution(t *testing.T) {
 	workDir := t.TempDir()
 	runner := New(Config{WorkDir: workDir})

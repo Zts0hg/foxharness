@@ -90,6 +90,49 @@ func TestChildRunnerFreezesLineageAndIntersectsCapabilityCeilings(t *testing.T) 
 	}
 }
 
+func TestChildRunnerPreservesExplicitEmptyParentCapabilitySnapshot(t *testing.T) {
+	store := newLifecycleStore()
+	var childAssemblies []RunAssembly
+	harness, err := NewRuntimeHarness(store, successfulHarnessDependencies(&childAssemblies))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentScope, err := parent.BeginRun(context.Background(), RunSpec{
+		Prompt: "parent", WorkDir: "/workspace", AllowedTools: []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childRunner, err := parent.NewChildRunner(parentScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := childRunner.Run(context.Background(), ChildRunRequest{
+		InvocationID: "invoke-empty-parent", Task: "inspect", ReadOnly: false, Depth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != ChildSucceeded {
+		t.Fatalf("child result = %#v", result)
+	}
+	for _, assembly := range childAssemblies {
+		if assembly.AllowedTools == nil || len(assembly.AllowedTools) != 0 {
+			t.Fatalf("child assembly tools = %#v, want explicit empty parent ceiling", assembly.AllowedTools)
+		}
+		if strings.Contains(assembly.Spec.Prompt, "read_file") || strings.Contains(assembly.Spec.Prompt, "bash") {
+			t.Fatalf("child prompt expanded empty parent ceiling:\n%s", assembly.Spec.Prompt)
+		}
+	}
+	if err := parent.FinishRun(parentScope); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestChildRunnerFromFrozenParentDoesNotCreateShadowParentState(t *testing.T) {
 	store := newLifecycleStore()
 	var childAssemblies []RunAssembly
@@ -297,6 +340,51 @@ func TestChildRunnerDerivesPermissionFromFrozenParentAfterChildIdentityExists(t 
 	_ = parent.FinishRun(parentScope)
 }
 
+func TestChildRunnerReadOnlyPermissionAndPromptUseFinalCapabilitySnapshot(t *testing.T) {
+	store := newLifecycleStore()
+	parentPermission := &recordingPermissionScope{}
+	childPermission := &recordingPermissionScope{leaf: true}
+	parentPermission.child = childPermission
+	var assemblies []RunAssembly
+	harness, _ := NewRuntimeHarness(store, successfulHarnessDependencies(&assemblies))
+	parent, _ := harness.CreateSession(context.Background(), TUIInteractive, SessionOptions{WorkDir: "/workspace"})
+	parentScope, err := parent.BeginRun(context.Background(), RunSpec{
+		Prompt: "parent", WorkDir: "/workspace", Permission: parentPermission,
+		AllowedTools: []string{"delegate_task", "read_file", "write_file"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, _ := parent.NewChildRunner(parentScope)
+
+	result, err := runner.Run(context.Background(), ChildRunRequest{
+		InvocationID: "readonly-child", DelegationID: "delegate-readonly",
+		Agent: "general-purpose", Task: "inspect", Depth: 1, ReadOnly: true,
+		AllowedTools:      []string{"read_file", "write_file"},
+		AgentAllowedTools: []string{"read_file", "write_file"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != ChildSucceeded {
+		t.Fatalf("child result = %#v", result)
+	}
+	request := parentPermission.snapshot()
+	if !reflect.DeepEqual(request.AllowedTools, []string{"read_file"}) {
+		t.Fatalf("permission allowed tools = %v, want final read-only snapshot [read_file]", request.AllowedTools)
+	}
+	for _, assembly := range assemblies {
+		if !reflect.DeepEqual(assembly.AllowedTools, []string{"read_file"}) {
+			t.Fatalf("child assembly tools = %v, want [read_file]", assembly.AllowedTools)
+		}
+		if strings.Contains(assembly.Spec.Prompt, "write_file") || !strings.Contains(assembly.Spec.Prompt, "Effective tools") ||
+			!strings.Contains(assembly.Spec.Prompt, "read_file") {
+			t.Fatalf("child prompt does not match final read-only capability snapshot:\n%s", assembly.Spec.Prompt)
+		}
+	}
+	_ = parent.FinishRun(parentScope)
+}
+
 func TestChildRunnerFailsClosedWithoutRequiredParentPermission(t *testing.T) {
 	store := newLifecycleStore()
 	modelCalls := 0
@@ -466,6 +554,33 @@ func TestChildRunnerCleanupFailureOverridesSuccessWithoutDiscardingReport(t *tes
 	_ = parent.FinishRun(parentScope)
 }
 
+func TestChildRunnerCleanupPanicBecomesFailureAndStillClosesSession(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store, successfulHarnessDependencies(nil))
+	parent, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	parentScope, _ := parent.BeginRun(context.Background(), RunSpec{Prompt: "parent", WorkDir: "/workspace"})
+	runner, _ := parent.NewChildRunner(parentScope)
+
+	result, err := runner.Run(context.Background(), ChildRunRequest{
+		InvocationID: "cleanup-panic", Task: "finish", Depth: 1,
+		Cleanup: ChildCleanupFunc(func(context.Context) error { panic("cleanup panic") }),
+	})
+	if err == nil || !strings.Contains(err.Error(), "cleanup panic") || result.Status != ChildFailed {
+		t.Fatalf("cleanup panic Run() = %#v, %v", result, err)
+	}
+	if store.finishCount() != 1 {
+		t.Fatalf("child finish attempts = %d, want 1 after cleanup panic", store.finishCount())
+	}
+	reopened, openErr := harness.OpenSession(context.Background(), ChildRun, result.SessionID)
+	if openErr != nil {
+		t.Fatalf("child session lease survived cleanup panic: %v", openErr)
+	}
+	if err := reopened.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_ = parent.FinishRun(parentScope)
+}
+
 func TestChildRunnerRecoversHiddenFinishBeforeClosingSession(t *testing.T) {
 	store := newLifecycleStore()
 	harness, _ := NewRuntimeHarness(store, successfulHarnessDependencies(nil))
@@ -500,6 +615,10 @@ type recordingChildCleanup struct {
 	completed bool
 	err       error
 }
+
+type ChildCleanupFunc func(context.Context) error
+
+func (f ChildCleanupFunc) Cleanup(ctx context.Context) error { return f(ctx) }
 
 type recordingPermissionScope struct {
 	mu      sync.Mutex

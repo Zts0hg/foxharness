@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/Zts0hg/foxharness/internal/processtree"
 )
 
 type darwinReadOnlyBashRunner struct {
@@ -39,20 +42,38 @@ func (r darwinReadOnlyBashRunner) Run(ctx context.Context, request readOnlyBashR
 	output := newBoundedOutput(MaxBashOutputBytes)
 	cmd.Stdout = output
 	cmd.Stderr = output
-	configureShellCommand(cmd)
-
-	err = cmd.Run()
+	tree, err := processtree.Start(cmd)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || strings.Contains(output.String(), "sandbox_apply") {
+			return BashCommandResult{Output: output.String(), Truncated: output.Truncated(), Err: fmt.Errorf("%w: %v: %s", ErrReadOnlyBashSandboxUnavailable, err, strings.TrimSpace(output.String()))}
+		}
+		return BashCommandResult{Output: output.String(), Truncated: output.Truncated(), Err: err}
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- cmd.Wait() }()
+	select {
+	case err = <-wait:
+	case <-timeoutCtx.Done():
+		cleanupErr := tree.Signal(true)
+		select {
+		case <-wait:
+			err = errors.Join(timeoutCtx.Err(), cleanupErr)
+		case <-time.After(bashReapTimeout):
+			err = errors.Join(timeoutCtx.Err(), cleanupErr, fmt.Errorf("read-only Bash process tree was not reaped within %s", bashReapTimeout))
+		}
+	}
+	err = errors.Join(err, tree.Close(bashReapTimeout))
 	result := BashCommandResult{Output: output.String(), Truncated: output.Truncated(), Err: err}
 	if timeoutCtx.Err() == context.DeadlineExceeded {
 		result.TimedOut = true
-		result.Err = timeoutCtx.Err()
 		return result
 	}
 	if err != nil && (errors.Is(err, os.ErrNotExist) || strings.Contains(result.Output, "sandbox_apply")) {
 		result.Err = fmt.Errorf("%w: %v: %s", ErrReadOnlyBashSandboxUnavailable, err, strings.TrimSpace(result.Output))
 		return result
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
 		result.ExitCode = exitErr.ExitCode()
 	}
 	return result

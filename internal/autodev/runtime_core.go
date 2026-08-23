@@ -187,7 +187,7 @@ func isNilRuntimeCoreSession(value RuntimeCoreSession) bool {
 }
 
 func cloneRuntimeCoreSpec(spec foxruntime.RunSpec) foxruntime.RunSpec {
-	spec.AllowedTools = append([]string(nil), spec.AllowedTools...)
+	spec.AllowedTools = cloneToolNames(spec.AllowedTools)
 	if spec.MaxTurns != nil {
 		value := *spec.MaxTurns
 		spec.MaxTurns = &value
@@ -209,6 +209,13 @@ func cloneRuntimeCoreSpec(spec foxruntime.RunSpec) foxruntime.RunSpec {
 		spec.DelegationDepth = &value
 	}
 	return spec
+}
+
+func cloneToolNames(tools []string) []string {
+	if tools == nil {
+		return nil
+	}
+	return append([]string{}, tools...)
 }
 
 var _ CoreRunner = (*RuntimeCoreRunner)(nil)

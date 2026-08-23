@@ -202,5 +202,23 @@ func TestM18RuntimeCoreRunnerFreezesCallerOwnedBaseSpec(t *testing.T) {
 	}
 }
 
+func TestRuntimeCoreRunnerPreservesExplicitEmptyAllowedTools(t *testing.T) {
+	sessionFake := &runtimeCoreSessionFake{
+		results: []foxruntime.RunResult{{SessionID: "session-1", RunID: "run-1"}},
+		errs:    []error{nil},
+	}
+	runner, err := NewRuntimeCoreRunner(RuntimeCoreRunnerConfig{
+		Session: sessionFake, BaseSpec: foxruntime.RunSpec{AllowedTools: []string{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.Run(context.Background(), CoreAttempt{AttemptID: "a", CorrelationID: "a", Ordinal: 1, Prompt: "work"}, nil)
+	got := sessionFake.specs[0].AllowedTools
+	if got == nil || len(got) != 0 {
+		t.Fatalf("allowed tools = %#v, want explicit empty deny-all slice", got)
+	}
+}
+
 var _ RuntimeCoreSession = (*runtimeCoreSessionFake)(nil)
 var _ CoreReporter = (*runtimeCoreReporterFake)(nil)

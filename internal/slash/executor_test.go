@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/Zts0hg/foxharness/internal/toolprotocol"
 )
 
 type fakeForkRunner struct {
@@ -23,7 +25,7 @@ func (f *fakeForkRunner) Run(ctx context.Context, task string, agentType string,
 	f.called = true
 	f.task = task
 	f.agentType = agentType
-	f.allowedTools = append([]string(nil), allowedTools...)
+	f.allowedTools = cloneAllowedTools(allowedTools)
 	if f.err != nil {
 		return f.result, f.err
 	}
@@ -243,6 +245,24 @@ func TestExecutor_InlineMode_SurfacesAllowedTools(t *testing.T) {
 	}
 }
 
+func TestExecutor_InlineMode_PreservesExplicitEmptyAllowedTools(t *testing.T) {
+	exec := NewExecutor()
+	cmd := &Command{
+		Type:    CommandPrompt,
+		Content: "body",
+		Frontmatter: Frontmatter{
+			AllowedTools: []string{},
+		},
+	}
+	got, err := exec.Execute(context.Background(), cmd, "", "")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got.AllowedTools == nil || len(got.AllowedTools) != 0 {
+		t.Fatalf("AllowedTools = %#v, want explicit empty deny-all slice", got.AllowedTools)
+	}
+}
+
 func TestExecutor_InlineMode_AfterHookDeferred(t *testing.T) {
 	wd := t.TempDir()
 	marker := wd + "/after.touched"
@@ -361,7 +381,65 @@ func TestExecutor_ForkMode_PassesAllowedToolsToRunner(t *testing.T) {
 	}
 }
 
-func TestExecutor_ForkMode_NoAllowedToolsPassesEmpty(t *testing.T) {
+func TestExecutor_ForkMode_PreservesExplicitEmptyAllowedTools(t *testing.T) {
+	fork := &fakeForkRunner{result: "out"}
+	exec := NewExecutor(WithForkRunner(fork))
+	cmd := &Command{
+		Type: CommandPrompt,
+		Frontmatter: Frontmatter{
+			Context:      "fork",
+			AllowedTools: []string{},
+		},
+	}
+	_, err := exec.Execute(context.Background(), cmd, "", "")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if fork.allowedTools == nil || len(fork.allowedTools) != 0 {
+		t.Fatalf("ForkRunner allowedTools = %#v, want explicit empty deny-all slice", fork.allowedTools)
+	}
+}
+
+func TestExecutor_ForkMode_InheritsParentCapabilitySnapshotFromToolContext(t *testing.T) {
+	fork := &fakeForkRunner{result: "out"}
+	exec := NewExecutor(WithForkRunner(fork))
+	ctx := toolprotocol.WithCapabilities(context.Background(), []string{"skill", "read_file"})
+	cmd := &Command{
+		Type: CommandPrompt,
+		Frontmatter: Frontmatter{
+			Context: "fork",
+		},
+	}
+	_, err := exec.Execute(ctx, cmd, "", "")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if want := []string{"skill", "read_file"}; !reflect.DeepEqual(fork.allowedTools, want) {
+		t.Fatalf("ForkRunner allowedTools = %#v, want parent snapshot %#v", fork.allowedTools, want)
+	}
+}
+
+func TestExecutor_ForkMode_IntersectsSkillAllowedToolsWithParentCapabilitySnapshot(t *testing.T) {
+	fork := &fakeForkRunner{result: "out"}
+	exec := NewExecutor(WithForkRunner(fork))
+	ctx := toolprotocol.WithCapabilities(context.Background(), []string{"skill"})
+	cmd := &Command{
+		Type: CommandPrompt,
+		Frontmatter: Frontmatter{
+			Context:      "fork",
+			AllowedTools: []string{"bash"},
+		},
+	}
+	_, err := exec.Execute(ctx, cmd, "", "")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if fork.allowedTools == nil || len(fork.allowedTools) != 0 {
+		t.Fatalf("ForkRunner allowedTools = %#v, want explicit empty intersection", fork.allowedTools)
+	}
+}
+
+func TestExecutor_ForkMode_NoAllowedToolsPassesNil(t *testing.T) {
 	fork := &fakeForkRunner{result: "out"}
 	exec := NewExecutor(WithForkRunner(fork))
 	cmd := &Command{
@@ -374,8 +452,8 @@ func TestExecutor_ForkMode_NoAllowedToolsPassesEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(fork.allowedTools) != 0 {
-		t.Errorf("ForkRunner allowedTools should be empty when not declared, got %v", fork.allowedTools)
+	if fork.allowedTools != nil {
+		t.Errorf("ForkRunner allowedTools = %#v, want nil when not declared", fork.allowedTools)
 	}
 }
 

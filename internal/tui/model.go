@@ -3190,7 +3190,7 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPromp
 		runEffort = normalized
 	}
 
-	if len(result.AllowedTools) > 0 {
+	if result.AllowedTools != nil {
 		capabilities := m.runner.State().RunCapabilities
 		if !capabilities.ToolRestrictions {
 			m.running = false
@@ -3201,7 +3201,7 @@ func (m Model) runInlinePromptCommand(result slash.ExecutionResult, displayPromp
 			return m, nil
 		}
 		m.status = "Running (restricted)"
-		allowedCopy := append([]string(nil), result.AllowedTools...)
+		allowedCopy := append([]string{}, result.AllowedTools...)
 		if runEffort != "" && !capabilities.EffortOverrides {
 			m.running = false
 			m.runStartedAt = time.Time{}

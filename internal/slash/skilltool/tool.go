@@ -175,7 +175,7 @@ func (t *SkillTool) resolve(raw json.RawMessage) (skillToolArgs, *slash.Command,
 	if !cmd.IsModelInvocable() {
 		return skillToolArgs{}, nil, fmt.Errorf("skill %q is not model-invocable", args.Name)
 	}
-	if len(cmd.Frontmatter.AllowedTools) > 0 && cmd.Frontmatter.Context != "fork" {
+	if cmd.Frontmatter.AllowedTools != nil && cmd.Frontmatter.Context != "fork" {
 		return skillToolArgs{}, nil, fmt.Errorf("skill %q declares allowed-tools=%v but context=inline; "+
 			"model-side enforcement requires context: fork — change the skill's frontmatter or invoke from the TUI",
 			args.Name, cmd.Frontmatter.AllowedTools)

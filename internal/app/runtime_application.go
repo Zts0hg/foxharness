@@ -54,7 +54,7 @@ func (a *RuntimeApplication) Run(ctx context.Context, command RunCommand, sink N
 	spec.Prompt = command.Prompt
 	spec.DisplayPrompt = command.DisplayPrompt
 	if command.AllowedTools != nil {
-		spec.AllowedTools = append([]string(nil), command.AllowedTools...)
+		spec.AllowedTools = cloneAllowedTools(command.AllowedTools)
 	}
 	if command.CollaborationMode != "" {
 		spec.CollaborationMode = command.CollaborationMode
@@ -90,7 +90,7 @@ func (a *RuntimeApplication) Drain(ctx context.Context) error {
 }
 
 func cloneRunSpec(spec foxruntime.RunSpec) foxruntime.RunSpec {
-	spec.AllowedTools = append([]string(nil), spec.AllowedTools...)
+	spec.AllowedTools = cloneAllowedTools(spec.AllowedTools)
 	if spec.MaxTurns != nil {
 		value := *spec.MaxTurns
 		spec.MaxTurns = &value
@@ -112,6 +112,13 @@ func cloneRunSpec(spec foxruntime.RunSpec) foxruntime.RunSpec {
 		spec.DelegationDepth = &value
 	}
 	return spec
+}
+
+func cloneAllowedTools(tools []string) []string {
+	if tools == nil {
+		return nil
+	}
+	return append([]string{}, tools...)
 }
 
 func isNilRuntimeSession(value RuntimeSession) bool {

@@ -158,7 +158,7 @@ func (h *RuntimeHarness) NewChildRunnerFromFrozenParent(parent FrozenParentRun) 
 			ProviderProtocol: parent.ProviderProtocol, Model: parent.Model, Effort: parent.Effort,
 			DelegationDepth: parent.DelegationDepth,
 		},
-		parentTools: append([]string(nil), parent.AllowedTools...),
+		parentTools: cloneToolNames(parent.AllowedTools),
 		permission:  parent.Permission, permissionRequired: requiresChildPermission(snapshot.PermissionPolicy),
 		parentContext: parentContext, parentMaxDepth: snapshot.MaxDelegationDepth,
 	}, nil
@@ -199,7 +199,9 @@ func (r *ChildRunner) Run(ctx context.Context, request ChildRunRequest) (result 
 		}
 		if request.Cleanup != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), childCleanupTimeout)
-			cleanupErr := request.Cleanup.Cleanup(cleanupCtx)
+			cleanupErr := runChildTerminalStep("cleanup", func() error {
+				return request.Cleanup.Cleanup(cleanupCtx)
+			})
 			cancel()
 			if cleanupErr != nil {
 				recordChildFailure(&result, &resultErr, "cleanup", fmt.Errorf("runtime child cleanup: %w", cleanupErr))
@@ -207,13 +209,17 @@ func (r *ChildRunner) Run(ctx context.Context, request ChildRunRequest) (result 
 		}
 		if child != nil {
 			recoveryCtx, cancel := context.WithTimeout(context.Background(), childCleanupTimeout)
-			recoveryErr := child.RecoverRunFinish(recoveryCtx)
+			recoveryErr := runChildTerminalStep("persistence recovery", func() error {
+				return child.RecoverRunFinish(recoveryCtx)
+			})
 			cancel()
 			if recoveryErr != nil {
 				recordChildFailure(&result, &resultErr, "persistence", fmt.Errorf("recover runtime child finish: %w", recoveryErr))
 			}
 			closeCtx, cancel := context.WithTimeout(context.Background(), childCleanupTimeout)
-			closeErr := child.Close(closeCtx)
+			closeErr := runChildTerminalStep("session close", func() error {
+				return child.Close(closeCtx)
+			})
 			cancel()
 			if closeErr != nil {
 				recordChildFailure(&result, &resultErr, "cleanup", fmt.Errorf("close runtime child session: %w", closeErr))
@@ -238,13 +244,16 @@ func (r *ChildRunner) Run(ctx context.Context, request ChildRunRequest) (result 
 
 	depth := 1
 	readOnly := request.ReadOnly
-	allowed := intersectChildTools(r.parentTools, request.AgentAllowedTools, request.AllowedTools)
+	allowed, err := resolveChildAllowedTools(readOnly, intersectChildTools(r.parentTools, request.AgentAllowedTools, request.AllowedTools))
+	if err != nil {
+		return result, err
+	}
 	var permissionRequest *ChildPermissionRequest
 	if r.permissionRequired || !isNilRuntimeDependency(r.permission) {
 		permissionRequest = &ChildPermissionRequest{
 			ParentSessionID: r.parentSession.ID, ParentRunID: r.parentRun.RunID,
 			DelegationID: request.DelegationID, Agent: request.Agent,
-			ReadOnly: readOnly, AllowedTools: append([]string(nil), allowed...),
+			ReadOnly: readOnly, AllowedTools: cloneToolNames(allowed),
 		}
 	}
 	runResult, err := child.Run(childContext, RunSpec{
@@ -260,6 +269,15 @@ func (r *ChildRunner) Run(ctx context.Context, request ChildRunRequest) (result 
 	result.Report = runResult.CommittedMessage
 	result.Status = classifyChildOutcome(runResult, err)
 	return result, err
+}
+
+func runChildTerminalStep(operation string, run func() error) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("runtime child %s panic: %v", operation, recovered)
+		}
+	}()
+	return run()
 }
 
 func recordChildFailure(result *ChildRunResult, resultErr *error, kind string, err error) {
@@ -283,7 +301,7 @@ func cloneChildPermissionRequest(request *ChildPermissionRequest) *ChildPermissi
 		return nil
 	}
 	copy := *request
-	copy.AllowedTools = append([]string(nil), request.AllowedTools...)
+	copy.AllowedTools = cloneToolNames(request.AllowedTools)
 	return &copy
 }
 
@@ -329,8 +347,8 @@ func cloneChildRunRequest(request ChildRunRequest) ChildRunRequest {
 	request.DelegationID = strings.TrimSpace(request.DelegationID)
 	request.Agent = strings.TrimSpace(request.Agent)
 	request.Task = strings.TrimSpace(request.Task)
-	request.AllowedTools = append([]string(nil), request.AllowedTools...)
-	request.AgentAllowedTools = append([]string(nil), request.AgentAllowedTools...)
+	request.AllowedTools = cloneToolNames(request.AllowedTools)
+	request.AgentAllowedTools = cloneToolNames(request.AgentAllowedTools)
 	if request.MaxTurns != nil {
 		value := *request.MaxTurns
 		request.MaxTurns = &value
@@ -338,8 +356,24 @@ func cloneChildRunRequest(request ChildRunRequest) ChildRunRequest {
 	return request
 }
 
+func resolveChildAllowedTools(readOnly bool, allowed []string) ([]string, error) {
+	profile, err := ResolveProfile(ChildRun)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := profile.Resolve(RunSpec{ReadOnly: &readOnly, AllowedTools: allowed})
+	if err != nil {
+		return nil, err
+	}
+	snapshot := resolved.Snapshot()
+	if snapshot.AllowedTools == "" {
+		return []string{}, nil
+	}
+	return strings.Split(snapshot.AllowedTools, ","), nil
+}
+
 func intersectChildTools(parent, agent, requested []string) []string {
-	effective := append([]string(nil), parent...)
+	effective := cloneToolNames(parent)
 	if agent != nil {
 		effective = intersectToolNames(effective, agent)
 	}

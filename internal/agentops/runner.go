@@ -99,6 +99,16 @@ func (r *Runner) executeTask(ctx context.Context, task Task) (outcome TaskOutcom
 			outcome.Error = fmt.Sprintf("task panic: %v", rec)
 		}
 	}()
+	if err := runCtx.Err(); err != nil {
+		outcome.Error = err.Error()
+		outcome.Status = TaskOutcomeCancelled
+		if errors.Is(err, context.DeadlineExceeded) {
+			outcome.Reason = TaskOutcomeReasonTimeout
+		} else {
+			outcome.Reason = TaskOutcomeReasonCancellation
+		}
+		return outcome
+	}
 
 	err := r.taskRunner()(runCtx, task)
 	if err == nil {
@@ -263,7 +273,8 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 		metricsPath,
 	)
 
-	return r.deliverTaskText(ctx, task, DeliveryStageFinal, final)
+	_ = r.deliverTaskText(ctx, task, DeliveryStageFinal, final)
+	return nil
 }
 
 func (r *Runner) drainApplication(ctx context.Context, task Task, sessionID string, application TaskApplication) {

@@ -101,6 +101,16 @@ func TestRunSpecResolvesImmutableNarrowedToolSnapshot(t *testing.T) {
 	if err != nil || intersected.Snapshot().AllowedTools != "read_file" {
 		t.Fatalf("ceiling intersection = %#v, %v", intersected.Snapshot(), err)
 	}
+	denyAll, err := profile.Resolve(RunSpec{AllowedTools: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if denyAll.Snapshot().AllowedTools != "" {
+		t.Fatalf("explicit empty tools snapshot = %q, want empty string", denyAll.Snapshot().AllowedTools)
+	}
+	if tools := denyAll.AllowedTools(); tools == nil || len(tools) != 0 {
+		t.Fatalf("explicit empty tools = %#v, want non-nil empty slice", tools)
+	}
 	if _, err := profile.Resolve(RunSpec{ReadOnly: boolValue(true)}); err == nil {
 		t.Fatal("TUI accepted unsupported read-only variation")
 	}

@@ -2,9 +2,13 @@ package shellcmd
 
 import (
 	"context"
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Zts0hg/foxharness/internal/processtree"
 )
 
 func TestRunCapturesCombinedOutputAndExitStatus(t *testing.T) {
@@ -42,10 +46,39 @@ func TestRunTimesOutAndKillsProcessTree(t *testing.T) {
 	if !result.TimedOut {
 		t.Fatal("TimedOut = false, want true")
 	}
-	if result.Err != context.DeadlineExceeded {
+	if !errors.Is(result.Err, context.DeadlineExceeded) {
 		t.Fatalf("Err = %v, want context deadline exceeded", result.Err)
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("Run returned after %s, want prompt process-tree cancellation", elapsed)
 	}
 }
+
+func TestRunPreservesProcessTreeCleanupFailureAfterTimeout(t *testing.T) {
+	cleanupErr := errors.New("process-tree cleanup failed")
+	result := run(context.Background(), t.TempDir(), "sleep 5", 20*time.Millisecond, func(cmd *exec.Cmd) (processtree.Tree, error) {
+		if err := cmd.Start(); err != nil {
+			return nil, err
+		}
+		return cleanupFailureTree{cmd: cmd, err: cleanupErr}, nil
+	})
+
+	if !result.TimedOut || !errors.Is(result.Err, context.DeadlineExceeded) {
+		t.Fatalf("timeout result = %#v, want deadline exceeded", result)
+	}
+	if !errors.Is(result.Err, cleanupErr) {
+		t.Fatalf("Err = %v, want cleanup failure %v", result.Err, cleanupErr)
+	}
+}
+
+type cleanupFailureTree struct {
+	cmd *exec.Cmd
+	err error
+}
+
+func (tree cleanupFailureTree) Signal(bool) error {
+	_ = tree.cmd.Process.Kill()
+	return tree.err
+}
+
+func (cleanupFailureTree) Close(time.Duration) error { return nil }

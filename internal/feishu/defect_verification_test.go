@@ -421,6 +421,30 @@ func TestDVFEI006RunnerCancelsQueuedAndInflightTasksBeforeReturning(t *testing.T
 	}
 }
 
+func TestDVFEI006RunnerCancelsEveryBufferedAcceptedTask(t *testing.T) {
+	messenger := &recordingTextMessenger{}
+	var started atomic.Int32
+	runner := &Runner{messenger: messenger, runTask: func(context.Context, Task) {
+		started.Add(1)
+	}}
+	tasks := make(chan Task, 3)
+	for _, id := range []string{"buffered-1", "buffered-2", "buffered-3"} {
+		tasks <- Task{TaskID: id, ChatID: "chat", SenderID: "sender"}
+	}
+	close(tasks)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	runner.Start(ctx, tasks)
+
+	if got := started.Load(); got != 0 {
+		t.Fatalf("buffered tasks started after cancellation = %d, want 0", got)
+	}
+	if got := strings.Join(messenger.texts, "\n"); !strings.Contains(got, "buffered-1") || !strings.Contains(got, "buffered-2") || !strings.Contains(got, "buffered-3") {
+		t.Fatalf("buffered cancellation messages = %q, want one correlated terminal message per accepted task", got)
+	}
+}
+
 func TestDVFEI007ApprovalResolutionIsNonBlockingAndExactlyOnce(t *testing.T) {
 	store := approval.NewStore()
 	sendEntered := make(chan struct{})

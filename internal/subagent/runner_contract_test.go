@@ -3,6 +3,7 @@ package subagent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/toolprotocol"
@@ -15,6 +16,7 @@ type recordingRunner struct {
 	result  *Result
 	err     error
 	enforce bool
+	allow   bool
 }
 
 func TestIACHD003DelegatePassesFrozenParentCapabilitySnapshot(t *testing.T) {
@@ -31,6 +33,18 @@ func TestIACHD003DelegatePassesFrozenParentCapabilitySnapshot(t *testing.T) {
 	}
 }
 
+func TestDelegatePassesExplicitEmptyParentCapabilitySnapshot(t *testing.T) {
+	runner := &recordingRunner{enforce: true, result: &Result{Status: OutcomeSucceeded}}
+	tool := NewTool(runner, "parent-session")
+	ctx := toolprotocol.WithCapabilities(context.Background(), []string{})
+	if _, err := tool.Execute(ctx, json.RawMessage(`{"task":"inspect"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if runner.request.AllowedTools == nil || len(runner.request.AllowedTools) != 0 {
+		t.Fatalf("child parent capability snapshot = %#v, want explicit empty deny-all slice", runner.request.AllowedTools)
+	}
+}
+
 func (r *recordingRunner) Run(_ context.Context, request Request) (*Result, error) {
 	r.calls++
 	r.request = request
@@ -38,6 +52,22 @@ func (r *recordingRunner) Run(_ context.Context, request Request) (*Result, erro
 }
 
 func (r *recordingRunner) PermissionEnforced() bool { return r.enforce }
+func (r *recordingRunner) DelegationAllowed() bool  { return r.allow || r.enforce }
+
+func TestCLIExecUndecoratedDelegationRunsWhenProfileAllowsNoCoordinator(t *testing.T) {
+	runner := &recordingRunner{
+		allow:  true,
+		result: &Result{SessionID: "child-session", Report: "done", Status: OutcomeSucceeded},
+	}
+	tool := NewTool(runner, "parent-session")
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"inspect"}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want CLI profile delegation without a coordinator", err)
+	}
+	if runner.calls != 1 || !strings.Contains(result, "child-session") {
+		t.Fatalf("delegation result/calls = %q/%d", result, runner.calls)
+	}
+}
 
 func TestIACHD004DelegateUsesConsumerOwnedRunnerExactlyOnce(t *testing.T) {
 	runner := &recordingRunner{enforce: true, result: &Result{SessionID: "child-session", Report: "done", Status: OutcomeSucceeded}}

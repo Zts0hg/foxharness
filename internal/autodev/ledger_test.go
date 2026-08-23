@@ -88,6 +88,63 @@ func TestLedgerValidatesRemoteEventOutboxIdentity(t *testing.T) {
 	}
 }
 
+func TestLoadLedgerRejectsMalformedPathIdentityFields(t *testing.T) {
+	path := ledgerPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("legacy-slug-traversal", func(t *testing.T) {
+		raw := `{"version":1,"items":[{"slug":"../outside","title":"Escape","priority":"high","status":"in-progress","stage":"spec-to-plan","stage_state":"running"}]}`
+		if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := LoadLedger(path, newTestClock())
+		if err == nil {
+			t.Fatal("LoadLedger accepted a ledger slug that can escape the managed worktree root")
+		}
+		var invalid *InvalidLedgerStateError
+		if !errors.As(err, &invalid) || !strings.Contains(err.Error(), "slug") {
+			t.Fatalf("LoadLedger error = %v, want invalid slug state", err)
+		}
+	})
+
+	t.Run("auto-branch-traversal", func(t *testing.T) {
+		title, description := "Safe item", "safe description"
+		bytes, hash := requirementRevisionIdentity(title, description)
+		item := &LedgerItem{
+			ItemID:           "item-safe",
+			Slug:             "safe-item",
+			Title:            title,
+			Description:      description,
+			RequirementBytes: bytes,
+			RequirementHash:  hash,
+			RevisionFrozen:   true,
+			SourceState:      SourceStateCurrent,
+			Priority:         PriorityHigh,
+			Status:           StatusInProgress,
+			Branch:           "auto/../../outside",
+			Stage:            StageSpecToPlan,
+			StageState:       StageStateRunning,
+		}
+		payload, err := json.Marshal(ledgerFile{Version: ledgerSchemaVersion, Items: []*LedgerItem{item}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, payload, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err = LoadLedger(path, newTestClock())
+		if err == nil {
+			t.Fatal("LoadLedger accepted an auto branch whose suffix can escape the managed worktree root")
+		}
+		var invalid *InvalidLedgerStateError
+		if !errors.As(err, &invalid) || !strings.Contains(err.Error(), "branch") {
+			t.Fatalf("LoadLedger error = %v, want invalid branch state", err)
+		}
+	})
+}
+
 func TestWorkflowIssueBindingRequiresPendingOutboxInSameMutation(t *testing.T) {
 	before := happyItem()
 	after := before

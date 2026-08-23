@@ -6,6 +6,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/toolexec"
+	"github.com/Zts0hg/foxharness/internal/toolprotocol"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
@@ -26,18 +27,26 @@ func CapabilitiesWithContext(registry tools.Registry, allowedNames []string, con
 	for _, name := range allowedNames {
 		allowed[name] = struct{}{}
 	}
-	capabilities := make([]toolexec.Capability, 0, len(allowedNames))
+	definitions := make([]schema.ToolDefinition, 0, len(allowedNames))
 	for _, available := range registry.GetAvailableTools() {
 		if _, ok := allowed[available.Name]; !ok {
 			continue
 		}
-		definition := available
+		definitions = append(definitions, available)
+	}
+	allowedSnapshot := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		allowedSnapshot = append(allowedSnapshot, definition.Name)
+	}
+	capabilities := make([]toolexec.Capability, 0, len(definitions))
+	for _, definition := range definitions {
 		capabilities = append(capabilities, toolexec.Capability{
 			Definition: definition, ParallelSafe: registry.IsParallelSafe(definition.Name),
 			Execute: func(ctx context.Context, call schema.ToolCall) engine.ToolExecutionResult {
 				if contextHook != nil {
 					ctx = contextHook(ctx)
 				}
+				ctx = toolprotocol.WithCapabilities(ctx, allowedSnapshot)
 				executed := registry.Execute(ctx, call)
 				if resultHook != nil {
 					copy := call

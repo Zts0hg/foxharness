@@ -1,6 +1,7 @@
 package feishu
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,11 @@ type DeliveryStore interface {
 	Release(messageID string) error
 }
 
+type contextDeliveryStore interface {
+	ReserveContext(context.Context, string) (bool, error)
+	ReleaseContext(context.Context, string) error
+}
+
 type memoryDeliveryStore struct {
 	mu       sync.Mutex
 	accepted map[string]struct{}
@@ -30,6 +36,13 @@ func newMemoryDeliveryStore() DeliveryStore {
 }
 
 func (s *memoryDeliveryStore) Reserve(messageID string) (bool, error) {
+	return s.ReserveContext(context.Background(), messageID)
+}
+
+func (s *memoryDeliveryStore) ReserveContext(ctx context.Context, messageID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
 		return false, errors.New("delivery message ID is required")
@@ -44,6 +57,13 @@ func (s *memoryDeliveryStore) Reserve(messageID string) (bool, error) {
 }
 
 func (s *memoryDeliveryStore) Release(messageID string) error {
+	return s.ReleaseContext(context.Background(), messageID)
+}
+
+func (s *memoryDeliveryStore) ReleaseContext(ctx context.Context, messageID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.accepted, strings.TrimSpace(messageID))
@@ -53,13 +73,14 @@ func (s *memoryDeliveryStore) Release(messageID string) error {
 // FileDeliveryStore persists accepted IDs with an atomic file replacement.
 type FileDeliveryStore struct {
 	path string
-	mu   sync.Mutex
 }
 
 type deliveryStoreFile struct {
 	Version    int      `json:"version"`
 	MessageIDs []string `json:"message_ids"`
 }
+
+var commitDeliveryStoreFileFunc = commitDeliveryStoreFile
 
 // NewFileDeliveryStore creates a file-backed authority without reading
 // ambient HOME or configuration.
@@ -77,43 +98,65 @@ func NewFileDeliveryStore(path string) (*FileDeliveryStore, error) {
 
 // Reserve atomically persists a previously unseen message ID.
 func (s *FileDeliveryStore) Reserve(messageID string) (bool, error) {
+	return s.ReserveContext(context.Background(), messageID)
+}
+
+func (s *FileDeliveryStore) ReserveContext(ctx context.Context, messageID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
 		return false, errors.New("delivery message ID is required")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	accepted, err := s.load()
-	if err != nil {
-		return false, err
-	}
-	if _, exists := accepted[messageID]; exists {
-		return false, nil
-	}
-	accepted[messageID] = struct{}{}
-	if err := s.save(accepted); err != nil {
-		return false, err
-	}
-	return true, nil
+	var reserved bool
+	err := withDeliveryStoreLock(ctx, s.path, func() error {
+		accepted, err := s.load()
+		if err != nil {
+			return err
+		}
+		if _, exists := accepted[messageID]; exists {
+			return nil
+		}
+		accepted[messageID] = struct{}{}
+		committed, err := s.save(accepted)
+		if err != nil {
+			if committed {
+				reserved = true
+			}
+			return err
+		}
+		reserved = true
+		return nil
+	})
+	return reserved, err
 }
 
 // Release rolls back a reservation when the live process cannot enqueue it.
 func (s *FileDeliveryStore) Release(messageID string) error {
+	return s.ReleaseContext(context.Background(), messageID)
+}
+
+func (s *FileDeliveryStore) ReleaseContext(ctx context.Context, messageID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	accepted, err := s.load()
-	if err != nil {
+	return withDeliveryStoreLock(ctx, s.path, func() error {
+		accepted, err := s.load()
+		if err != nil {
+			return err
+		}
+		if _, exists := accepted[messageID]; !exists {
+			return nil
+		}
+		delete(accepted, messageID)
+		_, err = s.save(accepted)
 		return err
-	}
-	if _, exists := accepted[messageID]; !exists {
-		return nil
-	}
-	delete(accepted, messageID)
-	return s.save(accepted)
+	})
 }
 
 func (s *FileDeliveryStore) load() (map[string]struct{}, error) {
@@ -142,9 +185,9 @@ func (s *FileDeliveryStore) load() (map[string]struct{}, error) {
 	return accepted, nil
 }
 
-func (s *FileDeliveryStore) save(accepted map[string]struct{}) error {
+func (s *FileDeliveryStore) save(accepted map[string]struct{}) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return fmt.Errorf("create delivery store directory: %w", err)
+		return false, fmt.Errorf("create delivery store directory: %w", err)
 	}
 	messageIDs := make([]string, 0, len(accepted))
 	for messageID := range accepted {
@@ -153,13 +196,13 @@ func (s *FileDeliveryStore) save(accepted map[string]struct{}) error {
 	sort.Strings(messageIDs)
 	data, err := json.Marshal(deliveryStoreFile{Version: deliveryStoreVersion, MessageIDs: messageIDs})
 	if err != nil {
-		return fmt.Errorf("encode delivery store: %w", err)
+		return false, fmt.Errorf("encode delivery store: %w", err)
 	}
 	data = append(data, '\n')
 
 	temporary, err := os.CreateTemp(filepath.Dir(s.path), ".deliveries-*.tmp")
 	if err != nil {
-		return fmt.Errorf("create delivery store temporary file: %w", err)
+		return false, fmt.Errorf("create delivery store temporary file: %w", err)
 	}
 	temporaryPath := temporary.Name()
 	cleanup := func() {
@@ -168,25 +211,28 @@ func (s *FileDeliveryStore) save(accepted map[string]struct{}) error {
 	}
 	if err := temporary.Chmod(0o600); err != nil {
 		cleanup()
-		return fmt.Errorf("set delivery store permissions: %w", err)
+		return false, fmt.Errorf("set delivery store permissions: %w", err)
 	}
 	if _, err := temporary.Write(data); err != nil {
 		cleanup()
-		return fmt.Errorf("write delivery store: %w", err)
+		return false, fmt.Errorf("write delivery store: %w", err)
 	}
 	if err := temporary.Sync(); err != nil {
 		cleanup()
-		return fmt.Errorf("sync delivery store: %w", err)
+		return false, fmt.Errorf("sync delivery store: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
 		_ = os.Remove(temporaryPath)
-		return fmt.Errorf("close delivery store: %w", err)
+		return false, fmt.Errorf("close delivery store: %w", err)
 	}
-	if err := os.Rename(temporaryPath, s.path); err != nil {
-		_ = os.Remove(temporaryPath)
-		return fmt.Errorf("replace delivery store: %w", err)
+	committed, err := commitDeliveryStoreFileFunc(temporaryPath, s.path)
+	if err != nil {
+		if !committed {
+			_ = os.Remove(temporaryPath)
+		}
+		return committed, fmt.Errorf("replace delivery store: %w", err)
 	}
-	return nil
+	return committed, nil
 }
 
 var _ DeliveryStore = (*FileDeliveryStore)(nil)

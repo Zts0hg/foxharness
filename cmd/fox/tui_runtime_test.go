@@ -80,6 +80,42 @@ func TestTUIInteractiveTargetCompositionPreservesMultiRunSessionAndCapabilitySur
 			t.Fatalf("tool surface = %q, want %q", got, want)
 		}
 	}
+	restricted, err := startup.Application.Run(context.Background(), app.RunCommand{
+		Prompt: "restricted", AllowedTools: []string{"read_file"},
+	}, nil)
+	if err != nil || restricted == nil || restricted.FinalMessage != "done:restricted" {
+		t.Fatalf("restricted run = %#v/%v", restricted, err)
+	}
+	restrictedObservation := lastTUIObservationForPrompt(t, model.snapshot(), "restricted")
+	var restrictedNames []string
+	for _, definition := range restrictedObservation.definitions {
+		restrictedNames = append(restrictedNames, definition.Name)
+	}
+	if got, want := strings.Join(restrictedNames, ","), "read_file"; got != want {
+		t.Fatalf("restricted tool surface = %q, want %q", got, want)
+	}
+	restrictedPrompt := restrictedObservation.messages[0].Content
+	for _, forbidden := range []string{"Use edit_file", "Use write_file", "Use bash", "Asking the User"} {
+		if strings.Contains(restrictedPrompt, forbidden) {
+			t.Fatalf("restricted system prompt contains %q:\n%s", forbidden, restrictedPrompt)
+		}
+	}
+	if !strings.Contains(restrictedPrompt, "Use read_file") {
+		t.Fatalf("restricted system prompt omitted read_file guidance:\n%s", restrictedPrompt)
+	}
+	denyAll, err := startup.Application.Run(context.Background(), app.RunCommand{
+		Prompt: "denyall", AllowedTools: []string{},
+	}, nil)
+	if err != nil || denyAll == nil || denyAll.FinalMessage != "done:denyall" {
+		t.Fatalf("deny-all run = %#v/%v", denyAll, err)
+	}
+	denyAllObservation := lastTUIObservationForPrompt(t, model.snapshot(), "denyall")
+	if len(denyAllObservation.definitions) != 0 {
+		t.Fatalf("deny-all tool surface = %#v, want no advertised tools", denyAllObservation.definitions)
+	}
+	if strings.Contains(denyAllObservation.messages[0].Content, "Use read_file") || strings.Contains(denyAllObservation.messages[0].Content, "Asking the User") {
+		t.Fatalf("deny-all system prompt advertised tools:\n%s", denyAllObservation.messages[0].Content)
+	}
 	if startup.Registry == nil || startup.Executor == nil || startup.SessionLogDir != initial.Session.Directory {
 		t.Fatalf("startup capabilities = registry:%v executor:%v log:%q state:%#v", startup.Registry != nil, startup.Executor != nil, startup.SessionLogDir, initial)
 	}
@@ -362,6 +398,7 @@ func (targetTUIChildRunner) Run(context.Context, subagent.Request) (*subagent.Re
 }
 
 func (targetTUIChildRunner) PermissionEnforced() bool { return true }
+func (targetTUIChildRunner) DelegationAllowed() bool  { return true }
 
 func (p *modelSnapshotTUIProvider) Generate(ctx context.Context, messages []schema.Message, definitions []schema.ToolDefinition) (*provider.GenerateResponse, error) {
 	return p.GenerateWithOptions(ctx, messages, definitions, provider.GenerateOptions{})
@@ -428,6 +465,17 @@ func containsName(names []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func lastTUIObservationForPrompt(t *testing.T, observations []targetTUIObservation, prompt string) targetTUIObservation {
+	t.Helper()
+	for i := len(observations) - 1; i >= 0; i-- {
+		if lastDirectUserMessage(observations[i].messages) == prompt {
+			return observations[i]
+		}
+	}
+	t.Fatalf("provider observation for prompt %q absent in %#v", prompt, observations)
+	return targetTUIObservation{}
 }
 
 func (p *targetTUIProvider) Generate(ctx context.Context, messages []schema.Message, definitions []schema.ToolDefinition) (*provider.GenerateResponse, error) {

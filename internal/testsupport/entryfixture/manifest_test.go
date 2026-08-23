@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,7 +132,7 @@ func TestManifestVerifyRejectsUnlistedFixtureFile(t *testing.T) {
 }
 
 func TestCharacterizationV1AuthorityIsFrozenVerifiableAndCopyable(t *testing.T) {
-	const correctedSourceCommit = "ee649228970ed08cbf567df4f6ca576560323585"
+	const correctedSourceCommit = "9d5f010e64920adc72ec262c1031d3956d883156"
 	root := filepath.Join("..", "..", "..", "testdata", "characterization", "v1")
 
 	manifest, err := Load(root)
@@ -273,6 +274,34 @@ func TestCopyFixtureCreatesIndependentFile(t *testing.T) {
 func TestCopyFixtureRejectsTraversal(t *testing.T) {
 	if _, err := CopyFixture(t.TempDir(), "../outside", t.TempDir()); err == nil {
 		t.Fatal("CopyFixture() error = nil, want traversal rejection")
+	}
+}
+
+func TestSecureOpenFixtureReturnsVerifiedHandleInsteadOfReopenablePath(t *testing.T) {
+	root := t.TempDir()
+	fixturePath := filepath.Join(root, "fixture.txt")
+	writeTestFile(t, fixturePath, []byte("baseline"))
+
+	file, err := secureOpenFixture(root, "fixture.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := os.Rename(fixturePath, fixturePath+".original"); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	writeTestFile(t, outside, []byte("outside"))
+	if err := os.Symlink(outside, fixturePath); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "baseline" {
+		t.Fatalf("opened fixture = %q, want original verified bytes", data)
 	}
 }
 

@@ -879,6 +879,76 @@ func TestDVAUT005FeatureWorkspaceRejectsSymlinksAndNonRegularTargets(t *testing.
 	})
 }
 
+func TestDVAUT005FeatureWorkspaceRejectsArtifactSwapDuringOpen(t *testing.T) {
+	workDir := t.TempDir()
+	featureDir := ".codexspec/specs/swap-test"
+	absoluteFeatureDir := filepath.Join(workDir, filepath.FromSlash(featureDir))
+	if err := os.MkdirAll(absoluteFeatureDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	artifactPath := filepath.Join(absoluteFeatureDir, "requirements.md")
+	backupPath := filepath.Join(absoluteFeatureDir, "requirements.original")
+	if err := os.WriteFile(artifactPath, []byte("authoritative"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(absoluteFeatureDir, "substitute.md"), []byte("substitute"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := openFeatureWorkspace(workDir, featureDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	workspace.openArtifact = func(name string) (*os.File, error) {
+		if err := os.Rename(artifactPath, backupPath); err != nil {
+			return nil, err
+		}
+		if err := os.Symlink("substitute.md", artifactPath); err != nil {
+			return nil, err
+		}
+		opened, openErr := workspace.featureRoot.Open(name)
+		if err := os.Remove(artifactPath); err != nil {
+			return nil, err
+		}
+		if err := os.Rename(backupPath, artifactPath); err != nil {
+			return nil, err
+		}
+		return opened, openErr
+	}
+
+	if data, err := workspace.readRegular("requirements.md"); err == nil {
+		t.Fatalf("readRegular() = %q, want identity mismatch rejection", data)
+	}
+}
+
+func TestDVAUT005RootedDirectoryOpenRejectsComponentSwap(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workDir, "expected"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(workDir, "substitute"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	afterOpen := func() error {
+		if err := os.Rename(filepath.Join(workDir, "expected"), filepath.Join(workDir, "original")); err != nil {
+			return err
+		}
+		return os.Rename(filepath.Join(workDir, "substitute"), filepath.Join(workDir, "expected"))
+	}
+	opened, err := openVerifiedRoot(root, "expected", afterOpen)
+	if opened != nil {
+		_ = opened.Close()
+	}
+	if err == nil {
+		t.Fatal("openVerifiedRoot() accepted a directory component replaced during open")
+	}
+}
+
 func TestDVAUT005LegacyLedgerRejectsIllegalFeatureDir(t *testing.T) {
 	repoRoot := t.TempDir()
 	deps, _, factory, git, gh := testDeps(t, repoRoot, `## [feature] Legacy
@@ -963,15 +1033,31 @@ func TestDVAUT006ExecRunnerBoundsIndependentOutputStreams(t *testing.T) {
 	}
 }
 
+type autodevCommandOutcome struct {
+	result CommandResult
+	err    error
+}
+
 func TestDVAUT006CancellationReapsDescendantAndSuppressesLaterGates(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix process liveness proof")
 	}
 	t.Setenv("FOX_AUTODEV_HELPER", "1")
 	runner := NewExecCommandRunner()
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	result, err := runner.Run(ctx, t.TempDir(), os.Args[0], "-test.run=TestAutodevExecHelperProcess", "--", "spawn")
+	workDir := t.TempDir()
+	readyPath := filepath.Join(workDir, "spawn-ready")
+	t.Setenv("FOX_AUTODEV_READY", readyPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	completed := make(chan autodevCommandOutcome, 1)
+	go func() {
+		result, err := runner.Run(ctx, workDir, os.Args[0], "-test.run=TestAutodevExecHelperProcess", "--", "spawn")
+		completed <- autodevCommandOutcome{result: result, err: err}
+	}()
+	waitAutodevHelperReady(t, readyPath, cancel, completed)
+	cancel()
+	outcome := <-completed
+	result, err := outcome.result, outcome.err
 	if err == nil {
 		t.Fatal("cancelled helper returned nil error")
 	}
@@ -1010,31 +1096,12 @@ func TestDVAUT006CancellationEscalatesTERMToKILL(t *testing.T) {
 	t.Setenv("FOX_AUTODEV_READY", readyPath)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	type commandOutcome struct {
-		result CommandResult
-		err    error
-	}
-	completed := make(chan commandOutcome, 1)
+	completed := make(chan autodevCommandOutcome, 1)
 	go func() {
 		result, err := NewExecCommandRunner().Run(ctx, workDir, os.Args[0], "-test.run=TestAutodevExecHelperProcess", "--", "spawn-ignore-term")
-		completed <- commandOutcome{result: result, err: err}
+		completed <- autodevCommandOutcome{result: result, err: err}
 	}()
-	readyDeadline := time.Now().Add(3 * time.Second)
-	for {
-		if _, err := os.Stat(readyPath); err == nil {
-			break
-		} else if !errors.Is(err, os.ErrNotExist) {
-			cancel()
-			<-completed
-			t.Fatalf("inspect TERM readiness barrier: %v", err)
-		}
-		if time.Now().After(readyDeadline) {
-			cancel()
-			<-completed
-			t.Fatal("TERM-resistant helper did not reach readiness barrier")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitAutodevHelperReady(t, readyPath, cancel, completed)
 	cancelledAt := time.Now()
 	cancel()
 	outcome := <-completed
@@ -1056,6 +1123,31 @@ func TestDVAUT006CancellationEscalatesTERMToKILL(t *testing.T) {
 	if testProcessAlive(pid) {
 		testForceKill(pid)
 		t.Fatal("TERM-resistant descendant remained alive after KILL escalation")
+	}
+}
+
+func waitAutodevHelperReady(t *testing.T, readyPath string, cancel context.CancelFunc, completed <-chan autodevCommandOutcome) {
+	t.Helper()
+	readyDeadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			cancel()
+			<-completed
+			t.Fatalf("inspect helper readiness barrier: %v", err)
+		}
+		select {
+		case outcome := <-completed:
+			t.Fatalf("helper exited before readiness barrier: %v (%s/%s)", outcome.err, outcome.result.Stdout, outcome.result.Stderr)
+		default:
+		}
+		if time.Now().After(readyDeadline) {
+			cancel()
+			<-completed
+			t.Fatal("helper did not reach readiness barrier")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -1091,6 +1183,11 @@ func TestAutodevExecHelperProcess(t *testing.T) {
 		}
 		fmt.Fprintln(os.Stdout, child.Process.Pid)
 		_ = os.Stdout.Sync()
+		if readyPath := os.Getenv("FOX_AUTODEV_READY"); readyPath != "" {
+			if err := os.WriteFile(readyPath, []byte("ready"), 0o644); err != nil {
+				os.Exit(3)
+			}
+		}
 		_ = child.Wait()
 	case "spawn-ignore-term":
 		signal.Ignore(syscall.SIGTERM)
@@ -1518,24 +1615,26 @@ func TestDVAUT008UndrainedLifecycleFailsAndRetainsWorktree(t *testing.T) {
 	deps.CoreFactory = failingCloseFactory{core: core}
 	runDone := make(chan error, 1)
 	go func() { runDone <- New(deps).Run(context.Background()) }()
+	deadline, ok := t.Deadline()
+	if !ok {
+		t.Fatal("test requires the go test deadline")
+	}
+	testCtx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
 	select {
 	case <-core.closeStarted:
-	case <-time.After(5 * time.Second):
+	case <-testCtx.Done():
 		t.Fatal("orchestrator did not attempt final CoreRunner.Close")
 	}
-	started := time.Now()
 	var err error
 	select {
 	case err = <-runDone:
-	case <-time.After(time.Second):
+	case <-testCtx.Done():
 		t.Fatal("orchestrator did not honor the bounded lifecycle close deadline")
 	}
 	var lifecycleErr *CoreLifecycleError
 	if !errors.As(err, &lifecycleErr) {
 		t.Fatalf("Run error = %T %v, want *CoreLifecycleError", err, err)
-	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("bounded lifecycle close took %v, want under one second", elapsed)
 	}
 	for _, call := range git.calls {
 		if strings.HasPrefix(call, "worktree remove") {

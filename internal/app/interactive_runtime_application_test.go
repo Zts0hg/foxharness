@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -11,6 +12,96 @@ import (
 type interactiveRuntimeSessionStub struct {
 	result foxruntime.RunResult
 	specs  []foxruntime.RunSpec
+}
+
+func TestInteractiveRuntimeApplicationClearsSessionGrantsWhenPreviousCloseFails(t *testing.T) {
+	closeErr := errors.New("close previous session")
+	nextClosed := 0
+	nextCommitted := 0
+	permissions := &interactivePermissionStub{state: PermissionState{SessionGrantCount: 2}}
+	application, err := NewInteractiveRuntimeApplication(InteractiveRuntimeApplicationConfig{
+		Initial: InteractiveRuntimeBinding{
+			Session: &interactiveRuntimeSessionStub{},
+			State: func() InteractiveSessionState {
+				return InteractiveSessionState{Session: SessionInfo{ID: "session-1"}}
+			},
+			Close: func(context.Context) error { return closeErr },
+		},
+		NewSession: func(context.Context) (InteractiveRuntimeBinding, error) {
+			return InteractiveRuntimeBinding{
+				Session: &interactiveRuntimeSessionStub{},
+				Commit:  func() { nextCommitted++ },
+				State: func() InteractiveSessionState {
+					return InteractiveSessionState{Session: SessionInfo{ID: "session-2"}}
+				},
+				Close: func(context.Context) error { nextClosed++; return nil },
+			}, nil
+		},
+		Permissions: permissions,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := application.NewSession(context.Background(), NewSessionCommand{})
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("NewSession() error = %v, want %v", err, closeErr)
+	}
+	if state.Session.ID != "session-1" || application.State().Session.ID != "session-1" {
+		t.Fatalf("NewSession() state = %#v/application=%#v, want retained recoverable session", state, application.State())
+	}
+	if nextClosed != 1 {
+		t.Fatalf("replacement close calls = %d, want 1 after rollback", nextClosed)
+	}
+	if nextCommitted != 0 {
+		t.Fatalf("replacement commit calls = %d, want 0 after rollback", nextCommitted)
+	}
+	if permissions.cleared != 0 || application.PermissionState().SessionGrantCount != 2 {
+		t.Fatalf("failed switch changed current grants: clears=%d state=%#v", permissions.cleared, application.PermissionState())
+	}
+}
+
+func TestInteractiveRuntimeApplicationClosesInvalidReplacementWithFreshBoundedContext(t *testing.T) {
+	var closeErr error
+	deadlineObserved := false
+	application, err := NewInteractiveRuntimeApplication(InteractiveRuntimeApplicationConfig{
+		Initial: InteractiveRuntimeBinding{
+			Session: &interactiveRuntimeSessionStub{},
+			State: func() InteractiveSessionState {
+				return InteractiveSessionState{Session: SessionInfo{ID: "session-1"}}
+			},
+		},
+		NewSession: func(context.Context) (InteractiveRuntimeBinding, error) {
+			return InteractiveRuntimeBinding{
+				Session: &interactiveRuntimeSessionStub{},
+				Close: func(ctx context.Context) error {
+					closeErr = ctx.Err()
+					_, deadlineObserved = ctx.Deadline()
+					return nil
+				},
+			}, nil
+		},
+		Permissions: &interactivePermissionStub{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	state, err := application.NewSession(ctx, NewSessionCommand{})
+	if err == nil {
+		t.Fatalf("NewSession() error = nil, want invalid replacement error")
+	}
+	if closeErr != nil {
+		t.Fatalf("replacement Close ctx error = %v, want fresh live cleanup context", closeErr)
+	}
+	if !deadlineObserved {
+		t.Fatalf("replacement Close context has no deadline; want bounded cleanup context within %s", interactiveSessionCloseTimeout)
+	}
+	if state.Session.ID != "" || application.State().Session.ID != "session-1" {
+		t.Fatalf("state = %#v/application=%#v, want current session retained", state, application.State())
+	}
 }
 
 func (s *interactiveRuntimeSessionStub) Run(_ context.Context, spec foxruntime.RunSpec) (foxruntime.RunResult, error) {
@@ -48,6 +139,7 @@ func TestInteractiveRuntimeApplicationOwnsRunSnapshotAndSessionSwitch(t *testing
 	var order []string
 	first := InteractiveRuntimeBinding{
 		Session: firstRuntime,
+		Commit:  func() { order = append(order, "commit-first") },
 		State: func() InteractiveSessionState {
 			return InteractiveSessionState{Session: SessionInfo{ID: "session-1"}, WorkDir: "/work", ContextUsage: "10%"}
 		},
@@ -57,6 +149,7 @@ func TestInteractiveRuntimeApplicationOwnsRunSnapshotAndSessionSwitch(t *testing
 	}
 	second := InteractiveRuntimeBinding{
 		Session: secondRuntime,
+		Commit:  func() { order = append(order, "commit-second") },
 		State: func() InteractiveSessionState {
 			return InteractiveSessionState{Session: SessionInfo{ID: "session-2"}, WorkDir: "/work", ContextUsage: "0%"}
 		},
@@ -94,7 +187,7 @@ func TestInteractiveRuntimeApplicationOwnsRunSnapshotAndSessionSwitch(t *testing
 		!reflect.DeepEqual(gotSpec.AllowedTools, []string{"read_file"}) {
 		t.Fatalf("resolved run spec = %#v", gotSpec)
 	}
-	if !reflect.DeepEqual(order, []string{"before", "after"}) {
+	if !reflect.DeepEqual(order, []string{"commit-first", "before", "after"}) {
 		t.Fatalf("run order = %#v", order)
 	}
 
@@ -102,7 +195,7 @@ func TestInteractiveRuntimeApplicationOwnsRunSnapshotAndSessionSwitch(t *testing
 	if err != nil || state.Session.ID != "session-2" {
 		t.Fatalf("new session state/error = %#v/%v", state, err)
 	}
-	if !reflect.DeepEqual(order, []string{"before", "after", "create-second", "close-first"}) {
+	if !reflect.DeepEqual(order, []string{"commit-first", "before", "after", "create-second", "close-first", "commit-second"}) {
 		t.Fatalf("session switch order = %#v", order)
 	}
 	if permissions.cleared != 1 || application.State().CollaborationMode != "normalized:default" {

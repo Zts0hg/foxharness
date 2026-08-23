@@ -80,6 +80,9 @@ type immediateGateway struct{ listenErr error }
 
 func (g *immediateGateway) Listen(string) error          { return g.listenErr }
 func (*immediateGateway) Shutdown(context.Context) error { return nil }
+func (*immediateGateway) StopAccepting(context.Context) error {
+	return nil
+}
 
 type drainingRunner struct{ returned bool }
 

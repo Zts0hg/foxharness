@@ -90,6 +90,7 @@ func unmarshalFrontmatter(yamlBlock string) (Frontmatter, error) {
 		return defaultFrontmatter(), err
 	}
 	explicitInvocable, hasExplicit := raw["user-invocable"]
+	_, hasAllowedTools := raw["allowed-tools"]
 
 	if err := yaml.Unmarshal([]byte(yamlBlock), &fm); err != nil {
 		if _, ok := raw["allowed-tools"].(string); !ok {
@@ -106,7 +107,7 @@ func unmarshalFrontmatter(yamlBlock string) (Frontmatter, error) {
 	} else {
 		fm.UserInvocable = true
 	}
-	fm.AllowedTools = parseAllowedTools(fm.AllowedTools)
+	fm.AllowedTools = parseAllowedTools(fm.AllowedTools, hasAllowedTools)
 
 	return fm, nil
 }
@@ -116,7 +117,8 @@ func frontmatterFromRaw(raw map[string]any) Frontmatter {
 	fm.Description = rawString(raw, "description")
 	fm.Arguments = rawString(raw, "arguments")
 	fm.ArgumentHint = rawString(raw, "argument-hint")
-	fm.AllowedTools = parseAllowedTools(raw["allowed-tools"])
+	_, hasAllowedTools := raw["allowed-tools"]
+	fm.AllowedTools = parseAllowedTools(raw["allowed-tools"], hasAllowedTools)
 	fm.Model = rawString(raw, "model")
 	fm.Effort = rawString(raw, "effort")
 	fm.DisableModelInvocation = rawBool(raw, "disable-model-invocation")
@@ -168,7 +170,7 @@ func rawStringSlice(v any) []string {
 	}
 }
 
-func parseAllowedTools(v any) []string {
+func parseAllowedTools(v any, explicit bool) []string {
 	var rawTools []string
 	switch typed := v.(type) {
 	case string:
@@ -177,6 +179,9 @@ func parseAllowedTools(v any) []string {
 		rawTools = rawStringSlice(v)
 	}
 	if len(rawTools) == 0 {
+		if explicit {
+			return []string{}
+		}
 		return nil
 	}
 	seen := make(map[string]bool, len(rawTools))
@@ -188,6 +193,9 @@ func parseAllowedTools(v any) []string {
 		}
 		seen[normalized] = true
 		out = append(out, normalized)
+	}
+	if len(out) == 0 && explicit {
+		return []string{}
 	}
 	return out
 }

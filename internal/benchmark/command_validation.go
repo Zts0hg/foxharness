@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Zts0hg/foxharness/internal/processtree"
 )
 
 const maxValidationOutputBytes = 1 << 20
@@ -40,10 +42,10 @@ func executeCommandValidation(ctx context.Context, workDir, command string, conf
 	cmd.Dir = workDir
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	configureValidationCommand(cmd)
 
 	result := ValidationResult{Type: "command", Status: ValidationStatusFailed, Deadline: &deadline}
-	if err := cmd.Start(); err != nil {
+	processTree, err := processtree.Start(cmd)
+	if err != nil {
 		result.Message = fmt.Sprintf("命令启动失败: %v", err)
 		return result
 	}
@@ -60,11 +62,12 @@ func executeCommandValidation(ctx context.Context, workDir, command string, conf
 			terminalErr = err
 		}
 	case <-overflow:
-		waitErr, cleanupErr = terminateValidationCommand(cmd, wait, config)
+		waitErr, cleanupErr = terminateValidationCommand(processTree, wait, config)
 	case <-runCtx.Done():
 		terminalErr = runCtx.Err()
-		waitErr, cleanupErr = terminateValidationCommand(cmd, wait, config)
+		waitErr, cleanupErr = terminateValidationCommand(processTree, wait, config)
 	}
+	cleanupErr = errors.Join(cleanupErr, processTree.Close(config.reapTimeout))
 
 	result.Stdout = stdout.String()
 	result.Stderr = stderr.String()
@@ -101,8 +104,8 @@ func overflowMessage(result ValidationResult) string {
 	return fmt.Sprintf("命令 %s 输出超过 %d 字节限制", strings.Join(streams, " 和 "), maxValidationOutputBytes)
 }
 
-func terminateValidationCommand(cmd *exec.Cmd, wait <-chan error, config commandValidationConfig) (error, error) {
-	terminateErr := signalValidationProcessTree(cmd, false)
+func terminateValidationCommand(processTree processtree.Tree, wait <-chan error, config commandValidationConfig) (error, error) {
+	terminateErr := processTree.Signal(false)
 	timer := time.NewTimer(config.terminateGrace)
 	defer timer.Stop()
 	select {
@@ -111,7 +114,7 @@ func terminateValidationCommand(cmd *exec.Cmd, wait <-chan error, config command
 	case <-timer.C:
 	}
 
-	killErr := signalValidationProcessTree(cmd, true)
+	killErr := processTree.Signal(true)
 	reapTimer := time.NewTimer(config.reapTimeout)
 	defer reapTimer.Stop()
 	select {

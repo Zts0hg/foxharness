@@ -450,6 +450,25 @@ func TestDVBEN006CancellationKillsIgnoringDescendantsAndReaps(t *testing.T) {
 	}
 }
 
+func TestDVBEN006SuccessfulParentExitStillTerminatesDescendants(t *testing.T) {
+	workDir := t.TempDir()
+	config := defaultCommandValidationConfig()
+	config.terminateGrace = 20 * time.Millisecond
+	result := executeCommandValidation(
+		context.Background(),
+		workDir,
+		"(sleep 0.2; touch leaked) >/dev/null 2>&1 &",
+		config,
+	)
+	if result.Status != ValidationStatusPassed {
+		t.Fatalf("validation result = %#v, want successful parent command", result)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(workDir, "leaked")); !os.IsNotExist(err) {
+		t.Fatalf("detached descendant survived successful parent exit: %v", err)
+	}
+}
+
 func TestDVBEN006ValidatorTimeoutIsDistinctAndOrdered(t *testing.T) {
 	config := defaultCommandValidationConfig()
 	config.timeout = 20 * time.Millisecond

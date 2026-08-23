@@ -113,6 +113,23 @@ func TestRuntimeApplicationPreservesBaseSpecAndDefensiveAllowedTools(t *testing.
 	}
 }
 
+func TestRuntimeApplicationPreservesExplicitEmptyAllowedTools(t *testing.T) {
+	runner := &runtimeSessionStub{result: foxruntime.RunResult{SessionID: "s", RunID: "r"}}
+	application, err := NewRuntimeApplication(RuntimeApplicationConfig{
+		Session: runner, Info: SessionInfo{ID: "s", Directory: "/s"},
+		RunSpec: foxruntime.RunSpec{Model: "model", Effort: "medium"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.Run(context.Background(), RunCommand{Prompt: "task", AllowedTools: []string{}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if runner.spec.AllowedTools == nil || len(runner.spec.AllowedTools) != 0 {
+		t.Fatalf("allowed tools = %#v, want explicit empty deny-all slice", runner.spec.AllowedTools)
+	}
+}
+
 func TestRuntimeApplicationFailureAndDrainContracts(t *testing.T) {
 	beforeErr := errors.New("before failed")
 	runner := &runtimeSessionStub{}

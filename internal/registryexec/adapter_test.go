@@ -6,7 +6,9 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"github.com/Zts0hg/foxharness/internal/toolprotocol"
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
@@ -69,6 +71,35 @@ func TestCapabilitiesApplyRunContextBeforeRegistryExecution(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesCarryFilteredSnapshotIntoRegistryExecution(t *testing.T) {
+	registry := tools.NewRegistry()
+	captured := make(chan []string, 1)
+	registry.Register(contextTool{capabilities: captured})
+	registry.Register(registryTool{name: "beta", output: "beta"})
+	registry.Register(registryTool{name: "gamma", output: "gamma"})
+
+	capabilities := Capabilities(registry, []string{"capture", "beta"}, nil)
+	var capture func(context.Context, schema.ToolCall) engine.ToolExecutionResult
+	for _, capability := range capabilities {
+		if capability.Definition.Name == "capture" {
+			capture = capability.Execute
+			break
+		}
+	}
+	if capture == nil {
+		t.Fatalf("capabilities = %#v, want capture included", capabilities)
+	}
+	result := capture(context.Background(), schema.ToolCall{ID: "call-4", Name: "capture"})
+	if result.IsError {
+		t.Fatalf("execution failed: %#v", result)
+	}
+	got := <-captured
+	want := []string{"beta", "capture"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("capability snapshot = %v, want filtered %v", got, want)
+	}
+}
+
 type registryTool struct {
 	name     string
 	output   string
@@ -87,7 +118,8 @@ func (t registryTool) ExecuteResult(context.Context, json.RawMessage) (tools.Exe
 func (t registryTool) ParallelSafe() bool { return t.parallel }
 
 type contextTool struct {
-	captured chan tools.InvocationContext
+	captured     chan tools.InvocationContext
+	capabilities chan []string
 }
 
 func (contextTool) Name() string { return "capture" }
@@ -96,6 +128,11 @@ func (contextTool) Definition() schema.ToolDefinition {
 }
 func (t contextTool) Execute(ctx context.Context, _ json.RawMessage) (string, error) {
 	invocation, _ := tools.InvocationContextFrom(ctx)
-	t.captured <- invocation
+	if t.captured != nil {
+		t.captured <- invocation
+	}
+	if t.capabilities != nil {
+		t.capabilities <- toolprotocol.CapabilitiesFromContext(ctx)
+	}
 	return "done", nil
 }

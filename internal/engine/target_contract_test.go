@@ -277,6 +277,31 @@ func TestTargetThinkingUsesTurnSnapshotForBudgetButHidesToolsFromModel(t *testin
 	}
 }
 
+func TestTargetThinkingStreamDoesNotEmitUserVisibleMessageDeltas(t *testing.T) {
+	invoker := &targetScriptedInvoker{
+		streaming: true,
+		steps: []runtimecontract.ModelStep{
+			{Deltas: []string{"private-plan"}, Response: runtimecontract.ModelResponse{Content: "think"}},
+			{Deltas: []string{"public-answer"}, Response: runtimecontract.ModelResponse{Content: "done", FinishReason: "stop"}},
+		},
+	}
+	observer := &targetTestObserver{}
+	eng := NewAgentEngine(invoker, targetTestToolExecutor{}, &immutableTargetConversation{}, targetTestPolicy{}, observer)
+
+	if _, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 1, Thinking: true}); err != nil {
+		t.Fatal(err)
+	}
+	var deltas []string
+	for _, fact := range observer.facts {
+		if fact.Kind == string(FactMessageDelta) {
+			deltas = append(deltas, fact.Content)
+		}
+	}
+	if !reflect.DeepEqual(deltas, []string{"public-answer"}) {
+		t.Fatalf("user-visible deltas = %#v, want action phase only", deltas)
+	}
+}
+
 func TestTargetStreamingFailureStateDoesNotLeakAcrossRuns(t *testing.T) {
 	invoker := &targetScriptedInvoker{
 		streaming: true,

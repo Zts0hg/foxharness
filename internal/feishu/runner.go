@@ -74,6 +74,7 @@ func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 	for {
 		if cancellation != nil && ctx.Err() != nil {
 			scheduler.cancelAll(ctx.Err())
+			r.cancelBufferedTasks(taskInput, ctx.Err())
 			taskInput = nil
 			cancellation = nil
 			cancelling = true
@@ -87,6 +88,7 @@ func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 		select {
 		case <-cancellation:
 			scheduler.cancelAll(ctx.Err())
+			r.cancelBufferedTasks(taskInput, ctx.Err())
 			taskInput = nil
 			cancellation = nil
 			cancelling = true
@@ -104,6 +106,20 @@ func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 			}
 		case sessionKey := <-scheduler.completed:
 			scheduler.complete(sessionKey)
+		}
+	}
+}
+
+func (r *Runner) cancelBufferedTasks(tasks <-chan Task, cause error) {
+	for tasks != nil {
+		select {
+		case task, ok := <-tasks:
+			if !ok {
+				return
+			}
+			r.deliverCancellation(task, cause)
+		default:
+			return
 		}
 	}
 }
