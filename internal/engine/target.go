@@ -368,6 +368,9 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		if err != nil {
 			return e.fail(emit, outcome, "tool", err)
 		}
+		if snapshot == nil {
+			return e.fail(emit, outcome, "tool", errors.New("tool executor returned nil snapshot"))
+		}
 		definitions := cloneToolDefinitions(snapshot.ToolDefinitions())
 		beforeTurn, err := policyRun.BeforeTurn(ctx, TurnState{Turn: turn})
 		if err != nil {

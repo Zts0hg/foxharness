@@ -31,6 +31,31 @@ func (nilModelRunInvoker) StartRun(context.Context) (ModelRunInvoker, error) {
 	return nil, nil
 }
 
+func TestTargetRejectsNilToolSnapshot(t *testing.T) {
+	invoker := modelInvokerFunc(func(context.Context, RunContext) (ModelResult, error) {
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}, FinishReason: "stop"}, nil
+	})
+	eng := NewAgentEngine(invoker, nilToolSnapshotExecutor{}, &targetTestConversation{}, targetTestPolicy{}, nil)
+
+	outcome, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 1})
+	if err == nil || !strings.Contains(err.Error(), "tool executor returned nil snapshot") {
+		t.Fatalf("Run() error = %v, want nil tool-snapshot collaborator error", err)
+	}
+	if outcome.ErrorKind != "tool" {
+		t.Fatalf("Run() outcome = %#v, want tool error kind", outcome)
+	}
+}
+
+type nilToolSnapshotExecutor struct{}
+
+func (nilToolSnapshotExecutor) Snapshot(context.Context) (ToolSnapshot, error) {
+	return nil, nil
+}
+
+func (nilToolSnapshotExecutor) Execute(context.Context, ToolSnapshot, []schema.ToolCall) (ToolBatch, error) {
+	return ToolBatch{}, nil
+}
+
 func TestTargetContractAdapterRunsM04Scenarios(t *testing.T) {
 	for _, testCase := range []runtimeTurnTestCase{
 		{name: "RT-001 tool-free completion", scenario: runtimeTurnToolFreeScenario()},
