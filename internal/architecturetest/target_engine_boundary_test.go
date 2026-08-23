@@ -19,7 +19,7 @@ func TestTargetEngineFilesDependOnlyOnStandardLibraryAndSchema(t *testing.T) {
 		t.Fatal("target engine production files = 0")
 	}
 	allowed := map[string]struct{}{
-		"context": {}, "encoding/json": {}, "errors": {}, "fmt": {},
+		"context": {}, "encoding/json": {}, "errors": {}, "fmt": {}, "reflect": {},
 		modulePath + "/internal/schema": {},
 	}
 	for path, file := range files {

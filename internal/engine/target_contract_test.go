@@ -56,6 +56,185 @@ func (nilToolSnapshotExecutor) Execute(context.Context, ToolSnapshot, []schema.T
 	return ToolBatch{}, nil
 }
 
+type typedNilModelRun struct{}
+
+func (*typedNilModelRun) Invoke(context.Context, RunContext, ModelFactEmitter) (ModelResult, error) {
+	panic("typed-nil model run was invoked")
+}
+
+type typedNilModelRunInvoker struct{}
+
+func (typedNilModelRunInvoker) StartRun(context.Context) (ModelRunInvoker, error) {
+	var run *typedNilModelRun
+	return run, nil
+}
+
+func TestTargetRejectsTypedNilModelRunInvoker(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("Run() panicked for typed-nil model run: %v", recovered)
+		}
+	}()
+	eng := NewAgentEngine(typedNilModelRunInvoker{}, targetTestToolExecutor{}, &targetTestConversation{}, targetTestPolicy{}, nil)
+
+	outcome, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 1})
+	if err == nil || !strings.Contains(err.Error(), "model invoker returned nil run invoker") {
+		t.Fatalf("Run() error = %v, want typed-nil model-run collaborator error", err)
+	}
+	if outcome.ErrorKind != "provider" {
+		t.Fatalf("Run() outcome = %#v, want provider error kind", outcome)
+	}
+}
+
+type typedNilToolSnapshot struct{}
+
+func (*typedNilToolSnapshot) ToolDefinitions() []schema.ToolDefinition {
+	panic("typed-nil tool snapshot was inspected")
+}
+
+type typedNilToolSnapshotExecutor struct{}
+
+func (typedNilToolSnapshotExecutor) Snapshot(context.Context) (ToolSnapshot, error) {
+	var snapshot *typedNilToolSnapshot
+	return snapshot, nil
+}
+
+func (typedNilToolSnapshotExecutor) Execute(context.Context, ToolSnapshot, []schema.ToolCall) (ToolBatch, error) {
+	return ToolBatch{}, nil
+}
+
+func TestTargetRejectsTypedNilToolSnapshot(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("Run() panicked for typed-nil tool snapshot: %v", recovered)
+		}
+	}()
+	eng := NewAgentEngine(modelInvokerFunc(func(context.Context, RunContext) (ModelResult, error) {
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}, FinishReason: "stop"}, nil
+	}), typedNilToolSnapshotExecutor{}, &targetTestConversation{}, targetTestPolicy{}, nil)
+
+	outcome, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 1})
+	if err == nil || !strings.Contains(err.Error(), "tool executor returned nil snapshot") {
+		t.Fatalf("Run() error = %v, want typed-nil tool-snapshot collaborator error", err)
+	}
+	if outcome.ErrorKind != "tool" {
+		t.Fatalf("Run() outcome = %#v, want tool error kind", outcome)
+	}
+}
+
+type typedNilModelInvoker struct{}
+
+func (*typedNilModelInvoker) StartRun(context.Context) (ModelRunInvoker, error) {
+	panic("typed-nil model invoker was used")
+}
+
+type typedNilToolExecutor struct{}
+
+func (*typedNilToolExecutor) Snapshot(context.Context) (ToolSnapshot, error) {
+	panic("typed-nil tool executor was used")
+}
+
+func (*typedNilToolExecutor) Execute(context.Context, ToolSnapshot, []schema.ToolCall) (ToolBatch, error) {
+	return ToolBatch{}, nil
+}
+
+type typedNilConversation struct{}
+
+func (*typedNilConversation) Prepare(context.Context, ConversationRequest) (ConversationProjection, error) {
+	panic("typed-nil conversation was used")
+}
+
+func (*typedNilConversation) RequestChanges(context.Context, []ConversationChange) error { return nil }
+
+type typedNilTurnPolicy struct{}
+
+func (*typedNilTurnPolicy) StartRun(context.Context, RunInput) (TurnRunPolicy, error) {
+	panic("typed-nil turn policy was used")
+}
+
+type typedNilRunPolicy struct{}
+
+func (*typedNilRunPolicy) BeforeTurn(context.Context, TurnState) (PolicyChanges, error) {
+	panic("typed-nil run policy was used")
+}
+
+func (*typedNilRunPolicy) AfterModel(context.Context, TurnState) (TurnDecision, error) {
+	return TurnDecision{}, nil
+}
+
+func (*typedNilRunPolicy) AfterTools(context.Context, ToolState) (PolicyChanges, error) {
+	return PolicyChanges{}, nil
+}
+
+type typedNilRunPolicyFactory struct{}
+
+func (typedNilRunPolicyFactory) StartRun(context.Context, RunInput) (TurnRunPolicy, error) {
+	var policy *typedNilRunPolicy
+	return policy, nil
+}
+
+type typedNilObserver struct{}
+
+func (*typedNilObserver) Observe(context.Context, Fact) { panic("typed-nil observer was used") }
+
+func TestTargetRejectsTypedNilRequiredCollaborators(t *testing.T) {
+	validModel := modelInvokerFunc(func(context.Context, RunContext) (ModelResult, error) {
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}, FinishReason: "stop"}, nil
+	})
+	tests := []struct {
+		name string
+		eng  *AgentEngine
+		want string
+	}{
+		{name: "model", eng: NewAgentEngine((*typedNilModelInvoker)(nil), targetTestToolExecutor{}, &targetTestConversation{}, targetTestPolicy{}, nil), want: "model invoker is required"},
+		{name: "tools", eng: NewAgentEngine(validModel, (*typedNilToolExecutor)(nil), &targetTestConversation{}, targetTestPolicy{}, nil), want: "tool executor is required"},
+		{name: "conversation", eng: NewAgentEngine(validModel, targetTestToolExecutor{}, (*typedNilConversation)(nil), targetTestPolicy{}, nil), want: "conversation is required"},
+		{name: "policy", eng: NewAgentEngine(validModel, targetTestToolExecutor{}, &targetTestConversation{}, (*typedNilTurnPolicy)(nil), nil), want: "turn policy is required"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("Run() panicked for typed-nil %s: %v", testCase.name, recovered)
+				}
+			}()
+			outcome, err := testCase.eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 1})
+			if err == nil || !strings.Contains(err.Error(), testCase.want) || outcome.ErrorKind != "configuration" {
+				t.Fatalf("Run() outcome/error = %#v/%v, want configuration error %q", outcome, err, testCase.want)
+			}
+		})
+	}
+}
+
+func TestTargetRejectsTypedNilRunPolicy(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("Run() panicked for typed-nil run policy: %v", recovered)
+		}
+	}()
+	eng := NewAgentEngine(modelInvokerFunc(func(context.Context, RunContext) (ModelResult, error) {
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}, FinishReason: "stop"}, nil
+	}), targetTestToolExecutor{}, &targetTestConversation{}, typedNilRunPolicyFactory{}, nil)
+	outcome, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 1})
+	if err == nil || !strings.Contains(err.Error(), "turn policy returned nil run policy") || outcome.ErrorKind != "policy" {
+		t.Fatalf("Run() outcome/error = %#v/%v, want typed-nil run-policy error", outcome, err)
+	}
+}
+
+func TestTargetTreatsTypedNilObserverAsAbsent(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("Run() panicked for typed-nil observer: %v", recovered)
+		}
+	}()
+	eng := NewAgentEngine(modelInvokerFunc(func(context.Context, RunContext) (ModelResult, error) {
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}, FinishReason: "stop"}, nil
+	}), targetTestToolExecutor{}, &targetTestConversation{}, targetTestPolicy{}, (*typedNilObserver)(nil))
+	if _, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 1}); err != nil {
+		t.Fatalf("Run() error = %v, want typed-nil optional observer treated as absent", err)
+	}
+}
+
 func TestTargetContractAdapterRunsM04Scenarios(t *testing.T) {
 	for _, testCase := range []runtimeTurnTestCase{
 		{name: "RT-001 tool-free completion", scenario: runtimeTurnToolFreeScenario()},

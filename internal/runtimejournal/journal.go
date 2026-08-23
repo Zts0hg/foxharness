@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -251,11 +252,14 @@ type journalModel struct {
 }
 
 func (m journalModel) StartRun(ctx context.Context) (engine.ModelRunInvoker, error) {
+	if isNilJournalCollaborator(m.base) {
+		return nil, errors.New("runtime journal model is required")
+	}
 	run, err := m.base.StartRun(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if run == nil {
+	if isNilJournalCollaborator(run) {
 		return nil, errors.New("runtime journal model returned nil run invoker")
 	}
 	return journalModelRun{journal: m.journal, base: run}, nil
@@ -327,11 +331,14 @@ func (t *journalTools) BeginTurn(ctx context.Context) error {
 }
 
 func (t *journalTools) Snapshot(ctx context.Context) (engine.ToolSnapshot, error) {
+	if t == nil || isNilJournalCollaborator(t.base) {
+		return nil, errors.New("runtime journal tool executor is required")
+	}
 	base, err := t.base.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if base == nil {
+	if isNilJournalCollaborator(base) {
 		return nil, errors.New("runtime journal tool executor returned nil snapshot")
 	}
 	return &journalToolSnapshot{owner: t, base: base}, nil
@@ -387,6 +394,19 @@ type journalToolSnapshot struct {
 
 func (s *journalToolSnapshot) ToolDefinitions() []schema.ToolDefinition {
 	return s.base.ToolDefinitions()
+}
+
+func isNilJournalCollaborator(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 var _ foxruntime.SessionArtifactJournal = (*Journal)(nil)

@@ -47,6 +47,96 @@ func TestJournalRejectsNilWrappedToolSnapshot(t *testing.T) {
 	}
 }
 
+type typedNilWrappedModelRun struct{}
+
+func (*typedNilWrappedModelRun) Invoke(context.Context, engine.RunContext, engine.ModelFactEmitter) (engine.ModelResult, error) {
+	return engine.ModelResult{}, nil
+}
+
+type typedNilWrappedModel struct{}
+
+func (typedNilWrappedModel) StartRun(context.Context) (engine.ModelRunInvoker, error) {
+	var run *typedNilWrappedModelRun
+	return run, nil
+}
+
+func TestJournalRejectsTypedNilWrappedModelRun(t *testing.T) {
+	journal := &Journal{}
+	if _, err := journal.WrapModel(typedNilWrappedModel{}).StartRun(context.Background()); err == nil {
+		t.Fatal("StartRun() error = nil, want typed-nil wrapped model-run error")
+	}
+}
+
+type typedNilWrappedToolSnapshot struct{}
+
+func (*typedNilWrappedToolSnapshot) ToolDefinitions() []schema.ToolDefinition { return nil }
+
+type typedNilWrappedTools struct{}
+
+func (typedNilWrappedTools) Snapshot(context.Context) (engine.ToolSnapshot, error) {
+	var snapshot *typedNilWrappedToolSnapshot
+	return snapshot, nil
+}
+
+func (typedNilWrappedTools) Execute(context.Context, engine.ToolSnapshot, []schema.ToolCall) (engine.ToolBatch, error) {
+	return engine.ToolBatch{}, nil
+}
+
+func TestJournalRejectsTypedNilWrappedToolSnapshot(t *testing.T) {
+	journal := &Journal{}
+	if _, err := journal.WrapTools(typedNilWrappedTools{}).Snapshot(context.Background()); err == nil {
+		t.Fatal("Snapshot() error = nil, want typed-nil wrapped tool-snapshot error")
+	}
+}
+
+func TestJournalRejectsNilDecoratorInputs(t *testing.T) {
+	journal := &Journal{}
+	t.Run("model", func(t *testing.T) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Fatalf("StartRun() panicked for nil wrapped model: %v", recovered)
+			}
+		}()
+		if _, err := journal.WrapModel(nil).StartRun(context.Background()); err == nil {
+			t.Fatal("StartRun() error = nil, want nil wrapped model error")
+		}
+	})
+	t.Run("tools", func(t *testing.T) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Fatalf("Snapshot() panicked for nil wrapped tools: %v", recovered)
+			}
+		}()
+		if _, err := journal.WrapTools(nil).Snapshot(context.Background()); err == nil {
+			t.Fatal("Snapshot() error = nil, want nil wrapped tools error")
+		}
+	})
+}
+
+func TestJournalRejectsTypedNilDecoratorInputs(t *testing.T) {
+	journal := &Journal{}
+	t.Run("model", func(t *testing.T) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Fatalf("StartRun() panicked for typed-nil wrapped model: %v", recovered)
+			}
+		}()
+		if _, err := journal.WrapModel((*typedNilWrappedModel)(nil)).StartRun(context.Background()); err == nil {
+			t.Fatal("StartRun() error = nil, want typed-nil wrapped model error")
+		}
+	})
+	t.Run("tools", func(t *testing.T) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Fatalf("Snapshot() panicked for typed-nil wrapped tools: %v", recovered)
+			}
+		}()
+		if _, err := journal.WrapTools((*typedNilWrappedTools)(nil)).Snapshot(context.Background()); err == nil {
+			t.Fatal("Snapshot() error = nil, want typed-nil wrapped tools error")
+		}
+	})
+}
+
 func TestJournalPreservesRunArtifactsAcrossRuntimeFactsAndMechanisms(t *testing.T) {
 	root := t.TempDir()
 	runRoot := filepath.Join(root, "runs", "run-1")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
@@ -330,7 +331,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 	emit := func(fact Fact) {
 		sequence++
 		fact.Sequence = sequence
-		if e.observer != nil {
+		if !isNilCollaborator(e.observer) {
 			e.observer.Observe(ctx, fact)
 		}
 	}
@@ -340,14 +341,14 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 	if err != nil {
 		return e.fail(emit, RunOutcome{}, "policy", err)
 	}
-	if policyRun == nil {
+	if isNilCollaborator(policyRun) {
 		return e.fail(emit, RunOutcome{}, "policy", errors.New("turn policy returned nil run policy"))
 	}
 	modelRun, err := e.model.StartRun(ctx)
 	if err != nil {
 		return e.fail(emit, RunOutcome{}, "provider", fmt.Errorf("模型生成失败: %w", err))
 	}
-	if modelRun == nil {
+	if isNilCollaborator(modelRun) {
 		return e.fail(emit, RunOutcome{}, "provider", errors.New("model invoker returned nil run invoker"))
 	}
 	outcome := RunOutcome{}
@@ -368,7 +369,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		if err != nil {
 			return e.fail(emit, outcome, "tool", err)
 		}
-		if snapshot == nil {
+		if isNilCollaborator(snapshot) {
 			return e.fail(emit, outcome, "tool", errors.New("tool executor returned nil snapshot"))
 		}
 		definitions := cloneToolDefinitions(snapshot.ToolDefinitions())
@@ -566,16 +567,29 @@ func (e *AgentEngine) validate() error {
 	switch {
 	case e == nil:
 		return errors.New("target engine is required")
-	case e.model == nil:
+	case isNilCollaborator(e.model):
 		return errors.New("model invoker is required")
-	case e.tools == nil:
+	case isNilCollaborator(e.tools):
 		return errors.New("tool executor is required")
-	case e.conversation == nil:
+	case isNilCollaborator(e.conversation):
 		return errors.New("conversation is required")
-	case e.policy == nil:
+	case isNilCollaborator(e.policy):
 		return errors.New("turn policy is required")
 	default:
 		return nil
+	}
+}
+
+func isNilCollaborator(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
 	}
 }
 
