@@ -356,6 +356,9 @@ func cloneChildRunRequest(request ChildRunRequest) ChildRunRequest {
 	request.Task = strings.TrimSpace(request.Task)
 	request.AllowedTools = cloneToolNames(request.AllowedTools)
 	request.AgentAllowedTools = cloneToolNames(request.AgentAllowedTools)
+	if isNilRuntimeDependency(request.Cleanup) {
+		request.Cleanup = nil
+	}
 	if request.MaxTurns != nil {
 		value := *request.MaxTurns
 		request.MaxTurns = &value

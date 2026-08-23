@@ -598,6 +598,23 @@ func TestChildRunnerPanicFinishesRunAndCleansExactlyOnce(t *testing.T) {
 	_ = parent.FinishRun(parentScope)
 }
 
+func TestChildRunnerTreatsTypedNilCleanupAsAbsent(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store, successfulHarnessDependencies(nil))
+	parent, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	parentScope, _ := parent.BeginRun(context.Background(), RunSpec{Prompt: "parent", WorkDir: "/workspace"})
+	runner, _ := parent.NewChildRunner(parentScope)
+	var cleanup *recordingChildCleanup
+
+	result, err := runner.Run(context.Background(), ChildRunRequest{
+		InvocationID: "typed-nil-cleanup", Task: "finish", Depth: 1, Cleanup: cleanup,
+	})
+	if err != nil || result.Status != ChildSucceeded || result.Report != "done" {
+		t.Fatalf("typed-nil cleanup Run() = %#v, %v; want successful child with absent cleanup", result, err)
+	}
+	_ = parent.FinishRun(parentScope)
+}
+
 func TestChildRunnerCleanupFailureOverridesSuccessWithoutDiscardingReport(t *testing.T) {
 	store := newLifecycleStore()
 	harness, _ := NewRuntimeHarness(store, successfulHarnessDependencies(nil))
