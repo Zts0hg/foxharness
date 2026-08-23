@@ -177,14 +177,15 @@ func (r *ChildRunner) Run(ctx context.Context, request ChildRunRequest) (result 
 		request.Agent = "general-purpose"
 	}
 	result = ChildRunResult{
-		InvocationID: request.InvocationID, ParentSessionID: r.parentSession.ID,
-		ParentRunID: r.parentRun.RunID, DelegationID: request.DelegationID,
+		InvocationID: request.InvocationID, DelegationID: request.DelegationID,
 		Agent: request.Agent, Depth: request.Depth, Status: ChildStartFailed,
 	}
 	if err := r.validate(request); err != nil {
 		result.Status = ChildRejected
 		return result, err
 	}
+	result.ParentSessionID = r.parentSession.ID
+	result.ParentRunID = r.parentRun.RunID
 	childContext, cancelChild := context.WithCancel(ctx)
 	stopParentCancellation := context.AfterFunc(r.parentContext, cancelChild)
 	defer func() {

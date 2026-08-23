@@ -173,6 +173,24 @@ func TestChildRunnerFromFrozenParentDoesNotCreateShadowParentState(t *testing.T)
 	}
 }
 
+func TestChildRunnerRejectsNilReceiverWithoutPanic(t *testing.T) {
+	var runner *ChildRunner
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("Run() panicked for nil child runner: %v", recovered)
+		}
+	}()
+	result, err := runner.Run(context.Background(), ChildRunRequest{
+		InvocationID: "nil-runner", Task: "inspect", Depth: 1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "runtime child runner is required") {
+		t.Fatalf("Run() error = %v, want missing child runner error", err)
+	}
+	if result.Status != ChildRejected || result.SessionID != "" || result.RunID != "" {
+		t.Fatalf("Run() result = %#v, want rejected result without child identity", result)
+	}
+}
+
 func TestChildRunnerRejectsNestedDepthBeforeSessionOrCleanup(t *testing.T) {
 	store := newLifecycleStore()
 	harness, _ := NewRuntimeHarness(store, successfulHarnessDependencies(nil))
