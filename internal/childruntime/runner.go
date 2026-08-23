@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -72,12 +73,14 @@ func New(config Config) *Runner {
 			config.HomeDir = "."
 		}
 	}
-	if metadata, ok := config.Provider.(providerMetadata); ok {
-		if config.ProviderProtocol == "" {
-			config.ProviderProtocol = metadata.ProviderProtocol()
-		}
-		if config.Model == "" {
-			config.Model = metadata.ModelName()
+	if !isNilProvider(config.Provider) {
+		if metadata, ok := config.Provider.(providerMetadata); ok {
+			if config.ProviderProtocol == "" {
+				config.ProviderProtocol = metadata.ProviderProtocol()
+			}
+			if config.Model == "" {
+				config.Model = metadata.ModelName()
+			}
 		}
 	}
 	return &Runner{config: config}
@@ -214,6 +217,19 @@ func (r *Runner) Run(ctx context.Context, request subagent.Request) (*subagent.R
 type providerMetadata interface {
 	ProviderProtocol() string
 	ModelName() string
+}
+
+func isNilProvider(value provider.LLMProvider) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func (r *Runner) parentTools() ([]string, error) {

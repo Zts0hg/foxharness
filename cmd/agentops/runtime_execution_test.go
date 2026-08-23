@@ -147,6 +147,19 @@ func TestAgentOpsApplicationPermissionApproverMapsTaskAndRunCorrelation(t *testi
 	}
 }
 
+func TestSnapshotAgentOpsProviderTreatsTypedNilMetadataAsAbsent(t *testing.T) {
+	var model *provider.OpenAIProvider
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("snapshotAgentOpsProvider() panicked for typed-nil provider: %v", recovered)
+		}
+	}()
+	snapshot := snapshotAgentOpsProvider(model)
+	if snapshot.protocol != "" || snapshot.model != "" {
+		t.Fatalf("typed-nil provider metadata = protocol %q/model %q, want absent metadata", snapshot.protocol, snapshot.model)
+	}
+}
+
 func TestSnapshotAgentOpsProviderPreservesMetadataExactly(t *testing.T) {
 	model := &exactAgentOpsMetadataProvider{}
 	snapshot := snapshotAgentOpsProvider(model)

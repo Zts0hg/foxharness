@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -293,6 +294,9 @@ type feishuProviderMetadataSource interface {
 }
 
 func snapshotFeishuProvider(modelProvider provider.LLMProvider) feishuProviderMetadata {
+	if isNilProvider(modelProvider) {
+		return feishuProviderMetadata{}
+	}
 	metadata, ok := modelProvider.(feishuProviderMetadataSource)
 	if !ok {
 		return feishuProviderMetadata{}
@@ -300,6 +304,19 @@ func snapshotFeishuProvider(modelProvider provider.LLMProvider) feishuProviderMe
 	return feishuProviderMetadata{
 		protocol: strings.ToLower(strings.TrimSpace(metadata.ProviderProtocol())),
 		model:    metadata.ModelName(),
+	}
+}
+
+func isNilProvider(value provider.LLMProvider) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -232,6 +233,9 @@ type agentOpsProviderMetadataSource interface {
 
 func snapshotAgentOpsProvider(modelProvider provider.LLMProvider) agentOpsTaskProvider {
 	result := agentOpsTaskProvider{LLMProvider: modelProvider}
+	if isNilProvider(modelProvider) {
+		return result
+	}
 	metadata, ok := modelProvider.(agentOpsProviderMetadataSource)
 	if !ok {
 		return result
@@ -239,6 +243,19 @@ func snapshotAgentOpsProvider(modelProvider provider.LLMProvider) agentOpsTaskPr
 	result.protocol = metadata.ProviderProtocol()
 	result.model = metadata.ModelName()
 	return result
+}
+
+func isNilProvider(value provider.LLMProvider) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func (p agentOpsTaskProvider) ProviderProtocol() string {

@@ -26,6 +26,22 @@ func (p *captureProvider) Generate(_ context.Context, messages []schema.Message,
 func (*captureProvider) ProviderProtocol() string { return "openai" }
 func (*captureProvider) ModelName() string        { return "child-model" }
 
+func TestNewTreatsTypedNilProviderAsAbsent(t *testing.T) {
+	var model *provider.OpenAIProvider
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("New() panicked for typed-nil provider metadata: %v", recovered)
+		}
+	}()
+	runner := New(Config{Provider: model})
+	if runner == nil {
+		t.Fatal("New() = nil, want runner with absent provider metadata")
+	}
+	if runner.config.ProviderProtocol != "" || runner.config.Model != "" {
+		t.Fatalf("typed-nil provider metadata = protocol %q/model %q, want absent metadata", runner.config.ProviderProtocol, runner.config.Model)
+	}
+}
+
 func TestRunnerExecutesThroughRuntimeChildProfile(t *testing.T) {
 	homeDir := t.TempDir()
 	workDir := t.TempDir()

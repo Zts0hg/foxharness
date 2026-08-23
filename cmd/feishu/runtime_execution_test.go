@@ -23,6 +23,19 @@ import (
 	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
+func TestSnapshotFeishuProviderTreatsTypedNilAsAbsent(t *testing.T) {
+	var model *provider.OpenAIProvider
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("snapshotFeishuProvider() panicked for typed-nil provider: %v", recovered)
+		}
+	}()
+	metadata := snapshotFeishuProvider(model)
+	if metadata.protocol != "" || metadata.model != "" {
+		t.Fatalf("typed-nil provider metadata = %#v, want empty snapshot", metadata)
+	}
+}
+
 func TestFeishuTaskFactoryRunsTargetProfileWithCompatibleSessionAndArtifacts(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
