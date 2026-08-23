@@ -17,6 +17,36 @@ import (
 	"github.com/Zts0hg/foxharness/internal/tracing"
 )
 
+type nilStartModel struct{}
+
+func (nilStartModel) StartRun(context.Context) (engine.ModelRunInvoker, error) {
+	return nil, nil
+}
+
+type nilSnapshotTools struct{}
+
+func (nilSnapshotTools) Snapshot(context.Context) (engine.ToolSnapshot, error) {
+	return nil, nil
+}
+
+func (nilSnapshotTools) Execute(context.Context, engine.ToolSnapshot, []schema.ToolCall) (engine.ToolBatch, error) {
+	return engine.ToolBatch{}, nil
+}
+
+func TestJournalRejectsNilWrappedModelRun(t *testing.T) {
+	journal := &Journal{}
+	if _, err := journal.WrapModel(nilStartModel{}).StartRun(context.Background()); err == nil {
+		t.Fatal("StartRun() error = nil, want nil wrapped model-run error")
+	}
+}
+
+func TestJournalRejectsNilWrappedToolSnapshot(t *testing.T) {
+	journal := &Journal{}
+	if _, err := journal.WrapTools(nilSnapshotTools{}).Snapshot(context.Background()); err == nil {
+		t.Fatal("Snapshot() error = nil, want nil wrapped tool-snapshot error")
+	}
+}
+
 func TestJournalPreservesRunArtifactsAcrossRuntimeFactsAndMechanisms(t *testing.T) {
 	root := t.TempDir()
 	runRoot := filepath.Join(root, "runs", "run-1")

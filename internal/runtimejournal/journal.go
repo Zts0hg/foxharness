@@ -255,6 +255,9 @@ func (m journalModel) StartRun(ctx context.Context) (engine.ModelRunInvoker, err
 	if err != nil {
 		return nil, err
 	}
+	if run == nil {
+		return nil, errors.New("runtime journal model returned nil run invoker")
+	}
 	return journalModelRun{journal: m.journal, base: run}, nil
 }
 
@@ -327,6 +330,9 @@ func (t *journalTools) Snapshot(ctx context.Context) (engine.ToolSnapshot, error
 	base, err := t.base.Snapshot(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if base == nil {
+		return nil, errors.New("runtime journal tool executor returned nil snapshot")
 	}
 	return &journalToolSnapshot{owner: t, base: base}, nil
 }
