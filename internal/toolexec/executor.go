@@ -59,7 +59,7 @@ func (e *Executor) Execute(
 	calls []schema.ToolCall,
 ) (engine.ToolBatch, error) {
 	capabilities, ok := snapshot.(*capabilitySnapshot)
-	if !ok || capabilities.owner != e {
+	if !ok || capabilities == nil || capabilities.owner != e {
 		return engine.ToolBatch{}, fmt.Errorf("tool snapshot does not belong to executor")
 	}
 	results := make([]engine.ToolExecutionResult, len(calls))

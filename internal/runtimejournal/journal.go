@@ -349,7 +349,7 @@ func (t *journalTools) Snapshot(ctx context.Context) (engine.ToolSnapshot, error
 
 func (t *journalTools) Execute(ctx context.Context, frozen engine.ToolSnapshot, calls []schema.ToolCall) (engine.ToolBatch, error) {
 	snapshot, ok := frozen.(*journalToolSnapshot)
-	if !ok || snapshot.owner != t {
+	if !ok || snapshot == nil || snapshot.owner != t {
 		return engine.ToolBatch{}, errors.New("runtime journal tool snapshot does not belong to executor")
 	}
 	batch, err := t.base.Execute(ctx, snapshot.base, calls)

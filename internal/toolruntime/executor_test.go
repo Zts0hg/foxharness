@@ -58,6 +58,20 @@ func TestExecutorCapsPersistsAndSeparatesLargeResultForms(t *testing.T) {
 	}
 }
 
+func TestExecutorRejectsTypedNilSnapshot(t *testing.T) {
+	executor := New(nil, toolresult.OSFileSystem{}, t.TempDir())
+	var typedNil *snapshot
+	var frozen engine.ToolSnapshot = typedNil
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("Execute() panicked for typed-nil snapshot: %v", recovered)
+		}
+	}()
+	if _, err := executor.Execute(context.Background(), frozen, nil); err == nil {
+		t.Fatal("Execute() error = nil, want ownership error for typed-nil snapshot")
+	}
+}
+
 func TestDynamicExecutorRefreshesCapabilitiesAfterTurnBoundaryAndFreezesEachSnapshot(t *testing.T) {
 	phase := 0
 	executor := NewDynamic(func() []toolexec.Capability {

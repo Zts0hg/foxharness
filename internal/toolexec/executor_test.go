@@ -118,6 +118,20 @@ func TestTL004TL005AndTL006SnapshotFailuresAliasesAndResultForms(t *testing.T) {
 	}
 }
 
+func TestExecutorRejectsTypedNilSnapshot(t *testing.T) {
+	executor := New(nil)
+	var typedNil *capabilitySnapshot
+	var snapshot engine.ToolSnapshot = typedNil
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("Execute() panicked for typed-nil snapshot: %v", recovered)
+		}
+	}()
+	if _, err := executor.Execute(context.Background(), snapshot, nil); err == nil {
+		t.Fatal("Execute() error = nil, want ownership error for typed-nil snapshot")
+	}
+}
+
 func TestTL007CancellationTerminatesConfirmedCallsInOrder(t *testing.T) {
 	started := make(chan string, 2)
 	finished := make(chan string, 2)

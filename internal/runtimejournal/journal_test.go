@@ -169,6 +169,21 @@ func TestJournalRejectsTypedNilDecoratorInputs(t *testing.T) {
 	})
 }
 
+func TestJournalRejectsTypedNilExecuteSnapshot(t *testing.T) {
+	journal := &Journal{}
+	tools := journal.WrapTools(staticTools{})
+	var typedNil *journalToolSnapshot
+	var frozen engine.ToolSnapshot = typedNil
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("Execute() panicked for typed-nil journal snapshot: %v", recovered)
+		}
+	}()
+	if _, err := tools.Execute(context.Background(), frozen, nil); err == nil {
+		t.Fatal("Execute() error = nil, want ownership error for typed-nil journal snapshot")
+	}
+}
+
 func TestJournalPreservesRunArtifactsAcrossRuntimeFactsAndMechanisms(t *testing.T) {
 	root := t.TempDir()
 	runRoot := filepath.Join(root, "runs", "run-1")

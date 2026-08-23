@@ -76,7 +76,7 @@ func (e *Executor) Snapshot(ctx context.Context) (engine.ToolSnapshot, error) {
 /* Execute runs one ordered batch and derives its bounded result forms. */
 func (e *Executor) Execute(ctx context.Context, frozen engine.ToolSnapshot, calls []schema.ToolCall) (engine.ToolBatch, error) {
 	owned, ok := frozen.(*snapshot)
-	if !ok || owned.owner != e {
+	if !ok || owned == nil || owned.owner != e {
 		return engine.ToolBatch{}, fmt.Errorf("runtime tool snapshot does not belong to executor")
 	}
 	batch, err := owned.executor.Execute(ctx, owned.base, calls)
