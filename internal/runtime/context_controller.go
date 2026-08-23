@@ -106,8 +106,11 @@ func (s *AgentSession) NewContextController(scope *RunScope, collector ContextCo
 	if scope == nil || scope.owner != s {
 		return nil, ErrRunScopeOwner
 	}
-	if collector == nil {
+	if isNilRuntimeDependency(collector) {
 		return nil, errors.New("runtime context collector is required")
+	}
+	if isNilRuntimeDependency(compactor) {
+		compactor = nil
 	}
 	return &ContextController{session: s, scope: scope, collector: collector, compactor: compactor}, nil
 }
@@ -120,7 +123,7 @@ func (s *AgentSession) CompactContext(ctx context.Context, compactor ContextComp
 	if s.profile.Snapshot().CompactionPolicy != "automatic_and_manual" {
 		return ContextCompactionProposal{}, errors.New("runtime profile does not permit manual compaction")
 	}
-	if compactor == nil {
+	if isNilRuntimeDependency(compactor) {
 		return ContextCompactionProposal{}, errors.New("runtime context compactor is required")
 	}
 	if err := s.acquire(ctx); err != nil {

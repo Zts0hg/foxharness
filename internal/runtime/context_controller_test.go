@@ -13,6 +13,40 @@ import (
 	"github.com/Zts0hg/foxharness/internal/session"
 )
 
+func TestContextControllerRejectsTypedNilCollector(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store)
+	agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	scope, _ := agentSession.BeginRun(context.Background(), RunSpec{Prompt: "work"})
+	var collector *recordingContextCollector
+
+	if _, err := agentSession.NewContextController(scope, collector, nil); err == nil {
+		t.Fatal("NewContextController() error = nil, want typed-nil collector rejection")
+	}
+	_ = agentSession.FinishRun(scope)
+}
+
+func TestContextControllerTreatsTypedNilCompactorAsAbsent(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store)
+	agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	scope, _ := agentSession.BeginRun(context.Background(), RunSpec{Prompt: "work"})
+	var compactor *budgetCheckingCompactor
+	controller, err := agentSession.NewContextController(scope, staticContextCollector("system"), compactor)
+	if err != nil {
+		t.Fatalf("NewContextController() error = %v, want typed-nil optional compactor treated as absent", err)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("Prepare() panicked for typed-nil optional compactor: %v", recovered)
+		}
+	}()
+	if _, err := controller.Prepare(context.Background(), ordinaryConversationRequest("work")); err != nil {
+		t.Fatalf("Prepare() error = %v, want typed-nil optional compactor treated as absent", err)
+	}
+	_ = agentSession.FinishRun(scope)
+}
+
 func TestContextControllerCollectsAndCommitsInitialContextOnce(t *testing.T) {
 	store := newLifecycleStore()
 	harness, _ := NewRuntimeHarness(store)
@@ -409,6 +443,21 @@ func TestAgentSessionRewindContextInvalidatesCoveredSummaryAndSerializesWithRuns
 	}
 	if state := store.compactState(id); state == nil || state.Summary != "" || state.CoveredUntilSeq != -1 {
 		t.Fatalf("rewound compact state = %#v", state)
+	}
+}
+
+func TestAgentSessionRejectsTypedNilManualCompactor(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store)
+	agentSession, _ := harness.CreateSession(context.Background(), TUIInteractive, SessionOptions{WorkDir: "/workspace"})
+	var compactor *recordingContextCompactor
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("CompactContext() panicked for typed-nil compactor: %v", recovered)
+		}
+	}()
+	if _, err := agentSession.CompactContext(context.Background(), compactor, "focus"); err == nil || !strings.Contains(err.Error(), "runtime context compactor is required") {
+		t.Fatalf("CompactContext() error = %v, want typed-nil compactor rejection", err)
 	}
 }
 
