@@ -26,4 +26,5 @@ project:
   created: "2026-04-28"
 
 workflow:
+  auto_distill: true
   auto_next: true
