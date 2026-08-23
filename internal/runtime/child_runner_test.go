@@ -216,6 +216,9 @@ func TestChildRunnerRejectsNestedDepthBeforeSessionOrCleanup(t *testing.T) {
 	if err == nil || result.Status != ChildRejected || result.SessionID != "" || result.RunID != "" {
 		t.Fatalf("nested Run() = %#v, %v", result, err)
 	}
+	if result.ParentSessionID != parent.Snapshot().ID || result.ParentRunID != parentScope.Snapshot().RunID {
+		t.Fatalf("nested rejection parent lineage = %s/%s, want %s/%s", result.ParentSessionID, result.ParentRunID, parent.Snapshot().ID, parentScope.Snapshot().RunID)
+	}
 	if store.sessionCount() != sessionsBefore || cleanup.calls != 0 {
 		t.Fatalf("nested rejection sessions/cleanup = %d/%d, want %d/0", store.sessionCount(), cleanup.calls, sessionsBefore)
 	}

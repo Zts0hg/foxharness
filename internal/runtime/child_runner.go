@@ -180,12 +180,14 @@ func (r *ChildRunner) Run(ctx context.Context, request ChildRunRequest) (result 
 		InvocationID: request.InvocationID, DelegationID: request.DelegationID,
 		Agent: request.Agent, Depth: request.Depth, Status: ChildStartFailed,
 	}
+	if r != nil {
+		result.ParentSessionID = r.parentSession.ID
+		result.ParentRunID = r.parentRun.RunID
+	}
 	if err := r.validate(request); err != nil {
 		result.Status = ChildRejected
 		return result, err
 	}
-	result.ParentSessionID = r.parentSession.ID
-	result.ParentRunID = r.parentRun.RunID
 	childContext, cancelChild := context.WithCancel(ctx)
 	stopParentCancellation := context.AfterFunc(r.parentContext, cancelChild)
 	defer func() {
