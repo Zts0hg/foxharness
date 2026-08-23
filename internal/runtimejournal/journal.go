@@ -324,6 +324,9 @@ type journalTools struct {
 }
 
 func (t *journalTools) BeginTurn(ctx context.Context) error {
+	if t == nil || isNilJournalCollaborator(t.base) {
+		return errors.New("runtime journal tool executor is required")
+	}
 	if boundary, ok := t.base.(engine.TurnBoundaryToolExecutor); ok {
 		return boundary.BeginTurn(ctx)
 	}

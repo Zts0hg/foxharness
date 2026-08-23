@@ -113,6 +113,38 @@ func TestJournalRejectsNilDecoratorInputs(t *testing.T) {
 	})
 }
 
+type typedNilBoundaryTools struct{}
+
+func (*typedNilBoundaryTools) BeginTurn(context.Context) error {
+	panic("typed-nil boundary tools were advanced")
+}
+
+func (*typedNilBoundaryTools) Snapshot(context.Context) (engine.ToolSnapshot, error) {
+	return staticToolSnapshot{}, nil
+}
+
+func (*typedNilBoundaryTools) Execute(context.Context, engine.ToolSnapshot, []schema.ToolCall) (engine.ToolBatch, error) {
+	return engine.ToolBatch{}, nil
+}
+
+func TestJournalRejectsTypedNilBoundaryDecoratorBeforeSnapshot(t *testing.T) {
+	journal := &Journal{}
+	var base *typedNilBoundaryTools
+	tools := journal.WrapTools(base)
+	boundary, ok := tools.(engine.TurnBoundaryToolExecutor)
+	if !ok {
+		t.Fatal("WrapTools() does not expose TurnBoundaryToolExecutor")
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("BeginTurn() panicked for typed-nil wrapped tools: %v", recovered)
+		}
+	}()
+	if err := boundary.BeginTurn(context.Background()); err == nil {
+		t.Fatal("BeginTurn() error = nil, want typed-nil wrapped tools error")
+	}
+}
+
 func TestJournalRejectsTypedNilDecoratorInputs(t *testing.T) {
 	journal := &Journal{}
 	t.Run("model", func(t *testing.T) {
