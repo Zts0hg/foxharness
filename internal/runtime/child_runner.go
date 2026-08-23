@@ -282,7 +282,11 @@ func runChildTerminalStep(operation string, run func() error) (err error) {
 
 func recordChildFailure(result *ChildRunResult, resultErr *error, kind string, err error) {
 	*resultErr = errors.Join(*resultErr, err)
-	result.Status = ChildFailed
+	// Cancellation remains the primary terminal classification even when bounded
+	// terminalization adds cleanup or persistence failure evidence afterwards.
+	if result.Status != ChildCancelled {
+		result.Status = ChildFailed
+	}
 	if result.Runtime.Outcome.ErrorKind == "" {
 		result.Runtime.Outcome.ErrorKind = kind
 	}

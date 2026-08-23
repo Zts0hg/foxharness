@@ -267,6 +267,53 @@ func TestChildRunnerPropagatesCancellationAndCleansBeforeReturning(t *testing.T)
 	_ = parent.FinishRun(parentScope)
 }
 
+func TestChildRunnerPreservesCancellationClassificationWhenCleanupFails(t *testing.T) {
+	store := newLifecycleStore()
+	modelStarted := make(chan struct{})
+	dependencies := successfulHarnessDependencies(nil)
+	dependencies.NewModel = func(context.Context, RunAssembly) (engine.ModelInvoker, error) {
+		return runtimeModelInvokerFunc(func(ctx context.Context, _ engine.RunContext) (engine.ModelResult, error) {
+			close(modelStarted)
+			<-ctx.Done()
+			return engine.ModelResult{}, ctx.Err()
+		}), nil
+	}
+	harness, _ := NewRuntimeHarness(store, dependencies)
+	parent, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	parentScope, _ := parent.BeginRun(context.Background(), RunSpec{Prompt: "parent", WorkDir: "/workspace"})
+	runner, _ := parent.NewChildRunner(parentScope)
+	cleanupErr := errors.New("process cleanup failed")
+	ctx, cancel := context.WithCancel(context.Background())
+	returned := make(chan ChildRunResult, 1)
+	errs := make(chan error, 1)
+
+	go func() {
+		result, err := runner.Run(ctx, ChildRunRequest{
+			InvocationID: "cancelled-cleanup-failure", Task: "wait", Depth: 1,
+			Cleanup: &recordingChildCleanup{err: cleanupErr},
+		})
+		returned <- result
+		errs <- err
+	}()
+	<-modelStarted
+	cancel()
+	result := <-returned
+	err := <-errs
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, cleanupErr) {
+		t.Fatalf("cancelled cleanup Run() error = %v, want cancellation joined with cleanup failure", err)
+	}
+	if result.Status != ChildCancelled {
+		t.Fatalf("cancelled cleanup Run() status = %s, want %s", result.Status, ChildCancelled)
+	}
+	if result.Runtime.Outcome.ErrorKind != "provider" {
+		t.Fatalf("cancelled cleanup runtime outcome = %#v, want original provider cause classification", result.Runtime.Outcome)
+	}
+	if !errors.Is(result.Runtime.Outcome.Err, context.Canceled) || !errors.Is(result.Runtime.Outcome.Err, cleanupErr) {
+		t.Fatalf("cancelled cleanup runtime error = %v, want cancellation joined with cleanup evidence", result.Runtime.Outcome.Err)
+	}
+	_ = parent.FinishRun(parentScope)
+}
+
 func TestChildRunnerPropagatesParentScopeCancellation(t *testing.T) {
 	store := newLifecycleStore()
 	modelStarted := make(chan struct{})
