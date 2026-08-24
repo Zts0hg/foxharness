@@ -241,10 +241,9 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 	if isNilAgentOpsDependency(application) {
 		return errors.New("AgentOps task application is required")
 	}
-	result, runErr := application.Run(ctx, app.RunCommand{Prompt: prompt}, nil)
-	drainErr := r.drainApplication(ctx, task, prepared.Session.ID, application)
-	if runErr != nil || drainErr != nil {
-		return errors.Join(runErr, drainErr)
+	result, err := r.runTaskApplication(ctx, task, prepared.Session.ID, prompt, application)
+	if err != nil {
+		return err
 	}
 
 	final := "任务执行完成。"
@@ -276,6 +275,26 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 	defer cancelTerminal()
 	_ = r.deliverTaskText(terminalCtx, task, DeliveryStageFinal, final)
 	return nil
+}
+
+func (r *Runner) runTaskApplication(
+	ctx context.Context,
+	task Task,
+	sessionID string,
+	prompt string,
+	application TaskApplication,
+) (result *app.RunOutcome, err error) {
+	defer func() {
+		drainErr := r.drainApplication(ctx, task, sessionID, application)
+		if recovered := recover(); recovered != nil {
+			if drainErr != nil {
+				panic(fmt.Sprintf("%v; cleanup failed: %v", recovered, drainErr))
+			}
+			panic(recovered)
+		}
+		err = errors.Join(err, drainErr)
+	}()
+	return application.Run(ctx, app.RunCommand{Prompt: prompt}, nil)
 }
 
 func (r *Runner) drainApplication(ctx context.Context, task Task, sessionID string, application TaskApplication) (err error) {

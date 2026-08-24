@@ -162,10 +162,9 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	}
 
 	reporter := NewReporter(r.messenger, task.ChatID, task.TaskID).WithDeliveryFailureObserver(r.deliveryFailureObserver)
-	result, runErr := prepared.Application.Run(runCtx, app.RunCommand{Prompt: taskPrompt}, reporter)
-	drainErr := r.drainPreparedTask(runCtx, task, prepared)
-	if runErr != nil || drainErr != nil {
-		cause := errors.Join(runErr, drainErr)
+	result, runErr := r.runPreparedApplication(runCtx, task, taskPrompt, prepared, reporter)
+	if runErr != nil {
+		cause := runErr
 		log.Printf("[Feishu Runner] task=%s session=%s failed: %v", task.TaskID, prepared.Session.ID, cause)
 		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 			r.deliverCancellation(task, cause)
@@ -181,6 +180,26 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	}
 
 	r.deliverTerminalText(task, DeliveryStageFinal, fmt.Sprintf("任务 %s 已完成，Session: %s，Run: %s", task.TaskID, prepared.Session.ID, result.RunID))
+}
+
+func (r *Runner) runPreparedApplication(
+	ctx context.Context,
+	task Task,
+	prompt string,
+	prepared PreparedTaskExecution,
+	reporter app.NotificationSink,
+) (result *app.RunOutcome, err error) {
+	defer func() {
+		drainErr := r.drainPreparedTask(ctx, task, prepared)
+		if recovered := recover(); recovered != nil {
+			if drainErr != nil {
+				panic(fmt.Sprintf("%v; cleanup failed: %v", recovered, drainErr))
+			}
+			panic(recovered)
+		}
+		err = errors.Join(err, drainErr)
+	}()
+	return prepared.Application.Run(ctx, app.RunCommand{Prompt: prompt}, reporter)
 }
 
 func (r *Runner) deliverTerminalText(task Task, stage DeliveryStage, text string) {

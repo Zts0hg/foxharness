@@ -139,6 +139,35 @@ func TestRunnerUsesFreshTerminalContextAfterDrainCancelsRunContext(t *testing.T)
 	}
 }
 
+func TestRunnerDrainsPreparedApplicationBeforePublishingRunPanic(t *testing.T) {
+	drained := 0
+	observer := &recordingTaskOutcomeObserver{}
+	messenger := &recordingTextMessenger{}
+	factory := &recordingTaskExecutionFactory{prepared: PreparedTaskExecution{
+		Application: &recordingRunUseCase{panicValue: "run panic"},
+		Session:     app.SessionInfo{ID: "session-1"},
+		Drain: func(context.Context) error {
+			drained++
+			return nil
+		},
+	}}
+	runner := NewRunner(factory, messenger)
+	runner.taskOutcomeObserver = observer
+	tasks := make(chan Task, 1)
+	tasks <- Task{TaskID: "task", ChatID: "chat", Text: "inspect"}
+	close(tasks)
+
+	runner.Start(context.Background(), tasks)
+
+	if drained != 1 {
+		t.Fatalf("drain calls = %d, want 1", drained)
+	}
+	outcomes := observer.snapshot()
+	if len(outcomes) != 1 || outcomes[0].Status != TaskOutcomeFailed || !strings.Contains(outcomes[0].Error, "run panic") {
+		t.Fatalf("task outcomes = %#v, want one panic failure", outcomes)
+	}
+}
+
 func TestRunnerReportsRuntimeSetupFailureAfterSelectedSessionNotice(t *testing.T) {
 	messenger := &recordingTextMessenger{}
 	factory := &recordingTaskExecutionFactory{prepared: PreparedTaskExecution{
@@ -188,15 +217,19 @@ func (f *recordingTaskExecutionFactory) PrepareTask(_ context.Context, request T
 }
 
 type recordingRunUseCase struct {
-	command app.RunCommand
-	sink    app.NotificationSink
-	outcome *app.RunOutcome
-	err     error
+	command    app.RunCommand
+	sink       app.NotificationSink
+	outcome    *app.RunOutcome
+	err        error
+	panicValue any
 }
 
 func (u *recordingRunUseCase) Run(ctx context.Context, command app.RunCommand, sink app.NotificationSink) (*app.RunOutcome, error) {
 	u.command = command
 	u.sink = sink
+	if u.panicValue != nil {
+		panic(u.panicValue)
+	}
 	if sink != nil && u.outcome != nil {
 		sink.Notify(ctx, app.Notification{Kind: app.NotificationRunStarted, SessionID: u.outcome.SessionID, RunID: u.outcome.RunID})
 		if u.outcome.FinalMessage != "" {

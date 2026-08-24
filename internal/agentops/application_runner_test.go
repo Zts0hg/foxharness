@@ -164,6 +164,29 @@ func TestRunnerUsesFreshTerminalContextAfterDrainCancelsRunContext(t *testing.T)
 	}
 }
 
+func TestRunnerDrainsPreparedApplicationBeforePropagatingRunPanic(t *testing.T) {
+	var events []string
+	application := &recordingAgentOpsApplication{events: &events, runPanic: "run panic"}
+	factory := &recordingAgentOpsExecutionFactory{prepared: PreparedTaskExecution{
+		Session: app.SessionInfo{ID: "session"},
+		Start: func(context.Context) (TaskApplication, error) {
+			return application, nil
+		},
+	}}
+
+	outcome := NewRunner(factory, &orderedAgentOpsMessenger{events: &events}).executeTask(
+		context.Background(),
+		Task{TaskID: "task", ChatID: "chat"},
+	)
+
+	if outcome.Status != TaskOutcomeFailed || outcome.Reason != TaskOutcomeReasonPanic {
+		t.Fatalf("task outcome = %#v, want panic failure", outcome)
+	}
+	if len(events) < 2 || !reflect.DeepEqual(events[len(events)-2:], []string{"run", "drain"}) {
+		t.Fatalf("events = %v, want run followed by drain", events)
+	}
+}
+
 type recordingAgentOpsExecutionFactory struct {
 	events   *[]string
 	request  TaskExecutionRequest
@@ -180,15 +203,19 @@ func (f *recordingAgentOpsExecutionFactory) PrepareTask(_ context.Context, reque
 }
 
 type recordingAgentOpsApplication struct {
-	events  *[]string
-	outcome *app.RunOutcome
-	err     error
-	drain   func(context.Context) error
+	events   *[]string
+	outcome  *app.RunOutcome
+	err      error
+	runPanic any
+	drain    func(context.Context) error
 }
 
 func (a *recordingAgentOpsApplication) Run(_ context.Context, _ app.RunCommand, _ app.NotificationSink) (*app.RunOutcome, error) {
 	if a.events != nil {
 		*a.events = append(*a.events, "run")
+	}
+	if a.runPanic != nil {
+		panic(a.runPanic)
 	}
 	return a.outcome, a.err
 }
