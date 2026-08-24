@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/app"
@@ -77,6 +78,43 @@ func TestRunnerDrainsPreparedApplicationAfterPartialFailure(t *testing.T) {
 	want := "Session session-1 执行失败：provider failed"
 	if got := messenger.texts[len(messenger.texts)-1]; got != want {
 		t.Fatalf("terminal message = %q, want %q", got, want)
+	}
+}
+
+func TestRunnerDrainFailurePreventsSuccessfulTerminalStatus(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		drain func(context.Context) error
+		want  string
+	}{
+		{name: "error", drain: func(context.Context) error { return errors.New("close failed") }, want: "close failed"},
+		{name: "panic", drain: func(context.Context) error { panic("cleanup panic") }, want: "cleanup panic"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			messenger := &recordingTextMessenger{}
+			factory := &recordingTaskExecutionFactory{prepared: PreparedTaskExecution{
+				Application: &recordingRunUseCase{outcome: &app.RunOutcome{
+					SessionID: "session-1", RunID: "run-1", FinalMessage: "finished",
+				}},
+				Session: app.SessionInfo{ID: "session-1"},
+				Drain:   test.drain,
+			}}
+
+			NewRunner(factory, messenger).runOne(
+				context.Background(),
+				Task{TaskID: "task", ChatID: "chat", Text: "inspect"},
+			)
+
+			last := messenger.texts[len(messenger.texts)-1]
+			if !strings.Contains(last, "执行失败") || !strings.Contains(last, test.want) {
+				t.Fatalf("terminal message = %q, want cleanup failure containing %q", last, test.want)
+			}
+			for _, message := range messenger.texts {
+				if strings.Contains(message, "任务 task 已完成") {
+					t.Fatalf("successful terminal status was published before cleanup completed: %v", messenger.texts)
+				}
+			}
+		})
 	}
 }
 
