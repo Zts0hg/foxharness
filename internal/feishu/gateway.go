@@ -174,7 +174,6 @@ func (g *Gateway) StopAccepting(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		g.abortDeliveries()
-		<-done
 		return ctx.Err()
 	}
 }

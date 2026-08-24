@@ -207,7 +207,7 @@ func TestGatewayStopAcceptingPreventsReservationAndEnqueue(t *testing.T) {
 	}
 }
 
-func TestGatewayStopAcceptingTimeoutWaitsForActiveDeliveryAndRollsBack(t *testing.T) {
+func TestGatewayStopAcceptingTimeoutReturnsBeforeUncooperativeDeliveryExits(t *testing.T) {
 	tasks := make(chan Task, 1)
 	store := &blockingReserveDeliveryStore{
 		enteredReserve: make(chan struct{}),
@@ -232,14 +232,14 @@ func TestGatewayStopAcceptingTimeoutWaitsForActiveDeliveryAndRollsBack(t *testin
 
 	select {
 	case err := <-stopDone:
-		t.Fatalf("StopAccepting() returned before active delivery exited: %v", err)
-	case <-time.After(30 * time.Millisecond):
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("StopAccepting() error = %v, want deadline evidence", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		close(store.releaseReserve)
+		t.Fatal("StopAccepting() remained blocked after its context deadline")
 	}
 	close(store.releaseReserve)
-
-	if err := <-stopDone; !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("StopAccepting() error = %v, want deadline evidence after active delivery rollback", err)
-	}
 	if status := <-responseDone; status == http.StatusOK {
 		t.Fatalf("active delivery status = 200, want shutdown rejection after rollback")
 	}
