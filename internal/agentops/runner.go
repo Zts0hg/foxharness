@@ -241,11 +241,10 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 	if isNilAgentOpsDependency(application) {
 		return errors.New("AgentOps task application is required")
 	}
-	defer r.drainApplication(ctx, task, prepared.Session.ID, application)
-
-	result, err := application.Run(ctx, app.RunCommand{Prompt: prompt}, nil)
-	if err != nil {
-		return err
+	result, runErr := application.Run(ctx, app.RunCommand{Prompt: prompt}, nil)
+	drainErr := r.drainApplication(ctx, task, prepared.Session.ID, application)
+	if runErr != nil || drainErr != nil {
+		return errors.Join(runErr, drainErr)
 	}
 
 	final := "任务执行完成。"
@@ -277,17 +276,18 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 	return nil
 }
 
-func (r *Runner) drainApplication(ctx context.Context, task Task, sessionID string, application TaskApplication) {
+func (r *Runner) drainApplication(ctx context.Context, task Task, sessionID string, application TaskApplication) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			log.Printf("[AgentOps] task=%s session=%s drain panic recovered: %v", task.TaskID, sessionID, recovered)
+			err = fmt.Errorf("drain AgentOps task %s session %s: panic: %v", task.TaskID, sessionID, recovered)
 		}
 	}()
 	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultTerminalSendTimeout)
 	defer cancel()
 	if err := application.Drain(drainCtx); err != nil {
-		log.Printf("[AgentOps] task=%s session=%s drain failed: %v", task.TaskID, sessionID, err)
+		return fmt.Errorf("drain AgentOps task %s session %s: %w", task.TaskID, sessionID, err)
 	}
+	return nil
 }
 
 func isNilAgentOpsDependency(value any) bool {

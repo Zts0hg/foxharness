@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/app"
@@ -46,8 +47,8 @@ func TestRunnerStartsPreparedApplicationAfterSessionNoticeAndPreservesFinalPrese
 		"message:已创建 AgentOps Session: session-1\n开始分析。",
 		"start",
 		"run",
-		"message:incident resolved\n\nSession: session-1\nRun: run-1\nTrace: /runs/run-1/trace.jsonl\nMetrics: /runs/run-1/metrics.jsonl",
 		"drain",
+		"message:incident resolved\n\nSession: session-1\nRun: run-1\nTrace: /runs/run-1/trace.jsonl\nMetrics: /runs/run-1/metrics.jsonl",
 	}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events = %#v, want %#v", events, wantEvents)
@@ -101,23 +102,40 @@ func TestRunnerRejectsTypedNilExecutionDependencies(t *testing.T) {
 	}
 }
 
-func TestRunnerDrainPanicCannotReplacePublishedTerminalOutcome(t *testing.T) {
-	messenger := &orderedAgentOpsMessenger{}
-	application := &recordingAgentOpsApplication{
-		outcome: &app.RunOutcome{SessionID: "session", RunID: "run", FinalMessage: "done"},
-		drain: func(context.Context) error {
-			panic("cleanup panic")
-		},
-	}
-	factory := &recordingAgentOpsExecutionFactory{prepared: PreparedTaskExecution{
-		Session: app.SessionInfo{ID: "session"},
-		Start: func(context.Context) (TaskApplication, error) {
-			return application, nil
-		},
-	}}
+func TestRunnerDrainFailurePreventsCompletedTerminalOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		drain func(context.Context) error
+		want  string
+	}{
+		{name: "error", drain: func(context.Context) error { return errors.New("close failed") }, want: "close failed"},
+		{name: "panic", drain: func(context.Context) error { panic("cleanup panic") }, want: "cleanup panic"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var events []string
+			application := &recordingAgentOpsApplication{
+				events:  &events,
+				outcome: &app.RunOutcome{SessionID: "session", RunID: "run", FinalMessage: "done"},
+				drain:   test.drain,
+			}
+			factory := &recordingAgentOpsExecutionFactory{prepared: PreparedTaskExecution{
+				Session: app.SessionInfo{ID: "session"},
+				Start: func(context.Context) (TaskApplication, error) {
+					return application, nil
+				},
+			}}
+			runner := NewRunner(factory, &orderedAgentOpsMessenger{events: &events})
 
-	if err := NewRunner(factory, messenger).run(context.Background(), Task{TaskID: "task", ChatID: "chat"}); err != nil {
-		t.Fatalf("run() error = %v, want published success unaffected by cleanup panic", err)
+			outcome := runner.executeTask(context.Background(), Task{TaskID: "task", ChatID: "chat"})
+			if outcome.Status != TaskOutcomeFailed || !strings.Contains(outcome.Error, test.want) {
+				t.Fatalf("task outcome = %#v, want failed cleanup containing %q", outcome, test.want)
+			}
+			for _, event := range events {
+				if strings.HasPrefix(event, "message:done") {
+					t.Fatalf("successful terminal message was published before cleanup completed: %v", events)
+				}
+			}
+		})
 	}
 }
 
