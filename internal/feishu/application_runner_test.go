@@ -118,6 +118,27 @@ func TestRunnerDrainFailurePreventsSuccessfulTerminalStatus(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesFreshTerminalContextAfterDrainCancelsRunContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	messenger := &terminalContextTextMessenger{}
+	factory := &recordingTaskExecutionFactory{prepared: PreparedTaskExecution{
+		Application: &recordingRunUseCase{outcome: &app.RunOutcome{
+			SessionID: "session-1", RunID: "run-1", FinalMessage: "finished",
+		}},
+		Session: app.SessionInfo{ID: "session-1"},
+		Drain: func(context.Context) error {
+			cancel()
+			return nil
+		},
+	}}
+
+	NewRunner(factory, messenger).runOne(ctx, Task{TaskID: "task", ChatID: "chat", Text: "inspect"})
+
+	if !messenger.terminalCalled || messenger.terminalContextErr != nil {
+		t.Fatalf("terminal delivery called/context error = %v/%v, want true/<nil>", messenger.terminalCalled, messenger.terminalContextErr)
+	}
+}
+
 func TestRunnerReportsRuntimeSetupFailureAfterSelectedSessionNotice(t *testing.T) {
 	messenger := &recordingTextMessenger{}
 	factory := &recordingTaskExecutionFactory{prepared: PreparedTaskExecution{
@@ -192,4 +213,17 @@ type recordingTextMessenger struct {
 func (m *recordingTextMessenger) SendText(_ context.Context, _ string, text string) error {
 	m.texts = append(m.texts, text)
 	return nil
+}
+
+type terminalContextTextMessenger struct {
+	terminalCalled     bool
+	terminalContextErr error
+}
+
+func (m *terminalContextTextMessenger) SendText(ctx context.Context, _ string, text string) error {
+	if strings.Contains(text, "任务 task 已完成") {
+		m.terminalCalled = true
+		m.terminalContextErr = ctx.Err()
+	}
+	return ctx.Err()
 }

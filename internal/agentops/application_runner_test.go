@@ -139,6 +139,31 @@ func TestRunnerDrainFailurePreventsCompletedTerminalOutcome(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesFreshTerminalContextAfterDrainCancelsRunContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	messenger := &terminalContextAgentOpsMessenger{}
+	application := &recordingAgentOpsApplication{
+		outcome: &app.RunOutcome{SessionID: "session", RunID: "run", FinalMessage: "done"},
+		drain: func(context.Context) error {
+			cancel()
+			return nil
+		},
+	}
+	factory := &recordingAgentOpsExecutionFactory{prepared: PreparedTaskExecution{
+		Session: app.SessionInfo{ID: "session"},
+		Start: func(context.Context) (TaskApplication, error) {
+			return application, nil
+		},
+	}}
+
+	if err := NewRunner(factory, messenger).run(ctx, Task{TaskID: "task", ChatID: "chat"}); err != nil {
+		t.Fatal(err)
+	}
+	if !messenger.terminalCalled || messenger.terminalContextErr != nil {
+		t.Fatalf("terminal delivery called/context error = %v/%v, want true/<nil>", messenger.terminalCalled, messenger.terminalContextErr)
+	}
+}
+
 type recordingAgentOpsExecutionFactory struct {
 	events   *[]string
 	request  TaskExecutionRequest
@@ -187,4 +212,17 @@ func (m *orderedAgentOpsMessenger) SendText(_ context.Context, _ string, text st
 		*m.events = append(*m.events, "message:"+text)
 	}
 	return nil
+}
+
+type terminalContextAgentOpsMessenger struct {
+	terminalCalled     bool
+	terminalContextErr error
+}
+
+func (m *terminalContextAgentOpsMessenger) SendText(ctx context.Context, _ string, text string) error {
+	if strings.HasPrefix(text, "done") {
+		m.terminalCalled = true
+		m.terminalContextErr = ctx.Err()
+	}
+	return ctx.Err()
 }

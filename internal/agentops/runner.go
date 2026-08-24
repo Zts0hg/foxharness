@@ -272,7 +272,9 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 		metricsPath,
 	)
 
-	_ = r.deliverTaskText(ctx, task, DeliveryStageFinal, final)
+	terminalCtx, cancelTerminal := context.WithTimeout(context.Background(), defaultTerminalSendTimeout)
+	defer cancelTerminal()
+	_ = r.deliverTaskText(terminalCtx, task, DeliveryStageFinal, final)
 	return nil
 }
 

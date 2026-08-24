@@ -157,7 +157,7 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 	if prepared.SetupError != nil {
 		cause := errors.Join(prepared.SetupError, r.drainPreparedTask(runCtx, task, prepared))
 		log.Printf("[Feishu Runner] task=%s session=%s runtime setup failed: %v", task.TaskID, prepared.Session.ID, cause)
-		r.deliverTaskText(runCtx, task, DeliveryStageFailure, fmt.Sprintf("初始化任务执行环境失败：%v", cause))
+		r.deliverTerminalText(task, DeliveryStageFailure, fmt.Sprintf("初始化任务执行环境失败：%v", cause))
 		return
 	}
 
@@ -170,17 +170,23 @@ func (r *Runner) runOne(ctx context.Context, task Task) {
 		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 			r.deliverCancellation(task, cause)
 		} else {
-			r.deliverTaskText(runCtx, task, DeliveryStageFailure, fmt.Sprintf("Session %s 执行失败：%v", prepared.Session.ID, cause))
+			r.deliverTerminalText(task, DeliveryStageFailure, fmt.Sprintf("Session %s 执行失败：%v", prepared.Session.ID, cause))
 		}
 		return
 	}
 
 	if result == nil || result.FinalMessage == "" {
-		r.deliverTaskText(runCtx, task, DeliveryStageFinal, fmt.Sprintf("任务 %s 执行完成，Session: %s", task.TaskID, prepared.Session.ID))
+		r.deliverTerminalText(task, DeliveryStageFinal, fmt.Sprintf("任务 %s 执行完成，Session: %s", task.TaskID, prepared.Session.ID))
 		return
 	}
 
-	r.deliverTaskText(runCtx, task, DeliveryStageFinal, fmt.Sprintf("任务 %s 已完成，Session: %s，Run: %s", task.TaskID, prepared.Session.ID, result.RunID))
+	r.deliverTerminalText(task, DeliveryStageFinal, fmt.Sprintf("任务 %s 已完成，Session: %s，Run: %s", task.TaskID, prepared.Session.ID, result.RunID))
+}
+
+func (r *Runner) deliverTerminalText(task Task, stage DeliveryStage, text string) {
+	deliveryCtx, cancel := context.WithTimeout(context.Background(), defaultTerminalSendTimeout)
+	defer cancel()
+	r.deliverTaskText(deliveryCtx, task, stage, text)
 }
 
 func (r *Runner) drainPreparedTask(ctx context.Context, task Task, prepared PreparedTaskExecution) (err error) {
