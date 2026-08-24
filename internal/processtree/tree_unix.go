@@ -5,6 +5,8 @@ package processtree
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -12,18 +14,73 @@ import (
 )
 
 type unixTree struct {
-	mu          sync.Mutex
-	cmd         *exec.Cmd
-	forceCalled bool
-	signalSent  bool
+	mu            sync.Mutex
+	cmd           *exec.Cmd
+	groupID       int
+	anchorInput   *os.File
+	anchorDone    <-chan error
+	anchorExited  bool
+	anchorExitErr error
+	forceCalled   bool
 }
 
+/*
+start keeps a signal-ignoring ownership anchor in every process group. The
+anchor prevents the numeric PGID from being reused after the command leader is
+reaped and remains alive until the tree owner sends its final group signal.
+*/
 func start(cmd *exec.Cmd) (Tree, error) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		return nil, err
+	anchorInput, anchorOutput, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("create process-tree ownership pipe: %w", err)
 	}
-	return &unixTree{cmd: cmd}, nil
+	readyInput, readyOutput, err := os.Pipe()
+	if err != nil {
+		_ = anchorInput.Close()
+		_ = anchorOutput.Close()
+		return nil, fmt.Errorf("create process-tree readiness pipe: %w", err)
+	}
+	anchor := exec.Command("/bin/sh", "-c", "trap '' TERM; printf x; IFS= read -r _")
+	anchor.Stdin = anchorInput
+	anchor.Stdout = readyOutput
+	anchor.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := anchor.Start(); err != nil {
+		_ = anchorInput.Close()
+		_ = anchorOutput.Close()
+		_ = readyInput.Close()
+		_ = readyOutput.Close()
+		return nil, fmt.Errorf("start process-tree ownership anchor: %w", err)
+	}
+	_ = anchorInput.Close()
+	_ = readyOutput.Close()
+	anchorDone := make(chan error, 1)
+	go func() { anchorDone <- anchor.Wait() }()
+	var ready [1]byte
+	_, readyErr := io.ReadFull(readyInput, ready[:])
+	_ = readyInput.Close()
+	if readyErr != nil {
+		return nil, abortUnixAnchor(anchor.Process.Pid, anchorOutput, anchorDone,
+			fmt.Errorf("initialize process-tree ownership anchor: %w", readyErr))
+	}
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: anchor.Process.Pid}
+	if err := cmd.Start(); err != nil {
+		return nil, abortUnixAnchor(anchor.Process.Pid, anchorOutput, anchorDone, err)
+	}
+	return &unixTree{
+		cmd: cmd, groupID: anchor.Process.Pid, anchorInput: anchorOutput, anchorDone: anchorDone,
+	}, nil
+}
+
+func abortUnixAnchor(groupID int, anchorInput *os.File, anchorDone <-chan error, cause error) error {
+	signalErr := syscall.Kill(-groupID, syscall.SIGKILL)
+	closeErr := anchorInput.Close()
+	waitErr := <-anchorDone
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) {
+		waitErr = nil
+	}
+	return errors.Join(cause, signalErr, closeErr, waitErr)
 }
 
 func (tree *unixTree) Signal(force bool) error {
@@ -33,36 +90,25 @@ func (tree *unixTree) Signal(force bool) error {
 }
 
 func (tree *unixTree) signalLocked(force bool) error {
-	if tree.cmd.Process == nil {
+	if tree.cmd.Process == nil || tree.groupID <= 0 {
 		return nil
 	}
 	if tree.forceCalled {
 		return nil
 	}
+	if err := tree.observeUnexpectedAnchorExitLocked(); err != nil {
+		return err
+	}
 	signal := syscall.SIGTERM
 	if force {
 		signal = syscall.SIGKILL
 	}
-	err := syscall.Kill(-tree.cmd.Process.Pid, signal)
-	if errors.Is(err, syscall.ESRCH) {
-		tree.forceCalled = true
-		return nil
-	}
-	if force && tree.signalSent && errors.Is(err, syscall.EPERM) {
-		// A successful earlier group signal proves ownership. Once the group
-		// disappears, its numeric PGID can be reused before the parent goroutine
-		// observes Wait; do not treat that unrelated group as cleanup failure.
-		tree.forceCalled = true
-		return nil
-	}
-	if err == nil {
-		tree.signalSent = true
-	}
+	err := syscall.Kill(-tree.groupID, signal)
 	if err == nil && force {
 		tree.forceCalled = true
 	}
 	if err != nil {
-		return fmt.Errorf("signal process group %d with %s: %w", tree.cmd.Process.Pid, signal, err)
+		return fmt.Errorf("signal owned process group %d with %s: %w", tree.groupID, signal, err)
 	}
 	return nil
 }
@@ -74,18 +120,55 @@ func (tree *unixTree) Close(timeout time.Duration) error {
 		return nil
 	}
 	signalErr := tree.signalLocked(true)
-	waitErr := waitForTreeExit(timeout, func() (bool, error) {
-		err := syscall.Kill(-tree.cmd.Process.Pid, 0)
-		if errors.Is(err, syscall.ESRCH) {
-			return true, nil
+	closeErr := tree.closeAnchorInputLocked()
+	waitErr := tree.waitForAnchorExitLocked(timeout)
+	return errors.Join(signalErr, closeErr, waitErr)
+}
+
+func (tree *unixTree) observeUnexpectedAnchorExitLocked() error {
+	if tree.anchorExited {
+		return fmt.Errorf("process-tree ownership anchor exited before cleanup: %w", tree.anchorExitErr)
+	}
+	select {
+	case err := <-tree.anchorDone:
+		tree.anchorExited = true
+		tree.anchorExitErr = err
+		return fmt.Errorf("process-tree ownership anchor exited before cleanup: %w", err)
+	default:
+		return nil
+	}
+}
+
+func (tree *unixTree) closeAnchorInputLocked() error {
+	if tree.anchorInput == nil {
+		return nil
+	}
+	err := tree.anchorInput.Close()
+	tree.anchorInput = nil
+	return err
+}
+
+func (tree *unixTree) waitForAnchorExitLocked(timeout time.Duration) error {
+	if tree.anchorExited {
+		if tree.forceCalled {
+			return nil
 		}
-		if tree.forceCalled && tree.signalSent && errors.Is(err, syscall.EPERM) {
-			return true, nil
+		return tree.anchorExitErr
+	}
+	if timeout <= 0 {
+		timeout = time.Millisecond
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-tree.anchorDone:
+		tree.anchorExited = true
+		tree.anchorExitErr = err
+		if tree.forceCalled {
+			return nil
 		}
-		if err != nil {
-			return false, fmt.Errorf("query process group %d: %w", tree.cmd.Process.Pid, err)
-		}
-		return false, nil
-	})
-	return errors.Join(signalErr, waitErr)
+		return err
+	case <-timer.C:
+		return fmt.Errorf("process-tree ownership anchor was not reaped within %s", timeout)
+	}
 }

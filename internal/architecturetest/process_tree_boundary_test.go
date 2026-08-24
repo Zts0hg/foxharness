@@ -71,12 +71,17 @@ func TestWindowsProcessTreeConsumersUseSharedPreStartBoundary(t *testing.T) {
 	}
 	unixText := string(unixSource)
 	for _, required := range []string{
-		"waitForTreeExit",
-		"syscall.Kill(-tree.cmd.Process.Pid, 0)",
+		"trap '' TERM",
+		"Pgid: anchor.Process.Pid",
+		"syscall.Kill(-tree.groupID, signal)",
+		"waitForAnchorExitLocked(timeout)",
 	} {
 		if !strings.Contains(unixText, required) {
-			t.Errorf("Unix process-tree Close does not wait on process-group cleanup via %s", required)
+			t.Errorf("Unix process-tree boundary does not preserve owned-group cleanup via %s", required)
 		}
+	}
+	if strings.Contains(unixText, "syscall.Kill(-tree.cmd.Process.Pid") {
+		t.Error("Unix process-tree cleanup signals a reapable command PID instead of its ownership-anchored PGID")
 	}
 }
 
