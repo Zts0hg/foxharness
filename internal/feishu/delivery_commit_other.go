@@ -4,8 +4,8 @@ package feishu
 
 import "os"
 
-func commitDeliveryStoreFile(temporaryPath, targetPath string) (bool, error) {
-	if err := os.Rename(temporaryPath, targetPath); err != nil {
+func commitDeliveryStoreFile(root *os.Root, temporaryPath, targetPath string) (bool, error) {
+	if err := root.Rename(temporaryPath, targetPath); err != nil {
 		return false, err
 	}
 	return true, nil

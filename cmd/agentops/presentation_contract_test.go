@@ -84,7 +84,7 @@ func TestUIAOP001CompositionOrderConstantsAndListenFailure(t *testing.T) {
 	}
 	for _, required := range []string{
 		"make(chan agentops.Task, 64)",
-		`filepath.Join(homeDir, ".foxharness", "feishu", "deliveries.json")`,
+		`feishu.NewFileDeliveryStore(homeDir, filepath.Join(".foxharness", "feishu", "deliveries.json"))`,
 		"WithDeliveryFailureObserver(agentops.NewLoggingDeliveryFailureObserver(log.Default()))",
 	} {
 		if !strings.Contains(text, required) {

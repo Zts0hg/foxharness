@@ -157,7 +157,7 @@ func waitForCompletion(ctx context.Context, name string, done <-chan struct{}) e
 }
 
 func newDeliveryStore(homeDir string) (feishu.DeliveryStore, error) {
-	return feishu.NewFileDeliveryStore(filepath.Join(homeDir, ".foxharness", "feishu", "deliveries.json"))
+	return feishu.NewFileDeliveryStore(homeDir, filepath.Join(".foxharness", "feishu", "deliveries.json"))
 }
 
 func newConfiguredLLMProvider(homeDir string, lookup llmconfig.EnvLookup) (provider.LLMProvider, error) {

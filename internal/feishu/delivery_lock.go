@@ -36,7 +36,7 @@ func withDeliveryStoreLock(ctx context.Context, path string, operation func() er
 		lock.token <- struct{}{}
 		releaseDeliveryPathLock(path, lock)
 	}()
-	return withDeliveryStoreFileLock(ctx, path, operation)
+	return operation()
 }
 
 func releaseDeliveryPathLock(path string, lock *deliveryPathLock) {

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -15,11 +14,8 @@ import (
 
 const deliveryStoreLockPollInterval = 10 * time.Millisecond
 
-func withDeliveryStoreFileLock(ctx context.Context, path string, operation func() error) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create delivery store directory: %w", err)
-	}
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+func withDeliveryStoreFileLock(ctx context.Context, root *os.Root, path string, operation func() error) error {
+	lock, err := openRootedRegularFile(root, path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("open delivery store lock: %w", err)
 	}

@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 )
 
-func commitDeliveryStoreFile(temporaryPath, targetPath string) (bool, error) {
-	if err := os.Rename(temporaryPath, targetPath); err != nil {
+func commitDeliveryStoreFile(root *os.Root, temporaryPath, targetPath string) (bool, error) {
+	if err := root.Rename(temporaryPath, targetPath); err != nil {
 		return false, err
 	}
-	directory, err := os.Open(filepath.Dir(targetPath))
+	directory, err := root.Open(filepath.Dir(targetPath))
 	if err != nil {
 		return true, err
 	}

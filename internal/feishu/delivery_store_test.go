@@ -16,9 +16,13 @@ import (
 	"github.com/Zts0hg/foxharness/internal/approval"
 )
 
+func newFileDeliveryStoreAtPath(path string) (*FileDeliveryStore, error) {
+	return NewFileDeliveryStore(filepath.Dir(path), filepath.Base(path))
+}
+
 func TestFileDeliveryStorePersistsAndReleasesReservations(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "deliveries.json")
-	store, err := NewFileDeliveryStore(path)
+	store, err := newFileDeliveryStoreAtPath(path)
 	if err != nil {
 		t.Fatalf("NewFileDeliveryStore() error = %v", err)
 	}
@@ -31,7 +35,7 @@ func TestFileDeliveryStorePersistsAndReleasesReservations(t *testing.T) {
 		t.Fatalf("duplicate Reserve() = %v, %v", accepted, err)
 	}
 
-	restarted, err := NewFileDeliveryStore(path)
+	restarted, err := newFileDeliveryStoreAtPath(path)
 	if err != nil {
 		t.Fatalf("restart NewFileDeliveryStore() error = %v", err)
 	}
@@ -49,7 +53,7 @@ func TestFileDeliveryStorePersistsAndReleasesReservations(t *testing.T) {
 }
 
 func TestFileDeliveryStoreConcurrentReservationHasOneWinner(t *testing.T) {
-	store, err := NewFileDeliveryStore(filepath.Join(t.TempDir(), "deliveries.json"))
+	store, err := NewFileDeliveryStore(t.TempDir(), "deliveries.json")
 	if err != nil {
 		t.Fatalf("NewFileDeliveryStore() error = %v", err)
 	}
@@ -83,7 +87,7 @@ func TestFileDeliveryStoreConcurrentIndependentInstancesHaveOneWinner(t *testing
 	const callers = 64
 	stores := make([]*FileDeliveryStore, callers)
 	for i := range stores {
-		store, err := NewFileDeliveryStore(path)
+		store, err := newFileDeliveryStoreAtPath(path)
 		if err != nil {
 			t.Fatalf("NewFileDeliveryStore() error = %v", err)
 		}
@@ -119,7 +123,7 @@ func TestFileDeliveryStoreFailsClosedOnCorruptAuthority(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not-json"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	store, err := NewFileDeliveryStore(path)
+	store, err := newFileDeliveryStoreAtPath(path)
 	if err != nil {
 		t.Fatalf("NewFileDeliveryStore() error = %v", err)
 	}
@@ -128,11 +132,61 @@ func TestFileDeliveryStoreFailsClosedOnCorruptAuthority(t *testing.T) {
 	}
 }
 
+func TestFileDeliveryStoreRejectsSymlinkAuthorities(t *testing.T) {
+	for _, suffix := range []string{"", ".lock"} {
+		t.Run("deliveries.json"+suffix, func(t *testing.T) {
+			root := t.TempDir()
+			outside := filepath.Join(t.TempDir(), "authority")
+			if err := os.WriteFile(outside, []byte(`{"version":1,"message_ids":[]}`), 0o600); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			path := filepath.Join(root, "deliveries.json")
+			if err := os.Symlink(outside, path+suffix); err != nil {
+				t.Skipf("Symlink() error = %v", err)
+			}
+			store, err := NewFileDeliveryStore(root, "deliveries.json")
+			if err != nil {
+				t.Fatalf("NewFileDeliveryStore() error = %v", err)
+			}
+			if accepted, err := store.Reserve("message-1"); err == nil || accepted {
+				t.Fatalf("Reserve() = %v, %v; want symlink authority rejected", accepted, err)
+			}
+		})
+	}
+}
+
+func TestFileDeliveryStoreRejectsSymlinkDirectoryEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "redirect")); err != nil {
+		t.Skipf("Symlink() error = %v", err)
+	}
+	store, err := NewFileDeliveryStore(root, filepath.Join("redirect", "deliveries.json"))
+	if err != nil {
+		t.Fatalf("NewFileDeliveryStore() error = %v", err)
+	}
+	if accepted, err := store.Reserve("message-1"); err == nil || accepted {
+		t.Fatalf("Reserve() = %v, %v; want outside-root directory symlink rejected", accepted, err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "deliveries.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("outside delivery authority Stat() error = %v, want not created", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "deliveries.json.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("outside lock authority Stat() error = %v, want not created", err)
+	}
+}
+
+func TestNewFileDeliveryStoreRejectsPathOutsideRoot(t *testing.T) {
+	if _, err := NewFileDeliveryStore(t.TempDir(), filepath.Join("..", "deliveries.json")); err == nil {
+		t.Fatal("NewFileDeliveryStore() accepted a path outside its trusted root")
+	}
+}
+
 func TestFileDeliveryStoreReportsAcceptedWhenCommitIsVisibleBeforePostCommitError(t *testing.T) {
 	commitErr := errors.New("sync committed delivery store")
 	previous := commitDeliveryStoreFileFunc
-	commitDeliveryStoreFileFunc = func(temporaryPath, targetPath string) (bool, error) {
-		if err := os.Rename(temporaryPath, targetPath); err != nil {
+	commitDeliveryStoreFileFunc = func(root *os.Root, temporaryPath, targetPath string) (bool, error) {
+		if err := root.Rename(temporaryPath, targetPath); err != nil {
 			return false, err
 		}
 		return true, commitErr
@@ -140,7 +194,7 @@ func TestFileDeliveryStoreReportsAcceptedWhenCommitIsVisibleBeforePostCommitErro
 	defer func() { commitDeliveryStoreFileFunc = previous }()
 
 	path := filepath.Join(t.TempDir(), "deliveries.json")
-	store, err := NewFileDeliveryStore(path)
+	store, err := newFileDeliveryStoreAtPath(path)
 	if err != nil {
 		t.Fatalf("NewFileDeliveryStore() error = %v", err)
 	}
@@ -149,7 +203,7 @@ func TestFileDeliveryStoreReportsAcceptedWhenCommitIsVisibleBeforePostCommitErro
 		t.Fatalf("Reserve() = %v, %v; want accepted post-commit error %v", accepted, err, commitErr)
 	}
 
-	restarted, err := NewFileDeliveryStore(path)
+	restarted, err := newFileDeliveryStoreAtPath(path)
 	if err != nil {
 		t.Fatalf("restart NewFileDeliveryStore() error = %v", err)
 	}

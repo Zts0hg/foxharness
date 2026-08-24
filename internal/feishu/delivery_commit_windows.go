@@ -2,18 +2,10 @@
 
 package feishu
 
-import "golang.org/x/sys/windows"
+import "os"
 
-func commitDeliveryStoreFile(temporaryPath, targetPath string) (bool, error) {
-	from, err := windows.UTF16PtrFromString(temporaryPath)
-	if err != nil {
-		return false, err
-	}
-	to, err := windows.UTF16PtrFromString(targetPath)
-	if err != nil {
-		return false, err
-	}
-	if err := windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); err != nil {
+func commitDeliveryStoreFile(root *os.Root, temporaryPath, targetPath string) (bool, error) {
+	if err := root.Rename(temporaryPath, targetPath); err != nil {
 		return false, err
 	}
 	return true, nil

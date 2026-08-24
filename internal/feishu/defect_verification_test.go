@@ -84,7 +84,7 @@ func TestDVFEI002DuplicateMessageDeliveriesUseDurableAtMostOnceAcceptance(t *tes
 	const concurrent = 8
 	tasks := make(chan Task, 32)
 	storePath := filepath.Join(t.TempDir(), "deliveries.json")
-	deliveryStore, err := NewFileDeliveryStore(storePath)
+	deliveryStore, err := NewFileDeliveryStore(filepath.Dir(storePath), filepath.Base(storePath))
 	if err != nil {
 		t.Fatalf("NewFileDeliveryStore() error = %v", err)
 	}
@@ -125,7 +125,7 @@ func TestDVFEI002DuplicateMessageDeliveriesUseDurableAtMostOnceAcceptance(t *tes
 	postMessageEvent(t, handler, "event-after", "message-1", true)
 	assertNoTask(t, tasks)
 	restartedTasks := make(chan Task, 1)
-	restartedStore, err := NewFileDeliveryStore(storePath)
+	restartedStore, err := NewFileDeliveryStore(filepath.Dir(storePath), filepath.Base(storePath))
 	if err != nil {
 		t.Fatalf("restart NewFileDeliveryStore() error = %v", err)
 	}
