@@ -99,3 +99,15 @@ func TestFileDeliveryStoreUnsupportedPlatformLockFailsClosed(t *testing.T) {
 		t.Fatal("unsupported delivery-store lock fallback does not fail closed with an explicit unsupported error")
 	}
 }
+
+func TestWindowsFileDeliveryStoreCommitFlushesRenamedAuthority(t *testing.T) {
+	root := moduleRoot(t)
+	source, err := os.ReadFile(filepath.Join(root, "internal", "feishu", "delivery_commit_windows.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, "syncRootedDeliveryStoreFile(root, targetPath)") {
+		t.Fatal("Windows delivery-store commit does not flush the renamed rooted authority to stable storage")
+	}
+}

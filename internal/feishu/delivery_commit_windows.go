@@ -8,5 +8,5 @@ func commitDeliveryStoreFile(root *os.Root, temporaryPath, targetPath string) (b
 	if err := root.Rename(temporaryPath, targetPath); err != nil {
 		return false, err
 	}
-	return true, nil
+	return true, syncRootedDeliveryStoreFile(root, targetPath)
 }

@@ -314,4 +314,12 @@ func createRootedDeliveryStoreTemp(root *os.Root, directory string) (*os.File, s
 	return nil, "", errors.New("exhausted delivery store temporary file names")
 }
 
+func syncRootedDeliveryStoreFile(root *os.Root, path string) error {
+	fileHandle, err := openRootedRegularFile(root, path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	return errors.Join(fileHandle.Sync(), fileHandle.Close())
+}
+
 var _ DeliveryStore = (*FileDeliveryStore)(nil)
