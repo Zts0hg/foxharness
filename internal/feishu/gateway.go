@@ -38,7 +38,9 @@ type Gateway struct {
 	tasks             chan<- Task
 	approvalStore     *approval.Store
 	deliveryStore     DeliveryStore
+	serverMu          sync.Mutex
 	server            *http.Server
+	shutdownRequested bool
 	admissionMu       sync.Mutex
 	admissionClosed   bool
 	activeDeliveries  int
@@ -82,8 +84,16 @@ func (g *Gateway) WithDeliveryStore(store DeliveryStore) *Gateway {
 // Listen registers the Feishu event dispatcher on /webhook/event and starts
 // an HTTP server bound to addr.  It blocks until the server exits.
 func (g *Gateway) Listen(addr string) error {
-	g.server = g.Server(addr)
-	err := g.server.ListenAndServe()
+	server := g.Server(addr)
+	g.serverMu.Lock()
+	if g.shutdownRequested {
+		g.serverMu.Unlock()
+		return nil
+	}
+	g.server = server
+	g.serverMu.Unlock()
+
+	err := server.ListenAndServe()
 	if err == http.ErrServerClosed {
 		return nil
 	}
@@ -314,10 +324,14 @@ func (g *Gateway) approvalCallbackAuthorized(r *http.Request) bool {
 
 // Shutdown gracefully shuts down a server previously created by Listen.
 func (g *Gateway) Shutdown(ctx context.Context) error {
-	if g.server == nil {
+	g.serverMu.Lock()
+	g.shutdownRequested = true
+	server := g.server
+	g.serverMu.Unlock()
+	if server == nil {
 		return nil
 	}
-	err := g.server.Shutdown(ctx)
+	err := server.Shutdown(ctx)
 	if err == http.ErrServerClosed {
 		return nil
 	}
