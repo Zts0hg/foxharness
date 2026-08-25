@@ -414,7 +414,10 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		modelResult, err := modelRun.Invoke(ctx, runContext, emitModelFact)
 		if errors.Is(err, ErrPromptTooLong) {
 			retryContext, recoveryCompactions, prepareErr := e.prepareContext(ctx, input, turn, PhaseAction, definitions, ConversationPrepareReactive)
-			if prepareErr == nil && len(recoveryCompactions) > 0 {
+			if prepareErr != nil {
+				return e.fail(emit, outcome, "conversation", prepareErr)
+			}
+			if len(recoveryCompactions) > 0 {
 				for _, compaction := range recoveryCompactions {
 					emit(Fact{Kind: FactContextCompacted, Turn: turn, Phase: PhaseAction, Name: compaction.Trigger})
 				}

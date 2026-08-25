@@ -470,6 +470,26 @@ func TestTargetPromptTooLongDoesNotRetryWithoutChangedProjection(t *testing.T) {
 	}
 }
 
+func TestTargetPromptTooLongReturnsReactivePreparationFailure(t *testing.T) {
+	prepareErr := errors.New("persist compact state")
+	conversation := &reactiveFailureConversation{err: prepareErr}
+	invoker := modelInvokerFunc(func(context.Context, RunContext) (ModelResult, error) {
+		return ModelResult{}, ErrPromptTooLong
+	})
+	eng := NewAgentEngine(invoker, targetTestToolExecutor{}, conversation, targetTestPolicy{}, nil)
+
+	outcome, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 1})
+	if !errors.Is(err, prepareErr) {
+		t.Fatalf("Run() error = %v, want reactive preparation error %v", err, prepareErr)
+	}
+	if outcome.ErrorKind != "conversation" {
+		t.Fatalf("Run() error kind = %q, want conversation", outcome.ErrorKind)
+	}
+	if conversation.reactiveCalls != 1 {
+		t.Fatalf("reactive Prepare() calls = %d, want 1", conversation.reactiveCalls)
+	}
+}
+
 func TestTargetThinkingUsesTurnSnapshotForBudgetButHidesToolsFromModel(t *testing.T) {
 	conversation := &invocationRecordingConversation{}
 	executor := &perTurnTargetToolExecutor{snapshots: []targetToolSnapshot{{definitions: []schema.ToolDefinition{{Name: "inspect"}}}}}
@@ -1096,6 +1116,23 @@ type invocationRecordingConversation struct {
 
 type compactingInvocationConversation struct {
 	requests []ConversationRequest
+}
+
+type reactiveFailureConversation struct {
+	err           error
+	reactiveCalls int
+}
+
+func (c *reactiveFailureConversation) Prepare(_ context.Context, request ConversationRequest) (ConversationProjection, error) {
+	if request.Preparation == ConversationPrepareReactive {
+		c.reactiveCalls++
+		return ConversationProjection{}, c.err
+	}
+	return ConversationProjection{Context: RunContext{Messages: []schema.Message{{Role: schema.RoleUser, Content: request.Input.Prompt}}}}, nil
+}
+
+func (*reactiveFailureConversation) RequestChanges(context.Context, []ConversationChange) error {
+	return nil
 }
 
 func (c *compactingInvocationConversation) Prepare(_ context.Context, request ConversationRequest) (ConversationProjection, error) {
