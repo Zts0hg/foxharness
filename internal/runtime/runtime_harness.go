@@ -327,14 +327,25 @@ func (o *runtimeObserver) dispatch(ctx context.Context, fact engine.Fact) {
 	}
 	o.mu.Unlock()
 	if o.artifacts != nil {
-		if err := o.artifacts.RecordArtifact(ctx, correlated); err != nil {
-			o.addWarning(RunWarning{Sink: "artifact", Operation: "record_fact", Error: err.Error()})
-		}
+		o.recordBestEffort("artifact", func() error { return o.artifacts.RecordArtifact(ctx, correlated) })
 	}
 	if o.telemetry != nil {
-		if err := o.telemetry.RecordTelemetry(ctx, correlated); err != nil {
-			o.addWarning(RunWarning{Sink: "telemetry", Operation: "record_fact", Error: err.Error()})
-		}
+		o.recordBestEffort("telemetry", func() error { return o.telemetry.RecordTelemetry(ctx, correlated) })
+	}
+}
+
+func (o *runtimeObserver) recordBestEffort(sink string, record func() error) {
+	var recordErr error
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				recordErr = fmt.Errorf("panic: %v", recovered)
+			}
+		}()
+		recordErr = record()
+	}()
+	if recordErr != nil {
+		o.addWarning(RunWarning{Sink: sink, Operation: "record_fact", Error: recordErr.Error()})
 	}
 }
 

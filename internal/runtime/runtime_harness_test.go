@@ -141,6 +141,43 @@ func TestRuntimeHarnessArtifactAndTelemetryFailuresAreWarnings(t *testing.T) {
 	}
 }
 
+func TestRuntimeHarnessArtifactAndTelemetryPanicsAreWarnings(t *testing.T) {
+	store := newLifecycleStore()
+	dependencies := successfulHarnessDependencies(nil)
+	artifact := &panickingArtifactJournal{}
+	telemetry := &panickingTelemetryJournal{}
+	dependencies.NewArtifactJournal = func(context.Context, RunAssembly) (SessionArtifactJournal, error) {
+		return artifact, nil
+	}
+	dependencies.NewTelemetryJournal = func(context.Context, RunAssembly) (TelemetryJournal, error) {
+		return telemetry, nil
+	}
+	harness, _ := NewRuntimeHarness(store, dependencies)
+	agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+
+	result, err := agentSession.Run(context.Background(), RunSpec{Prompt: "inspect"})
+	if err != nil {
+		t.Fatalf("best-effort journal panic became terminal: %v", err)
+	}
+	if result.Outcome.FinalMessage != "done" {
+		t.Fatalf("outcome = %#v, want successful authoritative result", result.Outcome)
+	}
+	wantWarnings := []RunWarning{
+		{Sink: "artifact", Operation: "record_fact", Error: "panic: artifact panic"},
+		{Sink: "telemetry", Operation: "record_fact", Error: "panic: telemetry panic"},
+		{Sink: "artifact", Operation: "record_fact", Error: "panic: artifact panic"},
+		{Sink: "telemetry", Operation: "record_fact", Error: "panic: telemetry panic"},
+		{Sink: "artifact", Operation: "record_fact", Error: "panic: artifact panic"},
+		{Sink: "telemetry", Operation: "record_fact", Error: "panic: telemetry panic"},
+	}
+	if !reflect.DeepEqual(result.Warnings, wantWarnings) {
+		t.Fatalf("warnings = %#v, want %#v", result.Warnings, wantWarnings)
+	}
+	if artifact.calls != 3 || telemetry.calls != 3 {
+		t.Fatalf("journal calls = artifact:%d telemetry:%d", artifact.calls, telemetry.calls)
+	}
+}
+
 func TestRuntimeHarnessJournalInitializationFailuresAreWarnings(t *testing.T) {
 	store := newLifecycleStore()
 	dependencies := successfulHarnessDependencies(nil)
@@ -536,6 +573,20 @@ type failingTelemetryJournal struct {
 func (j *failingTelemetryJournal) RecordTelemetry(context.Context, RuntimeFact) error {
 	j.calls++
 	return j.err
+}
+
+type panickingArtifactJournal struct{ calls int }
+
+func (j *panickingArtifactJournal) RecordArtifact(context.Context, RuntimeFact) error {
+	j.calls++
+	panic("artifact panic")
+}
+
+type panickingTelemetryJournal struct{ calls int }
+
+func (j *panickingTelemetryJournal) RecordTelemetry(context.Context, RuntimeFact) error {
+	j.calls++
+	panic("telemetry panic")
 }
 
 func runtimeFactKinds(facts []RuntimeFact) []engine.FactKind {
