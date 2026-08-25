@@ -108,7 +108,12 @@ func (s *capabilitySnapshot) ToolDefinitions() []schema.ToolDefinition {
 	return definitions
 }
 
-func executeOne(ctx context.Context, snapshot *capabilitySnapshot, call schema.ToolCall) engine.ToolExecutionResult {
+func executeOne(ctx context.Context, snapshot *capabilitySnapshot, call schema.ToolCall) (result engine.ToolExecutionResult) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			result = failureResult(call.ID, fmt.Sprintf("Error executing %s: panic: %v", call.Name, recovered))
+		}
+	}()
 	capability, ok := snapshot.capabilities[call.Name]
 	if !ok {
 		content := fmt.Sprintf("Error: tool '%s' does not exist in the system", call.Name)
@@ -120,7 +125,7 @@ func executeOne(ctx context.Context, snapshot *capabilitySnapshot, call schema.T
 	if capability.Execute == nil {
 		return failureResult(call.ID, fmt.Sprintf("Error executing %s: executable capability is missing", call.Name))
 	}
-	result := capability.Execute(ctx, cloneCall(call))
+	result = capability.Execute(ctx, cloneCall(call))
 	if result.CallID == "" {
 		result.CallID = call.ID
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +130,46 @@ func TestExecutorRejectsTypedNilSnapshot(t *testing.T) {
 	}()
 	if _, err := executor.Execute(context.Background(), snapshot, nil); err == nil {
 		t.Fatal("Execute() error = nil, want ownership error for typed-nil snapshot")
+	}
+}
+
+func TestParallelCapabilityPanicBecomesCorrelatedFailure(t *testing.T) {
+	executor := New([]Capability{
+		{
+			Definition:   schema.ToolDefinition{Name: "panic", InputSchema: map[string]any{"type": "object"}},
+			ParallelSafe: true,
+			Execute: func(context.Context, schema.ToolCall) engine.ToolExecutionResult {
+				panic("tool panic")
+			},
+		},
+		{
+			Definition:   schema.ToolDefinition{Name: "ok", InputSchema: map[string]any{"type": "object"}},
+			ParallelSafe: true,
+			Execute: func(_ context.Context, call schema.ToolCall) engine.ToolExecutionResult {
+				return engine.ToolExecutionResult{CallID: call.ID, ModelContent: "ok"}
+			},
+		},
+	})
+	snapshot, err := executor.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	batch, err := executor.Execute(context.Background(), snapshot, []schema.ToolCall{
+		{ID: "call-panic", Name: "panic", Arguments: json.RawMessage(`{}`)},
+		{ID: "call-ok", Name: "ok", Arguments: json.RawMessage(`{}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Results) != 2 {
+		t.Fatalf("results = %#v, want two correlated results", batch.Results)
+	}
+	if got := batch.Results[0]; got.CallID != "call-panic" || !got.IsError || !strings.Contains(got.ModelContent, "tool panic") {
+		t.Fatalf("panic result = %#v, want correlated failure", got)
+	}
+	if got := batch.Results[1]; got.CallID != "call-ok" || got.IsError || got.ModelContent != "ok" {
+		t.Fatalf("successful sibling result = %#v", got)
 	}
 }
 
