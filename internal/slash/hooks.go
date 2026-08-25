@@ -39,6 +39,7 @@ func runHook(ctx context.Context, phase, command, workDir string, timeout time.D
 	hookCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(hookCtx, "sh", "-c", command)
+	configureEmbeddedShellCommand(cmd)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}

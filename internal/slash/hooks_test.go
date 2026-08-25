@@ -2,6 +2,7 @@ package slash
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -61,5 +62,44 @@ func TestExecuteHooks_Timeout(t *testing.T) {
 	hooks := &FrontmatterHooks{Before: "sleep 5"}
 	if err := ExecuteHooks(context.Background(), hooks, "", 50*time.Millisecond); err != nil {
 		t.Errorf("timeout should be non-blocking, got err: %v", err)
+	}
+}
+
+func TestExecuteHooksCancellationKillsDescendants(t *testing.T) {
+	workDir := t.TempDir()
+	readyPath := filepath.Join(workDir, "ready")
+	leakedPath := filepath.Join(workDir, "leaked")
+	hooks := &FrontmatterHooks{Before: fmt.Sprintf(
+		"(printf ready > %q; sleep 0.5; printf leaked > %q) & wait",
+		readyPath,
+		leakedPath,
+	)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = ExecuteHooks(ctx, hooks, workDir, 5*time.Second)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("hook descendant did not reach readiness barrier")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled hook did not return")
+	}
+	time.Sleep(600 * time.Millisecond)
+	if _, err := os.Stat(leakedPath); !os.IsNotExist(err) {
+		t.Fatalf("cancelled hook descendant side effect survived: %v", err)
 	}
 }
