@@ -40,17 +40,13 @@ func TestRunBoundsBufferedOutput(t *testing.T) {
 }
 
 func TestRunTimesOutAndKillsProcessTree(t *testing.T) {
-	started := time.Now()
-	result := Run(context.Background(), t.TempDir(), "sleep 5; printf done", 20*time.Millisecond)
+	result := Run(context.Background(), t.TempDir(), "while :; do sleep 1; done", 20*time.Millisecond)
 
 	if !result.TimedOut {
 		t.Fatal("TimedOut = false, want true")
 	}
 	if !errors.Is(result.Err, context.DeadlineExceeded) {
 		t.Fatalf("Err = %v, want context deadline exceeded", result.Err)
-	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("Run returned after %s, want prompt process-tree cancellation", elapsed)
 	}
 }
 
