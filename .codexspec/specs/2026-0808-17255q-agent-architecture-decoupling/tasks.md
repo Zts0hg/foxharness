@@ -202,6 +202,14 @@
 - [x] **T158 (`D-REV-029`)** Drain prepared remote applications even when `Application.Run` panics, before propagating one panic outcome. Dependencies: T157. Covers: REQ-009, NFR-006, NFR-010, NFR-011. **Red:** `go test ./internal/agentops ./internal/feishu -run '^TestRunnerDrainsPreparedApplicationBefore(Propagating|Publishing)RunPanic$' -count=1` observed `run` without `drain`. **Green:** focused and affected package tests passed. **Commit:** `266b34af8b631c2a67cef14d4b096f02cec9c49b`.
 - [x] **T159 (`D-REV-030`)** Make Feishu admission shutdown return at its deadline even when a legacy delivery operation does not respond to cancellation. Dependencies: T158. Covers: REQ-009, NFR-006, NFR-010, NFR-011. **Red:** `go test ./internal/feishu -run '^TestGatewayStopAcceptingTimeoutReturnsBeforeUncooperativeDeliveryExits$' -count=1` remained blocked after the deadline. **Green:** both shutdown-timeout tests and the Feishu package passed. **Commit:** `0acf289ed49e75d373df7375fd7c2c39169a6b17`.
 - [x] **T160 (`D-REV-031`)** Confine durable Feishu state, lock, temporary file, and replacement operations beneath an explicit trusted `os.Root` and reject symlink/non-regular authorities. Dependencies: T159. Covers: REQ-009, NFR-001, NFR-006, NFR-010, NFR-011. **Red:** `go test ./internal/feishu -run '^TestFileDeliveryStoreRejectsSymlinkAuthorities$' -count=1` accepted both external state and lock symlinks. **Green:** rooted authority, directory-escape, traversal, persistence, concurrency, race, command-composition, and Linux/Windows compile-only checks passed. **Commit:** `6b2cd5c151f01f4b7346645125b50cfd26c31f9e`.
+- [x] **T161 (`D-REV-032`)** Flush the renamed Windows Feishu delivery authority before reporting a durable reservation commit. Dependencies: T160. Covers: REQ-009, NFR-001, NFR-006, NFR-010, NFR-011. **Red:** `go test ./internal/architecturetest -run '^TestWindowsFileDeliveryStoreCommitFlushesRenamedAuthority$' -count=1` found no post-rename flush. **Green:** the architecture contract and Windows Feishu compile-only check passed. **Commit:** `830607bdcb7901472889436960a52ca403d81bb5`.
+- [x] **T162 (`D-REV-033`)** Convert panics from parallel-safe tool capabilities into correlated tool failures instead of process-wide panics. Dependencies: T161. Covers: REQ-005, NFR-010, NFR-011. **Red:** `go test ./internal/toolexec -run '^TestParallelCapabilityPanicBecomesCorrelatedFailure$' -count=1` escaped a worker-goroutine panic. **Green:** focused, tool-execution package, and repeated race tests passed. **Commit:** `61ca2fbce369a106e95db65d1163e5622827f825`.
+- [x] **T163 (`D-REV-034`)** Return a failed reactive conversation preparation instead of discarding it and replaying the stale prompt-too-long provider error. Dependencies: T162. Covers: REQ-004, REQ-007, NFR-010, NFR-011. **Red:** `go test ./internal/engine -run '^TestTargetPromptTooLongReturnsReactivePreparationFailure$' -count=1` returned the stale model error instead of the persistence failure. **Green:** focused, engine package, and prompt-too-long race tests passed. **Commit:** `ef5aa7ac5627a637f75351d21fd8df6bcf974e19`.
+- [x] **T164 (`D-REV-035`)** Contain best-effort artifact and telemetry journal panics as warnings without changing the runtime outcome. Dependencies: T163. Covers: REQ-009, NFR-010, NFR-011. **Red:** `go test ./internal/runtime -run '^TestRuntimeHarnessArtifactAndTelemetryPanicsAreWarnings$' -count=1` let the artifact panic escape finalization. **Green:** focused, runtime package, and repeated race warning tests passed. **Commit:** `71abb0e0dfe4dc4484fca5f0549696d14dc69f4f`.
+- [x] **T165 (`D-REV-036`)** Make the mandatory shell cancellation proof independent of scheduler timing and a finite child sleep. Dependencies: T164. Covers: NFR-006, NFR-010, NFR-011. **Red:** the full-suite review run observed `TestRunTimesOutAndKillsProcessTree` exceed its one-second wall-clock assertion even though focused repeats passed. **Green:** an infinite child command plus behavior-only assertion passed 100 focused repetitions and 20 race repetitions. **Commit:** `d47e2297b780824526ecd062849f03b69d537acf`.
+- [x] **T166 (`D-REV-037`)** Bound retained stdout for embedded slash shell commands and report overflow as a compact inline error. Dependencies: T165. Covers: REQ-010, NFR-001, NFR-006, NFR-010, NFR-011. **Red:** `go test ./internal/slash -run '^TestExecuteEmbeddedShellRejectsOverflow$' -count=1` retained 1,048,588 output bytes. **Green:** the focused shell suite and ten race repetitions passed. **Commit:** `3aa497f52883f4cd9722634788c74d95a2c9aa8a`.
+- [x] **T167 (`D-REV-038`)** Apply the shared cross-platform process-tree cancellation boundary to slash hooks so descendants cannot outlive cancellation. Dependencies: T166. Covers: REQ-010, REQ-011, NFR-001, NFR-006, NFR-010, NFR-011. **Red:** `go test ./internal/slash -run '^TestExecuteHooksCancellationKillsDescendants$' -count=1` observed the cancelled descendant create its delayed side-effect file. **Green:** ten focused and ten race repetitions passed. **Commit:** `0beffc667907183142928143278ee44da892b479`.
+- [x] **T168 (`D-REV-039`)** Serialize Feishu listener publication and shutdown so an early shutdown request prevents a late server start. Dependencies: T167. Covers: REQ-009, NFR-006, NFR-010, NFR-011. **Red:** `go test ./internal/feishu -run '^TestGatewayShutdownBeforeListenPreventsLateStart$' -count=1` attempted to bind after `Shutdown` had returned. **Green:** repeated lifecycle tests, repeated race tests, and both remote command packages passed. **Commit:** `7ea865aa38261f054b78bb183e828030a5ca0c6a`.
 
 ## Dependencies and Execution Order
 
@@ -213,7 +221,7 @@
 - `T046` depends on every Phase 0 task and is the only `B00` freeze point.
 - `T047-T073` form the confirmed sequential `M01-M27` production chain. No production task may bypass a predecessor or `B00`.
 - `T074-T128` are separately approved TDD defect corrections discovered by Phase 0 defect gates or characterization expansion, and remain mapped even though they are not `Mxx` migration commits.
-- `T129-T160` are post-M27 strict-review remediation tasks. They do not alter the planned `M01-M27` migration order, but they are merge-blocking corrections and must pass focused, full, race, vet, fixture, and final review gates before merge.
+- `T129-T168` are post-M27 strict-review remediation tasks. They do not alter the planned `M01-M27` migration order, but they are merge-blocking corrections and must pass focused, full, race, vet, fixture, and final review gates before merge.
 - Profile cutovers and recoverable-state ownership boundaries are never combined. Adjacent mechanical work may be combined only under DEC-041 and only when its independent evidence remains intact.
 
 ## Required Verification Record
@@ -235,34 +243,34 @@ For each checked task, record in the task/implementation log:
 | `REQ-001` Headless runtime | T015, T058, T063, T065-T066, T069-T070, T073 | Full |
 | `REQ-002` Runtime Profiles | T020, T022, T024, T026, T028, T030, T032, T055 | Full |
 | `REQ-003` Runtime ownership | T015, T056-T058 | Full |
-| `REQ-004` Engine | T010-T011, T050-T054, T071 | Full |
-| `REQ-005` Collaborators | T010-T014, T050-T054, T071, T131, T134 | Full |
+| `REQ-004` Engine | T010-T011, T050-T054, T071, T141, T144-T146, T163 | Full |
+| `REQ-005` Collaborators | T010-T014, T050-T054, T071, T131, T134-T135, T142, T144-T147, T162 | Full |
 | `REQ-006` Session/persistence | T013, T045, T048-T049, T056-T057, T072, T113, T132 | Full |
-| `REQ-007` Prompt/context | T013, T047, T057, T072 | Full |
+| `REQ-007` Prompt/context | T013, T047, T057, T072, T163 | Full |
 | `REQ-008` Application/adapters | T021, T023, T025, T027, T034, T062-T070, T128, T130 | Full |
-| `REQ-009` Interactions/observation | T011, T015, T025, T027, T050, T054, T058, T062, T068, T071, T119, T130 | Full |
-| `REQ-010` Presentation entries | T021-T023, T034, T063, T067-T070, T128-T129, T131, T138-T139 | Full |
-| `REQ-011` Control clients | T029, T031-T034, T060-T064, T117-T127, T133, T136 | Full |
+| `REQ-009` Interactions/observation | T011, T015, T025, T027, T050, T054, T058, T062, T068, T071, T119, T130, T143, T149, T151, T155-T161, T164, T168 | Full |
+| `REQ-010` Presentation entries | T021-T023, T034, T063, T067-T070, T128-T129, T131, T138-T139, T166-T167 | Full |
+| `REQ-011` Control clients | T029, T031-T034, T060-T064, T117-T127, T133, T136, T154, T167 | Full |
 | `REQ-012` Child depth/capability | T030-T031, T043, T059, T061, T114-T118, T120, T134-T135, T138-T139 | Full |
 | `REQ-013` Benchmark fidelity | T028-T029, T042, T060 | Full |
 | `REQ-014` Profile bundles | T020-T034, T045, T055-T069, T116-T117, T129-T130, T132, T134-T135, T138-T139 | Full |
 | `REQ-015` Composition/injection | T002, T054, T058, T062, T073 | Full |
-| `NFR-001` Behavior compatibility | T010-T015, T020-T034, T040-T046, T047-T073, T074-T139 | Full |
+| `NFR-001` Behavior compatibility | T010-T015, T020-T034, T040-T046, T047-T073, T074-T139, T160-T161, T166-T167 | Full |
 | `NFR-002` Focused boundaries | T002, T050-T054, T062, T070 | Full |
 | `NFR-003` Dependency DAG | T002, T050, T054-T062, T071, T073 | Full |
 | `NFR-004` Single repo/module | T046, T073 | Full |
 | `NFR-005` Complete Phase 0 | T001-T006, T010-T015, T020-T034, T040-T046, T074-T128 | Full |
-| `NFR-006` Hermetic tests | T002-T006, T010-T015, T020-T034, T040-T046, T074-T127, T129-T131, T133-T136, T138-T139, T143, T154, T157-T160 | Full |
+| `NFR-006` Hermetic tests | T002-T006, T010-T015, T020-T034, T040-T046, T074-T127, T129-T131, T133-T136, T138-T139, T143, T154, T157-T161, T165-T168 | Full |
 | `NFR-007` Catalog coverage | T001, T004, T010-T015, T020-T034, T040-T046, T128, T140, affected migration tasks | Full |
 | `NFR-008` Old/target contracts | T004-T005, T050-T071 | Full |
 | `NFR-009` Immutable fixtures | T003, T013, T045-T049, T072-T073, T113, T132 | Full |
-| `NFR-010` Defect separation | T024-T034, T040-T045, T074-T160 | Full |
-| `NFR-011` TDD and gates | T046-T073, T074-T160 plus Required Verification Record | Full |
+| `NFR-010` Defect separation | T024-T034, T040-T045, T074-T168 | Full |
+| `NFR-011` TDD and gates | T046-T073, T074-T168 plus Required Verification Record | Full |
 | `NFR-012` Dependency docs/allowlist | T002, every dependency-changing migration task, T073 | Full |
 | `NFR-013` Atomic migration | T046-T073 | Full |
 | Shared Characterization Harness | T001, T003-T006, T010-T015, T113 | Full |
 | Runtime Profile and adapter catalogs | T020-T034, T114-T120, T128-T129, T134-T135, T138-T140 | Full |
-| Residual defect gates and corrections | T040-T044, T074-T160 | Full |
+| Residual defect gates and corrections | T040-T044, T074-T168 | Full |
 | `B00` baseline | T045-T046 | Full |
 | Engine component | T050-T054 | Full |
 | Runtime component | T055-T059 | Full |
