@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -379,6 +380,32 @@ func TestRuntimeHarnessTreatsTypedNilObserverAsAbsent(t *testing.T) {
 	result, err := agentSession.Run(context.Background(), RunSpec{Prompt: "inspect", Observer: observer})
 	if err != nil || result.Outcome.FinalMessage != "done" {
 		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+}
+
+func TestRuntimeHarnessContainsRunObserverPanicsAsWarnings(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store, successfulHarnessDependencies(nil))
+	agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+
+	result, err := agentSession.Run(context.Background(), RunSpec{
+		Prompt:   "inspect",
+		Observer: RunObserverFunc(func(context.Context, RuntimeFact) { panic("presentation unavailable") }),
+	})
+	if err != nil || result.Outcome.FinalMessage != "done" {
+		t.Fatalf("Run() = %#v, %v; want successful runtime outcome", result, err)
+	}
+	if store.finishCount() != 1 {
+		t.Fatalf("finish count = %d, want 1", store.finishCount())
+	}
+	if len(result.Warnings) != 3 {
+		t.Fatalf("warnings = %#v, want one warning per observer panic", result.Warnings)
+	}
+	for _, warning := range result.Warnings {
+		if warning.Sink != "observer" || warning.Operation != "observe_fact" ||
+			!strings.Contains(warning.Error, "presentation unavailable") {
+			t.Fatalf("observer warning = %#v", warning)
+		}
 	}
 }
 

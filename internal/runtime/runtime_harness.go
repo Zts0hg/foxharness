@@ -316,7 +316,7 @@ func (o *runtimeObserver) Observe(ctx context.Context, fact engine.Fact) {
 func (o *runtimeObserver) dispatch(ctx context.Context, fact engine.Fact) {
 	correlated := RuntimeFact{SessionID: o.sessionID, RunID: o.runID, Fact: fact}
 	if o.observer != nil {
-		o.observer.ObserveRunFact(ctx, correlated)
+		o.notifyObserver(ctx, correlated)
 	}
 	o.mu.Lock()
 	if fact.Kind == engine.FactMessage {
@@ -332,6 +332,17 @@ func (o *runtimeObserver) dispatch(ctx context.Context, fact engine.Fact) {
 	if o.telemetry != nil {
 		o.recordBestEffort("telemetry", func() error { return o.telemetry.RecordTelemetry(ctx, correlated) })
 	}
+}
+
+func (o *runtimeObserver) notifyObserver(ctx context.Context, fact RuntimeFact) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			o.addWarning(RunWarning{
+				Sink: "observer", Operation: "observe_fact", Error: fmt.Sprintf("panic: %v", recovered),
+			})
+		}
+	}()
+	o.observer.ObserveRunFact(ctx, fact)
 }
 
 func (o *runtimeObserver) recordBestEffort(sink string, record func() error) {
