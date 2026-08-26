@@ -204,6 +204,53 @@ func TestRuntimeHarnessJournalInitializationFailuresAreWarnings(t *testing.T) {
 	}
 }
 
+func TestRuntimeHarnessJournalInitializationPanicsAreWarnings(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*HarnessDependencies)
+		warning   RunWarning
+	}{
+		{
+			name: "artifact",
+			configure: func(dependencies *HarnessDependencies) {
+				dependencies.NewArtifactJournal = func(context.Context, RunAssembly) (SessionArtifactJournal, error) {
+					panic("transcript setup panic")
+				}
+			},
+			warning: RunWarning{Sink: "artifact", Operation: "initialize", Error: "panic: transcript setup panic"},
+		},
+		{
+			name: "telemetry",
+			configure: func(dependencies *HarnessDependencies) {
+				dependencies.NewTelemetryJournal = func(context.Context, RunAssembly) (TelemetryJournal, error) {
+					panic("telemetry setup panic")
+				}
+			},
+			warning: RunWarning{Sink: "telemetry", Operation: "initialize", Error: "panic: telemetry setup panic"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newLifecycleStore()
+			dependencies := successfulHarnessDependencies(nil)
+			test.configure(&dependencies)
+			harness, _ := NewRuntimeHarness(store, dependencies)
+			agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+
+			result, err := agentSession.Run(context.Background(), RunSpec{Prompt: "inspect"})
+			if err != nil || result.Outcome.FinalMessage != "done" {
+				t.Fatalf("Run() = %#v, %v; want successful authoritative result", result, err)
+			}
+			if !reflect.DeepEqual(result.Warnings, []RunWarning{test.warning}) {
+				t.Fatalf("warnings = %#v, want %#v", result.Warnings, []RunWarning{test.warning})
+			}
+			if store.finishCount() != 1 {
+				t.Fatalf("finish count = %d, want 1", store.finishCount())
+			}
+		})
+	}
+}
+
 func TestRuntimeHarnessSessionInitializationFailureReleasesLiveLease(t *testing.T) {
 	store := newLifecycleStore()
 	dependencies := successfulHarnessDependencies(nil)

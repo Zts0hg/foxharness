@@ -251,9 +251,14 @@ func buildArtifactJournal(ctx context.Context, dependencies HarnessDependencies,
 	if dependencies.NewArtifactJournal == nil {
 		return nil, nil
 	}
-	journal, err := dependencies.NewArtifactJournal(ctx, cloneRunAssembly(request))
-	if err != nil {
-		return nil, &RunWarning{Sink: "artifact", Operation: "initialize", Error: err.Error()}
+	var journal SessionArtifactJournal
+	warning := runJournalInitializer("artifact", func() error {
+		var err error
+		journal, err = dependencies.NewArtifactJournal(ctx, cloneRunAssembly(request))
+		return err
+	})
+	if warning != nil {
+		return nil, warning
 	}
 	if isNilRuntimeDependency(journal) {
 		return nil, nil
@@ -265,14 +270,31 @@ func buildTelemetryJournal(ctx context.Context, dependencies HarnessDependencies
 	if dependencies.NewTelemetryJournal == nil {
 		return nil, nil
 	}
-	journal, err := dependencies.NewTelemetryJournal(ctx, cloneRunAssembly(request))
-	if err != nil {
-		return nil, &RunWarning{Sink: "telemetry", Operation: "initialize", Error: err.Error()}
+	var journal TelemetryJournal
+	warning := runJournalInitializer("telemetry", func() error {
+		var err error
+		journal, err = dependencies.NewTelemetryJournal(ctx, cloneRunAssembly(request))
+		return err
+	})
+	if warning != nil {
+		return nil, warning
 	}
 	if isNilRuntimeDependency(journal) {
 		return nil, nil
 	}
 	return journal, nil
+}
+
+func runJournalInitializer(sink string, initialize func() error) (warning *RunWarning) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			warning = &RunWarning{Sink: sink, Operation: "initialize", Error: fmt.Sprintf("panic: %v", recovered)}
+		}
+	}()
+	if err := initialize(); err != nil {
+		return &RunWarning{Sink: sink, Operation: "initialize", Error: err.Error()}
+	}
+	return nil
 }
 
 type runtimeObserver struct {
