@@ -11,10 +11,12 @@ import (
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/autodev"
+	"github.com/Zts0hg/foxharness/internal/childruntime"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/subagent"
 )
 
 func TestUIAUT006TUILaunchPreservesTypedAutodevConfig(t *testing.T) {
@@ -37,7 +39,8 @@ func TestUIAUT006TUILaunchPreservesTypedAutodevConfig(t *testing.T) {
 }
 
 func TestM18AutodevTargetFactoryPreservesRuntimeProfileAndEngineerQuestionPort(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	workDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workDir, "AGENTS.md"), []byte("AUTODEV_TARGET_INSTRUCTION\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -51,6 +54,7 @@ func TestM18AutodevTargetFactoryPreservesRuntimeProfileAndEngineerQuestionPort(t
 	}
 	scripted := &targetAutodevProvider{}
 	var configs []llmconfig.ResolvedConfig
+	var childConfig childruntime.Config
 	factory := &autodevRuntimeCoreFactory{
 		llmConfig: llmconfig.ResolvedConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "base-model"},
 		maxTurns:  4,
@@ -58,11 +62,16 @@ func TestM18AutodevTargetFactoryPreservesRuntimeProfileAndEngineerQuestionPort(t
 			configs = append(configs, config)
 			return scripted, nil
 		},
+		newChildRunner: func(config childruntime.Config) subagent.Runner {
+			childConfig = config
+			return targetTUIChildRunner{}
+		},
 	}
 	core, err := factory.New(context.Background(), workDir, "item-model")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("HOME", t.TempDir())
 	asker := &targetAutodevAsker{}
 	core.SetUserAsker(asker)
 	stagePrompt, err := core.StagePrompt(context.Background(), "codexspec:generate-spec", "feature/requirements.md")
@@ -84,6 +93,9 @@ func TestM18AutodevTargetFactoryPreservesRuntimeProfileAndEngineerQuestionPort(t
 	if len(configs) != 1 || configs[0].Model != "item-model" {
 		t.Fatalf("provider configs = %#v", configs)
 	}
+	if childConfig.HomeDir != home {
+		t.Fatalf("Autodev child HomeDir = %q, want frozen parent home %q", childConfig.HomeDir, home)
+	}
 
 	observations := scripted.snapshot()
 	if len(observations) < 2 {
@@ -102,7 +114,7 @@ func TestM18AutodevTargetFactoryPreservesRuntimeProfileAndEngineerQuestionPort(t
 		t.Fatalf("tool surface = %q, want %q", got, want)
 	}
 
-	stored, err := session.NewFileStore(workDir).Open(session.ID(outcome.SessionID))
+	stored, err := session.NewFileStoreWithHome(workDir, home).Open(session.ID(outcome.SessionID))
 	if err != nil {
 		t.Fatal(err)
 	}

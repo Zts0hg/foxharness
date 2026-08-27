@@ -103,7 +103,7 @@ func (f *autodevRuntimeCoreFactory) New(ctx context.Context, workDir, model stri
 			return nil
 		}
 		return f.newChildRunner(childruntime.Config{
-			Provider: providerState, WorkDir: workDir,
+			Provider: providerState, WorkDir: workDir, HomeDir: store.HomeDir(),
 			ParentProfile:    childruntime.ParentProfile(foxruntime.AutodevPipeline),
 			ProviderProtocol: strings.ToLower(strings.TrimSpace(providerState.configSnapshot().Protocol)),
 			Model:            providerState.model(), Permission: permissions,

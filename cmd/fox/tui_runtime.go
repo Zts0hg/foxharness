@@ -448,7 +448,7 @@ func (c *tuiRuntimeComposition) buildToolRegistry(assembly foxruntime.RunAssembl
 	var child subagent.Runner
 	if c.config.NewChildRunner != nil {
 		child = c.config.NewChildRunner(childruntime.Config{
-			Provider: modelProvider, WorkDir: c.workDir, ParentProfile: childruntime.ParentProfile(foxruntime.TUIInteractive),
+			Provider: modelProvider, WorkDir: c.workDir, HomeDir: c.store.HomeDir(), ParentProfile: childruntime.ParentProfile(foxruntime.TUIInteractive),
 			ProviderProtocol: assembly.Spec.ProviderProtocol, Model: assembly.Run.Model, Effort: assembly.Run.Effort,
 			Permission: c.permissions, ParentEvidence: c.permissionEvidence(resource.stored, assembly.Spec.Prompt),
 		})
@@ -962,7 +962,7 @@ func (r *tuiForkRunner) Run(ctx context.Context, task string, agentType string, 
 	}
 	invocation, _ := tools.InvocationContextFrom(ctx)
 	child := r.composition.config.NewChildRunner(childruntime.Config{
-		Provider: modelProvider, WorkDir: r.composition.workDir,
+		Provider: modelProvider, WorkDir: r.composition.workDir, HomeDir: r.composition.store.HomeDir(),
 		ParentProfile:    childruntime.ParentProfile(foxruntime.TUIInteractive),
 		ProviderProtocol: strings.ToLower(strings.TrimSpace(r.composition.config.ResolvedLLM.Protocol)),
 		Model:            model, Effort: effort, Permission: r.composition.permissions,

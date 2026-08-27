@@ -312,7 +312,8 @@ func TestTUIInteractiveTargetCompactionAndRewindUseActiveSessionState(t *testing
 }
 
 func TestTUIInteractiveTargetForkCarriesParentPermissionEvidence(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	workDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workDir, "AGENTS.md"), []byte("TRUSTED_FORK_INSTRUCTION\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -333,6 +334,7 @@ func TestTUIInteractiveTargetForkCarriesParentPermissionEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer startup.Close(context.Background())
+	t.Setenv("HOME", t.TempDir())
 
 	state := startup.Application.State()
 	result, err := startup.Executor.Execute(context.Background(), &slash.Command{
@@ -344,6 +346,9 @@ func TestTUIInteractiveTargetForkCarriesParentPermissionEvidence(t *testing.T) {
 	}
 	if childConfig.ParentEvidence == nil {
 		t.Fatal("fork child ParentEvidence = nil")
+	}
+	if childConfig.HomeDir != home {
+		t.Fatalf("TUI fork child HomeDir = %q, want frozen parent home %q", childConfig.HomeDir, home)
 	}
 	evidence := childConfig.ParentEvidence(permission.Request{ToolName: "read_file", Action: "read AGENTS.md"})
 	if !strings.Contains(evidence.Trusted, "TRUSTED_FORK_INSTRUCTION") {

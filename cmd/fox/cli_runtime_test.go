@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/app"
+	"github.com/Zts0hg/foxharness/internal/childruntime"
 	"github.com/Zts0hg/foxharness/internal/cli"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/subagent"
 )
 
 func TestCLIExecTargetCompositionPreservesProfileArtifactsAndPresentation(t *testing.T) {
@@ -28,17 +30,23 @@ func TestCLIExecTargetCompositionPreservesProfileArtifactsAndPresentation(t *tes
 		t.Fatal(err)
 	}
 	model := &targetCLIProvider{}
+	var childConfig childruntime.Config
 	cfg := foxConfig{
 		WorkDir: workDir, Prompt: "/help remains ordinary input", Model: "cli-target-model",
 		ResolvedLLM: llmconfig.ResolvedConfig{
 			Protocol: "openai", BaseURL: "https://example.test", Model: "cli-target-model",
 		},
 		EffortOverride: "high", MaxTurns: 5,
+		NewChildRunner: func(config childruntime.Config) subagent.Runner {
+			childConfig = config
+			return targetTUIChildRunner{}
+		},
 	}
 	application, err := newCLIApplicationWithProvider(context.Background(), cfg, model)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("HOME", t.TempDir())
 	stdout := new(bytes.Buffer)
 	logs := new(bytes.Buffer)
 	if err := cli.Run(context.Background(), cli.Config{
@@ -62,6 +70,9 @@ func TestCLIExecTargetCompositionPreservesProfileArtifactsAndPresentation(t *tes
 	}
 	if !strings.Contains(logs.String(), "[CLI] Session: "+info.ID) || !strings.Contains(logs.String(), "[CLI] Session dir: "+info.Directory) {
 		t.Fatalf("CLI logs = %q", logs.String())
+	}
+	if childConfig.HomeDir != home {
+		t.Fatalf("CLI child HomeDir = %q, want frozen parent home %q", childConfig.HomeDir, home)
 	}
 
 	observations := model.snapshot()

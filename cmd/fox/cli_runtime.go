@@ -117,7 +117,7 @@ func newCLIApplicationWithProvider(ctx context.Context, config foxConfig, modelP
 			if err != nil {
 				return nil, err
 			}
-			registry := buildCLIToolRegistry(config, workDir, stored, modelProvider, checkpointer, messageID, skillRegistry)
+			registry := buildCLIToolRegistry(config, workDir, store.HomeDir(), stored, modelProvider, checkpointer, messageID, skillRegistry)
 			resultHook := combineResultHooks(conditionalSkillHook(skillRegistry), hooks.RecordCallback(tracker))
 			capabilities := registryexec.CapabilitiesWithContext(
 				registry, assembly.AllowedTools,
@@ -258,6 +258,7 @@ func selectCLIStoredSession(store *session.FileStore, workDir string, config fox
 func buildCLIToolRegistry(
 	config foxConfig,
 	workDir string,
+	homeDir string,
 	stored *session.StoredSession,
 	modelProvider provider.LLMProvider,
 	checkpointer checkpoint.Checkpointer,
@@ -276,7 +277,7 @@ func buildCLIToolRegistry(
 	var child subagent.Runner
 	if config.NewChildRunner != nil {
 		child = config.NewChildRunner(childruntime.Config{
-			Provider: modelProvider, WorkDir: workDir, ParentProfile: childruntime.ParentProfile(foxruntime.CLIExec),
+			Provider: modelProvider, WorkDir: workDir, HomeDir: homeDir, ParentProfile: childruntime.ParentProfile(foxruntime.CLIExec),
 			ProviderProtocol: strings.ToLower(strings.TrimSpace(config.ResolvedLLM.Protocol)),
 			Model:            config.Model, Effort: config.EffortOverride,
 		})
