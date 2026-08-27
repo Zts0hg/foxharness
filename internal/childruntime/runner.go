@@ -133,7 +133,7 @@ func (r *Runner) Run(ctx context.Context, request subagent.Request) (*subagent.R
 	if err != nil {
 		return nil, err
 	}
-	store := session.NewFileStore(r.config.WorkDir)
+	store := session.NewFileStoreWithHome(r.config.WorkDir, r.config.HomeDir)
 	supervisor := tools.NewBashProcessSupervisor()
 	if r.config.SupervisorFactory != nil {
 		supervisor = r.config.SupervisorFactory()

@@ -76,6 +76,31 @@ func TestRunnerExecutesThroughRuntimeChildProfile(t *testing.T) {
 	}
 }
 
+func TestRunnerStoresChildSessionUnderFrozenHomeDir(t *testing.T) {
+	ambientHome := t.TempDir()
+	configuredHome := t.TempDir()
+	workDir := t.TempDir()
+	t.Setenv("HOME", ambientHome)
+	runner := New(Config{
+		Provider: &captureProvider{}, WorkDir: workDir, HomeDir: configuredHome,
+		ParentProfile: CLIExec,
+	})
+
+	result, err := runner.Run(context.Background(), subagent.Request{
+		ParentSessionID: "parent-session", ParentRunID: "parent-run", DelegationID: "tool-call",
+		Task: "inspect", ReadOnly: true, Depth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.NewFileStoreWithHome(workDir, configuredHome).Open(session.ID(result.SessionID)); err != nil {
+		t.Fatalf("open child session from configured home: %v", err)
+	}
+	if _, err := session.NewFileStoreWithHome(workDir, ambientHome).Open(session.ID(result.SessionID)); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("open child session from ambient home error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestCLIExecRunnerExecutesWithoutPermissionCoordinator(t *testing.T) {
 	homeDir := t.TempDir()
 	workDir := t.TempDir()
