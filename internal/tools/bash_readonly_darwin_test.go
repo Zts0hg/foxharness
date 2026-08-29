@@ -56,3 +56,23 @@ func TestDarwinReadOnlyBashStartFailureIsUnavailable(t *testing.T) {
 		t.Fatalf("sandbox start error = %v, want unavailable", result.Err)
 	}
 }
+
+func TestSandboxInfrastructureFailureDetectionIsAnchoredToRunnerDiagnostics(t *testing.T) {
+	cases := []struct {
+		output string
+		want   bool
+	}{
+		{"sandbox-exec: sandbox_apply: Operation not permitted\n", true},
+		{"sandbox_apply: Operation not permitted\n", true},
+		{"  sandbox-exec: unbound variable: garbage\nBacktrace: ...\n", true},
+		{"grep: sandbox_apply: No such file or directory\n", false},
+		{"cat: missing.txt: No such file or directory\nsandbox_apply echoed by the command\n", false},
+		{"exit status 1\n", false},
+		{"", false},
+	}
+	for _, item := range cases {
+		if got := sandboxInfrastructureFailure(item.output); got != item.want {
+			t.Errorf("sandboxInfrastructureFailure(%q) = %v, want %v", item.output, got, item.want)
+		}
+	}
+}
