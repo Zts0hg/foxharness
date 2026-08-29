@@ -30,6 +30,10 @@ anchor prevents the numeric PGID from being reused after the command leader is
 reaped and remains alive until the tree owner sends its final group signal.
 */
 func start(cmd *exec.Cmd) (Tree, error) {
+	anchorShell, err := processTreeAnchorShell()
+	if err != nil {
+		return nil, err
+	}
 	anchorInput, anchorOutput, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("create process-tree ownership pipe: %w", err)
@@ -40,7 +44,7 @@ func start(cmd *exec.Cmd) (Tree, error) {
 		_ = anchorOutput.Close()
 		return nil, fmt.Errorf("create process-tree readiness pipe: %w", err)
 	}
-	anchor := exec.Command("/bin/sh", "-c", "trap '' TERM; printf x; IFS= read -r _")
+	anchor := exec.Command(anchorShell, "-c", "trap '' TERM; printf x; IFS= read -r _")
 	anchor.Stdin = anchorInput
 	anchor.Stdout = readyOutput
 	anchor.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -55,8 +59,7 @@ func start(cmd *exec.Cmd) (Tree, error) {
 	_ = readyOutput.Close()
 	anchorDone := make(chan error, 1)
 	go func() { anchorDone <- anchor.Wait() }()
-	var ready [1]byte
-	_, readyErr := io.ReadFull(readyInput, ready[:])
+	readyErr := waitForAnchorReady(readyInput)
 	_ = readyInput.Close()
 	if readyErr != nil {
 		return nil, abortUnixAnchor(anchor.Process.Pid, anchorOutput, anchorDone,
@@ -70,6 +73,44 @@ func start(cmd *exec.Cmd) (Tree, error) {
 	return &unixTree{
 		cmd: cmd, groupID: anchor.Process.Pid, anchorInput: anchorOutput, anchorDone: anchorDone,
 	}, nil
+}
+
+// anchorReadyTimeout bounds how long start waits for the ownership anchor to
+// signal readiness. The supervisor holds its admission lock across start, so
+// an anchor that never becomes ready must not block cleanup indefinitely.
+const anchorReadyTimeout = 2 * time.Second
+
+// waitForAnchorReady reads the anchor's single readiness byte, bounded by
+// anchorReadyTimeout. Closing the read end on abort unblocks a timed-out
+// reader, so the helper goroutine always exits.
+func waitForAnchorReady(readyInput *os.File) error {
+	ready := make(chan error, 1)
+	go func() {
+		var byte [1]byte
+		_, err := io.ReadFull(readyInput, byte[:])
+		ready <- err
+	}()
+	timer := time.NewTimer(anchorReadyTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-ready:
+		return err
+	case <-timer.C:
+		return errors.New("process-tree ownership anchor readiness timeout")
+	}
+}
+
+// processTreeAnchorShell resolves the shell that runs the ownership anchor:
+// PATH's sh when available, else the traditional /bin/sh location, so hosts
+// with a minimal PATH or without /bin/sh keep process-group ownership.
+func processTreeAnchorShell() (string, error) {
+	if path, err := exec.LookPath("sh"); err == nil {
+		return path, nil
+	}
+	if info, err := os.Stat("/bin/sh"); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+		return "/bin/sh", nil
+	}
+	return "", errors.New("no sh executable found for the process-tree ownership anchor")
 }
 
 func abortUnixAnchor(groupID int, anchorInput *os.File, anchorDone <-chan error, cause error) error {

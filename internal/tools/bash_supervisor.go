@@ -12,8 +12,11 @@ import (
 )
 
 const (
+	// The escalation budget must stay safely below the child runner's 5s
+	// cleanup timeout so a supervisor Cleanup always finishes reaping before
+	// its caller's context expires and reports the delegation as failed.
 	bashTerminateGrace = 250 * time.Millisecond
-	bashReapTimeout    = 5 * time.Second
+	bashReapTimeout    = 4 * time.Second
 )
 
 // BashCommandRunner executes one Bash command for a BashTool.
