@@ -83,6 +83,19 @@ func (r *Runner) Run(ctx context.Context, task Task) {
 	r.completeTask(task, r.executeTask(ctx, task))
 }
 
+// NotifyCancellation publishes the cancellation terminal reply for a task the
+// coordinated shutdown could not hand to the runner's consumer, keeping the
+// one-terminal-outcome-per-task rule intact for work accepted before shutdown.
+func (r *Runner) NotifyCancellation(task Task) {
+	r.completeTask(task, TaskOutcome{
+		TaskID: task.TaskID,
+		ChatID: task.ChatID,
+		Status: TaskOutcomeCancelled,
+		Reason: TaskOutcomeReasonCancellation,
+		Error:  context.Canceled.Error(),
+	})
+}
+
 func (r *Runner) executeTask(ctx context.Context, task Task) (outcome TaskOutcome) {
 	runCtx, cancel := context.WithTimeout(ctx, r.taskTimeoutOrDefault())
 	defer cancel()

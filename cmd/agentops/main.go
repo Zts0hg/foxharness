@@ -46,6 +46,7 @@ type gatewayService interface {
 
 type runnerService interface {
 	Start(context.Context, <-chan agentops.Task)
+	NotifyCancellation(agentops.Task)
 }
 
 func main() {
@@ -106,7 +107,7 @@ func serve(
 
 	bridgeDone := make(chan struct{})
 	go func() {
-		bridgeAgentOpsTasks(feishuTasks, agentTasks)
+		bridgeAgentOpsTasks(runnerCtx, feishuTasks, agentTasks, runner.NotifyCancellation)
 		close(bridgeDone)
 	}()
 
@@ -119,9 +120,10 @@ func serve(
 	select {
 	case listenErr := <-listenResult:
 		close(feishuTasks)
-		if listenErr != nil {
-			cancelRunner()
-		}
+		// A returned listener ends serve regardless of the error, so the
+		// runner must stop too; its queued tasks reach cancellation terminals
+		// through the bridge instead of blocking shutdown forever.
+		cancelRunner()
 		waitCtx, cancelWait := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancelWait()
 		return errors.Join(
@@ -159,15 +161,44 @@ func serve(
 	}
 }
 
-func bridgeAgentOpsTasks(feishuTasks <-chan feishu.Task, agentTasks chan<- agentops.Task) {
+// bridgeAgentOpsTasks forwards accepted Feishu tasks to the AgentOps runner.
+// Forwarding keeps draining preference: while the runner consumes, every
+// queued task is handed to it exactly as before cancellation. Only when the
+// capacity-64 buffer is full does the bridge wait context-aware, so shutdown
+// can never deadlock on a runner that stopped consuming: the blocked task and
+// everything still queued receive their cancellation terminal through
+// notifyCancelled instead of hanging serve until its shutdown budget expires.
+func bridgeAgentOpsTasks(
+	ctx context.Context,
+	feishuTasks <-chan feishu.Task,
+	agentTasks chan<- agentops.Task,
+	notifyCancelled func(agentops.Task),
+) {
 	defer close(agentTasks)
-	for task := range feishuTasks {
+	convert := func(task feishu.Task) agentops.Task {
 		agentTask := agentops.Parse(task.Text)
 		agentTask.TaskID = task.TaskID
 		agentTask.ChatID = task.ChatID
 		agentTask.SenderID = task.SenderID
 		agentTask.MessageID = task.MessageID
-		agentTasks <- agentTask
+		return agentTask
+	}
+	for task := range feishuTasks {
+		agentTask := convert(task)
+		select {
+		case agentTasks <- agentTask:
+			continue
+		default:
+		}
+		select {
+		case agentTasks <- agentTask:
+		case <-ctx.Done():
+			notifyCancelled(agentTask)
+			for queued := range feishuTasks {
+				notifyCancelled(convert(queued))
+			}
+			return
+		}
 	}
 }
 

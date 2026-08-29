@@ -115,7 +115,7 @@ func TestUIAOP002BridgeMapsEveryTypedFieldAndCloses(t *testing.T) {
 	input <- feishu.Task{TaskID: "task-2", ChatID: "chat-2", SenderID: "sender-2", MessageID: "message-2", Text: "new session"}
 	close(input)
 	output := make(chan agentops.Task)
-	go bridgeAgentOpsTasks(input, output)
+	go bridgeAgentOpsTasks(context.Background(), input, output, nil)
 
 	var got []agentops.Task
 	for task := range output {
@@ -133,7 +133,7 @@ func TestUIAOP002BridgeMapsEveryTypedFieldAndCloses(t *testing.T) {
 func TestUIAOP003BridgePreservesBackpressureAndDeliveryOrder(t *testing.T) {
 	input := make(chan feishu.Task)
 	output := make(chan agentops.Task)
-	go bridgeAgentOpsTasks(input, output)
+	go bridgeAgentOpsTasks(context.Background(), input, output, nil)
 
 	firstAccepted := make(chan struct{})
 	go func() {
@@ -175,3 +175,5 @@ func (r *uiAgentOpsDrainingRunner) Start(_ context.Context, tasks <-chan agentop
 	}
 	r.returned = true
 }
+
+func (r *uiAgentOpsDrainingRunner) NotifyCancellation(agentops.Task) {}

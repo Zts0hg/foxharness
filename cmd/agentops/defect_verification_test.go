@@ -275,6 +275,10 @@ func (r *recordingAgentOpsRunner) Start(ctx context.Context, tasks <-chan agento
 	r.recorder.add("runner-input-closed")
 }
 
+func (r *recordingAgentOpsRunner) NotifyCancellation(task agentops.Task) {
+	r.recorder.add("task-cancelled:" + task.TaskID)
+}
+
 func containsAgentOpsShutdownEvent(events []string, want string) bool {
 	for _, event := range events {
 		if event == want {
