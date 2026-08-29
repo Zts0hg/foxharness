@@ -107,6 +107,22 @@ func TestSupervisedBashRejectsBackgroundAndDetachBeforeRunner(t *testing.T) {
 		"/bin/bash -c 'sleep 1 &'",
 		"/usr/bin/open -a Terminal",
 		"/usr/bin/crontab -",
+		`\at now -f script.sh`,
+		`\setsid sleep 1`,
+		`\nohup sleep 1`,
+		`/usr/bin/\at now`,
+		`{a,}t now -f script.sh`,
+		`a?t now`,
+		`[a]t now`,
+		"builtin eval 'payload'",
+		"trap 'at now' EXIT",
+		"nice at now",
+		"timeout 5 at now",
+		"stdbuf -o0 at now",
+		"sudo at now",
+		"xargs at now",
+		"find . -name x -exec at now ;",
+		"watch -n1 at now",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {

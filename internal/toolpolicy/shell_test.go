@@ -71,3 +71,48 @@ func TestAssessSynchronousShellRejectsDetachedSchedulerForms(t *testing.T) {
 		})
 	}
 }
+
+func TestAssessSynchronousShellRejectsEscapeWrapperAndExpansionForms(t *testing.T) {
+	rejected := []string{
+		`\at now -f script.sh`,
+		`\setsid sleep 1`,
+		`/usr/bin/\at now`,
+		`{a,}t now -f script.sh`,
+		`a?t now`,
+		`[a]t now`,
+		"builtin eval 'payload'",
+		"trap 'at now' EXIT",
+		"nice at now",
+		"timeout 5 at now",
+		"stdbuf -o0 at now",
+		"sudo at now",
+		"xargs at now",
+		"find . -name x -exec at now ;",
+		"watch -n1 at now",
+		"at/",
+	}
+	accepted := []string{
+		"go test ./...",
+		"find . -name '*.go'",
+		"timeout 30 go test ./...",
+		"nice -n 5 grep -r pattern .",
+		"xargs grep foo",
+		"sudo -l",
+		"watch ls",
+		"stdbuf -o0 cat file",
+	}
+	for _, command := range rejected {
+		t.Run("reject "+command, func(t *testing.T) {
+			if synchronous, parsed := AssessSynchronousShell(command); !parsed || synchronous {
+				t.Fatalf("AssessSynchronousShell(%q) = %v, want rejected", command, synchronous)
+			}
+		})
+	}
+	for _, command := range accepted {
+		t.Run("accept "+command, func(t *testing.T) {
+			if synchronous, parsed := AssessSynchronousShell(command); !parsed || !synchronous {
+				t.Fatalf("AssessSynchronousShell(%q) = %v, want accepted", command, synchronous)
+			}
+		})
+	}
+}

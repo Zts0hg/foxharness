@@ -88,7 +88,7 @@ func AssessSynchronousShell(command string) (synchronous bool, parsed bool) {
 			synchronous = false
 		case *syntax.CallExpr:
 			sawCall = true
-			if len(n.Args) == 0 || !synchronousCommandName(n.Args[0]) {
+			if len(n.Args) == 0 || !synchronousInvocation(n) {
 				synchronous = false
 			}
 		}
@@ -97,20 +97,116 @@ func AssessSynchronousShell(command string) (synchronous bool, parsed bool) {
 	return synchronous && sawCall, true
 }
 
+// synchronousInvocation reports whether one simple command provably stays
+// inside the supervised process group for its whole lifetime: the command
+// word must be a plain literal naming a synchronous program, and a wrapper
+// that executes another program named in its arguments must name a provably
+// synchronous one.
+func synchronousInvocation(call *syntax.CallExpr) bool {
+	if !synchronousCommandName(call.Args[0]) {
+		return false
+	}
+	command := baseCommandName(literalWord(call.Args[0]))
+	if !wrapperCommands[command] {
+		return true
+	}
+	if command == "find" {
+		return findExecWordsAreSynchronous(call.Args)
+	}
+	// The remaining wrappers take the executed program from their arguments.
+	// A word that is not a plain literal could name any program, and the
+	// gate fails closed, so every argument must be a plain literal none of
+	// which names a detached or scheduler program.
+	for _, arg := range call.Args[1:] {
+		if !synchronousProgramWord(arg) {
+			return false
+		}
+	}
+	return true
+}
+
+// wrapperCommands lists commands that execute another program named in their
+// arguments, so a detached or scheduler command smuggled into the arguments
+// escapes the killed process group exactly as if named directly.
+var wrapperCommands = map[string]bool{
+	"find": true, "nice": true, "sudo": true, "stdbuf": true,
+	"timeout": true, "watch": true, "xargs": true,
+}
+
+// findExecWordsAreSynchronous checks only the words find uses to execute
+// another program: the word following an execution flag. Other find
+// arguments are patterns and paths, not program names.
+func findExecWordsAreSynchronous(args []*syntax.Word) bool {
+	for index, arg := range args[1:] {
+		switch strings.ToLower(literalWord(arg)) {
+		case "-exec", "-execdir", "-ok", "-okdir":
+			if index+2 < len(args) && !synchronousProgramWord(args[index+2]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // synchronousCommandName reports whether a command word names a synchronous
-// program. The word must be a single plain unquoted literal: quoted or
-// expanded words could hide any command name and cannot be proven
-// synchronous, so they are rejected. Absolute and relative paths resolve to
-// their base name before the detached-command lookup.
+// program. The word must be a single unquoted literal whose characters are
+// all plain command-name characters: quoted, escaped, brace, and glob forms
+// expand to a runtime name different from their literal text, so they cannot
+// be proven synchronous and are rejected. Absolute and relative paths resolve
+// to their base name before the detached-command lookup, and a word that
+// names no executable at all (a trailing slash) is rejected outright.
 func synchronousCommandName(word *syntax.Word) bool {
 	name := strings.ToLower(literalWord(word))
+	if !isPlainCommandName(name) {
+		return false
+	}
+	base := baseCommandName(name)
+	if base == "" {
+		return false
+	}
+	return !detachedShellCommands[base]
+}
+
+// synchronousProgramWord reports whether an argument word could name a
+// program a wrapper executes. Path operands that name no executable
+// (".", "..", or a trailing slash) cannot smuggle a program and pass; a word
+// that is not a plain literal could name anything and fails closed; a plain
+// literal fails only when its base name is a detached or scheduler program.
+func synchronousProgramWord(word *syntax.Word) bool {
+	name := strings.ToLower(literalWord(word))
+	if !isPlainCommandName(name) {
+		return false
+	}
+	base := baseCommandName(name)
+	if base == "" || base == "." || base == ".." {
+		return true
+	}
+	return !detachedShellCommands[base]
+}
+
+// isPlainCommandName reports whether the name consists only of characters
+// bash treats literally in a command word, so the runtime command name
+// cannot differ from the literal text.
+func isPlainCommandName(name string) bool {
 	if name == "" {
 		return false
 	}
-	if index := strings.LastIndex(name, "/"); index >= 0 {
-		name = name[index+1:]
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-' || r == '/' || r == '+':
+		default:
+			return false
+		}
 	}
-	return !detachedShellCommands[name]
+	return true
+}
+
+func baseCommandName(name string) string {
+	if index := strings.LastIndex(name, "/"); index >= 0 {
+		return name[index+1:]
+	}
+	return name
 }
 
 // detachedShellCommands lists shell forms that escape the supervised process
@@ -123,12 +219,13 @@ func synchronousCommandName(word *syntax.Word) bool {
 // must be added as soon as a family is identified.
 var detachedShellCommands = map[string]bool{
 	".": true, "at": true, "atq": true, "atrm": true, "bash": true,
-	"batch": true, "bg": true, "command": true, "coproc": true,
-	"crontab": true, "daemon": true, "dash": true, "disown": true,
-	"env": true, "eval": true, "exec": true, "fish": true,
-	"ksh": true, "launchctl": true, "nohup": true, "open": true,
-	"screen": true, "schtasks": true, "setsid": true, "sh": true,
-	"source": true, "systemd-run": true, "tmux": true, "zsh": true,
+	"batch": true, "bg": true, "builtin": true, "command": true,
+	"coproc": true, "crontab": true, "daemon": true, "dash": true,
+	"disown": true, "env": true, "eval": true, "exec": true,
+	"fish": true, "ksh": true, "launchctl": true, "nohup": true,
+	"open": true, "screen": true, "schtasks": true, "setsid": true,
+	"sh": true, "source": true, "systemd-run": true, "tmux": true,
+	"trap": true, "zsh": true,
 }
 
 func readOnlyCall(call *syntax.CallExpr, workspace, cwd string) bool {
