@@ -81,16 +81,15 @@ func (r darwinReadOnlyBashRunner) Run(ctx context.Context, request readOnlyBashR
 
 // sandboxInfrastructureFailure reports whether the captured output is the
 // sandbox runner's own diagnostic instead of the sandboxed command's output.
-// The check is anchored to the first line: an ordinary failing command that
-// merely prints the marker string must not be misreported as an unavailable
-// sandbox.
+// The check is anchored to the runner's argv[0]-prefixed diagnostic on the
+// first line: an ordinary failing command that merely prints the marker
+// string must not be misreported as an unavailable sandbox.
 func sandboxInfrastructureFailure(output string) bool {
 	firstLine := output
 	if index := strings.IndexAny(output, "\r\n"); index >= 0 {
 		firstLine = output[:index]
 	}
-	firstLine = strings.TrimSpace(firstLine)
-	return strings.HasPrefix(firstLine, "sandbox-exec:") || strings.HasPrefix(firstLine, "sandbox_apply")
+	return strings.HasPrefix(strings.TrimSpace(firstLine), "sandbox-exec:")
 }
 
 func newDarwinReadOnlyBashCommand(ctx context.Context, sandboxPath string, request readOnlyBashRequest) (*exec.Cmd, error) {

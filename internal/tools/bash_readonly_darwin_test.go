@@ -63,9 +63,10 @@ func TestSandboxInfrastructureFailureDetectionIsAnchoredToRunnerDiagnostics(t *t
 		want   bool
 	}{
 		{"sandbox-exec: sandbox_apply: Operation not permitted\n", true},
-		{"sandbox_apply: Operation not permitted\n", true},
 		{"  sandbox-exec: unbound variable: garbage\nBacktrace: ...\n", true},
+		{"sandbox_apply: Operation not permitted\n", false},
 		{"grep: sandbox_apply: No such file or directory\n", false},
+		{"sandbox_apply echoed by the command\nexit status 1\n", false},
 		{"cat: missing.txt: No such file or directory\nsandbox_apply echoed by the command\n", false},
 		{"exit status 1\n", false},
 		{"", false},
