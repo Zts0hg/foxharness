@@ -123,6 +123,18 @@ func TestSupervisedBashRejectsBackgroundAndDetachBeforeRunner(t *testing.T) {
 		"xargs at now",
 		"find . -name x -exec at now ;",
 		"watch -n1 at now",
+		`find . -e"x"ec at now ;`,
+		"find . -exec nice at now ;",
+		"taskset -c 0 setsid sleep 1000",
+		"ionice -c 2 at now",
+		"chrt -r 1 setsid sleep 1000",
+		"script -qc 'setsid sleep 1000' /dev/null",
+		"python3 -c 'import os;os.setsid()'",
+		"perl -e 'exec \"setsid\", \"sleep\"'",
+		"node -e 'require(\"child_process\").spawn(\"at\",[\"now\"],{detached:true})'",
+		"xargs at now",
+		"printf 'at\\0now\\0' | xargs -0",
+		"make deploy",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {

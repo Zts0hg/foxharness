@@ -129,20 +129,69 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 // arguments, so a detached or scheduler command smuggled into the arguments
 // escapes the killed process group exactly as if named directly.
 var wrapperCommands = map[string]bool{
-	"find": true, "nice": true, "sudo": true, "stdbuf": true,
-	"timeout": true, "watch": true, "xargs": true,
+	"chrt": true, "find": true, "ionice": true, "nice": true,
+	"script": true, "sudo": true, "stdbuf": true, "taskset": true,
+	"timeout": true, "watch": true,
 }
 
-// findExecWordsAreSynchronous checks only the words find uses to execute
-// another program: the word following an execution flag. Other find
-// arguments are patterns and paths, not program names.
+// interpreterNamePrefixes lists interpreter families whose versioned binaries
+// (python3.12, perl5) resolve to the same arbitrary-code capability, which
+// includes detaching from the process group, so no interpreter form can be
+// proven synchronous.
+var interpreterNamePrefixes = []string{
+	"awk", "lua", "node", "perl", "php", "python", "ruby", "tclsh",
+}
+
+// isDetachedOrInterpreterCommand reports whether a base command name is a
+// detached form, a scheduler or launcher family, or an interpreter. Wrapper
+// commands are deliberately excluded: executing one is allowed, naming a
+// detached program in its execution positions is not.
+func isDetachedOrInterpreterCommand(name string) bool {
+	if detachedShellCommands[name] {
+		return true
+	}
+	for _, prefix := range interpreterNamePrefixes {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		remainder := name[len(prefix):]
+		if remainder == "" || strings.TrimLeft(remainder, "0123456789.") == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// findExecWordsAreSynchronous checks the words find uses to execute another
+// program. The execution flag is matched on its runtime text so quoted or
+// escaped spellings cannot hide it, and the whole command span after the
+// flag — the executed program and its arguments, up to the ; or + terminator
+// — must be plain literals none of which names a detached, scheduler, or
+// wrapper program, so wrapper chains cannot reach a detached program through
+// the executed command's arguments.
 func findExecWordsAreSynchronous(args []*syntax.Word) bool {
-	for index, arg := range args[1:] {
-		switch strings.ToLower(literalWord(arg)) {
-		case "-exec", "-execdir", "-ok", "-okdir":
-			if index+2 < len(args) && !synchronousProgramWord(args[index+2]) {
-				return false
+	span := false
+	for _, arg := range args[1:] {
+		text := strings.ToLower(runtimeStaticText(arg))
+		if !span {
+			switch text {
+			case "-exec", "-execdir", "-ok", "-okdir":
+				span = true
 			}
+			continue
+		}
+		if text == ";" || text == "+" {
+			return true
+		}
+		if text == "{}" {
+			continue
+		}
+		if !isPlainCommandName(text) {
+			return false
+		}
+		base := baseCommandName(text)
+		if isDetachedOrInterpreterCommand(base) || wrapperCommands[base] {
+			return false
 		}
 	}
 	return true
@@ -164,7 +213,7 @@ func synchronousCommandName(word *syntax.Word) bool {
 	if base == "" {
 		return false
 	}
-	return !detachedShellCommands[base]
+	return !isDetachedOrInterpreterCommand(base)
 }
 
 // synchronousProgramWord reports whether an argument word could name a
@@ -181,7 +230,7 @@ func synchronousProgramWord(word *syntax.Word) bool {
 	if base == "" || base == "." || base == ".." {
 		return true
 	}
-	return !detachedShellCommands[base]
+	return !isDetachedOrInterpreterCommand(base)
 }
 
 // isPlainCommandName reports whether the name consists only of characters
@@ -219,13 +268,16 @@ func baseCommandName(name string) string {
 // must be added as soon as a family is identified.
 var detachedShellCommands = map[string]bool{
 	".": true, "at": true, "atq": true, "atrm": true, "bash": true,
-	"batch": true, "bg": true, "builtin": true, "command": true,
-	"coproc": true, "crontab": true, "daemon": true, "dash": true,
-	"disown": true, "env": true, "eval": true, "exec": true,
-	"fish": true, "ksh": true, "launchctl": true, "nohup": true,
-	"open": true, "screen": true, "schtasks": true, "setsid": true,
-	"sh": true, "source": true, "systemd-run": true, "tmux": true,
-	"trap": true, "zsh": true,
+	"batch": true, "bg": true, "builtin": true, "bun": true,
+	"command": true, "coproc": true, "crontab": true, "daemon": true,
+	"dash": true, "deno": true, "disown": true, "env": true,
+	"eval": true, "exec": true, "expect": true, "fish": true,
+	"gawk": true, "ksh": true, "launchctl": true, "make": true,
+	"mawk": true, "nodejs": true, "nohup": true, "open": true,
+	"osascript": true, "rscript": true, "screen": true,
+	"schtasks": true, "setsid": true, "sh": true, "source": true,
+	"systemd-run": true, "tmux": true, "trap": true, "xargs": true,
+	"zsh": true,
 }
 
 func readOnlyCall(call *syntax.CallExpr, workspace, cwd string) bool {
@@ -367,6 +419,51 @@ func literalWord(word *syntax.Word) string {
 			return ""
 		}
 		b.WriteString(lit.Value)
+	}
+	return b.String()
+}
+
+// runtimeStaticText returns the text a word contributes at runtime when all
+// of its parts are literal or quoted-literal, with quotes removed and
+// backslash escapes resolved to the escaped character. It returns "" when
+// any part is a dynamic expansion whose value is unknowable at review time.
+func runtimeStaticText(word *syntax.Word) string {
+	var b strings.Builder
+	for _, part := range word.Parts {
+		switch p := part.(type) {
+		case *syntax.Lit:
+			b.WriteString(unescapeShellText(p.Value))
+		case *syntax.SglQuoted:
+			b.WriteString(p.Value)
+		case *syntax.DblQuoted:
+			for _, inner := range p.Parts {
+				lit, ok := inner.(*syntax.Lit)
+				if !ok {
+					return ""
+				}
+				b.WriteString(lit.Value)
+			}
+		default:
+			return ""
+		}
+	}
+	return b.String()
+}
+
+// unescapeShellText resolves backslash escapes the way bash resolves them in
+// word expansion: an escaped character contributes itself.
+func unescapeShellText(text string) string {
+	if !strings.Contains(text, "\\") {
+		return text
+	}
+	var b strings.Builder
+	for index := 0; index < len(text); index++ {
+		if text[index] == '\\' && index+1 < len(text) {
+			b.WriteByte(text[index+1])
+			index++
+			continue
+		}
+		b.WriteByte(text[index])
 	}
 	return b.String()
 }
