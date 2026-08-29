@@ -33,11 +33,16 @@ func (p *PermissionPort) RequestPermission(ctx context.Context, request app.Perm
 		Arguments: request.Arguments, Risk: permissionRiskText(request),
 	}
 	result, err := p.store.Wait(ctx, pending, func(value approval.Request) error {
-		text := "工具调用等待统一权限审批\n\n" +
+		prefix := "工具调用等待统一权限审批\n\n" +
 			"Tool: " + value.ToolName + "\n" +
 			"Risk: " + value.Risk + "\n\n" +
-			"Arguments:\n" + value.Arguments + "\n\n" +
-			"ApprovalID: " + value.ID
+			"Arguments:\n" + value.Arguments
+		// The approval callback identifier must survive the messenger's
+		// head-keeping truncation, so the variable prefix is bounded first and
+		// the identifier is always composed last. Both the line label and the
+		// hex identifier are ASCII, so byte and rune counts agree.
+		text := truncateFeishuText(prefix, maxFeishuTextRunes-len(approvalIDLine)-len(value.ID)) +
+			approvalIDLine + value.ID
 		return p.messenger.SendText(ctx, p.chatID, text)
 	})
 	if err != nil {
@@ -75,5 +80,8 @@ func newPermissionApprovalID() string {
 	_, _ = rand.Read(value[:])
 	return hex.EncodeToString(value[:])
 }
+
+// approvalIDLine is the prompt suffix that carries the callback identifier.
+const approvalIDLine = "\n\nApprovalID: "
 
 var _ app.PermissionPort = (*PermissionPort)(nil)
