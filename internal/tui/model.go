@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/app"
@@ -304,7 +305,8 @@ type Model struct {
 	operationSeq uint64
 	// operationGen is shared across all Model copies so asynchronous
 	// commands can detect operations that began after they were scheduled.
-	operationGen       *uint64
+	// It is atomic because commands read it on their own goroutines.
+	operationGen       *atomic.Uint64
 	activeOperationID  uint64
 	runStartedAt       time.Time
 	spinnerFrame       int
@@ -414,7 +416,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 	return Model{
 		ctx:                ctx,
 		runner:             runner,
-		operationGen:       new(uint64),
+		operationGen:       &atomic.Uint64{},
 		events:             make(chan tea.Msg, 256),
 		now:                time.Now,
 		copySelection:      copyToClipboard,
@@ -535,7 +537,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// queued prompt starts when the restore message lands,
 					// and the restore aborts if a newer operation began.
 					m.pendingCancelRestore = false
-					return m, tea.Batch(cancelRestoreCmd(m.ctx, m.runner, m.operationGen, *m.operationGen), rearmInteractions)
+					return m, tea.Batch(cancelRestoreCmd(m.ctx, m.runner, m.operationGen, m.operationGen.Load()), rearmInteractions)
 				}
 				next, queued := m.startQueuedPromptIfReady()
 				return next, tea.Batch(queued, rearmInteractions)
@@ -2175,7 +2177,7 @@ func (m *Model) beginOperation() uint64 {
 	m.operationSeq++
 	m.activeOperationID = m.operationSeq
 	if m.operationGen != nil {
-		*m.operationGen = m.operationSeq
+		m.operationGen.Store(m.operationSeq)
 	}
 	return m.activeOperationID
 }
@@ -3371,9 +3373,9 @@ type cancelRestoreFinishedMsg struct {
 // cancelled run finishes finalizing, which must not freeze the interface.
 // The restore is abandoned when any newer operation began after it was
 // scheduled, so a stale rewind can never truncate a newer run's records.
-func cancelRestoreCmd(ctx context.Context, runner Runner, operationGen *uint64, scheduledGeneration uint64) tea.Cmd {
+func cancelRestoreCmd(ctx context.Context, runner Runner, operationGen *atomic.Uint64, scheduledGeneration uint64) tea.Cmd {
 	return func() tea.Msg {
-		if operationGen != nil && *operationGen != scheduledGeneration {
+		if operationGen != nil && operationGen.Load() != scheduledGeneration {
 			return nil
 		}
 		outcome, err := runner.RestoreLatestInput(ctx)

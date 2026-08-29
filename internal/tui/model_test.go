@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2286,7 +2287,7 @@ func TestAutoRestoreReportsFailureAfterSelectingCandidate(t *testing.T) {
 	m := NewModel(context.Background(), runner, Config{})
 	m.entries = nil
 
-	m.applyCancelRestore(cancelRestoreCmd(context.Background(), runner, new(uint64), 0)().(cancelRestoreFinishedMsg))
+	m.applyCancelRestore(cancelRestoreCmd(context.Background(), runner, &atomic.Uint64{}, 0)().(cancelRestoreFinishedMsg))
 
 	if !entriesContain(m.entries, "error", "history unavailable") {
 		t.Fatalf("auto restore failure was silent: %#v", m.entries)
