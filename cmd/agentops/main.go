@@ -119,15 +119,20 @@ func serve(
 
 	select {
 	case listenErr := <-listenResult:
-		close(feishuTasks)
-		// A returned listener ends serve regardless of the error, so the
-		// runner must stop too; its queued tasks reach cancellation terminals
-		// through the bridge instead of blocking shutdown forever.
-		cancelRunner()
+		// A returned listener ends serve regardless of the error. Drain
+		// gateway admission before closing the shared task channel, so an
+		// in-flight delivery handler that already reserved its message can
+		// never send on a closed channel.
 		waitCtx, cancelWait := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancelWait()
+		admissionErr := gateway.StopAccepting(waitCtx)
+		close(feishuTasks)
+		// The runner must stop too; its queued tasks reach cancellation
+		// terminals through the bridge instead of blocking shutdown forever.
+		cancelRunner()
 		return errors.Join(
 			listenErr,
+			admissionErr,
 			waitForCompletion(waitCtx, "AgentOps bridge", bridgeDone),
 			waitForCompletion(waitCtx, "AgentOps runner", runnerDone),
 		)

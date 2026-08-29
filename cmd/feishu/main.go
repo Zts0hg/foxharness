@@ -106,13 +106,18 @@ func serve(
 
 	select {
 	case listenErr := <-listenResult:
-		close(tasks)
-		if listenErr != nil {
-			cancelRunner()
-		}
+		// A returned listener ends serve regardless of the error. Drain
+		// gateway admission before closing the shared task channel, so an
+		// in-flight delivery handler that already reserved its message can
+		// never send on a closed channel.
 		waitCtx, cancelWait := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancelWait()
-		return errors.Join(listenErr, waitForCompletion(waitCtx, "runner", runnerDone))
+		admissionErr := gateway.StopAccepting(waitCtx)
+		close(tasks)
+		// The runner must stop too; a serve that is ending must not leave it
+		// consuming a closed queue.
+		cancelRunner()
+		return errors.Join(listenErr, admissionErr, waitForCompletion(waitCtx, "runner", runnerDone))
 	case <-signalCtx.Done():
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancelShutdown()

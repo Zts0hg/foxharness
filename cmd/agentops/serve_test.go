@@ -90,3 +90,57 @@ func TestServeShutdownDoesNotHangWhenRunnerStopsConsuming(t *testing.T) {
 func fmtTaskID(i int) string {
 	return "task-" + strconv.Itoa(i)
 }
+
+// admissionGateway records when StopAccepting starts and blocks it until the
+// test releases it, so the test can prove the shared task channel is not
+// closed while gateway admission is still undrained.
+type admissionGateway struct {
+	probeGateway
+	stopAcceptingStarted chan struct{}
+	releaseStopAccepting chan struct{}
+}
+
+func (g *admissionGateway) StopAccepting(ctx context.Context) error {
+	if g.stopAcceptingStarted != nil {
+		close(g.stopAcceptingStarted)
+	}
+	select {
+	case <-g.releaseStopAccepting:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
+}
+
+// A returned listener ends serve, and serve must drain gateway admission
+// before closing the shared Feishu task channel: an in-flight delivery
+// handler that is already past reserveDelivery would otherwise send on a
+// closed channel, losing the event and leaking its durable reservation.
+func TestServeDrainsGatewayAdmissionBeforeClosingTaskChannel(t *testing.T) {
+	gateway := &admissionGateway{
+		stopAcceptingStarted: make(chan struct{}),
+		releaseStopAccepting: make(chan struct{}),
+	}
+	feishuTasks := make(chan feishu.Task, 1)
+	signalCtx, cancelSignal := context.WithCancel(context.Background())
+	defer cancelSignal()
+	serveResult := make(chan error, 1)
+	go func() {
+		serveResult <- serve(signalCtx, gateway, &cancellingRunner{}, feishuTasks, ":0", time.Second)
+	}()
+	select {
+	case <-gateway.stopAcceptingStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serve did not drain gateway admission before closing the task channel")
+	}
+	feishuTasks <- feishu.Task{TaskID: "in-flight", ChatID: "chat", SenderID: "sender", MessageID: "message", Text: "task"}
+	close(gateway.releaseStopAccepting)
+	select {
+	case err := <-serveResult:
+		if err != nil {
+			t.Fatalf("serve() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not return after admission drain")
+	}
+}
