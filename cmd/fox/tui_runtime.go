@@ -62,6 +62,9 @@ type tuiRunResources struct {
 	hooks     *automemory.PerRunHooks
 	tracker   *automemory.Tracker
 	lifecycle *planruntime.Lifecycle
+	// skillToolRegistered mirrors whether the run's registry exposes the
+	// skill tool; the plan-stage activation drain is gated on it.
+	skillToolRegistered bool
 }
 
 type tuiRuntimeComposition struct {
@@ -375,8 +378,8 @@ func (c *tuiRuntimeComposition) newTools(_ context.Context, assembly foxruntime.
 	}
 	hooks := automemory.NewPerRunHooks(modelProvider, c.autoMemory, c.workDir)
 	tracker := hooks.NewTracker()
-	evidence := c.permissionEvidence(resource.stored, assembly.Spec.Prompt)
-	registry := c.buildToolRegistry(assembly, resource, modelProvider)
+	evidence := c.permissionEvidence(resource.stored, assembly.Spec)
+	registry, skillRegistered := c.buildToolRegistry(assembly, resource, modelProvider)
 	registry = permission.DecorateRegistry(registry, c.permissions, evidence)
 	var lifecycle *planruntime.Lifecycle
 	capabilityNames := assembly.AllowedTools
@@ -404,7 +407,7 @@ func (c *tuiRuntimeComposition) newTools(_ context.Context, assembly foxruntime.
 		capabilityNames = append(append([]string(nil), capabilityNames...), "submit_plan")
 	}
 	c.mu.Lock()
-	c.runs[assembly.Run.RunID] = tuiRunResources{hooks: hooks, tracker: tracker, lifecycle: lifecycle}
+	c.runs[assembly.Run.RunID] = tuiRunResources{hooks: hooks, tracker: tracker, lifecycle: lifecycle, skillToolRegistered: skillRegistered}
 	c.mu.Unlock()
 	resultHook := combineResultHooks(conditionalSkillHook(c.registry), hooks.RecordCallback(tracker))
 	contextHook := func(ctx context.Context) context.Context {
@@ -434,7 +437,7 @@ func (c *tuiRuntimeComposition) resetCollaboration() {
 	}
 }
 
-func (c *tuiRuntimeComposition) buildToolRegistry(assembly foxruntime.RunAssembly, resource *tuiSessionResources, modelProvider provider.LLMProvider) tools.Registry {
+func (c *tuiRuntimeComposition) buildToolRegistry(assembly foxruntime.RunAssembly, resource *tuiSessionResources, modelProvider provider.LLMProvider) (tools.Registry, bool) {
 	registry := tools.NewRegistry()
 	registry.Use(middleware.NewCheckpointMiddleware(resource.checkpointer, resource.messageID.get, c.workDir))
 	registry.Register(tools.NewReadFileTool(c.workDir))
@@ -450,14 +453,21 @@ func (c *tuiRuntimeComposition) buildToolRegistry(assembly foxruntime.RunAssembl
 		child = c.config.NewChildRunner(childruntime.Config{
 			Provider: modelProvider, WorkDir: c.workDir, HomeDir: c.store.HomeDir(), ParentProfile: childruntime.ParentProfile(foxruntime.TUIInteractive),
 			ProviderProtocol: assembly.Spec.ProviderProtocol, Model: assembly.Run.Model, Effort: assembly.Run.Effort,
-			Permission: c.permissions, ParentEvidence: c.permissionEvidence(resource.stored, assembly.Spec.Prompt),
+			Permission: c.permissions, ParentEvidence: c.permissionEvidence(resource.stored, foxruntime.RunSnapshot{}),
 		})
 	}
 	registry.Register(subagent.NewTool(child, string(assembly.Session.ID)))
 	fork := &runtimeForkRunner{runner: child, parentSessionID: string(assembly.Session.ID)}
-	executor := slash.NewExecutor(slash.WithWorkDir(c.workDir), slash.WithForkRunner(fork))
-	registry.Register(skilltool.NewSkillTool(c.registry, executor, func() string { return string(assembly.Session.ID) }))
-	return registry
+	// The skill tool exists only when the slash registry is available, and
+	// the plan-stage activation reminder drain is gated on the registry
+	// exposing it (see newPolicy).
+	skillRegistered := false
+	if c.registry != nil {
+		executor := slash.NewExecutor(slash.WithWorkDir(c.workDir), slash.WithForkRunner(fork))
+		registry.Register(skilltool.NewSkillTool(c.registry, executor, func() string { return string(assembly.Session.ID) }))
+		skillRegistered = true
+	}
+	return registry, skillRegistered
 }
 
 func (c *tuiRuntimeComposition) newPolicy(_ context.Context, assembly foxruntime.RunAssembly) (engine.TurnPolicy, error) {
@@ -469,7 +479,15 @@ func (c *tuiRuntimeComposition) newPolicy(_ context.Context, assembly foxruntime
 		var completionGate func(context.Context) (string, error)
 		if run.lifecycle != nil {
 			nextTurn = func(context.Context, int) ([]string, error) {
-				return append(run.lifecycle.RuntimeReminders(), c.activations.drain()...), nil
+				// Skill-activation reminders only make sense when the model
+				// can actually invoke a skill; without the skill tool the
+				// pending activations stay pending, mirroring the registry
+				// exposure gate.
+				reminders := run.lifecycle.RuntimeReminders()
+				if !run.skillToolRegistered {
+					return reminders, nil
+				}
+				return append(reminders, c.activations.drain()...), nil
 			}
 			completionGate = func(context.Context) (string, error) { return run.lifecycle.CompletionReminder(), nil }
 		}
@@ -610,23 +628,43 @@ func containsToolName(names []string, target string) bool {
 	return false
 }
 
-func (c *tuiRuntimeComposition) permissionEvidence(stored *session.StoredSession, prompt string) permission.EvidenceProvider {
+func (c *tuiRuntimeComposition) permissionEvidence(stored *session.StoredSession, spec foxruntime.RunSnapshot) permission.EvidenceProvider {
+	// The current prompt counts as direct user evidence only when the
+	// displayed prompt does not restate it differently; a re-displayed or
+	// edited prompt is presentation, not fresh authorization.
+	trustPrompt := spec.DisplayPrompt == "" || spec.DisplayPrompt == spec.Prompt
 	instructions := snapshotTUIInstructions(c.workDir)
 	return func(request permission.Request) permission.Evidence {
 		records, _ := session.NewMessageLog(stored).LoadRecords()
 		messages := make([]schema.Message, 0, len(records)+1)
 		for _, record := range records {
 			message := record.Message
-			if message.Role == schema.RoleUser && message.ToolCallID == "" && (record.IsMeta || record.IsCompactSummary || record.IsVisibleInTranscriptOnly) {
+			generatedDisplay := strings.TrimSpace(record.DisplayContent) != "" && record.DisplayContent != message.Content
+			if generatedDisplay {
+				messages = append(messages, schema.Message{Role: schema.RoleUser, Content: record.DisplayContent})
+			}
+			if message.Role == schema.RoleUser && message.ToolCallID == "" && (record.IsMeta || record.IsCompactSummary || record.IsVisibleInTranscriptOnly || generatedDisplay) {
 				message.Role = schema.RoleSystem
 			}
 			messages = append(messages, message)
 		}
-		if strings.TrimSpace(prompt) != "" {
-			messages = append(messages, schema.Message{Role: schema.RoleUser, Content: prompt})
+		if trustPrompt && strings.TrimSpace(spec.Prompt) != "" && !containsDirectUserMessage(messages, spec.Prompt) {
+			messages = append(messages, schema.Message{Role: schema.RoleUser, Content: spec.Prompt})
 		}
 		return permission.BuildEvidence(messages, instructions, request)
 	}
+}
+
+// containsDirectUserMessage reports whether the transcript already contains
+// the prompt as a direct user message, so the evidence does not duplicate it.
+func containsDirectUserMessage(messages []schema.Message, content string) bool {
+	for index := len(messages) - 1; index >= 0; index-- {
+		message := messages[index]
+		if message.Role == schema.RoleUser && message.ToolCallID == "" && message.Content == content {
+			return true
+		}
+	}
+	return false
 }
 
 func snapshotTUIInstructions(workDir string) []string {
@@ -966,7 +1004,7 @@ func (r *tuiForkRunner) Run(ctx context.Context, task string, agentType string, 
 		ParentProfile:    childruntime.ParentProfile(foxruntime.TUIInteractive),
 		ProviderProtocol: strings.ToLower(strings.TrimSpace(r.composition.config.ResolvedLLM.Protocol)),
 		Model:            model, Effort: effort, Permission: r.composition.permissions,
-		ParentEvidence: r.composition.permissionEvidence(resource.stored, ""),
+		ParentEvidence: r.composition.permissionEvidence(resource.stored, foxruntime.RunSnapshot{}),
 	})
 	if child == nil {
 		return "", errors.New("fork runner: subagent runner unavailable")
