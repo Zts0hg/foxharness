@@ -2253,10 +2253,14 @@ func TestAutoRestoreOnCancel(t *testing.T) {
 	cancelled := false
 	m.cancelRun = func() { cancelled = true }
 
-	m, _ = update(t, m, keyCtrlC())
+	m, cmd := update(t, m, keyCtrlC())
 	if !cancelled {
 		t.Fatalf("ctrl+c did not call cancelRun")
 	}
+	if cmd == nil {
+		t.Fatalf("ctrl+c did not schedule the asynchronous auto restore")
+	}
+	m, _ = update(t, m, cmd())
 	if runner.truncatedSeq != 0 {
 		t.Fatalf("truncated seq = %d, want 0", runner.truncatedSeq)
 	}
@@ -2274,7 +2278,7 @@ func TestAutoRestoreReportsFailureAfterSelectingCandidate(t *testing.T) {
 	m := NewModel(context.Background(), runner, Config{})
 	m.entries = nil
 
-	m.tryAutoRestoreAfterCancel()
+	m.applyCancelRestore(cancelRestoreCmd(context.Background(), runner)().(cancelRestoreFinishedMsg))
 
 	if !entriesContain(m.entries, "error", "history unavailable") {
 		t.Fatalf("auto restore failure was silent: %#v", m.entries)

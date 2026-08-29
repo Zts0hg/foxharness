@@ -489,6 +489,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyRunEvent(msg)
 		return m, waitForRunEvent(m.ctx, m.events)
 
+	case cancelRestoreFinishedMsg:
+		m.applyCancelRestore(msg)
+		return m, nil
+
 	case runFinishedMsg:
 		if !m.acceptsOperation(msg.operationID) {
 			return m, nil
@@ -1373,8 +1377,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cancelRun()
 			m.status = "Cancel requested"
 			m.appendEntry("system", "cancel", "Current run cancellation requested.", false)
-			m.tryAutoRestoreAfterCancel()
-			return m, nil
+			// The restore waits on the session lifecycle gate until the
+			// cancelled run finishes finalizing, so it must run off the UI
+			// goroutine; the outcome arrives as a message.
+			return m, cancelRestoreCmd(m.ctx, m.runner)
 		}
 		now := m.nowTime()
 		if !m.lastCtrlC.IsZero() && now.Sub(m.lastCtrlC) <= quitConfirmWindow {
@@ -3317,18 +3323,34 @@ func (m *Model) restoreConversationView(records []app.ConversationRecord, conten
 	m.scrollOffset = 0
 }
 
-func (m *Model) tryAutoRestoreAfterCancel() {
-	outcome, err := m.runner.RestoreLatestInput(m.ctx)
-	if err != nil {
-		if outcome.Attempted {
-			m.appendEntry("error", "auto restore", err.Error(), true)
+// cancelRestoreFinishedMsg carries the asynchronous post-cancellation input
+// restore outcome back to the UI goroutine.
+type cancelRestoreFinishedMsg struct {
+	outcome app.RestoreInputOutcome
+	err     error
+}
+
+// cancelRestoreCmd performs the post-cancellation input restore off the UI
+// goroutine: restoring waits on the session lifecycle gate until the
+// cancelled run finishes finalizing, which must not freeze the interface.
+func cancelRestoreCmd(ctx context.Context, runner Runner) tea.Cmd {
+	return func() tea.Msg {
+		outcome, err := runner.RestoreLatestInput(ctx)
+		return cancelRestoreFinishedMsg{outcome: outcome, err: err}
+	}
+}
+
+func (m *Model) applyCancelRestore(msg cancelRestoreFinishedMsg) {
+	if msg.err != nil {
+		if msg.outcome.Attempted {
+			m.appendEntry("error", "auto restore", msg.err.Error(), true)
 		}
 		return
 	}
-	if !outcome.Restored {
+	if !msg.outcome.Restored {
 		return
 	}
-	m.restoreConversationView(outcome.Conversation, outcome.Input)
+	m.restoreConversationView(msg.outcome.Conversation, msg.outcome.Input)
 	m.status = "Cancelled; restored input"
 }
 
