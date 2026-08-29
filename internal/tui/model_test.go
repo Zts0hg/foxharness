@@ -2257,10 +2257,18 @@ func TestAutoRestoreOnCancel(t *testing.T) {
 	if !cancelled {
 		t.Fatalf("ctrl+c did not call cancelRun")
 	}
-	if cmd == nil {
-		t.Fatalf("ctrl+c did not schedule the asynchronous auto restore")
+	if !m.pendingCancelRestore {
+		t.Fatalf("ctrl+c did not mark the deferred auto restore")
 	}
-	m, _ = update(t, m, cmd())
+	// The restore is deferred to the cancelled run's finish message.
+	m, restoreCmd := update(t, m, runFinishedMsg{operationID: m.activeOperationID, err: context.Canceled})
+	if cmd != nil {
+		t.Fatalf("ctrl+c restored synchronously instead of deferring to run finish")
+	}
+	if restoreCmd == nil {
+		t.Fatalf("run finish did not schedule the asynchronous auto restore")
+	}
+	m, _ = update(t, m, restoreCmd())
 	if runner.truncatedSeq != 0 {
 		t.Fatalf("truncated seq = %d, want 0", runner.truncatedSeq)
 	}

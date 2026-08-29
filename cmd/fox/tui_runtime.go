@@ -62,9 +62,10 @@ type tuiRunResources struct {
 	hooks     *automemory.PerRunHooks
 	tracker   *automemory.Tracker
 	lifecycle *planruntime.Lifecycle
-	// skillToolRegistered mirrors whether the run's registry exposes the
-	// skill tool; the plan-stage activation drain is gated on it.
-	skillToolRegistered bool
+	// skillExposedToModel mirrors whether the run's capability-filtered
+	// surface actually exposes the skill tool; the plan-stage activation
+	// drain is gated on it, matching the baseline registry-exposure gate.
+	skillExposedToModel bool
 }
 
 type tuiRuntimeComposition struct {
@@ -407,7 +408,7 @@ func (c *tuiRuntimeComposition) newTools(_ context.Context, assembly foxruntime.
 		capabilityNames = append(append([]string(nil), capabilityNames...), "submit_plan")
 	}
 	c.mu.Lock()
-	c.runs[assembly.Run.RunID] = tuiRunResources{hooks: hooks, tracker: tracker, lifecycle: lifecycle, skillToolRegistered: skillRegistered}
+	c.runs[assembly.Run.RunID] = tuiRunResources{hooks: hooks, tracker: tracker, lifecycle: lifecycle, skillExposedToModel: skillRegistered && (len(capabilityNames) == 0 || containsToolName(capabilityNames, "skill"))}
 	c.mu.Unlock()
 	resultHook := combineResultHooks(conditionalSkillHook(c.registry), hooks.RecordCallback(tracker))
 	contextHook := func(ctx context.Context) context.Context {
@@ -484,7 +485,7 @@ func (c *tuiRuntimeComposition) newPolicy(_ context.Context, assembly foxruntime
 				// pending activations stay pending, mirroring the registry
 				// exposure gate.
 				reminders := run.lifecycle.RuntimeReminders()
-				if !run.skillToolRegistered {
+				if !run.skillExposedToModel {
 					return reminders, nil
 				}
 				return append(reminders, c.activations.drain()...), nil

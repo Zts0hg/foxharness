@@ -318,10 +318,14 @@ type Model struct {
 	lastEscAction escAction
 	pendingEsc    time.Time
 	pendingEscID  uint64
-	mouseTail     []rune
-	mouseTailEsc  bool
-	mouseTailID   uint64
-	selection     selectionState
+	// pendingCancelRestore marks that the cancelled run's input should be
+	// restored when the run-finish message arrives; any newer run start
+	// cancels it.
+	pendingCancelRestore bool
+	mouseTail            []rune
+	mouseTailEsc         bool
+	mouseTailID          uint64
+	selection            selectionState
 
 	sessionID         string
 	modelName         string
@@ -491,7 +495,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case cancelRestoreFinishedMsg:
 		m.applyCancelRestore(msg)
-		return m, nil
+		next, queued := m.startQueuedPromptIfReady()
+		return next, queued
 
 	case runFinishedMsg:
 		if !m.acceptsOperation(msg.operationID) {
@@ -511,9 +516,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !entriesContainText(m.entries, "system", interruptedTurnMessage) {
 					m.appendEntry("system", "interrupted", interruptedTurnMessage, false)
 				}
+				if m.pendingCancelRestore {
+					// Restore the cancelled prompt before any queued prompt
+					// starts, so the rewind cannot race a newer run and the
+					// restore never waits on a held lifecycle gate. The
+					// queued prompt starts when the restore message lands.
+					m.pendingCancelRestore = false
+					return m, tea.Batch(cancelRestoreCmd(m.ctx, m.runner), rearmInteractions)
+				}
 				next, queued := m.startQueuedPromptIfReady()
 				return next, tea.Batch(queued, rearmInteractions)
 			}
+			m.pendingCancelRestore = false
 			m.status = "Run failed"
 			if len(m.queuedPrompts) > 0 {
 				m.status = fmt.Sprintf("Run failed; %d queued", len(m.queuedPrompts))
@@ -1377,10 +1391,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cancelRun()
 			m.status = "Cancel requested"
 			m.appendEntry("system", "cancel", "Current run cancellation requested.", false)
-			// The restore waits on the session lifecycle gate until the
-			// cancelled run finishes finalizing, so it must run off the UI
-			// goroutine; the outcome arrives as a message.
-			return m, cancelRestoreCmd(m.ctx, m.runner)
+			// The restore must wait until the cancelled run has finished
+			// finalizing: it rewinds session context through the lifecycle
+			// gate, and rewinding against a stale target while another run
+			// could still start would drop that run's records. The restore
+			// fires when this run's finish message arrives; a newer run
+			// cancels it.
+			m.pendingCancelRestore = true
+			return m, nil
 		}
 		now := m.nowTime()
 		if !m.lastCtrlC.IsZero() && now.Sub(m.lastCtrlC) <= quitConfirmWindow {
@@ -2110,6 +2128,7 @@ func (m Model) submitBangCommand(text string) (tea.Model, tea.Cmd) {
 	m.resetCompletions()
 	m.scrollOffset = 0
 	m.running = true
+	m.pendingCancelRestore = false
 	operationID := m.beginOperation()
 	m.runStartedAt = m.nowTime()
 	m.spinnerFrame = 0
@@ -2127,6 +2146,7 @@ func (m Model) startPrompt(text string) (tea.Model, tea.Cmd) {
 func (m Model) startPromptInCollaborationMode(text string, mode collaboration.Mode) (tea.Model, tea.Cmd) {
 	m.scrollOffset = 0
 	m.running = true
+	m.pendingCancelRestore = false
 	operationID := m.beginOperation()
 	m.runStartedAt = m.nowTime()
 	m.spinnerFrame = 0
