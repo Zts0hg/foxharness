@@ -188,7 +188,7 @@ func (t *BashTool) ExecuteResult(ctx context.Context, args json.RawMessage) (Exe
 
 	if result.TimedOut {
 		warning := "\n[警告: 命令执行超时(30s)，已被系统强制终止。] "
-		if !t.readOnly {
+		if !t.readOnly && !t.supervised {
 			warning = "\n[警告: 命令执行超时(30s)，已被系统强制终止。如果是常驻服务，请尝试将其转入后台。] "
 		}
 		return ExecutionResult{

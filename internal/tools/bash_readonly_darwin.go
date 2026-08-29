@@ -68,7 +68,7 @@ func (r darwinReadOnlyBashRunner) Run(ctx context.Context, request readOnlyBashR
 		result.TimedOut = true
 		return result
 	}
-	if err != nil && (errors.Is(err, os.ErrNotExist) || sandboxInfrastructureFailure(result.Output)) {
+	if err != nil && errors.Is(err, os.ErrNotExist) {
 		result.Err = fmt.Errorf("%w: %v: %s", ErrReadOnlyBashSandboxUnavailable, err, strings.TrimSpace(result.Output))
 		return result
 	}
@@ -80,10 +80,11 @@ func (r darwinReadOnlyBashRunner) Run(ctx context.Context, request readOnlyBashR
 }
 
 // sandboxInfrastructureFailure reports whether the captured output is the
-// sandbox runner's own diagnostic instead of the sandboxed command's output.
-// The check is anchored to the runner's argv[0]-prefixed diagnostic on the
-// first line: an ordinary failing command that merely prints the marker
-// string must not be misreported as an unavailable sandbox.
+// sandbox runner's own diagnostic. It is only sound before the sandboxed
+// command has run: at that point no command output can be present, so a
+// runner diagnostic is the only possible content. After the command has run
+// the content is indistinguishable from command output that merely echoes
+// the diagnostic prefix, and the classification is not attempted.
 func sandboxInfrastructureFailure(output string) bool {
 	firstLine := output
 	if index := strings.IndexAny(output, "\r\n"); index >= 0 {
