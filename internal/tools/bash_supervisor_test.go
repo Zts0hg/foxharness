@@ -135,6 +135,10 @@ func TestSupervisedBashRejectsBackgroundAndDetachBeforeRunner(t *testing.T) {
 		"xargs at now",
 		"printf 'at\\0now\\0' | xargs -0",
 		"make deploy",
+		`find . -maxdepth 1 -exec true \; -exec setsid sleep 5 {} \;`,
+		"tcsh -c 'sleep 1'",
+		"busybox setsid sleep 5",
+		"gmake deploy",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {

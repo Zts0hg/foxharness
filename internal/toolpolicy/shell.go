@@ -127,19 +127,21 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 
 // wrapperCommands lists commands that execute another program named in their
 // arguments, so a detached or scheduler command smuggled into the arguments
-// escapes the killed process group exactly as if named directly.
+// escapes the killed process group exactly as if named directly. busybox and
+// toybox are multi-call binaries whose first argument names the program.
 var wrapperCommands = map[string]bool{
-	"chrt": true, "find": true, "ionice": true, "nice": true,
-	"script": true, "sudo": true, "stdbuf": true, "taskset": true,
-	"timeout": true, "watch": true,
+	"busybox": true, "chrt": true, "find": true, "ionice": true,
+	"nice": true, "script": true, "sudo": true, "stdbuf": true,
+	"taskset": true, "timeout": true, "toybox": true, "watch": true,
 }
 
 // interpreterNamePrefixes lists interpreter families whose versioned binaries
-// (python3.12, perl5) resolve to the same arbitrary-code capability, which
-// includes detaching from the process group, so no interpreter form can be
-// proven synchronous.
+// (python3.12, perl5, pypy3) resolve to the same arbitrary-code capability,
+// which includes detaching from the process group, so no interpreter form can
+// be proven synchronous.
 var interpreterNamePrefixes = []string{
-	"awk", "lua", "node", "perl", "php", "python", "ruby", "tclsh",
+	"awk", "julia", "lua", "node", "perl", "php", "python", "pypy",
+	"ruby", "tclsh",
 }
 
 // isDetachedOrInterpreterCommand reports whether a base command name is a
@@ -181,7 +183,10 @@ func findExecWordsAreSynchronous(args []*syntax.Word) bool {
 			continue
 		}
 		if text == ";" || text == "+" {
-			return true
+			// A terminator ends this executed span; find allows further
+			// execution flags after it, so scanning continues.
+			span = false
+			continue
 		}
 		if text == "{}" {
 			continue
@@ -268,16 +273,18 @@ func baseCommandName(name string) string {
 // must be added as soon as a family is identified.
 var detachedShellCommands = map[string]bool{
 	".": true, "at": true, "atq": true, "atrm": true, "bash": true,
-	"batch": true, "bg": true, "builtin": true, "bun": true,
-	"command": true, "coproc": true, "crontab": true, "daemon": true,
-	"dash": true, "deno": true, "disown": true, "env": true,
-	"eval": true, "exec": true, "expect": true, "fish": true,
-	"gawk": true, "ksh": true, "launchctl": true, "make": true,
-	"mawk": true, "nodejs": true, "nohup": true, "open": true,
-	"osascript": true, "rscript": true, "screen": true,
+	"batch": true, "bg": true, "bmake": true, "builtin": true,
+	"bun": true, "csh": true, "command": true, "coproc": true,
+	"crontab": true, "daemon": true, "dash": true, "deno": true,
+	"disown": true, "env": true, "eval": true, "exec": true,
+	"expect": true, "fish": true, "gawk": true, "ghci": true,
+	"gmake": true, "ksh": true, "launchctl": true, "make": true,
+	"mawk": true, "nodejs": true, "nohup": true, "octave": true,
+	"open": true, "osascript": true, "pwsh": true, "pythonw": true,
+	"r": true, "rscript": true, "sbcl": true, "screen": true,
 	"schtasks": true, "setsid": true, "sh": true, "source": true,
-	"systemd-run": true, "tmux": true, "trap": true, "xargs": true,
-	"zsh": true,
+	"systemd-run": true, "tcsh": true, "tmux": true, "trap": true,
+	"wish": true, "xonsh": true, "xargs": true, "zsh": true,
 }
 
 func readOnlyCall(call *syntax.CallExpr, workspace, cwd string) bool {
