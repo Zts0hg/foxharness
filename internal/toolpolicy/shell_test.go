@@ -129,6 +129,8 @@ func TestAssessSynchronousShellRejectsEscapeWrapperAndExpansionForms(t *testing.
 		"powershell -Command Get-Date",
 		"php-cgi script.php",
 		"elvish script.elv",
+		"find . $'\\x2dexec' sh -c 'setsid sleep 5' ;",
+		"find . $'-exec' sh -c 'setsid sleep 5' ;",
 		"SUDO at now",
 		"NICE python3 -c 'print(1)'",
 		"FIND . -exec sh -c 'setsid sleep 5' ;",

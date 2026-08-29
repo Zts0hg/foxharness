@@ -215,7 +215,8 @@ func findExecWordsAreSynchronous(args []*syntax.Word) bool {
 	return true
 }
 
-// synchronousCommandName reports whether a command word names a synchronous// program. The word must be a single unquoted literal whose characters are
+// synchronousCommandName reports whether a command word names a synchronous
+// program. The word must be a single unquoted literal whose characters are
 // all plain command-name characters: quoted, escaped, brace, and glob forms
 // expand to a runtime name different from their literal text, so they cannot
 // be proven synchronous and are rejected. Absolute and relative paths resolve
@@ -456,6 +457,13 @@ func runtimeStaticText(word *syntax.Word) string {
 		case *syntax.Lit:
 			b.WriteString(unescapeShellText(p.Value))
 		case *syntax.SglQuoted:
+			if p.Dollar && strings.Contains(p.Value, "\\") {
+				// ANSI-C quoting decodes backslash escapes at runtime, so
+				// the literal text with escapes is not the runtime text; a
+				// form like $'\x2dexec' would hide a decoded flag. Escape
+				// content is unknowable here and fails closed.
+				return ""
+			}
 			b.WriteString(p.Value)
 		case *syntax.DblQuoted:
 			for _, inner := range p.Parts {
