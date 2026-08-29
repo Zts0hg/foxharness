@@ -2286,7 +2286,7 @@ func TestAutoRestoreReportsFailureAfterSelectingCandidate(t *testing.T) {
 	m := NewModel(context.Background(), runner, Config{})
 	m.entries = nil
 
-	m.applyCancelRestore(cancelRestoreCmd(context.Background(), runner)().(cancelRestoreFinishedMsg))
+	m.applyCancelRestore(cancelRestoreCmd(context.Background(), runner, new(uint64), 0)().(cancelRestoreFinishedMsg))
 
 	if !entriesContain(m.entries, "error", "history unavailable") {
 		t.Fatalf("auto restore failure was silent: %#v", m.entries)
@@ -5741,4 +5741,35 @@ func sidebarContent(docs []sidebarDocument, title string) string {
 		}
 	}
 	return ""
+}
+
+func TestAutoRestoreAbandonedWhenNewerRunStartsInFlight(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "cancel me"}),
+		{Seq: 1, RunID: "run-1", Kind: "progress", Message: schema.Message{Role: schema.RoleAssistant}},
+	}
+	m := NewModel(context.Background(), runner, Config{})
+	m.running = true
+	cancelled := false
+	m.cancelRun = func() { cancelled = true }
+
+	m, _ = update(t, m, keyCtrlC())
+	if !cancelled {
+		t.Fatalf("ctrl+c did not call cancelRun")
+	}
+	m, restoreCmd := update(t, m, runFinishedMsg{operationID: m.activeOperationID, err: context.Canceled})
+	if restoreCmd == nil {
+		t.Fatalf("run finish did not schedule the asynchronous auto restore")
+	}
+	// A newer run starts while the restore is in flight.
+	m.running = true
+	m.beginOperation()
+	m, _ = update(t, m, restoreCmd())
+	if runner.truncatedSeq != -1 {
+		t.Fatalf("stale restore truncated the newer run's records at %d", runner.truncatedSeq)
+	}
+	if m.status == "Cancelled; restored input" {
+		t.Fatalf("stale restore was applied over a newer run")
+	}
 }

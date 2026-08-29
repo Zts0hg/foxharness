@@ -63,9 +63,25 @@ type tuiRunResources struct {
 	tracker   *automemory.Tracker
 	lifecycle *planruntime.Lifecycle
 	// skillExposedToModel mirrors whether the run's capability-filtered
-	// surface actually exposes the skill tool; the plan-stage activation
-	// drain is gated on it, matching the baseline registry-exposure gate.
+	// surface actually exposes the skill tool; the activation drain is gated
+	// on it, matching the baseline registry-exposure gate.
 	skillExposedToModel bool
+}
+
+// runExposesSkillTool reports whether the surface the model currently sees
+// includes the skill tool. A Formal Plan lifecycle advertises whatever its
+// active phase registry holds, so the check is re-evaluated at drain time;
+// plain runs use the capability-filtered exposure snapshot.
+func runExposesSkillTool(run tuiRunResources) bool {
+	if run.lifecycle != nil {
+		for _, definition := range run.lifecycle.GetAvailableTools() {
+			if definition.Name == "skill" {
+				return true
+			}
+		}
+		return false
+	}
+	return run.skillExposedToModel
 }
 
 type tuiRuntimeComposition struct {
@@ -476,16 +492,21 @@ func (c *tuiRuntimeComposition) newPolicy(_ context.Context, assembly foxruntime
 	run := c.runs[assembly.Run.RunID]
 	c.mu.Unlock()
 	return turnpolicy.New(turnpolicy.Config{Bind: func(context.Context, engine.RunInput) (turnpolicy.Bindings, error) {
-		nextTurn := func(context.Context, int) ([]string, error) { return c.activations.drain(), nil }
+		// Skill-activation reminders only make sense when the surface the
+		// model currently sees can actually invoke a skill: without the skill
+		// tool — filtered out by allowed-tools, or absent from the active
+		// Formal Plan phase registry — the pending activations stay pending.
+		nextTurn := func(context.Context, int) ([]string, error) {
+			if !runExposesSkillTool(run) {
+				return nil, nil
+			}
+			return c.activations.drain(), nil
+		}
 		var completionGate func(context.Context) (string, error)
 		if run.lifecycle != nil {
 			nextTurn = func(context.Context, int) ([]string, error) {
-				// Skill-activation reminders only make sense when the model
-				// can actually invoke a skill; without the skill tool the
-				// pending activations stay pending, mirroring the registry
-				// exposure gate.
 				reminders := run.lifecycle.RuntimeReminders()
-				if !run.skillExposedToModel {
+				if !runExposesSkillTool(run) {
 					return reminders, nil
 				}
 				return append(reminders, c.activations.drain()...), nil

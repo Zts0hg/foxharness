@@ -298,10 +298,13 @@ type Model struct {
 	fileMentions       []fileMention
 	queuedPrompts      []queuedPrompt
 
-	entries            []entry
-	status             string
-	running            bool
-	operationSeq       uint64
+	entries      []entry
+	status       string
+	running      bool
+	operationSeq uint64
+	// operationGen is shared across all Model copies so asynchronous
+	// commands can detect operations that began after they were scheduled.
+	operationGen       *uint64
 	activeOperationID  uint64
 	runStartedAt       time.Time
 	spinnerFrame       int
@@ -411,6 +414,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 	return Model{
 		ctx:                ctx,
 		runner:             runner,
+		operationGen:       new(uint64),
 		events:             make(chan tea.Msg, 256),
 		now:                time.Now,
 		copySelection:      copyToClipboard,
@@ -494,6 +498,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForRunEvent(m.ctx, m.events)
 
 	case cancelRestoreFinishedMsg:
+		if m.running {
+			// A newer run started while the restore was in flight; the
+			// stale rewind would block on that run and truncate its
+			// records, so the restore is abandoned and the newer run owns
+			// the interaction loop.
+			m.pendingCancelRestore = false
+			return m, nil
+		}
 		m.applyCancelRestore(msg)
 		next, queued := m.startQueuedPromptIfReady()
 		return next, queued
@@ -520,9 +532,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Restore the cancelled prompt before any queued prompt
 					// starts, so the rewind cannot race a newer run and the
 					// restore never waits on a held lifecycle gate. The
-					// queued prompt starts when the restore message lands.
+					// queued prompt starts when the restore message lands,
+					// and the restore aborts if a newer operation began.
 					m.pendingCancelRestore = false
-					return m, tea.Batch(cancelRestoreCmd(m.ctx, m.runner), rearmInteractions)
+					return m, tea.Batch(cancelRestoreCmd(m.ctx, m.runner, m.operationGen, *m.operationGen), rearmInteractions)
 				}
 				next, queued := m.startQueuedPromptIfReady()
 				return next, tea.Batch(queued, rearmInteractions)
@@ -2161,6 +2174,9 @@ func (m Model) startPromptInCollaborationMode(text string, mode collaboration.Mo
 func (m *Model) beginOperation() uint64 {
 	m.operationSeq++
 	m.activeOperationID = m.operationSeq
+	if m.operationGen != nil {
+		*m.operationGen = m.operationSeq
+	}
 	return m.activeOperationID
 }
 
@@ -3353,8 +3369,13 @@ type cancelRestoreFinishedMsg struct {
 // cancelRestoreCmd performs the post-cancellation input restore off the UI
 // goroutine: restoring waits on the session lifecycle gate until the
 // cancelled run finishes finalizing, which must not freeze the interface.
-func cancelRestoreCmd(ctx context.Context, runner Runner) tea.Cmd {
+// The restore is abandoned when any newer operation began after it was
+// scheduled, so a stale rewind can never truncate a newer run's records.
+func cancelRestoreCmd(ctx context.Context, runner Runner, operationGen *uint64, scheduledGeneration uint64) tea.Cmd {
 	return func() tea.Msg {
+		if operationGen != nil && *operationGen != scheduledGeneration {
+			return nil
+		}
 		outcome, err := runner.RestoreLatestInput(ctx)
 		return cancelRestoreFinishedMsg{outcome: outcome, err: err}
 	}
