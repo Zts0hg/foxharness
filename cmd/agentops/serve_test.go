@@ -91,24 +91,28 @@ func fmtTaskID(i int) string {
 	return "task-" + strconv.Itoa(i)
 }
 
-// admissionGateway records when StopAccepting starts and blocks it until the
-// test releases it, so the test can prove the shared task channel is not
-// closed while gateway admission is still undrained.
+// admissionGateway records when StopAccepting starts and blocks only the
+// first call until the test releases it, so the test can prove the shared
+// task channel is not closed while gateway admission is still undrained.
+// Later calls (the idempotent post-abort drain) return immediately.
 type admissionGateway struct {
 	probeGateway
 	stopAcceptingStarted chan struct{}
 	releaseStopAccepting chan struct{}
+	stopOnce             sync.Once
 }
 
 func (g *admissionGateway) StopAccepting(ctx context.Context) error {
-	if g.stopAcceptingStarted != nil {
-		close(g.stopAcceptingStarted)
-	}
-	select {
-	case <-g.releaseStopAccepting:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	g.stopOnce.Do(func() {
+		if g.stopAcceptingStarted != nil {
+			close(g.stopAcceptingStarted)
+		}
+		select {
+		case <-g.releaseStopAccepting:
+		case <-ctx.Done():
+			return
+		}
+	})
 	return nil
 }
 

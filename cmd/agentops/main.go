@@ -126,6 +126,7 @@ func serve(
 		waitCtx, cancelWait := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancelWait()
 		admissionErr := gateway.StopAccepting(waitCtx)
+		drainErr := drainAbortedAdmission(gateway, shutdownTimeout)
 		close(feishuTasks)
 		// The runner must stop too; its queued tasks reach cancellation
 		// terminals through the bridge instead of blocking shutdown forever.
@@ -133,6 +134,7 @@ func serve(
 		return errors.Join(
 			listenErr,
 			admissionErr,
+			drainErr,
 			waitForCompletion(waitCtx, "AgentOps bridge", bridgeDone),
 			waitForCompletion(waitCtx, "AgentOps runner", runnerDone),
 		)
@@ -154,12 +156,14 @@ func serve(
 			waitCtx, cancelWait = context.WithTimeout(context.Background(), shutdownTimeout)
 			defer cancelWait()
 		}
+		drainErr := drainAbortedAdmission(gateway, shutdownTimeout)
 		close(feishuTasks)
 		cancelRunner()
 		return errors.Join(
 			admissionErr,
 			shutdownErr,
 			listenErr,
+			drainErr,
 			waitForCompletion(waitCtx, "AgentOps bridge", bridgeDone),
 			waitForCompletion(waitCtx, "AgentOps runner", runnerDone),
 		)
@@ -205,6 +209,18 @@ func bridgeAgentOpsTasks(
 			return
 		}
 	}
+}
+
+// drainAbortedAdmission covers the path where the bounded admission wait
+// timed out and the gateway aborted its in-flight delivery handlers: the
+// idempotent second StopAccepting call waits until every aborted handler has
+// reached its terminal rollback, so the caller closes the shared task
+// channel under no live sender instead of racing a handler into a send on a
+// closed channel.
+func drainAbortedAdmission(gateway gatewayService, timeout time.Duration) error {
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), timeout)
+	defer cancelDrain()
+	return gateway.StopAccepting(drainCtx)
 }
 
 func waitForListenResult(ctx context.Context, result <-chan error) (error, bool) {

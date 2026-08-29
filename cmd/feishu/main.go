@@ -113,11 +113,12 @@ func serve(
 		waitCtx, cancelWait := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancelWait()
 		admissionErr := gateway.StopAccepting(waitCtx)
+		drainErr := drainAbortedAdmission(gateway, shutdownTimeout)
 		close(tasks)
 		// The runner must stop too; a serve that is ending must not leave it
 		// consuming a closed queue.
 		cancelRunner()
-		return errors.Join(listenErr, admissionErr, waitForCompletion(waitCtx, "runner", runnerDone))
+		return errors.Join(listenErr, admissionErr, drainErr, waitForCompletion(waitCtx, "runner", runnerDone))
 	case <-signalCtx.Done():
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancelShutdown()
@@ -136,11 +137,24 @@ func serve(
 			waitCtx, cancelWait = context.WithTimeout(context.Background(), shutdownTimeout)
 			defer cancelWait()
 		}
+		drainErr := drainAbortedAdmission(gateway, shutdownTimeout)
 		close(tasks)
 		cancelRunner()
 		runnerErr := waitForCompletion(waitCtx, "runner", runnerDone)
-		return errors.Join(admissionErr, shutdownErr, listenErr, runnerErr)
+		return errors.Join(admissionErr, shutdownErr, listenErr, drainErr, runnerErr)
 	}
+}
+
+// drainAbortedAdmission covers the path where the bounded admission wait
+// timed out and the gateway aborted its in-flight delivery handlers: the
+// idempotent second StopAccepting call waits until every aborted handler has
+// reached its terminal rollback, so the caller closes the shared task
+// channel under no live sender instead of racing a handler into a send on a
+// closed channel.
+func drainAbortedAdmission(gateway gatewayService, timeout time.Duration) error {
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), timeout)
+	defer cancelDrain()
+	return gateway.StopAccepting(drainCtx)
 }
 
 func waitForListenResult(ctx context.Context, result <-chan error) (error, bool) {
