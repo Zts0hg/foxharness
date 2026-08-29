@@ -88,13 +88,29 @@ func AssessSynchronousShell(command string) (synchronous bool, parsed bool) {
 			synchronous = false
 		case *syntax.CallExpr:
 			sawCall = true
-			if len(n.Args) == 0 || detachedShellCommands[strings.ToLower(literalWord(n.Args[0]))] {
+			if len(n.Args) == 0 || !synchronousCommandName(n.Args[0]) {
 				synchronous = false
 			}
 		}
 		return true
 	})
 	return synchronous && sawCall, true
+}
+
+// synchronousCommandName reports whether a command word names a synchronous
+// program. The word must be a single plain unquoted literal: quoted or
+// expanded words could hide any command name and cannot be proven
+// synchronous, so they are rejected. Absolute and relative paths resolve to
+// their base name before the detached-command lookup.
+func synchronousCommandName(word *syntax.Word) bool {
+	name := strings.ToLower(literalWord(word))
+	if name == "" {
+		return false
+	}
+	if index := strings.LastIndex(name, "/"); index >= 0 {
+		name = name[index+1:]
+	}
+	return !detachedShellCommands[name]
 }
 
 // detachedShellCommands lists shell forms that escape the supervised process

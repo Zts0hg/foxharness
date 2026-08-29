@@ -101,6 +101,12 @@ func TestSupervisedBashRejectsBackgroundAndDetachBeforeRunner(t *testing.T) {
 		"crontab -",
 		"schtasks /create /tn demo /tr calc /sc once",
 		"open -a Terminal",
+		`"at" now -f script.sh`,
+		`'launchctl' submit -l label -- sleep 1`,
+		"/usr/bin/at now -f script.sh",
+		"/bin/bash -c 'sleep 1 &'",
+		"/usr/bin/open -a Terminal",
+		"/usr/bin/crontab -",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
