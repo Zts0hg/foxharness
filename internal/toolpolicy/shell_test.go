@@ -129,6 +129,16 @@ func TestAssessSynchronousShellRejectsEscapeWrapperAndExpansionForms(t *testing.
 		"powershell -Command Get-Date",
 		"php-cgi script.php",
 		"elvish script.elv",
+		"SUDO at now",
+		"NICE python3 -c 'print(1)'",
+		"FIND . -exec sh -c 'setsid sleep 5' ;",
+		"find . \"$(echo -exec)\" sh -c 'setsid sleep 5' ;",
+		"ksh93 script.ksh",
+		"zsh-5.9 -c 'sleep 1'",
+		"octave-cli script.m",
+		"wish8.6 script.tcl",
+		"ghci-9.4 script.hs",
+		"pwsh-preview -Command Get-Date",
 	}
 	accepted := []string{
 		"go test ./...",

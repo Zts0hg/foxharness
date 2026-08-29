@@ -142,6 +142,12 @@ func TestSupervisedBashRejectsBackgroundAndDetachBeforeRunner(t *testing.T) {
 		"shopt -s expand_aliases",
 		"python3.13t -c 'print(1)'",
 		"luajit script.lua",
+		"SUDO at now",
+		"NICE python3 -c 'print(1)'",
+		"FIND . -exec sh -c 'setsid sleep 5' ;",
+		"find . \"$(echo -exec)\" sh -c 'setsid sleep 5' ;",
+		"ksh93 script.ksh",
+		"zsh-5.9 -c 'sleep 1'",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {

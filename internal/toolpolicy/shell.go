@@ -106,7 +106,7 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 	if !synchronousCommandName(call.Args[0]) {
 		return false
 	}
-	command := baseCommandName(literalWord(call.Args[0]))
+	command := strings.ToLower(baseCommandName(literalWord(call.Args[0])))
 	if !wrapperCommands[command] {
 		return true
 	}
@@ -135,15 +135,18 @@ var wrapperCommands = map[string]bool{
 	"taskset": true, "timeout": true, "toybox": true, "watch": true,
 }
 
-// interpreterNamePrefixes lists interpreter families whose versioned or
-// variant binaries (python3.12, python3.13t, perl5, pypy3, php-cgi) resolve
-// to the same arbitrary-code capability, which includes detaching from the
-// process group, so no interpreter form can be proven synchronous. The match
-// is prefix-only on purpose: suffix spellings are unbounded, while the cost
-// of a false positive is one rejected command in a conservative gate.
+// interpreterNamePrefixes lists interpreter and shell families whose
+// versioned or variant binaries (python3.12, python3.13t, perl5, pypy3,
+// php-cgi, ksh93, zsh-5.9, ghci-9.4, octave-cli, wish8.6, pwsh-preview)
+// resolve to the same arbitrary-code capability, which includes detaching
+// from the process group, so no such form can be proven synchronous. The
+// match is prefix-only on purpose: suffix spellings are unbounded, while the
+// cost of a false positive is one rejected command in a conservative gate.
+// Short generic names (sh, env, open, trap) stay exact matches in
+// detachedShellCommands so unrelated words sharing the prefix stay usable.
 var interpreterNamePrefixes = []string{
-	"awk", "julia", "lua", "node", "perl", "php", "python", "pypy",
-	"ruby", "tclsh",
+	"awk", "ghci", "julia", "ksh", "lua", "node", "octave", "perl",
+	"php", "python", "pypy", "pwsh", "ruby", "tclsh", "wish", "zsh",
 }
 
 // isDetachedOrInterpreterCommand reports whether a base command name is a
@@ -177,6 +180,11 @@ func findExecWordsAreSynchronous(args []*syntax.Word) bool {
 			switch text {
 			case "-exec", "-execdir", "-ok", "-okdir":
 				span = true
+			case "":
+				// A word whose runtime text is unknowable could expand to
+				// an execution flag, which would hide the executed program
+				// from every check below, so it fails closed.
+				return false
 			}
 			continue
 		}
