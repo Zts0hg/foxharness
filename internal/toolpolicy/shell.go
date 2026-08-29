@@ -185,6 +185,13 @@ func findExecWordsAreSynchronous(args []*syntax.Word) bool {
 				// an execution flag, which would hide the executed program
 				// from every check below, so it fails closed.
 				return false
+			default:
+				// An unquoted word carrying brace or glob metacharacters
+				// expands into different or multiple runtime words, so its
+				// static text proves nothing about what find will receive.
+				if wordBraceOrGlobProne(arg) {
+					return false
+				}
 			}
 			continue
 		}
@@ -208,8 +215,7 @@ func findExecWordsAreSynchronous(args []*syntax.Word) bool {
 	return true
 }
 
-// synchronousCommandName reports whether a command word names a synchronous
-// program. The word must be a single unquoted literal whose characters are
+// synchronousCommandName reports whether a command word names a synchronous// program. The word must be a single unquoted literal whose characters are
 // all plain command-name characters: quoted, escaped, brace, and glob forms
 // expand to a runtime name different from their literal text, so they cannot
 // be proven synchronous and are rejected. Absolute and relative paths resolve
@@ -466,8 +472,24 @@ func runtimeStaticText(word *syntax.Word) string {
 	return b.String()
 }
 
+// wordBraceOrGlobProne reports whether an unquoted part of the word carries
+// brace or glob metacharacters, so bash expands it into different or
+// multiple runtime words regardless of its literal text. Quoted and dynamic
+// parts are classified by their own rules.
+func wordBraceOrGlobProne(word *syntax.Word) bool {
+	for _, part := range word.Parts {
+		lit, ok := part.(*syntax.Lit)
+		if !ok {
+			continue
+		}
+		if strings.ContainsAny(lit.Value, "{*?[") {
+			return true
+		}
+	}
+	return false
+}
+
 // unescapeShellText resolves backslash escapes the way bash resolves them in
-// word expansion: an escaped character contributes itself.
 func unescapeShellText(text string) string {
 	if !strings.Contains(text, "\\") {
 		return text

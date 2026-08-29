@@ -139,6 +139,8 @@ func TestAssessSynchronousShellRejectsEscapeWrapperAndExpansionForms(t *testing.
 		"wish8.6 script.tcl",
 		"ghci-9.4 script.hs",
 		"pwsh-preview -Command Get-Date",
+		`find . {,-exec} python3 -c 'import os;os.setsid()' ;`,
+		"find . *(-exec) sh -c 'setsid sleep 5' ;",
 	}
 	accepted := []string{
 		"go test ./...",
