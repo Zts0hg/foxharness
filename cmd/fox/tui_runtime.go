@@ -70,10 +70,14 @@ type tuiRunResources struct {
 
 // runExposesSkillTool reports whether the surface the model currently sees
 // includes the skill tool. A Formal Plan lifecycle advertises whatever its
-// active phase registry holds, so the check is re-evaluated at drain time;
-// plain runs use the capability-filtered exposure snapshot.
+// active phase registry holds, so the check is re-evaluated at drain time
+// and additionally requires the run's allowed-tools to keep the skill tool
+// exposed; plain runs use the capability-filtered exposure snapshot.
 func runExposesSkillTool(run tuiRunResources) bool {
 	if run.lifecycle != nil {
+		if !run.skillExposedToModel {
+			return false
+		}
 		for _, definition := range run.lifecycle.GetAvailableTools() {
 			if definition.Name == "skill" {
 				return true
