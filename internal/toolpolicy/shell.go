@@ -130,9 +130,10 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 // escapes the killed process group exactly as if named directly. busybox and
 // toybox are multi-call binaries whose first argument names the program.
 var wrapperCommands = map[string]bool{
-	"busybox": true, "chrt": true, "find": true, "ionice": true,
-	"nice": true, "script": true, "sudo": true, "stdbuf": true,
-	"taskset": true, "timeout": true, "toybox": true, "watch": true,
+	"arch": true, "busybox": true, "chrt": true, "find": true,
+	"ionice": true, "nice": true, "script": true, "sudo": true,
+	"stdbuf": true, "taskset": true, "timeout": true, "toybox": true,
+	"watch": true,
 }
 
 // interpreterNamePrefixes lists interpreter and shell families whose

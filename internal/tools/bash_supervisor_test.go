@@ -148,6 +148,7 @@ func TestSupervisedBashRejectsBackgroundAndDetachBeforeRunner(t *testing.T) {
 		"find . \"$(echo -exec)\" sh -c 'setsid sleep 5' ;",
 		`find . {,-exec} python3 -c 'import os;os.setsid()' ;`,
 		"find . $'\\x2dexec' sh -c 'setsid sleep 5' ;",
+		"arch -x86_64 screen -dm session 'setsid sleep 5'",
 		"ksh93 script.ksh",
 		"zsh-5.9 -c 'sleep 1'",
 	}

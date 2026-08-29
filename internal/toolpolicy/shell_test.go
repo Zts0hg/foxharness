@@ -131,6 +131,8 @@ func TestAssessSynchronousShellRejectsEscapeWrapperAndExpansionForms(t *testing.
 		"elvish script.elv",
 		"find . $'\\x2dexec' sh -c 'setsid sleep 5' ;",
 		"find . $'-exec' sh -c 'setsid sleep 5' ;",
+		"arch -x86_64 screen -dm session 'setsid sleep 5'",
+		"arch -arm64 at now",
 		"SUDO at now",
 		"NICE python3 -c 'print(1)'",
 		"FIND . -exec sh -c 'setsid sleep 5' ;",
