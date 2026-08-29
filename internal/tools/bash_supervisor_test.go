@@ -93,6 +93,14 @@ func TestSupervisedBashRejectsBackgroundAndDetachBeforeRunner(t *testing.T) {
 		"disown",
 		"bash -c 'sleep 1 &'",
 		"cat <(sleep 1)",
+		"echo sleep 1 | at now",
+		"batch < script.sh",
+		"systemd-run --collect sleep 1",
+		"launchctl submit -l label -- sleep 1",
+		"launchctl load plists/com.example.payload.plist",
+		"crontab -",
+		"schtasks /create /tn demo /tr calc /sc once",
+		"open -a Terminal",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {

@@ -97,12 +97,22 @@ func AssessSynchronousShell(command string) (synchronous bool, parsed bool) {
 	return synchronous && sawCall, true
 }
 
+// detachedShellCommands lists shell forms that escape the supervised process
+// tree by design: interpreters and nested shells, plus scheduler and launcher
+// families (at/batch, cron, systemd-run, launchctl, schtasks, open) whose
+// payload is executed by a system daemon or LaunchServices outside the killed
+// process group, so a cancelled call could still produce later side effects.
+// The list is closed on purpose: supervised Bash rejects anything it cannot
+// prove synchronous, so a missed name weakens the cancellation guarantee and
+// must be added as soon as a family is identified.
 var detachedShellCommands = map[string]bool{
-	".": true, "bash": true, "bg": true, "command": true,
-	"coproc": true, "daemon": true, "dash": true, "disown": true,
+	".": true, "at": true, "atq": true, "atrm": true, "bash": true,
+	"batch": true, "bg": true, "command": true, "coproc": true,
+	"crontab": true, "daemon": true, "dash": true, "disown": true,
 	"env": true, "eval": true, "exec": true, "fish": true,
-	"ksh": true, "nohup": true, "screen": true, "setsid": true,
-	"sh": true, "source": true, "tmux": true, "zsh": true,
+	"ksh": true, "launchctl": true, "nohup": true, "open": true,
+	"screen": true, "schtasks": true, "setsid": true, "sh": true,
+	"source": true, "systemd-run": true, "tmux": true, "zsh": true,
 }
 
 func readOnlyCall(call *syntax.CallExpr, workspace, cwd string) bool {
