@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -511,4 +512,83 @@ func (stringReadCloser) Close() error { return nil }
 
 func readCloser(value string) stringReadCloser {
 	return stringReadCloser{Reader: strings.NewReader(value)}
+}
+
+func TestFileDeliveryStorePrunesExpiredReservations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deliveries.json")
+	store, err := newFileDeliveryStoreAtPath(path)
+	if err != nil {
+		t.Fatalf("NewFileDeliveryStore() error = %v", err)
+	}
+	current := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return current }
+
+	if accepted, err := store.Reserve("message-old"); err != nil || !accepted {
+		t.Fatalf("Reserve(message-old) = %v, %v", accepted, err)
+	}
+	current = current.Add(25 * time.Hour)
+	if accepted, err := store.Reserve("message-new"); err != nil || !accepted {
+		t.Fatalf("Reserve(message-new) after TTL = %v, %v", accepted, err)
+	}
+
+	restarted, err := newFileDeliveryStoreAtPath(path)
+	if err != nil {
+		t.Fatalf("restart NewFileDeliveryStore() error = %v", err)
+	}
+	restarted.now = func() time.Time { return current }
+	if accepted, err := restarted.Reserve("message-old"); err != nil || !accepted {
+		t.Fatalf("expired reservation was not pruned: Reserve(message-old) = %v, %v", accepted, err)
+	}
+	if accepted, err := restarted.Reserve("message-new"); err != nil || accepted {
+		t.Fatalf("live reservation was pruned early: Reserve(message-new) = %v, %v", accepted, err)
+	}
+}
+
+func TestFileDeliveryStorePruneKeepsLegacyVersion1FileDeduplication(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deliveries.json")
+	legacy := `{"version":1,"message_ids":["message-legacy"]}` + "\n"
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newFileDeliveryStoreAtPath(path)
+	if err != nil {
+		t.Fatalf("NewFileDeliveryStore() error = %v", err)
+	}
+	current := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return current }
+
+	if accepted, err := store.Reserve("message-legacy"); err != nil || accepted {
+		t.Fatalf("legacy duplicate Reserve() = %v, %v", accepted, err)
+	}
+	if accepted, err := store.Reserve("message-new"); err != nil || !accepted {
+		t.Fatalf("Reserve(message-new) beside legacy entry = %v, %v", accepted, err)
+	}
+
+	restarted, err := newFileDeliveryStoreAtPath(path)
+	if err != nil {
+		t.Fatalf("restart NewFileDeliveryStore() error = %v", err)
+	}
+	restarted.now = func() time.Time { return current }
+	if accepted, err := restarted.Reserve("message-legacy"); err != nil || accepted {
+		t.Fatalf("migrated legacy reservation lost: Reserve(message-legacy) = %v, %v", accepted, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file deliveryStoreFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		t.Fatalf("store file is not version 2 JSON: %v", err)
+	}
+	if file.Version != deliveryStoreVersion || deliveryStoreVersion != 2 {
+		t.Fatalf("store file version = %d, want 2", file.Version)
+	}
+	if len(file.MessageIDs) != 2 {
+		t.Fatalf("store file records = %d, want 2", len(file.MessageIDs))
+	}
+	for _, record := range file.MessageIDs {
+		if record.ReservedAt.IsZero() {
+			t.Fatalf("record %s has no reservation timestamp", record.ID)
+		}
+	}
 }

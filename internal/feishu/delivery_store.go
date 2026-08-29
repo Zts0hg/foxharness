@@ -12,9 +12,18 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
-const deliveryStoreVersion = 1
+const (
+	deliveryStoreVersion = 2
+	// deliveryRetention bounds how long a reservation keeps suppressing
+	// redelivery. Feishu retries undelivered events for a bounded window, so
+	// retaining far beyond that window only accumulates permanent storage and
+	// per-message rewrite cost without preventing any duplicate. A reservation
+	// older than the retention is pruned and the message can be accepted again.
+	deliveryRetention = 24 * time.Hour
+)
 
 // DeliveryStore is the durable at-most-once acceptance authority for Feishu
 // message IDs. Reserve returns true only for the first accepted delivery.
@@ -77,9 +86,23 @@ type FileDeliveryStore struct {
 	rootPath string
 	path     string
 	lockKey  string
+	now      func() time.Time
+}
+
+type deliveryRecord struct {
+	ID         string    `json:"id"`
+	ReservedAt time.Time `json:"reserved_at"`
 }
 
 type deliveryStoreFile struct {
+	Version    int              `json:"version"`
+	MessageIDs []deliveryRecord `json:"message_ids"`
+}
+
+// deliveryStoreFileV1 decodes the version 1 store, whose entries carried no
+// reservation timestamp. Such entries migrate with the current time so the
+// retention window starts when version 2 first rewrites the file.
+type deliveryStoreFileV1 struct {
 	Version    int      `json:"version"`
 	MessageIDs []string `json:"message_ids"`
 }
@@ -116,6 +139,7 @@ func NewFileDeliveryStore(rootPath, path string) (*FileDeliveryStore, error) {
 		rootPath: filepath.Clean(absRoot),
 		path:     path,
 		lockKey:  filepath.Clean(absRoot) + "\x00" + path,
+		now:      time.Now,
 	}, nil
 }
 
@@ -138,10 +162,11 @@ func (s *FileDeliveryStore) ReserveContext(ctx context.Context, messageID string
 		if err != nil {
 			return err
 		}
+		pruneExpiredReservations(accepted, deliveryRetention, s.now())
 		if _, exists := accepted[messageID]; exists {
 			return nil
 		}
-		accepted[messageID] = struct{}{}
+		accepted[messageID] = deliveryRecord{ID: messageID, ReservedAt: s.now()}
 		committed, err := s.save(root, accepted)
 		if err != nil {
 			if committed {
@@ -200,11 +225,11 @@ func (s *FileDeliveryStore) withLock(ctx context.Context, operation func(*os.Roo
 	})
 }
 
-func (s *FileDeliveryStore) load(root *os.Root) (map[string]struct{}, error) {
+func (s *FileDeliveryStore) load(root *os.Root) (map[string]deliveryRecord, error) {
 	fileHandle, err := openRootedRegularFile(root, s.path, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return make(map[string]struct{}), nil
+			return make(map[string]deliveryRecord), nil
 		}
 		return nil, fmt.Errorf("read delivery store: %w", err)
 	}
@@ -213,31 +238,63 @@ func (s *FileDeliveryStore) load(root *os.Root) (map[string]struct{}, error) {
 	if err := errors.Join(readErr, closeErr); err != nil {
 		return nil, fmt.Errorf("read delivery store: %w", err)
 	}
+	var version struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &version); err != nil {
+		return nil, fmt.Errorf("decode delivery store: %w", err)
+	}
+	if version.Version == 1 {
+		var legacy deliveryStoreFileV1
+		if err := json.Unmarshal(data, &legacy); err != nil {
+			return nil, fmt.Errorf("decode delivery store: %w", err)
+		}
+		accepted := make(map[string]deliveryRecord, len(legacy.MessageIDs))
+		for _, messageID := range legacy.MessageIDs {
+			messageID = strings.TrimSpace(messageID)
+			if messageID == "" {
+				return nil, errors.New("delivery store contains an empty message ID")
+			}
+			accepted[messageID] = deliveryRecord{ID: messageID, ReservedAt: s.now()}
+		}
+		return accepted, nil
+	}
 	var file deliveryStoreFile
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, fmt.Errorf("decode delivery store: %w", err)
 	}
-	if file.Version != deliveryStoreVersion {
-		return nil, fmt.Errorf("unsupported delivery store version %d", file.Version)
+	if version.Version != deliveryStoreVersion {
+		return nil, fmt.Errorf("unsupported delivery store version %d", version.Version)
 	}
-	accepted := make(map[string]struct{}, len(file.MessageIDs))
-	for _, messageID := range file.MessageIDs {
-		messageID = strings.TrimSpace(messageID)
-		if messageID == "" {
+	accepted := make(map[string]deliveryRecord, len(file.MessageIDs))
+	for _, record := range file.MessageIDs {
+		record.ID = strings.TrimSpace(record.ID)
+		if record.ID == "" {
 			return nil, errors.New("delivery store contains an empty message ID")
 		}
-		accepted[messageID] = struct{}{}
+		accepted[record.ID] = record
 	}
 	return accepted, nil
 }
 
-func (s *FileDeliveryStore) save(root *os.Root, accepted map[string]struct{}) (bool, error) {
-	messageIDs := make([]string, 0, len(accepted))
-	for messageID := range accepted {
-		messageIDs = append(messageIDs, messageID)
+// pruneExpiredReservations deletes entries whose reservation age exceeds the
+// retention so the store file cannot grow without bound and a redelivery
+// beyond Feishu's retry window can be accepted again.
+func pruneExpiredReservations(accepted map[string]deliveryRecord, retention time.Duration, current time.Time) {
+	for messageID, record := range accepted {
+		if record.ReservedAt.Add(retention).Before(current) {
+			delete(accepted, messageID)
+		}
 	}
-	sort.Strings(messageIDs)
-	data, err := json.Marshal(deliveryStoreFile{Version: deliveryStoreVersion, MessageIDs: messageIDs})
+}
+
+func (s *FileDeliveryStore) save(root *os.Root, accepted map[string]deliveryRecord) (bool, error) {
+	records := make([]deliveryRecord, 0, len(accepted))
+	for _, record := range accepted {
+		records = append(records, record)
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
+	data, err := json.Marshal(deliveryStoreFile{Version: deliveryStoreVersion, MessageIDs: records})
 	if err != nil {
 		return false, fmt.Errorf("encode delivery store: %w", err)
 	}
