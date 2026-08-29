@@ -120,6 +120,15 @@ func TestAssessSynchronousShellRejectsEscapeWrapperAndExpansionForms(t *testing.
 		"pwsh script.ps1",
 		"Rscript script.R",
 		"R -f script.R",
+		"shopt -s expand_aliases",
+		"python3.13t -c 'print(1)'",
+		"julia-1.11 script.jl",
+		"luajit script.lua",
+		"nawk '{print}' file",
+		"jruby script.rb",
+		"powershell -Command Get-Date",
+		"php-cgi script.php",
+		"elvish script.elv",
 	}
 	accepted := []string{
 		"go test ./...",

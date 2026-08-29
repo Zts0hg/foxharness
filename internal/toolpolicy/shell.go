@@ -135,10 +135,12 @@ var wrapperCommands = map[string]bool{
 	"taskset": true, "timeout": true, "toybox": true, "watch": true,
 }
 
-// interpreterNamePrefixes lists interpreter families whose versioned binaries
-// (python3.12, perl5, pypy3) resolve to the same arbitrary-code capability,
-// which includes detaching from the process group, so no interpreter form can
-// be proven synchronous.
+// interpreterNamePrefixes lists interpreter families whose versioned or
+// variant binaries (python3.12, python3.13t, perl5, pypy3, php-cgi) resolve
+// to the same arbitrary-code capability, which includes detaching from the
+// process group, so no interpreter form can be proven synchronous. The match
+// is prefix-only on purpose: suffix spellings are unbounded, while the cost
+// of a false positive is one rejected command in a conservative gate.
 var interpreterNamePrefixes = []string{
 	"awk", "julia", "lua", "node", "perl", "php", "python", "pypy",
 	"ruby", "tclsh",
@@ -153,11 +155,7 @@ func isDetachedOrInterpreterCommand(name string) bool {
 		return true
 	}
 	for _, prefix := range interpreterNamePrefixes {
-		if !strings.HasPrefix(name, prefix) {
-			continue
-		}
-		remainder := name[len(prefix):]
-		if remainder == "" || strings.TrimLeft(remainder, "0123456789.") == "" {
+		if strings.HasPrefix(name, prefix) {
 			return true
 		}
 	}
@@ -276,15 +274,18 @@ var detachedShellCommands = map[string]bool{
 	"batch": true, "bg": true, "bmake": true, "builtin": true,
 	"bun": true, "csh": true, "command": true, "coproc": true,
 	"crontab": true, "daemon": true, "dash": true, "deno": true,
-	"disown": true, "env": true, "eval": true, "exec": true,
-	"expect": true, "fish": true, "gawk": true, "ghci": true,
-	"gmake": true, "ksh": true, "launchctl": true, "make": true,
-	"mawk": true, "nodejs": true, "nohup": true, "octave": true,
-	"open": true, "osascript": true, "pwsh": true, "pythonw": true,
-	"r": true, "rscript": true, "sbcl": true, "screen": true,
-	"schtasks": true, "setsid": true, "sh": true, "source": true,
-	"systemd-run": true, "tcsh": true, "tmux": true, "trap": true,
-	"wish": true, "xonsh": true, "xargs": true, "zsh": true,
+	"disown": true, "elvish": true, "env": true, "eval": true,
+	"exec": true, "expect": true, "fish": true, "gawk": true,
+	"ghci": true, "gmake": true, "jruby": true, "ksh": true,
+	"launchctl": true, "make": true, "mawk": true, "nawk": true,
+	"nodejs": true,
+	"nohup":  true, "octave": true, "open": true, "osascript": true,
+	"powershell": true, "pwsh": true, "pythonw": true, "r": true,
+	"rscript": true, "sbcl": true, "screen": true, "schtasks": true,
+	"setsid": true, "sh": true, "shopt": true, "source": true,
+	"systemd-run": true, "tcsh": true, "tmux": true,
+	"trap": true, "wish": true, "xonsh": true, "xargs": true,
+	"zsh": true,
 }
 
 func readOnlyCall(call *syntax.CallExpr, workspace, cwd string) bool {

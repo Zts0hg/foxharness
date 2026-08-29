@@ -139,6 +139,9 @@ func TestSupervisedBashRejectsBackgroundAndDetachBeforeRunner(t *testing.T) {
 		"tcsh -c 'sleep 1'",
 		"busybox setsid sleep 5",
 		"gmake deploy",
+		"shopt -s expand_aliases",
+		"python3.13t -c 'print(1)'",
+		"luajit script.lua",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
