@@ -46,11 +46,8 @@ func TestWindowsProcessTreeConsumersUseSharedPreStartBoundary(t *testing.T) {
 		t.Error("Windows process-tree boundary relies on Job signaling instead of active-process accounting")
 	}
 	windowsText := string(windowsSource)
-	if strings.Contains(windowsText, `exec.Command("taskkill"`) {
-		t.Error("Windows graceful process-tree termination must bound taskkill with an explicit context")
-	}
-	if !strings.Contains(windowsText, "exec.CommandContext") {
-		t.Error("Windows graceful process-tree termination does not use a bounded CommandContext")
+	if strings.Contains(windowsText, "taskkill") {
+		t.Error("Windows process-tree boundary must terminate through the job object instead of shelling out to taskkill")
 	}
 
 	slashWindowsSource, err := os.ReadFile(filepath.Join(root, "internal", "slash", "shell_process_windows.go"))

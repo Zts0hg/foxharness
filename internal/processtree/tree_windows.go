@@ -3,12 +3,10 @@
 package processtree
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -16,8 +14,6 @@ import (
 
 	"golang.org/x/sys/windows"
 )
-
-const windowsTaskkillTimeout = 250 * time.Millisecond
 
 type windowsTree struct {
 	mu  sync.Mutex
@@ -110,25 +106,29 @@ func abortSuspendedCommand(cmd *exec.Cmd, job windows.Handle, cause error) error
 	return errors.Join(cause, terminateErr, killErr, waitErr, closeErr)
 }
 
+// Signal requests termination of the whole process tree. The force form
+// terminates the job object immediately. The graceful form is a no-op by
+// design: Windows job objects expose no graceful-termination broadcast for
+// console process trees, and an external kill utility without /F posts
+// WM_CLOSE, which structurally fails for the windowless processes this
+// harness spawns, so the attempt would only spawn another process and
+// pollute cleanup diagnostics with a guaranteed error. The graceful phase
+// therefore contributes only its wait window; every caller follows it with
+// Signal(true) as the supervisor cleanup, benchmark validation, and autodev
+// command teardown all do.
 func (tree *windowsTree) Signal(force bool) error {
 	tree.mu.Lock()
 	defer tree.mu.Unlock()
+	if !force {
+		return nil
+	}
 	if tree.cmd.Process == nil {
 		return nil
 	}
 	if tree.job == 0 {
 		return nil
 	}
-	if force {
-		return windows.TerminateJobObject(tree.job, 1)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), windowsTaskkillTimeout)
-	defer cancel()
-	err := exec.CommandContext(ctx, "taskkill", "/T", "/PID", strconv.Itoa(tree.cmd.Process.Pid)).Run()
-	if ctx.Err() != nil {
-		return errors.Join(err, ctx.Err())
-	}
-	return err
+	return windows.TerminateJobObject(tree.job, 1)
 }
 
 func (tree *windowsTree) Close(timeout time.Duration) error {
