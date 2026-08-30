@@ -74,7 +74,7 @@ func TestDiagnosticLoggerEmitsInjectionAndCompletionLines(t *testing.T) {
 	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactSystemReminder, Turn: 1, Name: string(engine.ConversationSourceReminder), Content: "reminder"})
 	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactSystemReminder, Turn: 1, Name: string(engine.ConversationSourceTODOGate), Content: "todo"})
 	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactErrorRecovery, Turn: 1, Content: "recovery"})
-	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactContextCompacted, Turn: 1, Name: "session_history", BeforeMessages: 9, AfterMessages: 3})
+	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactContextCompacted, Turn: 1, Name: string(ContextCompactionPreTurn), BeforeMessages: 9, AfterMessages: 3})
 	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactRunCompleted, Content: "done"})
 
 	for _, want := range []string{
@@ -88,6 +88,24 @@ func TestDiagnosticLoggerEmitsInjectionAndCompletionLines(t *testing.T) {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("diagnostic log is missing %q\nlogs:\n%s", want, logs.String())
 		}
+	}
+}
+
+/* TestDiagnosticLoggerScopesCompactionSuccessLineToTurnContext verifies the
+ * baseline trigger scope of the compaction success line: only the pre-turn
+ * (turn_context) compaction announces it, while the first-projection and
+ * reactive compactions record their events without a diagnostic line. */
+func TestDiagnosticLoggerScopesCompactionSuccessLineToTurnContext(t *testing.T) {
+	logs := captureDiagnosticLog(t)
+	observer := newDiagnosticLogger(RunAssembly{}).wrapObserver(recordingObserver{})
+	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactContextCompacted, Turn: 1, Name: string(ContextCompactionInitialHistory), BeforeMessages: 9, AfterMessages: 3})
+	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactContextCompacted, Turn: 1, Name: string(ContextCompactionReactive), BeforeMessages: 3, AfterMessages: 2})
+	if strings.Contains(logs.String(), "[Compactor]") {
+		t.Fatalf("non-turn compaction emitted a diagnostic line:\n%s", logs.String())
+	}
+	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactContextCompacted, Turn: 2, Name: string(ContextCompactionPreTurn), BeforeMessages: 8, AfterMessages: 2})
+	if !strings.Contains(logs.String(), "[Compactor] 上下文已压缩: 8 -> 2 条消息（含 boundary + summary）") {
+		t.Fatalf("turn-context compaction success line missing:\n%s", logs.String())
 	}
 }
 

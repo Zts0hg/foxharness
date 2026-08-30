@@ -12,6 +12,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/childruntime"
+	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/provider"
@@ -128,6 +129,95 @@ func TestTUIInteractiveTargetCompositionPreservesMultiRunSessionAndCapabilitySur
 	}
 	if records, err := startup.Application.Conversation(context.Background()); err != nil || len(records) != 0 {
 		t.Fatalf("new session conversation = %#v/%v", records, err)
+	}
+}
+
+/* TestTUIInteractiveTargetTodoGateStaysOffWithoutVisibleUpdateTodo verifies
+ * that the TODO completion gate arms only when the run's visible tool surface
+ * exposes update_todo. A restricted run that filters update_todo out cannot
+ * satisfy the gate, so an incomplete session TODO.md must not block or fail
+ * the run. */
+func TestTUIInteractiveTargetTodoGateStaysOffWithoutVisibleUpdateTodo(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workDir := t.TempDir()
+	model := &targetTUIProvider{}
+	config := foxConfig{
+		WorkDir: workDir, Model: "tui-model", MaxTurns: 4,
+		ResolvedLLM: llmconfig.ResolvedConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "tui-model"},
+	}
+	startup, err := newTUIStartupWithProviderFactory(context.Background(), config, tui.Interactions{
+		Permissions: denyPermissionPort{}, Questions: cancelQuestionPort{}, PlanReview: cancelPlanPort{},
+	}, func(llmconfig.ResolvedConfig) (provider.LLMProvider, error) { return model, nil }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer startup.Close(context.Background())
+
+	/* A session TODO.md persists across runs and routinely carries unchecked
+	 * items; with update_todo filtered out nothing can satisfy the gate. */
+	sessionDirectory := startup.Application.State().Session.Directory
+	if err := os.WriteFile(filepath.Join(sessionDirectory, "TODO.md"), []byte("# TODO\n\n- [ ] unfinished item\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := startup.Application.Run(context.Background(), app.RunCommand{
+		Prompt: "restricted todo", AllowedTools: []string{"read_file"},
+	}, nil)
+	if err != nil || outcome == nil || outcome.FinalMessage != "done:restricted todo" {
+		t.Fatalf("restricted run without update_todo = %#v/%v, want a normal completion", outcome, err)
+	}
+	calls := 0
+	for _, observation := range model.snapshot() {
+		if strings.HasPrefix(lastDirectUserMessage(observation.messages), "restricted todo") {
+			calls++
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("restricted run without update_todo consumed %d model calls, want 1", calls)
+	}
+}
+
+/* TestTUIInteractiveTargetTodoGateStillBlocksWhenUpdateTodoIsVisible verifies
+ * the gate itself: with update_todo on the visible surface, an incomplete
+ * session TODO.md blocks the first final response with the reminder and fails
+ * the run when the next response still does not update the checklist. */
+func TestTUIInteractiveTargetTodoGateStillBlocksWhenUpdateTodoIsVisible(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workDir := t.TempDir()
+	model := &targetTUIProvider{}
+	config := foxConfig{
+		WorkDir: workDir, Model: "tui-model", MaxTurns: 4,
+		ResolvedLLM: llmconfig.ResolvedConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "tui-model"},
+	}
+	startup, err := newTUIStartupWithProviderFactory(context.Background(), config, tui.Interactions{
+		Permissions: denyPermissionPort{}, Questions: cancelQuestionPort{}, PlanReview: cancelPlanPort{},
+	}, func(llmconfig.ResolvedConfig) (provider.LLMProvider, error) { return model, nil }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer startup.Close(context.Background())
+
+	sessionDirectory := startup.Application.State().Session.Directory
+	if err := os.WriteFile(filepath.Join(sessionDirectory, "TODO.md"), []byte("# TODO\n\n- [ ] unfinished item\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := startup.Application.Run(context.Background(), app.RunCommand{Prompt: "gated todo"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "TODO.md still has incomplete checklist items after TODO completion reminder") {
+		t.Fatalf("unrestricted run with an incomplete TODO.md = %#v/%v, want the repeated-unsatisfied gate failure", outcome, err)
+	}
+	observations := model.snapshot()
+	if len(observations) != 2 {
+		t.Fatalf("gated run consumed %d model calls, want the blocked first call and the failing second call", len(observations))
+	}
+	reminderSeen := false
+	for _, message := range observations[1].messages {
+		if message.Role == schema.RoleUser && strings.Contains(message.Content, "TODO.md still has incomplete checklist items") {
+			reminderSeen = true
+		}
+	}
+	if !reminderSeen {
+		t.Fatalf("second model call never received the TODO completion reminder:\n%#v", observations[1].messages)
 	}
 }
 
@@ -355,6 +445,37 @@ func TestTUIInteractiveTargetForkCarriesParentPermissionEvidence(t *testing.T) {
 	evidence := childConfig.ParentEvidence(permission.Request{ToolName: "read_file", Action: "read AGENTS.md"})
 	if !strings.Contains(evidence.Trusted, "TRUSTED_FORK_INSTRUCTION") {
 		t.Fatalf("fork parent evidence omitted project instructions: %q", evidence.Trusted)
+	}
+}
+
+/* TestTUIRuntimeNonPlanRunDrainsSkillActivationsWithoutSkillTool verifies
+ * that a plain run drains pending skill-activation reminders even when its
+ * allowed-tools filter hides the skill tool: the baseline drained the queue
+ * unconditionally on the non-plan path, so the reminders reach the model on
+ * this run instead of being held for a later one. */
+func TestTUIRuntimeNonPlanRunDrainsSkillActivationsWithoutSkillTool(t *testing.T) {
+	runID := session.RunID("run-restricted")
+	composition := &tuiRuntimeComposition{
+		runs:        map[session.RunID]tuiRunResources{runID: {skillExposedToModel: false}},
+		activations: runtimeActivations{pending: []string{"activation reminder body"}},
+	}
+	policy, err := composition.newPolicy(context.Background(), foxruntime.RunAssembly{
+		Session: foxruntime.AgentSessionSnapshot{ID: "session-1"},
+		Run:     foxruntime.RunScopeSnapshot{RunID: runID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := policy.StartRun(context.Background(), engine.RunInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := run.BeforeTurn(context.Background(), engine.TurnState{Turn: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes.Changes) != 1 || !strings.Contains(changes.Changes[0].Message.Content, "activation reminder body") {
+		t.Fatalf("restricted non-plan run drained %#v, want the pending activation reminder", changes.Changes)
 	}
 }
 

@@ -66,6 +66,11 @@ type tuiRunResources struct {
 	// surface actually exposes the skill tool; the activation drain is gated
 	// on it, matching the baseline registry-exposure gate.
 	skillExposedToModel bool
+	// todoUpdateExposedToModel mirrors whether the run's allowed-tools
+	// restriction keeps update_todo reachable. The TODO completion gate can
+	// demand nothing else, so it must stay disarmed when this is false. An
+	// empty restriction leaves every registered tool exposed.
+	todoUpdateExposedToModel bool
 }
 
 // runExposesSkillTool reports whether the surface the model currently sees
@@ -86,6 +91,27 @@ func runExposesSkillTool(run tuiRunResources) bool {
 		return false
 	}
 	return run.skillExposedToModel
+}
+
+// runExposesTodoUpdateTool reports whether the surface the model currently
+// sees includes update_todo, the only tool the TODO completion gate can
+// demand. Plain runs resolve it from the allowed-tools exposure snapshot; a
+// Formal Plan lifecycle resolves it from the active phase registry at gate
+// time, because update_todo belongs to its checklist and implementation
+// surfaces rather than the initial proposal surface.
+func runExposesTodoUpdateTool(run tuiRunResources) bool {
+	if run.lifecycle != nil {
+		if !run.todoUpdateExposedToModel {
+			return false
+		}
+		for _, definition := range run.lifecycle.GetAvailableTools() {
+			if definition.Name == "update_todo" {
+				return true
+			}
+		}
+		return false
+	}
+	return run.todoUpdateExposedToModel
 }
 
 type tuiRuntimeComposition struct {
@@ -423,7 +449,11 @@ func (c *tuiRuntimeComposition) newTools(_ context.Context, assembly foxruntime.
 		capabilityNames = append(append([]string(nil), capabilityNames...), "submit_plan")
 	}
 	c.mu.Lock()
-	c.runs[assembly.Run.RunID] = tuiRunResources{hooks: hooks, tracker: tracker, lifecycle: lifecycle, skillExposedToModel: skillRegistered && (len(capabilityNames) == 0 || containsToolName(capabilityNames, "skill"))}
+	c.runs[assembly.Run.RunID] = tuiRunResources{
+		hooks: hooks, tracker: tracker, lifecycle: lifecycle,
+		skillExposedToModel:      skillRegistered && (len(capabilityNames) == 0 || containsToolName(capabilityNames, "skill")),
+		todoUpdateExposedToModel: len(assembly.AllowedTools) == 0 || containsToolName(assembly.AllowedTools, "update_todo"),
+	}
 	c.mu.Unlock()
 	resultHook := combineResultHooks(conditionalSkillHook(c.registry), hooks.RecordCallback(tracker))
 	contextHook := func(ctx context.Context) context.Context {
@@ -475,7 +505,7 @@ func (c *tuiRuntimeComposition) buildToolRegistry(assembly foxruntime.RunAssembl
 	registry.Register(subagent.NewTool(child, string(assembly.Session.ID)))
 	fork := &runtimeForkRunner{runner: child, parentSessionID: string(assembly.Session.ID)}
 	// The skill tool exists only when the slash registry is available, and
-	// the plan-stage activation reminder drain is gated on the registry
+	// the Formal Plan activation reminder drain is gated on the registry
 	// exposing it (see newPolicy).
 	skillRegistered := false
 	if c.registry != nil {
@@ -491,14 +521,11 @@ func (c *tuiRuntimeComposition) newPolicy(_ context.Context, assembly foxruntime
 	run := c.runs[assembly.Run.RunID]
 	c.mu.Unlock()
 	return turnpolicy.New(turnpolicy.Config{Bind: func(context.Context, engine.RunInput) (turnpolicy.Bindings, error) {
-		// Skill-activation reminders only make sense when the surface the
-		// model currently sees can actually invoke a skill: without the skill
-		// tool — filtered out by allowed-tools, or absent from the active
-		// Formal Plan phase registry — the pending activations stay pending.
+		// Formal Plan runs drain pending skill activations only while the
+		// active phase registry still exposes the skill tool; every other run
+		// drains unconditionally, matching the baseline shared run path where
+		// held reminders would otherwise wait for a later unrestricted run.
 		nextTurn := func(context.Context, int) ([]string, error) {
-			if !runExposesSkillTool(run) {
-				return nil, nil
-			}
 			return c.activations.drain(), nil
 		}
 		var completionGate func(context.Context) (string, error)
@@ -520,7 +547,7 @@ func (c *tuiRuntimeComposition) newPolicy(_ context.Context, assembly foxruntime
 				if err != nil {
 					return "", err
 				}
-				return todopolicy.CompletionReminder(resource.stored.RootDir, true), nil
+				return todopolicy.CompletionReminder(resource.stored.RootDir, runExposesTodoUpdateTool(run)), nil
 			},
 		}, nil
 	}}), nil

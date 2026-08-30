@@ -478,6 +478,52 @@ func TestRuntimeHarnessAppliesResolvedTaskTimeout(t *testing.T) {
 	}
 }
 
+/* TestRuntimeHarnessAssemblyFailurePrintsNoDiagnosticLines verifies the
+ * baseline silence around assembly failures: the run never enters the engine,
+ * so the synthesized run-start fact that carries the terminal error must not
+ * produce the engine-start or thinking-mode announcements on stderr. */
+func TestRuntimeHarnessAssemblyFailurePrintsNoDiagnosticLines(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mut  func(*HarnessDependencies)
+	}{
+		{"model", func(d *HarnessDependencies) {
+			d.NewModel = func(context.Context, RunAssembly) (engine.ModelInvoker, error) {
+				return nil, errors.New("model config invalid")
+			}
+		}},
+		{"tools", func(d *HarnessDependencies) {
+			d.NewTools = func(context.Context, RunAssembly) (engine.ToolExecutor, error) {
+				return nil, errors.New("tools broken")
+			}
+		}},
+		{"policy", func(d *HarnessDependencies) {
+			d.NewPolicy = func(context.Context, RunAssembly) (engine.TurnPolicy, error) { return nil, errors.New("policy broken") }
+		}},
+		{"context", func(d *HarnessDependencies) {
+			d.NewContext = func(context.Context, RunAssembly) (ContextCollector, ContextCompactor, error) {
+				return nil, nil, errors.New("context broken")
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureDiagnosticLog(t)
+			store := newLifecycleStore()
+			dependencies := successfulHarnessDependencies(nil)
+			tc.mut(&dependencies)
+			harness, _ := NewRuntimeHarness(store, dependencies)
+			agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+
+			if _, err := agentSession.Run(context.Background(), RunSpec{Prompt: "inspect"}); err == nil {
+				t.Fatal("Run() error = nil, want the assembly failure")
+			}
+			if logs.Len() != 0 {
+				t.Fatalf("assembly failure printed diagnostic lines:\n%s", logs.String())
+			}
+		})
+	}
+}
+
 func TestRuntimeHarnessFinishFailureCanBeRecoveredWithoutLeakingScope(t *testing.T) {
 	logs := captureDiagnosticLog(t)
 	store := newLifecycleStore()

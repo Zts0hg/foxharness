@@ -134,7 +134,12 @@ func (o *diagnosticObserver) Observe(ctx context.Context, fact engine.Fact) {
 		log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", o.logger.assembly.Session.ID, o.logger.assembly.Session.WorkDir)
 		log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", o.logger.assembly.Spec.Thinking)
 	case engine.FactContextCompacted:
-		log.Printf("[Compactor] 上下文已压缩: %d -> %d 条消息（含 boundary + summary）", fact.BeforeMessages, fact.AfterMessages)
+		/* The baseline announced only the ordinary pre-turn compaction on
+		 * stderr; first-projection and reactive compactions recorded their
+		 * telemetry and reporter events without this line. */
+		if fact.Name == string(ContextCompactionPreTurn) {
+			log.Printf("[Compactor] 上下文已压缩: %d -> %d 条消息（含 boundary + summary）", fact.BeforeMessages, fact.AfterMessages)
+		}
 	case engine.FactToolResult:
 		if fact.IsError {
 			log.Printf("  -> ❌ 工具执行报错: %s, 输出：%s\n", fact.Name, fact.FullContent)

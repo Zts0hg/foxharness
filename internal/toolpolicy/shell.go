@@ -132,7 +132,7 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 var wrapperCommands = map[string]bool{
 	"arch": true, "busybox": true, "chroot": true, "chrt": true,
 	"caffeinate": true, "doas": true, "find": true, "gfind": true,
-	"gnice": true,
+	"gnice":   true,
 	"gstdbuf": true, "ionice": true, "nice": true, "nsenter": true,
 	"runuser": true, "script": true, "setarch": true, "setpriv": true,
 	"strace": true, "sudo": true, "stdbuf": true, "su": true,
