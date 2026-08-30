@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"sync"
 
@@ -200,6 +201,9 @@ func (s *AgentSession) BeginRun(ctx context.Context, spec RunSpec) (*RunScope, e
 	resolved, err := s.profile.Resolve(spec)
 	if err != nil {
 		return nil, err
+	}
+	if spec.AllowedTools != nil {
+		log.Printf("[slash] restricting next run to allowed tools: %v", resolved.AllowedTools())
 	}
 	if err := s.acquire(ctx); err != nil {
 		return nil, err
