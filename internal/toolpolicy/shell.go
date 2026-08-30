@@ -107,6 +107,9 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 		return false
 	}
 	command := strings.ToLower(baseCommandName(literalWord(call.Args[0])))
+	if command == "git" {
+		return gitInvocationIsSynchronous(call.Args)
+	}
 	if !wrapperCommands[command] {
 		return true
 	}
@@ -123,6 +126,36 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 		}
 	}
 	return true
+}
+
+// gitInvocationIsSynchronous reports whether a git invocation provably
+// executes no other program. Git runs configuration-defined aliases, diff
+// helpers, and hooks, so only its read-only subcommands are provable, and an
+// injected -c or --config-env definition before the subcommand could turn
+// even those into arbitrary shell execution.
+func gitInvocationIsSynchronous(args []*syntax.Word) bool {
+	subcommand := ""
+	for _, arg := range args[1:] {
+		text := literalWord(arg)
+		if text == "" {
+			// A word that is not a plain literal could carry an injected
+			// configuration definition, so the gate fails closed.
+			return false
+		}
+		if subcommand != "" {
+			continue
+		}
+		if strings.HasPrefix(text, "-c") && !strings.HasPrefix(text, "--") {
+			return false
+		}
+		if text == "--config-env" || strings.HasPrefix(text, "--config-env=") {
+			return false
+		}
+		if !strings.HasPrefix(text, "-") {
+			subcommand = strings.ToLower(text)
+		}
+	}
+	return gitArgsAllowed([]string{subcommand})
 }
 
 // wrapperCommands lists commands that execute another program named in their
@@ -150,10 +183,15 @@ var wrapperCommands = map[string]bool{
 // Short generic names (sh, env, open, trap) stay exact matches in
 // detachedShellCommands so unrelated words sharing the prefix stay usable.
 var interpreterNamePrefixes = []string{
-	"awk", "clisp", "dart", "elixir", "erl", "escript", "ghc", "guile",
-	"java", "jshell", "julia", "ksh", "lua", "node", "octave", "perl",
-	"php", "python", "pypy", "pwsh", "racket", "runghc", "runhaskell",
-	"ruby", "tclsh", "wish", "zsh",
+	"awk", "cabal", "ccl", "clisp", "clojure", "csc", "csi", "dart",
+	"dotnet", "elixir", "emacs", "erb", "erl", "escript", "ghc",
+	"gnuplot", "gdb", "groovy", "guile", "ipython", "irb", "java",
+	"jshell", "jrunscript", "julia", "kotlin", "ksh", "lua", "lisp",
+	"lldb", "mono", "mysql", "node", "npm", "npx", "nvim", "octave",
+	"perl", "php", "pnpm", "psql", "python", "pypy", "pwsh", "racket",
+	"runghc", "runhaskell", "ruby", "scala", "scheme", "sqlite",
+	"stack", "swift", "tclsh", "tsx", "ts-node", "vim", "wish", "yarn",
+	"zsh",
 }
 
 // isDetachedOrInterpreterCommand reports whether a base command name is a
@@ -287,32 +325,37 @@ func baseCommandName(name string) string {
 // tree by design: interpreters and nested shells (including the Korn and
 // POSIX family members mksh, oksh, yash, and posh), session multiplexers
 // (screen, tmux, dtach, abduco) that park their payload in a detached
-// session, scheduler and launcher families (at/batch, cron, systemd-run,
-// launchctl, schtasks, open) whose payload is executed by a system daemon or
-// LaunchServices outside the killed process group, and structural escapers
-// such as timeout that relocate themselves and their payload into a new
-// process group.
+// session, remote-execution clients (ssh, autossh) whose payload never runs
+// inside this process group, scheduler and launcher families (at/batch,
+// cron, systemd-run, launchctl, schtasks, open, xdg-open, gio,
+// start-stop-daemon) whose payload is executed by a system daemon,
+// LaunchServices, or a detached service outside the killed process group,
+// and structural escapers such as timeout that relocate themselves and their
+// payload into a new process group.
 // The list is closed on purpose: supervised Bash rejects anything it cannot
 // prove synchronous, so a missed name weakens the cancellation guarantee and
 // must be added as soon as a family is identified.
 var detachedShellCommands = map[string]bool{
 	".": true, "abduco": true, "at": true, "atq": true, "atrm": true,
-	"bash": true, "batch": true, "bg": true, "bmake": true,
-	"builtin": true, "bun": true, "command": true, "coproc": true,
-	"csh": true, "crontab": true, "daemon": true, "dash": true,
-	"deno": true, "disown": true, "dtach": true, "elvish": true,
-	"env": true, "eval": true, "exec": true, "expect": true,
-	"fish": true, "gawk": true, "ghci": true, "gmake": true,
-	"jruby": true, "ksh": true, "launchctl": true, "make": true,
-	"mapfile": true, "mawk": true, "mksh": true, "nawk": true,
-	"nodejs": true, "nohup": true, "octave": true, "oksh": true,
-	"open": true, "osascript": true, "posh": true, "powershell": true,
-	"pwsh": true, "pythonw": true, "r": true, "readarray": true,
-	"rscript": true, "sbcl": true, "screen": true, "schtasks": true,
-	"setsid": true, "sh": true, "shopt": true, "source": true,
+	"autossh": true, "bash": true, "batch": true, "bg": true,
+	"bmake": true, "builtin": true, "bun": true, "command": true,
+	"coproc": true, "csh": true, "crontab": true, "daemon": true,
+	"dash": true, "deno": true, "disown": true, "dtach": true,
+	"elvish": true, "env": true, "es": true, "eval": true, "exec": true,
+	"expect": true, "fish": true, "gawk": true, "ghci": true,
+	"gio": true, "gmake": true, "jruby": true, "jjs": true, "ksh": true,
+	"launchctl": true, "make": true, "mapfile": true, "mawk": true,
+	"mksh": true, "nawk": true, "nodejs": true, "nohup": true,
+	"nu": true, "octave": true, "oksh": true, "open": true,
+	"osascript": true, "osh": true, "posh": true, "powershell": true,
+	"psql": true, "pwsh": true, "pythonw": true, "r": true, "rc": true,
+	"readarray": true, "rscript": true, "sbcl": true, "screen": true,
+	"schtasks": true, "setsid": true, "sh": true, "shopt": true,
+	"source": true, "ssh": true, "start-stop-daemon": true,
 	"systemd-run": true, "tcsh": true, "timeout": true, "tmux": true,
-	"trap": true, "wish": true, "xonsh": true, "xargs": true,
-	"genv": true, "gnohup": true, "gtimeout": true, "gxargs": true,
+	"trap": true, "wish": true, "xdg-open": true, "xonsh": true,
+	"xargs": true,
+	"genv":  true, "gnohup": true, "gtimeout": true, "gxargs": true,
 	"yash": true,
 	"zsh":  true,
 }
