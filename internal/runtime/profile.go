@@ -139,6 +139,7 @@ type RunSnapshot struct {
 type ResolvedRunSpec struct {
 	snapshot        RunSnapshot
 	tools           []string
+	restrictedTools bool
 	observer        RunObserver
 	permission      PermissionScope
 	childPermission *ChildPermissionRequest
@@ -214,7 +215,10 @@ func (p Profile) Resolve(spec RunSpec) (ResolvedRunSpec, error) {
 			MaxTurns: maxTurns, TaskTimeout: taskTimeout, Thinking: thinking, ReadOnly: readOnly,
 			AllowedTools: strings.Join(tools, ","), DelegationDepth: depth,
 		},
-		tools:           cloneToolNames(tools),
+		tools: cloneToolNames(tools),
+		/* ChildRun prompt guidance is always capability-scoped, so its runs are
+		 * marked restricted even when the caller supplied no explicit restriction. */
+		restrictedTools: spec.AllowedTools != nil || p.snapshot.Name == ChildRun,
 		observer:        spec.Observer,
 		permission:      spec.Permission,
 		childPermission: cloneChildPermissionRequest(spec.childPermission),

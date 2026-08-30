@@ -104,7 +104,7 @@ func (c *PromptCollector) Collect(_ context.Context, request ContextCollectionRe
 		clone.workDir = request.WorkDir
 	}
 	clone.collaborationMode = normalizePromptCollaborationMode(request.CollaborationMode)
-	if clone.toolCapabilities != nil {
+	if request.RestrictedTools {
 		clone = *clone.WithToolCapabilities(request.AllowedTools)
 	}
 	fragments, err := clone.composeFragments(request.Prompt)

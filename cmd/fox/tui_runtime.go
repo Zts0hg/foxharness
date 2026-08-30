@@ -405,11 +405,6 @@ func (c *tuiRuntimeComposition) newTools(_ context.Context, assembly foxruntime.
 	var lifecycle *planruntime.Lifecycle
 	capabilityNames := assembly.AllowedTools
 	if collaboration.Normalize(collaboration.Mode(assembly.Spec.CollaborationMode)) == collaboration.ModeFormalPlan {
-		for _, required := range []string{"read_file", "bash", "ask_user_question", "update_todo"} {
-			if !containsToolName(capabilityNames, required) {
-				return nil, fmt.Errorf("restricted Formal Plan run is missing required lifecycle tool: %s", required)
-			}
-		}
 		checklistRegistry := tools.NewRegistry()
 		checklistRegistry.Register(tools.NewReadFileTool(c.workDir))
 		checklistRegistry.Register(tools.NewBashTool(c.workDir))
@@ -544,11 +539,13 @@ func (c *tuiRuntimeComposition) newContext(_ context.Context, assembly foxruntim
 	if err != nil {
 		return nil, nil, err
 	}
+	/* Prompt guidance scoping follows the run's resolved tool restriction
+	 * (see ContextCollectionRequest.RestrictedTools), so unrestricted runs
+	 * keep the full base prompt. */
 	collector := foxruntime.NewPromptCollector(c.workDir).
 		WithInteractiveAsk(true).
 		WithMemory(resource.memory.WorkingMemoryPath()).
 		WithAutoMemory(c.autoMemory, automemory.MainMemoryGuidance).
-		WithToolCapabilities(assembly.AllowedTools).
 		WithSkillList(func() string {
 			window := compaction.NewModelRegistry().Lookup(assembly.Run.Model)
 			return skilltool.FormatSkillsWithinBudget(c.registry.ModelInvocable(), window)
@@ -586,7 +583,10 @@ func (c *tuiRuntimeComposition) bind(agentSession *foxruntime.AgentSession) (app
 		RestoreLatestInput: func(ctx context.Context) (app.RestoreInputOutcome, error) {
 			return c.restoreLatestInput(ctx, agentSession, resource)
 		},
-		BeforeRun: func(_ context.Context, _ app.RunCommand) error {
+		BeforeRun: func(_ context.Context, command app.RunCommand) error {
+			if err := c.validateFormalPlanAllowedTools(command); err != nil {
+				return err
+			}
 			nextSequence, err := session.NewMessageLog(resource.stored).NextSeq()
 			if err != nil {
 				return fmt.Errorf("读取下一条消息序号失败: %w", err)
@@ -652,6 +652,47 @@ func containsToolName(names []string, target string) bool {
 		}
 	}
 	return false
+}
+
+/* formalPlanRequiredTools is the lifecycle tool set that every restricted
+ * Formal Plan run must keep reachable. */
+var formalPlanRequiredTools = []string{
+	"read_file",
+	"bash",
+	"ask_user_question",
+	"submit_plan",
+	"update_todo",
+}
+
+/* validateFormalPlanAllowedTools rejects an allowed-tools restriction that
+ * would strand a Formal Plan run without a required lifecycle tool. The run's
+ * collaboration mode is the command override when present, otherwise the
+ * mode selected for future runs. */
+func (c *tuiRuntimeComposition) validateFormalPlanAllowedTools(command app.RunCommand) error {
+	if len(command.AllowedTools) == 0 {
+		return nil
+	}
+	mode := collaboration.Normalize(collaboration.Mode(command.CollaborationMode))
+	if command.CollaborationMode == "" && c.application != nil {
+		mode = collaboration.Normalize(collaboration.Mode(c.application.State().CollaborationMode))
+	}
+	if mode != collaboration.ModeFormalPlan {
+		return nil
+	}
+	allowed := make(map[string]bool, len(command.AllowedTools))
+	for _, name := range command.AllowedTools {
+		allowed[name] = true
+	}
+	var missing []string
+	for _, required := range formalPlanRequiredTools {
+		if !allowed[required] {
+			missing = append(missing, required)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("restricted Formal Plan run is missing required lifecycle tools: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func (c *tuiRuntimeComposition) permissionEvidence(stored *session.StoredSession, spec foxruntime.RunSnapshot) permission.EvidenceProvider {

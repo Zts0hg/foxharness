@@ -30,7 +30,10 @@ type ContextCollectionRequest struct {
 	WorkDir           string
 	CollaborationMode string
 	AllowedTools      []string
-	ReadOnly          bool
+	/* RestrictedTools reports whether the run resolves an explicit tool
+	 * restriction, so prompt guidance may be scoped to AllowedTools. */
+	RestrictedTools bool
+	ReadOnly        bool
 }
 
 /* ContextCollector resolves complete prompt fragments without owning their rendering. */
@@ -289,7 +292,8 @@ func (c *ContextController) initialize(ctx context.Context) error {
 		run := c.scope.resolved.Snapshot()
 		fragments, err := c.collector.Collect(ctx, ContextCollectionRequest{
 			Profile: run.Profile, Prompt: run.Prompt, WorkDir: run.WorkDir,
-			CollaborationMode: run.CollaborationMode, AllowedTools: c.scope.AllowedTools(), ReadOnly: run.ReadOnly,
+			CollaborationMode: run.CollaborationMode, AllowedTools: c.scope.AllowedTools(),
+			RestrictedTools: c.scope.resolved.restrictedTools, ReadOnly: run.ReadOnly,
 		})
 		if err != nil {
 			return fmt.Errorf("collect runtime context: %w", err)
