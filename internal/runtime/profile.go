@@ -216,9 +216,10 @@ func (p Profile) Resolve(spec RunSpec) (ResolvedRunSpec, error) {
 			AllowedTools: strings.Join(tools, ","), DelegationDepth: depth,
 		},
 		tools: cloneToolNames(tools),
-		/* ChildRun prompt guidance is always capability-scoped, so its runs are
-		 * marked restricted even when the caller supplied no explicit restriction. */
-		restrictedTools: spec.AllowedTools != nil || p.snapshot.Name == ChildRun,
+		/* Only child runs scope their prompt guidance to the capability
+		 * snapshot. Main-surface allowed-tools restrictions filter the tool
+		 * registry but keep the full base system prompt. */
+		restrictedTools: p.snapshot.Name == ChildRun,
 		observer:        spec.Observer,
 		permission:      spec.Permission,
 		childPermission: cloneChildPermissionRequest(spec.childPermission),

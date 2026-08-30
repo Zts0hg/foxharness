@@ -94,14 +94,19 @@ func TestTUIInteractiveTargetCompositionPreservesMultiRunSessionAndCapabilitySur
 	if got, want := strings.Join(restrictedNames, ","), "read_file"; got != want {
 		t.Fatalf("restricted tool surface = %q, want %q", got, want)
 	}
+	/* A main-surface allowed-tools restriction filters the tool registry only;
+	 * the model still receives the full baseline base prompt. */
 	restrictedPrompt := restrictedObservation.messages[0].Content
-	for _, forbidden := range []string{"Use edit_file", "Use write_file", "Use bash", "Asking the User"} {
-		if strings.Contains(restrictedPrompt, forbidden) {
-			t.Fatalf("restricted system prompt contains %q:\n%s", forbidden, restrictedPrompt)
+	for _, want := range []string{
+		"TARGET_TUI_PROJECT_INSTRUCTION",
+		"Prefer reading files before editing them.",
+		"After changing code, verify with the smallest relevant test command.",
+		"Treat @path tokens in user messages as project-relative file references; read referenced files before making claims or edits about them.",
+		"Asking the User",
+	} {
+		if !strings.Contains(restrictedPrompt, want) {
+			t.Fatalf("restricted system prompt omitted baseline guidance %q:\n%s", want, restrictedPrompt)
 		}
-	}
-	if !strings.Contains(restrictedPrompt, "Use read_file") {
-		t.Fatalf("restricted system prompt omitted read_file guidance:\n%s", restrictedPrompt)
 	}
 	denyAll, err := startup.Application.Run(context.Background(), app.RunCommand{
 		Prompt: "denyall", AllowedTools: []string{},
@@ -112,9 +117,6 @@ func TestTUIInteractiveTargetCompositionPreservesMultiRunSessionAndCapabilitySur
 	denyAllObservation := lastTUIObservationForPrompt(t, model.snapshot(), "denyall")
 	if len(denyAllObservation.definitions) != 0 {
 		t.Fatalf("deny-all tool surface = %#v, want no advertised tools", denyAllObservation.definitions)
-	}
-	if strings.Contains(denyAllObservation.messages[0].Content, "Use read_file") || strings.Contains(denyAllObservation.messages[0].Content, "Asking the User") {
-		t.Fatalf("deny-all system prompt advertised tools:\n%s", denyAllObservation.messages[0].Content)
 	}
 	if startup.Registry == nil || startup.Executor == nil || startup.SessionLogDir != initial.Session.Directory {
 		t.Fatalf("startup capabilities = registry:%v executor:%v log:%q state:%#v", startup.Registry != nil, startup.Executor != nil, startup.SessionLogDir, initial)

@@ -539,9 +539,9 @@ func (c *tuiRuntimeComposition) newContext(_ context.Context, assembly foxruntim
 	if err != nil {
 		return nil, nil, err
 	}
-	/* Prompt guidance scoping follows the run's resolved tool restriction
-	 * (see ContextCollectionRequest.RestrictedTools), so unrestricted runs
-	 * keep the full base prompt. */
+	/* TUI runs always keep the full base prompt; allowed-tools restrictions
+	 * only filter the run's tool surface (see
+	 * ContextCollectionRequest.RestrictedTools). */
 	collector := foxruntime.NewPromptCollector(c.workDir).
 		WithInteractiveAsk(true).
 		WithMemory(resource.memory.WorkingMemoryPath()).
