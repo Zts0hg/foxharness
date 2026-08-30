@@ -75,6 +75,46 @@ func TestContextControllerTurnOneWithoutThinkingKeepsBothDecisionPoints(t *testi
 	_ = agentSession.FinishRun(scope)
 }
 
+/* TestContextControllerTurnOneThinkingKeepsPrePrepareNoticesOutOfRunLocal pins
+ * the baseline first-turn shape with thinking: the notices the engine
+ * requested before the thinking prepare stay out of the run-local decision's
+ * input, because the baseline appended its turn-one reminders after both
+ * first-turn compaction decisions had run. */
+func TestContextControllerTurnOneThinkingKeepsPrePrepareNoticesOutOfRunLocal(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store)
+	agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	scope, _ := agentSession.BeginRun(context.Background(), RunSpec{Prompt: "work"})
+	compactor := &recordingContextCompactor{}
+	controller, _ := agentSession.NewContextController(scope, staticContextCollector("system"), compactor)
+	if err := controller.RequestChanges(context.Background(), []engine.ConversationChange{{
+		Kind: engine.ConversationAppendContextMessage, Source: engine.ConversationSourceReminder, Turn: 1,
+		Message: engine.Message{Role: engine.RoleUser, Content: "turn-one pre-prepare notice"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	thinking := ordinaryConversationRequest("work")
+	thinking.Phase = engine.PhaseThinking
+	if _, err := controller.Prepare(context.Background(), thinking); err != nil {
+		t.Fatal(err)
+	}
+	action := ordinaryConversationRequest("work")
+	projection, err := controller.Prepare(context.Background(), action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compactor.requests) < 2 {
+		t.Fatalf("compaction requests = %#v", compactor.requests)
+	}
+	if slices.Contains(messageContents(compactor.requests[1].Messages), "turn-one pre-prepare notice") {
+		t.Fatalf("run-local input carried the pre-prepare notice: %#v", compactor.requests[1].Messages)
+	}
+	if !slices.Contains(messageContents(projection.Context.Messages), "turn-one pre-prepare notice") {
+		t.Fatalf("projection lost the pre-prepare notice: %v", messageContents(projection.Context.Messages))
+	}
+	_ = agentSession.FinishRun(scope)
+}
+
 /* TestContextControllerPreTurnCompactionKeepsPreviousTurnNotices pins the
  * baseline pre-turn compaction input: it covers everything appended through
  * the end of the previous turn — including the previous turn's gate

@@ -232,7 +232,11 @@ func (c *ContextController) Prepare(ctx context.Context, request engine.Conversa
 
 	triggers := c.session.claimContextPreparation(c.scope.run.ID, request.Turn, request.Phase, request.Preparation)
 	compactions := make([]engine.ConversationCompaction, 0, len(triggers))
+	initialClaimed := false
 	for _, trigger := range triggers {
+		if trigger == ContextCompactionInitialHistory {
+			initialClaimed = true
+		}
 		before := len(c.messages)
 		compaction, err := c.compact(ctx, request, trigger)
 		if err != nil {
@@ -253,9 +257,14 @@ func (c *ContextController) Prepare(ctx context.Context, request engine.Conversa
 		}
 	}
 	/* The projection the engine invoked now covers every pending notice, so
-	 * the next compaction decision may include them again. */
-	c.injected = make([]bool, len(c.messages))
-	c.injectedTurn = make([]int, len(c.messages))
+	 * the next compaction decision may include them again — except after the
+	 * durable session-history decision, whose run-local follow-up at the
+	 * first turn still excludes the notices that predated it, the way the
+	 * baseline appended its turn-one reminders after both decisions ran. */
+	if !initialClaimed {
+		c.injected = make([]bool, len(c.messages))
+		c.injectedTurn = make([]int, len(c.messages))
+	}
 	run := c.scope.resolved.Snapshot()
 	return engine.ConversationProjection{
 		Context: engine.RunContext{
