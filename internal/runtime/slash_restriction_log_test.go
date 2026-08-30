@@ -40,3 +40,28 @@ func TestRestrictedRunLogsSlashRestriction(t *testing.T) {
 		t.Fatalf("unrestricted run announced a slash restriction:\n%s", logs.String()[before:])
 	}
 }
+
+/* TestChildRunAdmissionDoesNotLogSlashRestriction verifies that the baseline
+ * slash-restriction admission line stays a main-run announcement: child runs
+ * always carry a non-nil allowed-tools snapshot and must stay silent. */
+func TestChildRunAdmissionDoesNotLogSlashRestriction(t *testing.T) {
+	logs := captureDiagnosticLog(t)
+	harness, err := NewRuntimeHarness(newLifecycleStore(), successfulHarnessDependencies(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := harness.CreateSession(context.Background(), ChildRun, SessionOptions{WorkDir: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns := 1
+	if _, err := child.Run(context.Background(), RunSpec{
+		Prompt: "delegate", Model: "model-a", ProviderProtocol: "messages",
+		MaxTurns: &turns, AllowedTools: []string{"bash", "read_file"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "[slash] restricting next run") {
+		t.Fatalf("child run announced a slash restriction:\n%s", logs.String())
+	}
+}

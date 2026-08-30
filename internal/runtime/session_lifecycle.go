@@ -202,7 +202,10 @@ func (s *AgentSession) BeginRun(ctx context.Context, spec RunSpec) (*RunScope, e
 	if err != nil {
 		return nil, err
 	}
-	if spec.AllowedTools != nil {
+	/* The admission line announces a user-requested main-run slash
+	 * restriction. Child runs always admit a non-nil capability snapshot, so
+	 * announcing it would mislabel every delegation as a slash restriction. */
+	if spec.AllowedTools != nil && s.profile.Snapshot().Name != ChildRun {
 		log.Printf("[slash] restricting next run to allowed tools: %v", resolved.AllowedTools())
 	}
 	if err := s.acquire(ctx); err != nil {
