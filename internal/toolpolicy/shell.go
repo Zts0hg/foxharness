@@ -86,8 +86,21 @@ func AssessSynchronousShell(command string) (synchronous bool, parsed bool) {
 			synchronous = false
 		case *syntax.CoprocClause:
 			synchronous = false
+		case *syntax.DeclClause:
+			// declare, export, typeset, and local set arbitrary environment
+			// state — including PATH, which decides what every later command
+			// word resolves to — so no declaration can be proven synchronous.
+			synchronous = false
 		case *syntax.CallExpr:
 			sawCall = true
+			if len(n.Assigns) > 0 && !inertAssignments(n.Assigns) {
+				// An assignment prefix could name PATH, a loader variable, or
+				// a tool's own configuration channel, any of which changes
+				// what the command executes, so only provably inert names
+				// pass.
+				synchronous = false
+				break
+			}
 			if len(n.Args) == 0 || !synchronousInvocation(n) {
 				synchronous = false
 			}
@@ -95,6 +108,26 @@ func AssessSynchronousShell(command string) (synchronous bool, parsed bool) {
 		return true
 	})
 	return synchronous && sawCall, true
+}
+
+// inertAssignments reports whether every assignment prefix names a variable
+// that cannot change what the command resolves or executes: locale, terminal
+// geometry, and color selection. Everything else fails closed.
+func inertAssignments(assigns []*syntax.Assign) bool {
+	for _, assign := range assigns {
+		if assign.Name == nil {
+			return false
+		}
+		name := strings.ToLower(assign.Name.Value)
+		switch {
+		case name == "columns", name == "lines", name == "no_color",
+			name == "term", name == "tz", name == "lang":
+		case strings.HasPrefix(name, "lc_"):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // synchronousInvocation reports whether one simple command provably stays
@@ -132,11 +165,12 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 // executes no other program. Git runs configuration-defined aliases, diff
 // helpers, and hooks, so only its read-only subcommands are provable, and an
 // injected -c or --config-env definition before the subcommand could turn
-// even those into arbitrary shell execution.
+// even those into arbitrary shell execution. Global options that take a
+// separate value consume that value so it is not mistaken for the subcommand.
 func gitInvocationIsSynchronous(args []*syntax.Word) bool {
 	subcommand := ""
-	for _, arg := range args[1:] {
-		text := literalWord(arg)
+	for index := 1; index < len(args); index++ {
+		text := literalWord(args[index])
 		if text == "" {
 			// A word that is not a plain literal could carry an injected
 			// configuration definition, so the gate fails closed.
@@ -153,9 +187,41 @@ func gitInvocationIsSynchronous(args []*syntax.Word) bool {
 		}
 		if !strings.HasPrefix(text, "-") {
 			subcommand = strings.ToLower(text)
+			continue
+		}
+		if gitOptionsTakingSeparateValue[text] {
+			index++
 		}
 	}
+	if subcommand == "" {
+		// A bare option query such as --exec-path or --version runs no
+		// subcommand; only the known passive queries are provable.
+		return gitBareQueries(args)
+	}
 	return gitArgsAllowed([]string{subcommand})
+}
+
+// gitOptionsTakingSeparateValue lists git global options whose value is a
+// separate argument word.
+var gitOptionsTakingSeparateValue = map[string]bool{
+	"-C": true, "--git-dir": true, "--namespace": true,
+	"--super-prefix": true, "--work-tree": true,
+}
+
+// gitBareQueries reports whether a subcommand-less git invocation consists
+// only of passive option queries that print information and execute nothing.
+func gitBareQueries(args []*syntax.Word) bool {
+	passive := map[string]bool{
+		"--exec-path": true, "--help": true, "--html-path": true,
+		"--info-path": true, "--man-page": true, "--version": true,
+	}
+	for index := 1; index < len(args); index++ {
+		text := literalWord(args[index])
+		if text == "" || !passive[text] {
+			return false
+		}
+	}
+	return true
 }
 
 // wrapperCommands lists commands that execute another program named in their
@@ -163,14 +229,16 @@ func gitInvocationIsSynchronous(args []*syntax.Word) bool {
 // escapes the killed process group exactly as if named directly. busybox and
 // toybox are multi-call binaries whose first argument names the program.
 var wrapperCommands = map[string]bool{
-	"arch": true, "busybox": true, "chroot": true, "chrt": true,
-	"caffeinate": true, "doas": true, "find": true, "gfind": true,
-	"gnice": true, "gruncon": true, "gstdbuf": true, "ionice": true,
-	"ltrace": true, "nice": true, "nsenter": true, "runcon": true,
+	"arch": true, "bwrap": true, "busybox": true, "caffeinate": true,
+	"chroot": true, "chrt": true, "doas": true, "firejail": true,
+	"find": true, "flock": true, "gfind": true, "gnice": true,
+	"gruncon": true, "gstdbuf": true, "ionice": true, "ltrace": true,
+	"nice": true, "nsenter": true, "numactl": true, "perf": true,
+	"proxychains": true, "proxychains4": true, "runcon": true,
 	"runuser": true, "script": true, "setarch": true, "setpriv": true,
-	"strace": true, "sudo": true, "stdbuf": true, "su": true,
-	"taskset": true, "time": true, "toybox": true, "unshare": true,
-	"valgrind": true, "watch": true,
+	"sshpass": true, "strace": true, "sudo": true, "stdbuf": true,
+	"su": true, "systemd-nspawn": true, "taskset": true, "time": true,
+	"toybox": true, "unshare": true, "valgrind": true, "watch": true,
 }
 
 // interpreterNamePrefixes lists interpreter and shell families whose
@@ -183,15 +251,15 @@ var wrapperCommands = map[string]bool{
 // Short generic names (sh, env, open, trap) stay exact matches in
 // detachedShellCommands so unrelated words sharing the prefix stay usable.
 var interpreterNamePrefixes = []string{
-	"awk", "cabal", "ccl", "clisp", "clojure", "csc", "csi", "dart",
-	"dotnet", "elixir", "emacs", "erb", "erl", "escript", "ghc",
-	"gnuplot", "gdb", "groovy", "guile", "ipython", "irb", "java",
-	"jshell", "jrunscript", "julia", "kotlin", "ksh", "lua", "lisp",
-	"lldb", "mono", "mysql", "node", "npm", "npx", "nvim", "octave",
-	"perl", "php", "pnpm", "psql", "python", "pypy", "pwsh", "racket",
-	"runghc", "runhaskell", "ruby", "scala", "scheme", "sqlite",
-	"stack", "swift", "tclsh", "tsx", "ts-node", "vim", "wish", "yarn",
-	"zsh",
+	"awk", "bash", "cabal", "ccl", "clisp", "clojure", "csc", "csh",
+	"csi", "dash", "dart", "dotnet", "elixir", "emacs", "erb", "erl",
+	"escript", "ghc", "gnuplot", "gdb", "groovy", "guile", "ipython",
+	"irb", "java", "jshell", "jrunscript", "julia", "kotlin", "ksh",
+	"lua", "lisp", "lldb", "mono", "mysql", "node", "npm", "npx",
+	"nvim", "octave", "perl", "php", "pnpm", "psql", "python", "pypy",
+	"pwsh", "racket", "runghc", "runhaskell", "ruby", "scala",
+	"scheme", "sqlite", "stack", "swift", "tclsh", "tsx", "ts-node",
+	"vim", "wish", "yarn", "zsh",
 }
 
 // isDetachedOrInterpreterCommand reports whether a base command name is a
@@ -336,25 +404,31 @@ func baseCommandName(name string) string {
 // prove synchronous, so a missed name weakens the cancellation guarantee and
 // must be added as soon as a family is identified.
 var detachedShellCommands = map[string]bool{
-	".": true, "abduco": true, "at": true, "atq": true, "atrm": true,
-	"autossh": true, "bash": true, "batch": true, "bg": true,
-	"bmake": true, "builtin": true, "bun": true, "command": true,
-	"coproc": true, "csh": true, "crontab": true, "daemon": true,
-	"dash": true, "deno": true, "disown": true, "dtach": true,
-	"elvish": true, "env": true, "es": true, "eval": true, "exec": true,
-	"expect": true, "fish": true, "gawk": true, "ghci": true,
-	"gio": true, "gmake": true, "jruby": true, "jjs": true, "ksh": true,
-	"launchctl": true, "make": true, "mapfile": true, "mawk": true,
-	"mksh": true, "nawk": true, "nodejs": true, "nohup": true,
-	"nu": true, "octave": true, "oksh": true, "open": true,
-	"osascript": true, "osh": true, "posh": true, "powershell": true,
+	".": true, "abduco": true, "anacron": true, "at": true, "atq": true,
+	"atrm": true, "autossh": true, "bash": true, "batch": true,
+	"bg": true, "bmake": true, "brew": true, "builtin": true,
+	"bun": true, "byobu": true, "command": true, "coproc": true,
+	"crond": true, "crontab": true, "csh": true, "daemon": true,
+	"dash": true,
+	"deno": true, "disown": true, "docker": true, "dtach": true,
+	"dvtm": true, "elvish": true, "env": true, "es": true, "eval": true,
+	"exec": true, "ex": true, "expect": true, "fish": true, "gawk": true,
+	"ghci": true, "gio": true, "gmake": true, "jruby": true, "jjs": true,
+	"ksh": true, "kubectl": true, "launchctl": true, "make": true,
+	"mapfile": true, "mawk": true, "mksh": true, "mosh": true,
+	"nawk": true, "nodejs": true, "nohup": true, "nu": true,
+	"octave": true, "oksh": true, "open": true, "osascript": true,
+	"osh": true, "podman": true, "posh": true, "powershell": true,
 	"psql": true, "pwsh": true, "pythonw": true, "r": true, "rc": true,
-	"readarray": true, "rscript": true, "sbcl": true, "screen": true,
-	"schtasks": true, "setsid": true, "sh": true, "shopt": true,
-	"source": true, "ssh": true, "start-stop-daemon": true,
-	"systemd-run": true, "tcsh": true, "timeout": true, "tmux": true,
-	"trap": true, "wish": true, "xdg-open": true, "xonsh": true,
-	"xargs": true,
+	"readarray": true, "rsh": true, "rsync": true, "rscript": true,
+	"rvim": true, "rview": true, "sbcl": true, "scp": true,
+	"screen": true, "schtasks": true, "setsid": true, "sftp": true,
+	"sh": true, "shopt": true, "source": true, "ssh": true,
+	"start-stop-daemon": true, "systemctl": true, "systemd-run": true,
+	"tcsh": true, "timeout": true, "tmux": true, "trap": true,
+	"vi": true, "view": true, "wish": true, "xdg-open": true,
+	"xargs": true, "zellij": true,
+	"xonsh": true,
 	"genv":  true, "gnohup": true, "gtimeout": true, "gxargs": true,
 	"yash": true,
 	"zsh":  true,
