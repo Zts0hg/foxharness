@@ -160,6 +160,10 @@ type ConversationChange struct {
 	Kind    ConversationChangeKind
 	Source  ConversationChangeSource
 	Message schema.Message
+	/* Turn records the engine turn that produced the change, so the
+	 * conversation can attribute injections to their producing turn. Zero
+	 * means the producing turn is unknown. */
+	Turn int
 }
 
 /* ConversationPreparation identifies why one model-visible projection is requested. */
@@ -390,7 +394,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 			return e.fail(emit, outcome, "policy", err)
 		}
 		emitInjectionFacts(emit, turn, beforeTurn.Changes)
-		if err := e.requestChanges(ctx, beforeTurn.Changes); err != nil {
+		if err := e.requestChanges(ctx, turn, beforeTurn.Changes); err != nil {
 			return e.fail(emit, outcome, "conversation", err)
 		}
 		if input.Thinking {
@@ -408,7 +412,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 				return e.fail(emit, outcome, "provider", fmt.Errorf("Thinking 阶段生成失败: %w", err))
 			}
 			outcome.Usage = addUsage(outcome.Usage, thinking.Usage)
-			if err := e.requestChanges(ctx, []ConversationChange{{
+			if err := e.requestChanges(ctx, turn, []ConversationChange{{
 				Kind:    ConversationAppendContextMessage,
 				Source:  ConversationSourceThinking,
 				Message: schema.NormalizeMessage(thinking.Message),
@@ -446,7 +450,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		outcome.FinishReason = modelResult.FinishReason
 		outcome.Usage = addUsage(outcome.Usage, modelResult.Usage)
 
-		if err := e.requestChanges(ctx, []ConversationChange{{
+		if err := e.requestChanges(ctx, turn, []ConversationChange{{
 			Kind:    ConversationAppendMessage,
 			Message: schema.NormalizeMessage(modelResult.Message),
 		}}); err != nil {
@@ -460,7 +464,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 			return e.fail(emit, outcome, "policy", err)
 		}
 		emitInjectionFacts(emit, turn, decision.Changes)
-		if err := e.requestChanges(ctx, decision.Changes); err != nil {
+		if err := e.requestChanges(ctx, turn, decision.Changes); err != nil {
 			return e.fail(emit, outcome, "conversation", err)
 		}
 		if decision.Terminal != nil {
@@ -481,7 +485,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 				return e.fail(emit, outcome, "policy", err)
 			}
 			emitInjectionFacts(emit, turn, toolDecision.Changes)
-			if err := e.requestChanges(ctx, toolDecision.Changes); err != nil {
+			if err := e.requestChanges(ctx, turn, toolDecision.Changes); err != nil {
 				return e.fail(emit, outcome, "conversation", err)
 			}
 		}
@@ -565,7 +569,7 @@ func (e *AgentEngine) executeTools(
 			},
 		})
 	}
-	if err := e.requestChanges(ctx, changes); err != nil {
+	if err := e.requestChanges(ctx, turn, changes); err != nil {
 		return state, err
 	}
 	return state, ctx.Err()
@@ -589,13 +593,16 @@ func emitInjectionFacts(emit func(Fact), turn int, changes []ConversationChange)
 	}
 }
 
-func (e *AgentEngine) requestChanges(ctx context.Context, changes []ConversationChange) error {
+/* requestChanges commits one ordered set of changes stamped with the turn
+ * that produced them, so receivers can attribute injections across turns. */
+func (e *AgentEngine) requestChanges(ctx context.Context, turn int, changes []ConversationChange) error {
 	if len(changes) == 0 {
 		return nil
 	}
 	cloned := make([]ConversationChange, len(changes))
 	for index, change := range changes {
 		change.Message = cloneMessage(change.Message)
+		change.Turn = turn
 		cloned[index] = change
 	}
 	return e.conversation.RequestChanges(ctx, cloned)

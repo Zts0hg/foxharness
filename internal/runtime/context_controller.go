@@ -103,6 +103,11 @@ type ContextController struct {
 	 * input can exclude them the way the baseline did by appending its notices
 	 * after the compaction ran. */
 	injected []bool
+	/* injectedTurn mirrors injected one-to-one and records the producing turn
+	 * each notice carries, so the pre-turn compaction input can exclude only
+	 * the current turn's notices the way the baseline loop carried the
+	 * previous turn's notices into its turn-start decision. */
+	injectedTurn []int
 	/* compactedTurn records the turn that already performed a run-local
 	 * compaction, mirroring the baseline justCompacted flag: the turn's budget
 	 * check is suppressed once that compaction committed. */
@@ -250,6 +255,7 @@ func (c *ContextController) Prepare(ctx context.Context, request engine.Conversa
 	/* The projection the engine invoked now covers every pending notice, so
 	 * the next compaction decision may include them again. */
 	c.injected = make([]bool, len(c.messages))
+	c.injectedTurn = make([]int, len(c.messages))
 	run := c.scope.resolved.Snapshot()
 	return engine.ConversationProjection{
 		Context: engine.RunContext{
@@ -277,8 +283,14 @@ func (c *ContextController) RequestChanges(ctx context.Context, changes []engine
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	/* The engine requests a turn's policy notices before that turn's first
+	 * prepare, so a run's first notices arrive before any preparation and
+	 * must initialize the projection themselves, the way the baseline
+	 * carried its turn-one reminders on top of the built initial context. */
 	if !c.initialized {
-		return errors.New("runtime context is not prepared")
+		if err := c.initialize(ctx); err != nil {
+			return err
+		}
 	}
 	for _, change := range changes {
 		switch change.Kind {
@@ -300,6 +312,7 @@ func (c *ContextController) RequestChanges(ctx context.Context, changes []engine
 		}
 		c.messages = append(c.messages, message)
 		c.injected = append(c.injected, change.Kind == engine.ConversationAppendContextMessage)
+		c.injectedTurn = append(c.injectedTurn, change.Turn)
 	}
 	return nil
 }
@@ -316,12 +329,39 @@ func (c *ContextController) pendingInjections() []engine.Message {
 	return notices
 }
 
+/* pendingInjectionsForTurn returns the pending transient notices the given
+ * turn produced, in conversation order. A notice with an unknown producing
+ * turn is attributed to every turn, so it stays excluded wherever the turn's
+ * own notices are excluded. */
+func (c *ContextController) pendingInjectionsForTurn(turn int) []engine.Message {
+	notices := make([]engine.Message, 0, len(c.messages))
+	for index, message := range c.messages {
+		if c.injected[index] && (c.injectedTurn[index] == 0 || c.injectedTurn[index] == turn) {
+			notices = append(notices, message)
+		}
+	}
+	return notices
+}
+
 /* preparedMessages returns the projection without the pending transient
- * notices, which the baseline appends only after the pre-turn compaction. */
+ * notices, which the baseline appends only after its compaction decisions. */
 func (c *ContextController) preparedMessages() []engine.Message {
 	messages := make([]engine.Message, 0, len(c.messages))
 	for index, message := range c.messages {
 		if !c.injected[index] {
+			messages = append(messages, message)
+		}
+	}
+	return messages
+}
+
+/* messagesWithoutTurnNotices returns the projection without the notices the
+ * given turn produced, keeping everything appended through the end of the
+ * previous turn inside the projection. */
+func (c *ContextController) messagesWithoutTurnNotices(turn int) []engine.Message {
+	messages := make([]engine.Message, 0, len(c.messages))
+	for index, message := range c.messages {
+		if !c.injected[index] || (c.injectedTurn[index] != 0 && c.injectedTurn[index] != turn) {
 			messages = append(messages, message)
 		}
 	}
@@ -355,6 +395,7 @@ func (c *ContextController) initialize(ctx context.Context) error {
 	}
 	c.messages = projectStoredContext(c.systemPrompt, c.session.record.TranscriptPath(), state, records)
 	c.injected = make([]bool, len(c.messages))
+	c.injectedTurn = make([]int, len(c.messages))
 	c.initialized = true
 	return nil
 }
@@ -367,11 +408,22 @@ func (c *ContextController) compact(ctx context.Context, request engine.Conversa
 	if err != nil {
 		return nil, err
 	}
-	/* The pre-turn decision compacts the projection the previous prepare
-	 * published; the notices appended for this turn follow the compaction. */
-	messages := c.messages
-	if trigger == ContextCompactionPreTurn {
+	/* Each decision compacts the projection the baseline fed the matching
+	 * decision point: the durable session-history decision sees the clean
+	 * stored projection, the run-local decision sees everything through the
+	 * end of the previous turn, and the recovery decision sees the live
+	 * projection. The notices each input excluded follow the compaction. */
+	var messages []engine.Message
+	var reappend []engine.Message
+	switch trigger {
+	case ContextCompactionInitialHistory:
 		messages = c.preparedMessages()
+		reappend = c.pendingInjections()
+	case ContextCompactionPreTurn:
+		messages = c.messagesWithoutTurnNotices(request.Turn)
+		reappend = c.pendingInjectionsForTurn(request.Turn)
+	default:
+		messages = c.messages
 	}
 	proposal, err := c.compactor.Compact(ctx, ContextCompactionRequest{
 		Trigger: trigger, Messages: cloneContextMessages(messages),
@@ -392,7 +444,6 @@ func (c *ContextController) compact(ctx context.Context, request engine.Conversa
 	if !proposal.Changed {
 		return nil, nil
 	}
-	pending := c.pendingInjections()
 	if proposal.CompactState != nil {
 		if err := c.session.commitCompactState(proposal.CompactState); err != nil {
 			return nil, c.wrapInitialCompactionError(trigger, err)
@@ -405,7 +456,7 @@ func (c *ContextController) compact(ctx context.Context, request engine.Conversa
 	} else {
 		c.messages = cloneContextMessages(proposal.Messages)
 	}
-	c.messages = append(c.messages, pending...)
+	c.messages = append(c.messages, reappend...)
 	return &engine.ConversationCompaction{Trigger: string(trigger)}, nil
 }
 
