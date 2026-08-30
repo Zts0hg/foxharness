@@ -175,7 +175,10 @@ func (s *AgentSession) runAssembled(
 	input := engine.RunInput{
 		Prompt: assembly.Spec.Prompt, MaxTurns: assembly.Spec.MaxTurns, Thinking: assembly.Spec.Thinking,
 	}
-	return engine.NewAgentEngine(model, tools, conversation, policy, observer).Run(scope.Context(), input)
+	diagnostics := newDiagnosticLogger(assembly)
+	return engine.NewAgentEngine(
+		diagnostics.wrapModel(model), tools, conversation, policy, diagnostics.wrapObserver(observer),
+	).Run(scope.Context(), input)
 }
 
 func failedAssemblyOutcome(ctx context.Context, observer *runtimeObserver, kind string, err error) (engine.RunOutcome, error) {

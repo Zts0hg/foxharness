@@ -102,6 +102,8 @@ func (e *Executor) Execute(ctx context.Context, frozen engine.ToolSnapshot, call
 			result.ModelContent = persisted[index].Preview
 			result.ObserverContent = truncateObserverOutput(full[index])
 			result.ArtifactPath = persisted[index].FilePath
+		} else {
+			result.ObserverContent = truncateObserverOutput(result.ObserverContent)
 		}
 		e.seenIDs[result.CallID] = true
 	}

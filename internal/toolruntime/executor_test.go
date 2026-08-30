@@ -32,6 +32,41 @@ func TestExecutorPreservesSmallStructuredResults(t *testing.T) {
 	}
 }
 
+/* TestExecutorBoundsObserverPreviewForUnpersistedResults pins the
+ * observer-visible preview of a tool result to the baseline 800-rune bound
+ * even when the result is small enough to stay unpersisted. */
+func TestExecutorBoundsObserverPreviewForUnpersistedResults(t *testing.T) {
+	original := strings.Repeat("x", 5_000)
+	executor := New([]toolexec.Capability{{
+		Definition: schema.ToolDefinition{Name: "inspect"},
+		Execute: func(context.Context, schema.ToolCall) engine.ToolExecutionResult {
+			return engine.ToolExecutionResult{FullContent: original, ModelContent: original, ObserverContent: original}
+		},
+	}}, toolresult.OSFileSystem{}, t.TempDir())
+	snapshot, err := executor.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := executor.Execute(context.Background(), snapshot, []schema.ToolCall{{ID: "call-preview", Name: "inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := batch.Results[0]
+	if len(result.FullContent) != len(original) || result.ArtifactPath != "" {
+		t.Fatalf("unpersisted result forms = %#v", result)
+	}
+	if result.ModelContent != original {
+		t.Fatalf("model content must keep the full unpersisted output, length = %d", len(result.ModelContent))
+	}
+	runes := []rune(result.ObserverContent)
+	if len(runes) <= observerOutputLimit || !strings.Contains(result.ObserverContent, "已截断") {
+		t.Fatalf("observer preview = %d runes, want the bounded preview with a truncation marker", len(runes))
+	}
+	if want := strings.Repeat("x", observerOutputLimit); !strings.HasPrefix(string(runes), want) {
+		t.Fatalf("observer preview does not start with the first %d runes", observerOutputLimit)
+	}
+}
+
 func TestExecutorCapsPersistsAndSeparatesLargeResultForms(t *testing.T) {
 	original := strings.Repeat("x", toolresult.MaxToolResultBytes+10_000)
 	dir := t.TempDir()

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,9 +90,43 @@ func (j *Journal) RecordArtifact(_ context.Context, fact foxruntime.RuntimeFact)
 			payload["turn"] = fact.Fact.Turn
 		}
 		return j.transcript.AppendRun(fact.RunID, "context_compacted", payload)
+	case engine.FactSystemReminder:
+		payload := map[string]any{
+			"turn":    fact.Fact.Turn,
+			"message": stripRuntimeNoticePrefix(fact.Fact.Content),
+		}
+		switch fact.Fact.Name {
+		case string(engine.ConversationSourceNextTurnReminder):
+			payload["source"] = "next_turn_reminders"
+		case string(engine.ConversationSourceCompletionGate):
+			payload["source"] = "completion_gate"
+		case string(engine.ConversationSourceTODOGate):
+			payload["source"] = "todo_completion_gate"
+		}
+		return j.transcript.AppendRun(fact.RunID, "system_reminder_injected", payload)
+	case engine.FactErrorRecovery:
+		payload := map[string]any{"prompt": stripRuntimeNoticePrefix(fact.Fact.Content)}
+		return j.transcript.AppendRun(fact.RunID, "error_recovery_injected", payload)
 	default:
 		return nil
 	}
+}
+
+/* runtimeNoticePrefixes are the presentation prefixes the engine adds to
+ * policy-sourced conversation injections; transcript records store the bare
+ * notice text. */
+var runtimeNoticePrefixes = []string{
+	"[Runtime System Reminder]\n\n",
+	"[Runtime System Notice]\n\n",
+}
+
+func stripRuntimeNoticePrefix(content string) string {
+	for _, prefix := range runtimeNoticePrefixes {
+		if strings.HasPrefix(content, prefix) {
+			return strings.TrimPrefix(content, prefix)
+		}
+	}
+	return content
 }
 
 /* RecordTelemetry finalizes run-level metrics and tracing on the canonical terminal fact. */
@@ -102,6 +137,7 @@ func (j *Journal) RecordTelemetry(_ context.Context, fact foxruntime.RuntimeFact
 	if fact.Fact.Kind == engine.FactToolCall {
 		j.startTool(fact.Fact)
 	}
+	j.annotateInjection(fact.Fact)
 	if fact.Fact.Kind != engine.FactRunCompleted && fact.Fact.Kind != engine.FactRunError {
 		return j.takeErrors()
 	}
@@ -205,6 +241,28 @@ func (j *Journal) startTool(fact engine.Fact) {
 	j.toolCalls[fact.CallID] = &toolObservation{
 		turn: fact.Turn, started: time.Now(),
 		span: j.tracer.StartSpan(turn.span.ID(), "tool_call", map[string]any{"tool": fact.Name, "tool_call_id": fact.CallID}),
+	}
+}
+
+/* annotateInjection records the turn-span annotation for one injected reminder
+ * or recovery notice, mirroring the baseline injection tracing. */
+func (j *Journal) annotateInjection(fact engine.Fact) {
+	switch fact.Kind {
+	case engine.FactErrorRecovery:
+		attributes := map[string]any{"turn": fact.Turn}
+		j.tracer.Annotate(j.turn(fact.Turn).span.ID(), "error_recovery_injected", attributes)
+	case engine.FactSystemReminder:
+		attributes := map[string]any{"turn": fact.Turn}
+		switch fact.Name {
+		case string(engine.ConversationSourceReminder), string(engine.ConversationSourceNextTurnReminder):
+		default:
+			return
+		}
+		if fact.Name == string(engine.ConversationSourceNextTurnReminder) {
+			attributes["source"] = "next_turn_reminders"
+		}
+		j.tracer.Annotate(j.turn(fact.Turn).span.ID(), "system_reminder_injected", attributes)
+	default:
 	}
 }
 

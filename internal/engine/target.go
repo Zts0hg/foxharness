@@ -255,6 +255,10 @@ const (
 	FactThinking FactKind = "thinking"
 	/* FactContextCompacted marks a committed context reduction before model invocation. */
 	FactContextCompacted FactKind = "compaction"
+	/* FactSystemReminder carries one system reminder injected into the conversation. */
+	FactSystemReminder FactKind = "system_reminder_injected"
+	/* FactErrorRecovery carries one error recovery notice injected into the conversation. */
+	FactErrorRecovery FactKind = "error_recovery_injected"
 	/* FactToolCall carries one ordered model-requested tool invocation. */
 	FactToolCall FactKind = "tool_call"
 	/* FactToolResult carries one ordered correlated tool result. */
@@ -377,6 +381,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		if err != nil {
 			return e.fail(emit, outcome, "policy", err)
 		}
+		emitInjectionFacts(emit, turn, beforeTurn.Changes)
 		if err := e.requestChanges(ctx, beforeTurn.Changes); err != nil {
 			return e.fail(emit, outcome, "conversation", err)
 		}
@@ -427,7 +432,9 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		if err != nil {
 			return e.fail(emit, outcome, "provider", fmt.Errorf("模型生成失败: %w", err))
 		}
-		outcome.FinalMessage = modelResult.Message.Content
+		if modelResult.Message.Content != "" {
+			outcome.FinalMessage = modelResult.Message.Content
+		}
 		outcome.FinishReason = modelResult.FinishReason
 		outcome.Usage = addUsage(outcome.Usage, modelResult.Usage)
 
@@ -444,6 +451,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		if err != nil {
 			return e.fail(emit, outcome, "policy", err)
 		}
+		emitInjectionFacts(emit, turn, decision.Changes)
 		if err := e.requestChanges(ctx, decision.Changes); err != nil {
 			return e.fail(emit, outcome, "conversation", err)
 		}
@@ -464,6 +472,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 			if err != nil {
 				return e.fail(emit, outcome, "policy", err)
 			}
+			emitInjectionFacts(emit, turn, toolDecision.Changes)
 			if err := e.requestChanges(ctx, toolDecision.Changes); err != nil {
 				return e.fail(emit, outcome, "conversation", err)
 			}
@@ -552,6 +561,24 @@ func (e *AgentEngine) executeTools(
 		return state, err
 	}
 	return state, ctx.Err()
+}
+
+/* emitInjectionFacts publishes the canonical injection observations for one
+ * ordered set of policy-sourced context proposals. */
+func emitInjectionFacts(emit func(Fact), turn int, changes []ConversationChange) {
+	for _, change := range changes {
+		switch change.Source {
+		case ConversationSourceRecovery:
+			emit(Fact{Kind: FactErrorRecovery, Turn: turn, Content: change.Message.Content})
+		case ConversationSourceReminder:
+			emit(Fact{Kind: FactSystemReminder, Turn: turn, Name: string(change.Source), Content: change.Message.Content})
+		case ConversationSourceNextTurnReminder, ConversationSourceCompletionGate:
+			emit(Fact{Kind: FactSystemReminder, Turn: turn, Name: string(change.Source), Content: change.Message.Content})
+		case ConversationSourceTODOGate:
+			emit(Fact{Kind: FactSystemReminder, Turn: turn, Name: string(change.Source), Content: change.Message.Content})
+		default:
+		}
+	}
 }
 
 func (e *AgentEngine) requestChanges(ctx context.Context, changes []ConversationChange) error {

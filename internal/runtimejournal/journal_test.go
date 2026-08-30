@@ -391,3 +391,130 @@ func eventTypes(events []map[string]any) []string {
 }
 
 var _ = metrics.EventRunSummary
+
+/* TestJournalRecordsReminderAndRecoveryTranscriptEvents verifies that injected
+ * reminders and recovery notices regain their baseline transcript records and
+ * turn-span annotations. */
+func TestJournalRecordsReminderAndRecoveryTranscriptEvents(t *testing.T) {
+	root := t.TempDir()
+	runRoot := filepath.Join(root, "runs", "run-1")
+	if err := os.MkdirAll(runRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	assembly := foxruntime.RunAssembly{
+		Session: foxruntime.AgentSessionSnapshot{ID: "session-1", RootDir: root},
+		Run:     foxruntime.RunScopeSnapshot{RunID: "run-1", RootDir: runRoot},
+		Spec:    foxruntime.RunSnapshot{Prompt: "task"},
+	}
+	journal, err := New(assembly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	cases := []struct {
+		source      string
+		content     string
+		wantPayload map[string]any
+		annotate    bool
+		annotateExt map[string]any
+	}{
+		{
+			source:      string(engine.ConversationSourceReminder),
+			content:     "[Runtime System Reminder]\n\ngeneral reminder body",
+			wantPayload: map[string]any{"turn": 2, "message": "general reminder body"},
+			annotate:    true,
+		},
+		{
+			source:      string(engine.ConversationSourceNextTurnReminder),
+			content:     "[Runtime System Reminder]\n\nqueued reminder body",
+			wantPayload: map[string]any{"turn": 3, "message": "queued reminder body", "source": "next_turn_reminders"},
+			annotate:    true,
+			annotateExt: map[string]any{"source": "next_turn_reminders"},
+		},
+		{
+			source:      string(engine.ConversationSourceCompletionGate),
+			content:     "[Runtime System Reminder]\n\ngate body",
+			wantPayload: map[string]any{"turn": 4, "message": "gate body", "source": "completion_gate"},
+		},
+		{
+			source:      string(engine.ConversationSourceTODOGate),
+			content:     "[Runtime System Reminder]\n\ntodo gate body",
+			wantPayload: map[string]any{"turn": 5, "message": "todo gate body", "source": "todo_completion_gate"},
+		},
+	}
+	for index, testCase := range cases {
+		fact := engine.Fact{
+			Kind: engine.FactSystemReminder, Sequence: index + 2,
+			Turn: testCase.wantPayload["turn"].(int), Name: testCase.source, Content: testCase.content,
+		}
+		if err := journal.RecordArtifact(ctx, runtimeFact(assembly, fact)); err != nil {
+			t.Fatal(err)
+		}
+		if err := journal.RecordTelemetry(ctx, runtimeFact(assembly, fact)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recovery := engine.Fact{
+		Kind: engine.FactErrorRecovery, Sequence: 7,
+		Turn: 3, Content: "[Runtime System Notice]\n\nrecovery prompt body",
+	}
+	if err := journal.RecordArtifact(ctx, runtimeFact(assembly, recovery)); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTelemetry(ctx, runtimeFact(assembly, recovery)); err != nil {
+		t.Fatal(err)
+	}
+
+	events := readJSONLines[session.TranscriptEvent](t, filepath.Join(root, "transcript.jsonl"))
+	var reminderEvents []session.TranscriptEvent
+	for _, event := range events {
+		if event.Type == "system_reminder_injected" || event.Type == "error_recovery_injected" {
+			reminderEvents = append(reminderEvents, event)
+		}
+	}
+	if len(reminderEvents) != len(cases)+1 {
+		t.Fatalf("injection transcript events = %d, want %d: %#v", len(reminderEvents), len(cases)+1, reminderEvents)
+	}
+	for index, want := range cases {
+		event := reminderEvents[index]
+		if event.Type != "system_reminder_injected" {
+			t.Fatalf("event %d type = %q", index, event.Type)
+		}
+		payload, _ := event.Payload.(map[string]any)
+		for key, value := range want.wantPayload {
+			if numeric, ok := value.(int); ok {
+				value = float64(numeric)
+			}
+			if payload[key] != value {
+				t.Fatalf("event %d payload[%q] = %#v, want %#v (full: %#v)", index, key, payload[key], value, payload)
+			}
+		}
+	}
+	recoveryEvent := reminderEvents[len(cases)]
+	if recoveryEvent.Type != "error_recovery_injected" {
+		t.Fatalf("recovery event type = %q", recoveryEvent.Type)
+	}
+	if payload, _ := recoveryEvent.Payload.(map[string]any); payload["prompt"] != "recovery prompt body" {
+		t.Fatalf("recovery payload = %#v", payload)
+	}
+
+	annotations := readJSONLines[tracing.SpanEvent](t, filepath.Join(runRoot, "trace.jsonl"))
+	annotateNames := map[string][]map[string]any{}
+	for _, event := range annotations {
+		if event.Type == tracing.EventAnnotation {
+			annotateNames[event.Name] = append(annotateNames[event.Name], event.Attrs)
+		}
+	}
+	if got := len(annotateNames["system_reminder_injected"]); got != 2 {
+		t.Fatalf("system_reminder_injected annotations = %d, want 2", got)
+	}
+	if got := len(annotateNames["error_recovery_injected"]); got != 1 {
+		t.Fatalf("error_recovery_injected annotations = %d, want 1", got)
+	}
+	if got := annotateNames["error_recovery_injected"][0]["turn"]; got != float64(3) {
+		t.Fatalf("recovery annotation turn = %#v, want 3", got)
+	}
+	if got := annotateNames["system_reminder_injected"][1]["source"]; got != "next_turn_reminders" {
+		t.Fatalf("next-turn annotation source = %#v", got)
+	}
+}
