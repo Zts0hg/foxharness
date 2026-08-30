@@ -199,3 +199,25 @@ func TestAssessSynchronousShellRejectsEscapeWrapperAndExpansionForms(t *testing.
 		})
 	}
 }
+
+/* TestAssessShellRejectsFindWritePrimaries pins the read-only classification
+ * of the GNU find primaries that write their report to a file: -fls belongs
+ * to the same rejected class as -fprint, -fprint0, and -fprintf. */
+func TestAssessShellRejectsFindWritePrimaries(t *testing.T) {
+	workspace := t.TempDir()
+	for _, command := range []string{
+		"find . -fls pwn.txt",
+		"find . -name x -fls pwn.txt",
+		"find . -fprint pwn.txt",
+		"find . -fprint0 pwn.txt",
+		"find . -fprintf pwn.txt %p\\n",
+	} {
+		readOnly, _, parsed := AssessShell(command, workspace, workspace)
+		if !parsed {
+			t.Fatalf("AssessShell(%q) parsed = false, want true", command)
+		}
+		if readOnly {
+			t.Fatalf("AssessShell(%q) readOnly = true, want false", command)
+		}
+	}
+}
