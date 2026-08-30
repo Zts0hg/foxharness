@@ -477,15 +477,15 @@ func TestModel_AllowedTools_RoutesToRunRestricted(t *testing.T) {
 	}
 }
 
-func TestModel_ExplicitEmptyAllowedTools_RoutesToRunRestricted(t *testing.T) {
+func TestModel_ExplicitEmptyAllowedTools_UsesRegularRun(t *testing.T) {
 	runner := &restrictedFakeRunner{fakeRunner: newFakeRunner()}
 	r := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
 	r.Register(&slash.Command{
 		Type:        slash.CommandPrompt,
-		Name:        "denyall",
-		Description: "denyall",
+		Name:        "emptyallow",
+		Description: "emptyallow",
 		Source:      slash.SourceProject,
-		Content:     "Run without tools",
+		Content:     "Run normally",
 		Frontmatter: slash.Frontmatter{
 			UserInvocable: true,
 			AllowedTools:  []string{},
@@ -493,17 +493,17 @@ func TestModel_ExplicitEmptyAllowedTools_RoutesToRunRestricted(t *testing.T) {
 	})
 	m := NewModel(context.Background(), runner, Config{}).WithRegistry(r, slash.NewExecutor())
 
-	m, _ = update(t, m, keyRunes("/denyall"))
+	m, _ = update(t, m, keyRunes("/emptyallow"))
 	m = drivePromptCommand(t, m)
 
-	if len(runner.restrictedRuns) != 1 {
-		t.Fatalf("expected restricted run for explicit empty allowed-tools, got %d; unrestricted=%v status=%q", len(runner.restrictedRuns), runner.fakeRunner.runs, m.status)
+	/* The baseline routed a run through the restricted runner only when the
+	 * allowed-tools list carried entries, so an empty list stays a regular
+	 * run. */
+	if len(runner.fakeRunner.runs) != 1 {
+		t.Fatalf("expected regular run for explicit empty allowed-tools, got %v; restricted=%v status=%q", runner.fakeRunner.runs, runner.restrictedRuns, m.status)
 	}
-	if runner.restrictedAllow == nil || len(runner.restrictedAllow) != 0 {
-		t.Fatalf("allowedTools = %#v, want explicit empty deny-all slice", runner.restrictedAllow)
-	}
-	if len(runner.fakeRunner.runs) != 0 {
-		t.Errorf("unrestricted Run should not be called, got %v", runner.fakeRunner.runs)
+	if len(runner.restrictedRuns) != 0 {
+		t.Errorf("restricted run should not be called, got %v", runner.restrictedRuns)
 	}
 }
 

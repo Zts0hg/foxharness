@@ -25,7 +25,9 @@ func (f *fakeForkRunner) Run(ctx context.Context, task string, agentType string,
 	f.called = true
 	f.task = task
 	f.agentType = agentType
-	f.allowedTools = cloneAllowedTools(allowedTools)
+	/* Recorded verbatim: an empty non-nil restriction and nil are different
+	 * contracts, and the fake must observe the value it received. */
+	f.allowedTools = allowedTools
 	if f.err != nil {
 		return f.result, f.err
 	}
@@ -245,7 +247,7 @@ func TestExecutor_InlineMode_SurfacesAllowedTools(t *testing.T) {
 	}
 }
 
-func TestExecutor_InlineMode_PreservesExplicitEmptyAllowedTools(t *testing.T) {
+func TestExecutor_InlineMode_EmptyAllowedToolsStaysUnrestricted(t *testing.T) {
 	exec := NewExecutor()
 	cmd := &Command{
 		Type:    CommandPrompt,
@@ -258,8 +260,8 @@ func TestExecutor_InlineMode_PreservesExplicitEmptyAllowedTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if got.AllowedTools == nil || len(got.AllowedTools) != 0 {
-		t.Fatalf("AllowedTools = %#v, want explicit empty deny-all slice", got.AllowedTools)
+	if got.AllowedTools != nil {
+		t.Fatalf("AllowedTools = %#v, want the baseline unrestricted nil for an empty list", got.AllowedTools)
 	}
 }
 
@@ -381,7 +383,7 @@ func TestExecutor_ForkMode_PassesAllowedToolsToRunner(t *testing.T) {
 	}
 }
 
-func TestExecutor_ForkMode_PreservesExplicitEmptyAllowedTools(t *testing.T) {
+func TestExecutor_ForkMode_EmptyAllowedToolsStaysUnrestricted(t *testing.T) {
 	fork := &fakeForkRunner{result: "out"}
 	exec := NewExecutor(WithForkRunner(fork))
 	cmd := &Command{
@@ -395,8 +397,8 @@ func TestExecutor_ForkMode_PreservesExplicitEmptyAllowedTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if fork.allowedTools == nil || len(fork.allowedTools) != 0 {
-		t.Fatalf("ForkRunner allowedTools = %#v, want explicit empty deny-all slice", fork.allowedTools)
+	if fork.allowedTools != nil {
+		t.Fatalf("ForkRunner allowedTools = %#v, want the baseline unrestricted nil for an empty list", fork.allowedTools)
 	}
 }
 

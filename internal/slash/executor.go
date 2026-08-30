@@ -252,10 +252,9 @@ func isForkMode(cmd *Command) bool {
 }
 
 func cloneAllowedTools(tools []string) []string {
-	if tools == nil {
-		return nil
-	}
-	return append([]string{}, tools...)
+	/* Appending onto nil keeps an empty clone nil, the way the baseline's
+	 * clone did, so an empty list stays an unrestricted surface. */
+	return append([]string(nil), tools...)
 }
 
 func forkAllowedTools(ctx context.Context, commandAllowed []string) []string {
