@@ -75,6 +75,36 @@ func TestContextControllerTurnOneWithoutThinkingKeepsBothDecisionPoints(t *testi
 	_ = agentSession.FinishRun(scope)
 }
 
+/* TestContextControllerTurnOneThinkingPreparesBothDecisionPoints pins the
+ * baseline first-turn shape with thinking: both compaction decisions run on
+ * the thinking prepare — before the thinking model call — so an
+ * over-threshold history never reaches the thinking invocation, and the
+ * action prepare runs no decision of its own. */
+func TestContextControllerTurnOneThinkingPreparesBothDecisionPoints(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store)
+	agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	scope, _ := agentSession.BeginRun(context.Background(), RunSpec{Prompt: "work"})
+	compactor := &recordingContextCompactor{}
+	controller, _ := agentSession.NewContextController(scope, staticContextCollector("system"), compactor)
+	thinking := ordinaryConversationRequest("work")
+	thinking.Phase = engine.PhaseThinking
+	if _, err := controller.Prepare(context.Background(), thinking); err != nil {
+		t.Fatal(err)
+	}
+	if got := compactionTriggers(compactor); !reflect.DeepEqual(got, []ContextCompactionTrigger{ContextCompactionInitialHistory, ContextCompactionPreTurn}) {
+		t.Fatalf("thinking prepare decisions = %v, want both baseline decisions", got)
+	}
+	action := ordinaryConversationRequest("work")
+	if _, err := controller.Prepare(context.Background(), action); err != nil {
+		t.Fatal(err)
+	}
+	if got := compactionTriggers(compactor); len(got) != 2 {
+		t.Fatalf("action prepare added decisions = %v, want none", got)
+	}
+	_ = agentSession.FinishRun(scope)
+}
+
 /* TestContextControllerTurnOneThinkingKeepsPrePrepareNoticesOutOfRunLocal pins
  * the baseline first-turn shape with thinking: the notices the engine
  * requested before the thinking prepare stay out of the run-local decision's

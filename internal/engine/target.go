@@ -393,7 +393,6 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		if err != nil {
 			return e.fail(emit, outcome, "policy", err)
 		}
-		emitInjectionFacts(emit, turn, beforeTurn.Changes)
 		if err := e.requestChanges(ctx, turn, beforeTurn.Changes); err != nil {
 			return e.fail(emit, outcome, "conversation", err)
 		}
@@ -433,6 +432,11 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 		for _, compaction := range compactions {
 			emit(Fact{Kind: FactContextCompacted, Turn: turn, Phase: PhaseAction, Name: compaction.Trigger, BeforeMessages: compaction.BeforeMessages, AfterMessages: compaction.AfterMessages})
 		}
+		/* The baseline recorded the compaction before the turn's notices, so
+		 * the injection observations follow every compaction fact of the
+		 * turn's prepares even though the changes were requested before
+		 * them. */
+		emitInjectionFacts(emit, turn, beforeTurn.Changes)
 		modelResult, err := modelRun.Invoke(ctx, runContext, emitModelFact)
 		if errors.Is(err, ErrPromptTooLong) {
 			retryContext, recoveryCompactions, prepareErr := e.prepareContext(ctx, input, turn, PhaseAction, definitions, ConversationPrepareReactive)

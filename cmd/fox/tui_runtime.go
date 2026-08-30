@@ -59,16 +59,6 @@ type tuiSessionResources struct {
 	messageID    *runtimeMessageID
 	compactorsMu sync.Mutex
 	compactors   map[session.RunID]*compaction.Compactor
-	/* contextUsed and contextWindow hold the latest tool-overhead-inclusive
-	 * context estimate published by the engine turn flow. */
-	contextUsed   atomic.Int64
-	contextWindow atomic.Int64
-}
-
-/* publishContextEstimate records one engine-published context estimate. */
-func (r *tuiSessionResources) publishContextEstimate(used int, window int) {
-	r.contextUsed.Store(int64(used))
-	r.contextWindow.Store(int64(window))
 }
 
 /* contextEstimatePublisher republishes the live context estimate each time the
@@ -186,6 +176,15 @@ type tuiRuntimeComposition struct {
 	executor    *slash.Executor
 	activations runtimeActivations
 	journals    tuiJournalSet
+
+	/* contextUsed and contextWindow hold the latest tool-overhead-inclusive
+	 * context estimate published by the engine turn flow. They live on the
+	 * composition, not the session resources, so a session switch such as
+	 * /new keeps showing the last published estimate until the next run
+	 * publishes a fresh one, the way the baseline's runner-level estimate
+	 * holder did. */
+	contextUsed   atomic.Int64
+	contextWindow atomic.Int64
 
 	permissions *permission.Coordinator
 	controller  *interactionruntime.PermissionController
@@ -644,7 +643,7 @@ func (c *tuiRuntimeComposition) newContext(_ context.Context, assembly foxruntim
 		})
 	return collector, &contextEstimatePublisher{
 		inner: runtimecompaction.New(compactor), mechanism: compactor,
-		publish: resource.publishContextEstimate,
+		publish: c.publishContextEstimate,
 	}, nil
 }
 
@@ -703,6 +702,12 @@ func (c *tuiRuntimeComposition) bind(agentSession *foxruntime.AgentSession) (app
 			return errors.Join(agentSession.RecoverRunFinish(ctx), agentSession.Close(ctx))
 		},
 	}, nil
+}
+
+/* publishContextEstimate records one engine-published context estimate. */
+func (c *tuiRuntimeComposition) publishContextEstimate(used int, window int) {
+	c.contextUsed.Store(int64(used))
+	c.contextWindow.Store(int64(window))
 }
 
 func (c *tuiRuntimeComposition) sessionState(resource *tuiSessionResources) app.InteractiveSessionState {
@@ -1046,8 +1051,8 @@ func tuiProjectedMessages(state *session.CompactState, records []session.Message
 }
 
 func (c *tuiRuntimeComposition) contextUsage(resource *tuiSessionResources) string {
-	if used := resource.contextUsed.Load(); used > 0 {
-		if window := resource.contextWindow.Load(); window > 0 {
+	if used := c.contextUsed.Load(); used > 0 {
+		if window := c.contextWindow.Load(); window > 0 {
 			return formatTUIContextUsage(int(used), int(window))
 		}
 	}

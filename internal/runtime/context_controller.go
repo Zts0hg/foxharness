@@ -230,7 +230,7 @@ func (c *ContextController) Prepare(ctx context.Context, request engine.Conversa
 		return engine.ConversationProjection{}, err
 	}
 
-	triggers := c.session.claimContextPreparation(c.scope.run.ID, request.Turn, request.Phase, request.Preparation)
+	triggers := c.session.claimContextPreparation(c.scope.run.ID, request.Turn, request.Preparation)
 	compactions := make([]engine.ConversationCompaction, 0, len(triggers))
 	for _, trigger := range triggers {
 		before := len(c.messages)
@@ -535,7 +535,7 @@ func validateCompactionProposal(trigger ContextCompactionTrigger, proposal Conte
  * the durable decision — claims both, while a thinking turn claims the
  * durable one on its thinking prepare and the run-local one on its action
  * prepare. */
-func (s *AgentSession) claimContextPreparation(runID session.RunID, turn int, phase engine.Phase, preparation engine.ConversationPreparation) []ContextCompactionTrigger {
+func (s *AgentSession) claimContextPreparation(runID session.RunID, turn int, preparation engine.ConversationPreparation) []ContextCompactionTrigger {
 	if preparation == engine.ConversationPrepareReactive {
 		return []ContextCompactionTrigger{ContextCompactionReactive}
 	}
@@ -544,7 +544,11 @@ func (s *AgentSession) claimContextPreparation(runID session.RunID, turn int, ph
 	key := contextTurnKey{runID: runID, turn: turn}
 	if !s.contextInitialPrepared[runID] {
 		s.contextInitialPrepared[runID] = true
-		if turn == 1 && phase != engine.PhaseThinking {
+		if turn == 1 {
+			/* The baseline ran both first-turn decisions before the thinking
+			 * phase, so the thinking prepare — like the single no-thinking
+			 * prepare — carries both, and no over-threshold history reaches
+			 * the thinking invocation. */
 			s.contextPreparedTurns[key] = true
 			return []ContextCompactionTrigger{ContextCompactionInitialHistory, ContextCompactionPreTurn}
 		}

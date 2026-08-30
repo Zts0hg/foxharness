@@ -210,6 +210,15 @@ var wrapperExecFlags = map[string]map[string]bool{
 	"cpio": {
 		"--to-command": true,
 	},
+	"gcpio": {
+		"--to-command": true,
+	},
+	"gsort": {
+		"--compress-program": true,
+	},
+	"gtar": {
+		"-I": true, "--to-command": true, "--use-compress-program": true,
+	},
 	"sort": {
 		"--compress-program": true,
 	},
@@ -223,13 +232,13 @@ var wrapperCommands = map[string]bool{
 	"arch": true, "bsdtar": true, "bwrap": true, "busybox": true,
 	"caffeinate": true, "chroot": true, "chrt": true, "cpio": true,
 	"doas": true, "fakeroot": true, "faketime": true, "firejail": true,
-	"find": true, "flock": true, "gfind": true, "gnice": true,
+	"find": true, "flock": true, "gcpio": true, "gfind": true, "gnice": true,
 	"gruncon": true, "gstdbuf": true, "ionice": true, "ltrace": true,
 	"nice": true, "nsenter": true, "numactl": true,
 	"perf": true, "proot": true, "proxychains": true,
 	"proxychains4": true, "runcon": true,
 	"runuser": true, "script": true, "setarch": true, "setpriv": true,
-	"sort": true, "sshpass": true, "strace": true, "sudo": true,
+	"gsort": true, "gtar": true, "sort": true, "sshpass": true, "strace": true, "sudo": true,
 	"stdbuf": true,
 	"su":     true, "systemd-nspawn": true, "tar": true, "taskset": true, "time": true,
 	"toybox": true, "unshare": true, "valgrind": true, "watch": true,

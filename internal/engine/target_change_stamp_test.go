@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -121,5 +122,50 @@ func TestTargetEngineStampsConversationChangesWithTheProducingTurn(t *testing.T)
 		if stamp != want[index] {
 			t.Fatalf("change stamps = %v, want %v", conversation.stamps, want)
 		}
+	}
+}
+
+/* compactingProjectionConversation reports one committed compaction on every
+ * ordinary prepare. */
+type compactingProjectionConversation struct{}
+
+func (c *compactingProjectionConversation) Prepare(_ context.Context, request ConversationRequest) (ConversationProjection, error) {
+	return ConversationProjection{
+		Context:     RunContext{Messages: []schema.Message{{Role: schema.RoleUser, Content: request.Input.Prompt}}},
+		Compactions: []ConversationCompaction{{Trigger: "turn_context", BeforeMessages: 9, AfterMessages: 3}},
+	}, nil
+}
+
+func (c *compactingProjectionConversation) RequestChanges(context.Context, []ConversationChange) error {
+	return nil
+}
+
+/* TestTargetEngineRecordsCompactionBeforeTurnNotices pins the baseline
+ * transcript order: a turn that both compacts and injects records the
+ * context_compacted fact before the turn's injection facts, because the
+ * baseline compacted before appending its reminders even though the changes
+ * reach the conversation ahead of the preparation. */
+func TestTargetEngineRecordsCompactionBeforeTurnNotices(t *testing.T) {
+	var kinds []FactKind
+	eng := NewAgentEngine(
+		modelInvokerFunc(func(_ context.Context, _ RunContext) (ModelResult, error) {
+			return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "progress"}}, nil
+		}),
+		&recordingTargetToolExecutor{}, &compactingProjectionConversation{},
+		stampRecordingPolicy{}, observerFunc(func(_ context.Context, fact Fact) {
+			if fact.Kind == FactContextCompacted || fact.Kind == FactSystemReminder {
+				kinds = append(kinds, fact.Kind)
+			}
+		}),
+	)
+	eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 2})
+	/* Each turn records its compaction first, then the turn's injection
+	 * facts. */
+	want := []FactKind{
+		FactContextCompacted, FactSystemReminder, FactSystemReminder,
+		FactContextCompacted, FactSystemReminder, FactSystemReminder,
+	}
+	if !slices.Equal(kinds, want) {
+		t.Fatalf("recorded fact order = %v, want %v", kinds, want)
 	}
 }
