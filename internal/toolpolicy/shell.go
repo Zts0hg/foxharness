@@ -132,11 +132,12 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 var wrapperCommands = map[string]bool{
 	"arch": true, "busybox": true, "chroot": true, "chrt": true,
 	"caffeinate": true, "doas": true, "find": true, "gfind": true,
-	"gnice":   true,
-	"gstdbuf": true, "ionice": true, "nice": true, "nsenter": true,
+	"gnice": true, "gruncon": true, "gstdbuf": true, "ionice": true,
+	"ltrace": true, "nice": true, "nsenter": true, "runcon": true,
 	"runuser": true, "script": true, "setarch": true, "setpriv": true,
 	"strace": true, "sudo": true, "stdbuf": true, "su": true,
-	"taskset": true, "toybox": true, "watch": true,
+	"taskset": true, "time": true, "toybox": true, "unshare": true,
+	"valgrind": true, "watch": true,
 }
 
 // interpreterNamePrefixes lists interpreter and shell families whose
@@ -297,13 +298,14 @@ var detachedShellCommands = map[string]bool{
 	"disown": true, "elvish": true, "env": true, "eval": true,
 	"exec": true, "expect": true, "fish": true, "gawk": true,
 	"ghci": true, "gmake": true, "jruby": true, "ksh": true,
-	"launchctl": true, "make": true, "mawk": true, "nawk": true,
+	"launchctl": true, "make": true, "mapfile": true, "mawk": true,
+	"nawk":   true,
 	"nodejs": true,
 	"nohup":  true, "octave": true, "open": true, "osascript": true,
 	"powershell": true, "pwsh": true, "pythonw": true, "r": true,
 	"rscript": true, "sbcl": true, "screen": true, "schtasks": true,
 	"setsid": true, "sh": true, "shopt": true, "source": true,
-	"systemd-run": true, "tcsh": true, "timeout": true, "tmux": true,
+	"readarray": true, "systemd-run": true, "tcsh": true, "timeout": true, "tmux": true,
 	"trap": true, "wish": true, "xonsh": true, "xargs": true,
 	"genv": true, "gnohup": true, "gtimeout": true, "gxargs": true,
 	"zsh": true,
