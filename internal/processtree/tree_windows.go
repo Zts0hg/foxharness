@@ -131,6 +131,42 @@ func (tree *windowsTree) Signal(force bool) error {
 	return windows.TerminateJobObject(tree.job, 1)
 }
 
+/* Release stops owning the job without terminating it: the kill-on-close
+ * limit is cleared before the handle closes so detached survivors keep
+ * running after a normal command completion. */
+func (tree *windowsTree) Release(_ time.Duration) error {
+	tree.mu.Lock()
+	defer tree.mu.Unlock()
+	if tree.job == 0 {
+		return nil
+	}
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	if err := windows.QueryInformationJobObject(
+		tree.job,
+		windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)),
+		uint32(unsafe.Sizeof(info)),
+		nil,
+	); err != nil {
+		return fmt.Errorf("query process-tree job limits: %w", err)
+	}
+	info.BasicLimitInformation.LimitFlags &^= windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	if _, err := windows.SetInformationJobObject(
+		tree.job,
+		windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)),
+		uint32(unsafe.Sizeof(info)),
+	); err != nil {
+		return fmt.Errorf("clear process-tree kill-on-close limit: %w", err)
+	}
+	closeErr := windows.CloseHandle(tree.job)
+	tree.job = 0
+	if errors.Is(closeErr, os.ErrProcessDone) {
+		closeErr = nil
+	}
+	return closeErr
+}
+
 func (tree *windowsTree) Close(timeout time.Duration) error {
 	tree.mu.Lock()
 	defer tree.mu.Unlock()

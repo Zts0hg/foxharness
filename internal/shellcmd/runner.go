@@ -57,6 +57,9 @@ func run(ctx context.Context, workDir, command string, timeout time.Duration, st
 	var cleanupErr error
 	select {
 	case err = <-wait:
+		/* The command completed on its own: reap the direct child and let
+		 * detached survivors live instead of killing the whole group. */
+		cleanupErr = tree.Release(processReapTimeout)
 	case <-timeoutCtx.Done():
 		cleanupErr = tree.Signal(true)
 		select {
@@ -66,8 +69,8 @@ func run(ctx context.Context, workDir, command string, timeout time.Duration, st
 			err = timeoutCtx.Err()
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("shell process tree was not reaped within %s", processReapTimeout))
 		}
+		cleanupErr = errors.Join(cleanupErr, tree.Close(processReapTimeout))
 	}
-	cleanupErr = errors.Join(cleanupErr, tree.Close(processReapTimeout))
 	if cleanupErr != nil {
 		err = errors.Join(err, cleanupErr)
 	}

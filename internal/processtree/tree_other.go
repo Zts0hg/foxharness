@@ -50,6 +50,10 @@ func (tree *processTree) Signal(force bool) error {
 	return err
 }
 
+func (tree *processTree) Release(_ time.Duration) error {
+	return nil
+}
+
 func (tree *processTree) Close(_ time.Duration) error {
 	return tree.Signal(true)
 }

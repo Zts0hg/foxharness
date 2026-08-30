@@ -77,4 +77,6 @@ func (tree cleanupFailureTree) Signal(bool) error {
 	return tree.err
 }
 
+func (cleanupFailureTree) Release(time.Duration) error { return nil }
+
 func (cleanupFailureTree) Close(time.Duration) error { return nil }

@@ -154,6 +154,39 @@ func (tree *unixTree) signalLocked(force bool) error {
 	return nil
 }
 
+/* Release hands the group back to its survivors: the anchor's stdin closes so
+ * the ownership anchor exits on its own, and no group signal is sent. */
+func (tree *unixTree) Release(timeout time.Duration) error {
+	tree.mu.Lock()
+	defer tree.mu.Unlock()
+	if tree.cmd.Process == nil {
+		return nil
+	}
+	closeErr := tree.closeAnchorInputLocked()
+	return errors.Join(closeErr, tree.waitForAnchorReleaseLocked(timeout))
+}
+
+/* waitForAnchorReleaseLocked waits for the anchor to exit after its stdin
+ * closed. The anchor's read returns EOF status on that deliberate close, so
+ * the exit status itself is not an ownership failure. */
+func (tree *unixTree) waitForAnchorReleaseLocked(timeout time.Duration) error {
+	if tree.anchorExited {
+		return nil
+	}
+	if timeout <= 0 {
+		timeout = time.Millisecond
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-tree.anchorDone:
+		tree.anchorExited = true
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("process-tree ownership anchor was not reaped within %s", timeout)
+	}
+}
+
 func (tree *unixTree) Close(timeout time.Duration) error {
 	tree.mu.Lock()
 	defer tree.mu.Unlock()

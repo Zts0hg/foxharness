@@ -12,6 +12,10 @@ const treeExitPollInterval = 10 * time.Millisecond
 // Tree owns the complete process tree rooted at one started command.
 type Tree interface {
 	Signal(force bool) error
+	/* Release stops owning the tree without terminating it: the direct
+	 * command has finished on its own, so detached survivors are allowed to
+	 * keep running. */
+	Release(timeout time.Duration) error
 	Close(timeout time.Duration) error
 }
 
