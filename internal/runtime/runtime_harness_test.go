@@ -479,6 +479,7 @@ func TestRuntimeHarnessAppliesResolvedTaskTimeout(t *testing.T) {
 }
 
 func TestRuntimeHarnessFinishFailureCanBeRecoveredWithoutLeakingScope(t *testing.T) {
+	logs := captureDiagnosticLog(t)
 	store := newLifecycleStore()
 	store.failNextFinish(errors.New("run metadata unavailable"))
 	harness, _ := NewRuntimeHarness(store, successfulHarnessDependencies(nil))
@@ -486,13 +487,16 @@ func TestRuntimeHarnessFinishFailureCanBeRecoveredWithoutLeakingScope(t *testing
 	observer := &recordingRunObserver{}
 
 	result, err := agentSession.Run(context.Background(), RunSpec{Prompt: "inspect", Observer: observer})
-	if err == nil || result.Outcome.ErrorKind != "persistence" {
-		t.Fatalf("Run() = %#v, %v; want terminal persistence failure", result, err)
+	if err != nil || result.Outcome.ErrorKind != "" || result.Outcome.FinalMessage != "done" {
+		t.Fatalf("Run() = %#v, %v; want the completed run despite the terminal write failure", result, err)
+	}
+	if !strings.Contains(logs.String(), "[Engine] 写入 Run 完成状态失败: run metadata unavailable") {
+		t.Fatalf("terminal write failure was not announced:\n%s", logs.String())
 	}
 	if got := runtimeFactKinds(observer.snapshot()); !reflect.DeepEqual(got, []engine.FactKind{
-		engine.FactRunStarted, engine.FactMessage, engine.FactRunError,
+		engine.FactRunStarted, engine.FactMessage, engine.FactRunCompleted,
 	}) {
-		t.Fatalf("finish failure facts = %v, want one error terminal", got)
+		t.Fatalf("finish failure facts = %v, want the baseline completion terminal", got)
 	}
 	if err := agentSession.RecoverRunFinish(context.Background()); err != nil {
 		t.Fatalf("RecoverRunFinish() error = %v", err)

@@ -678,7 +678,9 @@ func TestChildRunnerRecoversHiddenFinishBeforeClosingSession(t *testing.T) {
 	result, err := runner.Run(context.Background(), ChildRunRequest{
 		InvocationID: "finish-recovery", Task: "finish", Depth: 1,
 	})
-	if !errors.Is(err, finishErr) || result.Status != ChildFailed || result.RunID == "" {
+	/* The failed terminal write never fails the child run; the hidden
+	 * recovery step still repairs the durable finish before the close. */
+	if err != nil || result.Status != ChildSucceeded || result.RunID == "" {
 		t.Fatalf("finish recovery Run() = %#v, %v", result, err)
 	}
 	if store.finishCount() != 2 {

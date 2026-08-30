@@ -62,7 +62,10 @@ func TestM14RuntimeCleanupFailureRetainsStartedRuntimeEvidence(t *testing.T) {
 	if err == nil || result.Status != ResultStatusInfrastructureFailed || result.CleanupError == "" {
 		t.Fatalf("cleanup result/error = %#v/%v", result, err)
 	}
-	if result.RuntimeStatus != RuntimeStatusFailed || result.RunID == "" || !strings.Contains(result.RuntimeCause, "finish runtime run") {
+	/* A failed terminal run write never fails the run; the recovery failure
+	 * surfaces through the cleanup evidence while the runtime run stays
+	 * completed with its started run identifier. */
+	if result.RuntimeStatus != RuntimeStatusCompleted || result.RunID == "" || result.RuntimeCause != "" {
 		t.Fatalf("runtime evidence lost to cleanup failure: %#v", result)
 	}
 }

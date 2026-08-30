@@ -134,16 +134,13 @@ func (s *AgentSession) Run(ctx context.Context, spec RunSpec) (result RunResult,
 }
 
 func (s *AgentSession) finishRun(scope *RunScope, observer *runtimeObserver, result RunResult, runErr error) (RunResult, error) {
-	finishErr := s.FinishRun(scope)
-	if finishErr != nil {
-		if runErr == nil {
-			result.Outcome.ErrorKind = "persistence"
-			result.Outcome.Err = finishErr
-		}
-		runErr = errors.Join(runErr, fmt.Errorf("finish runtime run: %w", finishErr))
+	/* A failed terminal run write is announced and left to the recovery hook;
+	 * the outcome the run already produced stays authoritative. */
+	if finishErr := s.FinishRun(scope); finishErr != nil {
+		logRunFinishFailure(finishErr)
 	}
 	terminalCtx, cancel := context.WithTimeout(context.WithoutCancel(scope.Context()), terminalObserverTimeout)
-	observer.finish(terminalCtx, runErr, finishErr != nil)
+	observer.finish(terminalCtx)
 	cancel()
 	result = observer.result(result.Outcome)
 	return result, runErr
@@ -167,7 +164,8 @@ func (s *AgentSession) runAssembled(
 	if err != nil {
 		return failedAssemblyOutcome(scope.Context(), observer, "conversation", err)
 	}
-	conversation, err := s.NewContextController(scope, collector, compactor)
+	diagnostics := newDiagnosticLogger(assembly)
+	conversation, err := s.NewContextController(scope, collector, diagnostics.wrapCompactor(compactor))
 	if err != nil {
 		return failedAssemblyOutcome(scope.Context(), observer, "conversation", err)
 	}
@@ -175,7 +173,6 @@ func (s *AgentSession) runAssembled(
 	input := engine.RunInput{
 		Prompt: assembly.Spec.Prompt, MaxTurns: assembly.Spec.MaxTurns, Thinking: assembly.Spec.Thinking,
 	}
-	diagnostics := newDiagnosticLogger(assembly)
 	return engine.NewAgentEngine(
 		diagnostics.wrapModel(model), tools, conversation, policy, diagnostics.wrapObserver(observer),
 	).Run(scope.Context(), input)
@@ -398,19 +395,10 @@ func (o *runtimeObserver) observeFailure(ctx context.Context, err error) {
 	})
 }
 
-func (o *runtimeObserver) finish(ctx context.Context, finalErr error, finishFailed bool) {
+func (o *runtimeObserver) finish(ctx context.Context) {
 	o.mu.Lock()
 	terminal := o.terminal
 	o.terminal = nil
-	if finishFailed {
-		sequence := o.lastSequence + 1
-		if terminal != nil {
-			sequence = terminal.Sequence
-		}
-		terminal = &engine.Fact{
-			Kind: engine.FactRunError, Sequence: sequence, Content: finalErr.Error(), IsError: true,
-		}
-	}
 	o.mu.Unlock()
 	if terminal != nil {
 		o.dispatch(ctx, *terminal)
