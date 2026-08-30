@@ -71,6 +71,12 @@ type runPolicy struct {
 
 func (p *runPolicy) BeforeTurn(ctx context.Context, state engine.TurnState) (engine.PolicyChanges, error) {
 	var changes []engine.ConversationChange
+	if p.recovery.ShouldInject() {
+		if prompt := p.recovery.BuildPrompt(); prompt != "" {
+			p.recovery.MarkInject()
+			changes = append(changes, contextNotice(prompt))
+		}
+	}
 	if message, ok := p.reminder.MaybeBuild(state.Turn); ok {
 		changes = append(changes, contextReminder(engine.ConversationSourceReminder, message))
 	}
@@ -141,16 +147,7 @@ func (p *runPolicy) AfterTools(_ context.Context, state engine.ToolState) (engin
 			p.todoUpdated = true
 		}
 	}
-
-	if !p.recovery.ShouldInject() {
-		return engine.PolicyChanges{}, nil
-	}
-	prompt := p.recovery.BuildPrompt()
-	if prompt == "" {
-		return engine.PolicyChanges{}, nil
-	}
-	p.recovery.MarkInject()
-	return engine.PolicyChanges{Changes: []engine.ConversationChange{contextNotice(prompt)}}, nil
+	return engine.PolicyChanges{}, nil
 }
 
 func contextNotice(message string) engine.ConversationChange {

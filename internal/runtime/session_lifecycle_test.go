@@ -330,6 +330,7 @@ type lifecycleStore struct {
 	messages    map[session.ID][]session.MessageRecord
 	compact     map[session.ID]*session.CompactState
 	messageErr  error
+	loadErr     error
 	messageTime time.Time
 }
 
@@ -403,6 +404,11 @@ func (s *lifecycleStore) FinishRun(*session.StoredRun) error {
 func (s *lifecycleStore) LoadMessageRecords(storedSession *session.StoredSession) ([]session.MessageRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		err := s.loadErr
+		s.loadErr = nil
+		return nil, err
+	}
 	return cloneMessageRecords(s.messages[storedSession.ID]), nil
 }
 
@@ -533,6 +539,12 @@ func (s *lifecycleStore) failNextMessage(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messageErr = err
+}
+
+func (s *lifecycleStore) failNextLoad(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadErr = err
 }
 
 func intPointer(value int) *int { return &value }

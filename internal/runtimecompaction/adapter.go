@@ -7,6 +7,7 @@ package runtimecompaction
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 
 	"github.com/Zts0hg/foxharness/internal/compaction"
@@ -112,7 +113,7 @@ func (a *Adapter) compactInitial(ctx context.Context, request foxruntime.Context
 	}
 	summary, err := a.mechanism.Summarize(ctx, messages)
 	if err != nil {
-		return foxruntime.ContextCompactionProposal{}, err
+		return foxruntime.ContextCompactionProposal{}, fmt.Errorf("持久化上下文压缩失败: %w", err)
 	}
 	return foxruntime.ContextCompactionProposal{
 		Changed:      true,

@@ -82,6 +82,9 @@ func TestPolicyBindsCallbacksForEachConcurrentRunAndPropagatesErrors(t *testing.
 	}
 }
 
+/* TestPL001PL005RecoveryOrdinaryAndNextTurnOrder pins the baseline injection
+ * order: recorded tool failures surface as one recovery notice at the start of
+ * the next turn, ahead of the reminder and next-turn sources. */
 func TestPL001PL005RecoveryOrdinaryAndNextTurnOrder(t *testing.T) {
 	policy := New(nextTurnConfig(func(turn int) []string {
 		if turn == 4 {
@@ -100,22 +103,25 @@ func TestPL001PL005RecoveryOrdinaryAndNextTurnOrder(t *testing.T) {
 			Turn: turn, Calls: []schema.ToolCall{call},
 			Results: []engine.ToolExecutionResult{{CallID: call.ID, ModelContent: "structured failure", IsError: true}},
 		})
-		if err != nil || len(decision.Changes) != 1 || !strings.Contains(decision.Changes[0].Message.Content, "Failure count for same tool+arguments: "+strconv.Itoa(turn)) {
-			t.Fatalf("turn %d recovery = %#v, %v", turn, decision, err)
-		}
-		if decision.Changes[0].Source != engine.ConversationSourceRecovery {
-			t.Fatalf("turn %d recovery source = %q", turn, decision.Changes[0].Source)
+		if err != nil || len(decision.Changes) != 0 {
+			t.Fatalf("turn %d AfterTools proposals = %#v, %v, want the failure recorded without an immediate notice", turn, decision.Changes, err)
 		}
 	}
 	decision, err := run.BeforeTurn(context.Background(), engine.TurnState{Turn: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decision.Changes) != 2 || !strings.Contains(decision.Changes[0].Message.Content, "Possible Loop Detected") || !strings.Contains(decision.Changes[1].Message.Content, "next-turn fixture reminder") {
-		t.Fatalf("turn-four proposals = %#v", decision.Changes)
+	if len(decision.Changes) != 3 {
+		t.Fatalf("turn-four proposals = %#v, want recovery, reminder, and next-turn", decision.Changes)
 	}
-	if decision.Changes[0].Source != engine.ConversationSourceReminder || decision.Changes[1].Source != engine.ConversationSourceNextTurnReminder {
-		t.Fatalf("turn-four sources = %#v", decision.Changes)
+	if decision.Changes[0].Source != engine.ConversationSourceRecovery || !strings.Contains(decision.Changes[0].Message.Content, "Failure count for same tool+arguments: 3") {
+		t.Fatalf("turn-four recovery = %#v", decision.Changes[0])
+	}
+	if decision.Changes[1].Source != engine.ConversationSourceReminder || !strings.Contains(decision.Changes[1].Message.Content, "Possible Loop Detected") {
+		t.Fatalf("turn-four reminder = %#v", decision.Changes[1])
+	}
+	if decision.Changes[2].Source != engine.ConversationSourceNextTurnReminder || !strings.Contains(decision.Changes[2].Message.Content, "next-turn fixture reminder") {
+		t.Fatalf("turn-four next-turn = %#v", decision.Changes[2])
 	}
 }
 
@@ -285,11 +291,14 @@ func TestPolicyFactoryIsolatesRecoveryReminderAndCompletionState(t *testing.T) {
 
 	second, _ := policy.StartRun(context.Background(), engine.RunInput{})
 	call.ID = "second-1"
-	recoveryDecision, err := second.AfterTools(context.Background(), failedToolState(1, call))
+	if _, err := second.AfterTools(context.Background(), failedToolState(1, call)); err != nil {
+		t.Fatal(err)
+	}
+	recoveryDecision, err := second.BeforeTurn(context.Background(), engine.TurnState{Turn: 2})
 	if err != nil || len(recoveryDecision.Changes) != 1 || !strings.Contains(recoveryDecision.Changes[0].Message.Content, "Failure count for same tool+arguments: 1") {
 		t.Fatalf("second run recovery inherited state: %#v, %v", recoveryDecision, err)
 	}
-	reminderDecision, err := second.BeforeTurn(context.Background(), engine.TurnState{Turn: 2})
+	reminderDecision, err := second.BeforeTurn(context.Background(), engine.TurnState{Turn: 3})
 	if err != nil || len(reminderDecision.Changes) != 0 {
 		t.Fatalf("second run reminder inherited state: %#v, %v", reminderDecision, err)
 	}

@@ -114,6 +114,7 @@ type stubMechanism struct {
 	blocking     int
 	toolOverhead int
 	summary      string
+	summarizeErr error
 	summarized   []schema.Message
 	instructions string
 	maybe        []schema.Message
@@ -129,7 +130,7 @@ func (m *stubMechanism) RecentKeep() int               { return m.recentKeep }
 func (m *stubMechanism) BlockingThreshold() int        { return m.blocking - m.toolOverhead }
 func (m *stubMechanism) Summarize(_ context.Context, messages []schema.Message) (string, error) {
 	m.summarized = append([]schema.Message(nil), messages...)
-	return m.summary, nil
+	return m.summary, m.summarizeErr
 }
 func (m *stubMechanism) SummarizeWithInstructions(_ context.Context, messages []schema.Message, instructions string) (string, error) {
 	m.summarized = append([]schema.Message(nil), messages...)
@@ -143,4 +144,22 @@ func (m *stubMechanism) MaybeCompact(context.Context, []schema.Message) ([]schem
 func (m *stubMechanism) ForceCompact(context.Context, []schema.Message) ([]schema.Message, error) {
 	m.forceCalls++
 	return append([]schema.Message(nil), m.force...), nil
+}
+
+/* TestAdapterWrapsInitialSummarizationFailure pins the baseline initial
+ * compaction error chain for a summarizer outage. */
+func TestAdapterWrapsInitialSummarizationFailure(t *testing.T) {
+	mechanism := &stubMechanism{estimate: 2, threshold: 1, recentKeep: 1, summarizeErr: errors.New("provider unavailable")}
+	adapter := New(mechanism)
+	_, err := adapter.Compact(context.Background(), foxruntime.ContextCompactionRequest{
+		Trigger: foxruntime.ContextCompactionInitialHistory,
+		Records: []session.MessageRecord{
+			{Seq: 0, Message: schema.Message{Role: schema.RoleUser, Content: "old user"}},
+			{Seq: 1, Message: schema.Message{Role: schema.RoleAssistant, Content: "old answer"}},
+			{Seq: 2, Message: schema.Message{Role: schema.RoleUser, Content: "current"}},
+		},
+	})
+	if err == nil || err.Error() != "持久化上下文压缩失败: provider unavailable" {
+		t.Fatalf("initial summarization error = %v, want the baseline wrapped chain", err)
+	}
 }

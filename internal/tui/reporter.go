@@ -27,7 +27,7 @@ func (s *channelNotificationSink) OnThinking(ctx context.Context, turn int) {
 }
 
 func (s *channelNotificationSink) OnCompaction(ctx context.Context, scope string) {
-	s.Notify(ctx, app.Notification{Kind: app.NotificationContextCompacted, Phase: scope})
+	s.Notify(ctx, app.Notification{Kind: app.NotificationContextCompacted, Name: scope})
 }
 
 func (s *channelNotificationSink) OnToolCall(ctx context.Context, name string, arguments string) {
@@ -67,7 +67,7 @@ func (s *channelNotificationSink) Notify(ctx context.Context, notification app.N
 	case app.NotificationContextCompacted:
 		event.role = "system"
 		event.title = "context compacted"
-		event.body = fmt.Sprintf("Compacted context scope: %s", notification.Phase)
+		event.body = fmt.Sprintf("Compacted context scope: %s", notification.Name)
 		event.status = "Context compacted"
 	case app.NotificationToolCall:
 		event.role = "tool"

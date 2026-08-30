@@ -217,3 +217,37 @@ func messageIndex(messages []schema.Message, content string) int {
 	}
 	return -1
 }
+
+/* TestTargetAdapterRecoveryNoticeCarriesTheTurnThatConsumesIt pins the
+ * baseline recovery attribution: the notice is produced at the start of the
+ * turn that receives it, so its fact lands on the new turn rather than the
+ * turn whose tool failed. */
+func TestTargetAdapterRecoveryNoticeCarriesTheTurnThatConsumesIt(t *testing.T) {
+	calls := []schema.ToolCall{
+		{ID: "repeat-1", Name: "repeat", Arguments: json.RawMessage(`{"same":true}`)},
+		{ID: "repeat-2", Name: "repeat", Arguments: json.RawMessage(`{"same":true}`)},
+	}
+	invoker := &policyScriptedInvoker{results: []engine.ModelResult{
+		toolModelResult(calls[0]), toolModelResult(calls[1]),
+		{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}, FinishReason: "stop"},
+	}}
+	conversation := &policyConversation{}
+	var recoveryTurns []int
+	observer := observerFunc(func(_ context.Context, fact engine.Fact) {
+		if fact.Kind == engine.FactErrorRecovery {
+			recoveryTurns = append(recoveryTurns, fact.Turn)
+		}
+	})
+	target := engine.NewAgentEngine(invoker, policyToolExecutor{fail: true}, conversation, New(Config{}), observer)
+
+	if _, err := target.Run(context.Background(), engine.RunInput{Prompt: "repeat", MaxTurns: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if len(recoveryTurns) != 2 || recoveryTurns[0] != 2 || recoveryTurns[1] != 3 {
+		t.Fatalf("recovery fact turns = %v, want the turns that received the notices", recoveryTurns)
+	}
+}
+
+type observerFunc func(context.Context, engine.Fact)
+
+func (f observerFunc) Observe(ctx context.Context, fact engine.Fact) { f(ctx, fact) }

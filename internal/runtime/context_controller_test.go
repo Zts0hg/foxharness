@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -146,11 +147,233 @@ func TestContextControllerCompactsAtMostOncePerTurn(t *testing.T) {
 	for _, request := range compactor.requests {
 		got = append(got, request.Trigger)
 	}
-	want := []ContextCompactionTrigger{ContextCompactionInitialHistory, ContextCompactionPreTurn}
+	/* Turn 1 keeps both baseline decision points; every later turn compacts at
+	 * most once, on its first prepare. */
+	want := []ContextCompactionTrigger{
+		ContextCompactionInitialHistory, ContextCompactionPreTurn, ContextCompactionPreTurn,
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("compaction triggers = %v, want %v", got, want)
 	}
 	_ = agentSession.FinishRun(scope)
+}
+
+/* TestContextControllerTurnOneKeepsBothCompactionDecisionPoints pins the
+ * baseline turn shape: the first prepare of a run compacts the durable
+ * session history and the second prepare of the same turn still runs the
+ * ordinary run-local pre-turn decision. */
+func TestContextControllerTurnOneKeepsBothCompactionDecisionPoints(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store)
+	agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	scope, _ := agentSession.BeginRun(context.Background(), RunSpec{Prompt: "work"})
+	compactor := &recordingContextCompactor{}
+	controller, _ := agentSession.NewContextController(scope, staticContextCollector("system"), compactor)
+
+	thinking := ordinaryConversationRequest("work")
+	thinking.Phase = engine.PhaseThinking
+	if _, err := controller.Prepare(context.Background(), thinking); err != nil {
+		t.Fatal(err)
+	}
+	action := ordinaryConversationRequest("work")
+	if _, err := controller.Prepare(context.Background(), action); err != nil {
+		t.Fatal(err)
+	}
+	got := compactionTriggers(compactor)
+	want := []ContextCompactionTrigger{ContextCompactionInitialHistory, ContextCompactionPreTurn}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("turn 1 compaction triggers = %v, want %v", got, want)
+	}
+	_ = agentSession.FinishRun(scope)
+}
+
+/* TestContextControllerChecksBudgetOnFirstTurnAfterDurableCompaction pins the
+ * baseline blocking decision on a first turn without thinking: the durable
+ * session-history compaction never suppresses the budget check. */
+func TestContextControllerChecksBudgetOnFirstTurnAfterDurableCompaction(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store)
+	agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	id := agentSession.Snapshot().ID
+	store.seedMessages(id, []session.MessageRecord{
+		{Seq: 0, Message: engine.Message{Role: engine.RoleUser, Content: "covered"}},
+	})
+	scope, _ := agentSession.BeginRun(context.Background(), RunSpec{Prompt: "work"})
+	compactor := contextCompactorFunc(func(_ context.Context, request ContextCompactionRequest) (ContextCompactionProposal, error) {
+		if request.Trigger == ContextCompactionInitialHistory {
+			return ContextCompactionProposal{
+				Changed:      true,
+				CompactState: &session.CompactState{Summary: "durable summary", CoveredUntilSeq: 0},
+			}, nil
+		}
+		return ContextCompactionProposal{}, nil
+	})
+	budget := &blockedBudgetCompactor{inner: compactor}
+	controller, _ := agentSession.NewContextController(scope, staticContextCollector("system"), budget)
+	_, err := controller.Prepare(context.Background(), ordinaryConversationRequest("work"))
+	var blocked *ContextBlockedError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("first-turn Prepare() error = %v, want the blocking decision after the durable compaction", err)
+	}
+	_ = agentSession.FinishRun(scope)
+}
+
+/* TestContextControllerSkipsActionBudgetAfterRunLocalCompaction pins the
+ * baseline blocking decision on a later thinking turn: a run-local compaction
+ * performed during the same turn suppresses the action-phase budget check. */
+func TestContextControllerSkipsActionBudgetAfterRunLocalCompaction(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store)
+	agentSession, _ := harness.CreateSession(context.Background(), TUIInteractive, SessionOptions{WorkDir: "/workspace"})
+	id := agentSession.Snapshot().ID
+	store.seedMessages(id, []session.MessageRecord{
+		{Seq: 0, Message: engine.Message{Role: engine.RoleUser, Content: "covered"}},
+	})
+	scope, _ := agentSession.BeginRun(context.Background(), RunSpec{Prompt: "work"})
+	compactor := contextCompactorFunc(func(_ context.Context, request ContextCompactionRequest) (ContextCompactionProposal, error) {
+		if request.Trigger == ContextCompactionInitialHistory {
+			return ContextCompactionProposal{}, nil
+		}
+		if request.Trigger == ContextCompactionPreTurn {
+			return ContextCompactionProposal{Changed: true, Messages: []engine.Message{
+				{Role: engine.RoleSystem, Content: "system"},
+				{Role: engine.RoleUser, Content: "compacted"},
+			}}, nil
+		}
+		return ContextCompactionProposal{}, nil
+	})
+	budget := &blockedBudgetCompactor{inner: compactor}
+	controller, _ := agentSession.NewContextController(scope, staticContextCollector("system"), budget)
+	thinking := ordinaryConversationRequest("work")
+	thinking.Turn = 2
+	thinking.Phase = engine.PhaseThinking
+	if _, err := controller.Prepare(context.Background(), thinking); err != nil {
+		t.Fatal(err)
+	}
+	action := ordinaryConversationRequest("work")
+	action.Turn = 2
+	if _, err := controller.Prepare(context.Background(), action); err != nil {
+		t.Fatalf("action Prepare() after a run-local compaction = %v, want the baseline continuation", err)
+	}
+	_ = agentSession.FinishRun(scope)
+}
+
+/* TestContextControllerCompactsBeforeTurnInjections pins the baseline per-turn
+ * order: the pre-turn compaction runs on the projection without the turn's
+ * injected recovery and reminder notices, while the returned projection still
+ * carries them for the model. */
+func TestContextControllerCompactsBeforeTurnInjections(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store)
+	agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	scope, _ := agentSession.BeginRun(context.Background(), RunSpec{Prompt: "work"})
+	compactor := &recordingContextCompactor{}
+	controller, _ := agentSession.NewContextController(scope, staticContextCollector("system"), compactor)
+	if _, err := controller.Prepare(context.Background(), ordinaryConversationRequest("work")); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.RequestChanges(context.Background(), []engine.ConversationChange{{
+		Kind: engine.ConversationAppendContextMessage, Source: engine.ConversationSourceReminder,
+		Message: engine.Message{Role: engine.RoleUser, Content: "queued reminder"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	request := ordinaryConversationRequest("work")
+	request.Turn = 2
+	projection, err := controller.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compactor.requests) < 2 {
+		t.Fatalf("compaction requests = %#v", compactor.requests)
+	}
+	for _, content := range messageContents(compactor.requests[1].Messages) {
+		if strings.Contains(content, "queued reminder") {
+			t.Fatalf("turn notice reached the compaction input: %#v", compactor.requests[1].Messages)
+		}
+	}
+	if got := messageContents(projection.Context.Messages); !slices.Contains(got, "queued reminder") {
+		t.Fatalf("projection lost the turn notice: %v", got)
+	}
+	_ = agentSession.FinishRun(scope)
+}
+
+/* TestContextControllerKeepsBaselinePersistenceErrorChains ports the baseline
+ * lifecycle contract: run-facing persistence and context-assembly failures
+ * keep the baseline wrapped error wording. */
+func TestContextControllerKeepsBaselinePersistenceErrorChains(t *testing.T) {
+	tests := []struct {
+		name      string
+		kind      string
+		wantError string
+	}{
+		{name: "user message persistence", kind: "user", wantError: "写入 Session 用户消息失败: message log unavailable"},
+		{name: "assistant message persistence", kind: "assistant", wantError: "写入 Session 助手消息失败: message log unavailable"},
+		{name: "tool result persistence", kind: "tool", wantError: "写入 Session 工具结果失败: message log unavailable"},
+		{name: "message history load", kind: "load", wantError: "读取 Session 消息历史失败: message log unavailable"},
+		{name: "initial context assembly", kind: "initial", wantError: "组装 Session 上下文失败: summarizer unavailable"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := newLifecycleStore()
+			harness, _ := NewRuntimeHarness(store)
+			agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+			scope, _ := agentSession.BeginRun(context.Background(), RunSpec{Prompt: "work"})
+			var compactor ContextCompactor
+			if testCase.kind == "initial" {
+				compactor = failingInitialCompactor{err: errors.New("summarizer unavailable")}
+			}
+			controller, _ := agentSession.NewContextController(scope, staticContextCollector("system"), compactor)
+			/* Both assembly failures surface on the run's first prepare, while
+			 * the persistence failures surface on a later committed change. */
+			if testCase.kind == "initial" || testCase.kind == "load" {
+				if testCase.kind == "load" {
+					store.failNextLoad(errors.New("message log unavailable"))
+				}
+				_, err := controller.Prepare(context.Background(), ordinaryConversationRequest("work"))
+				if err == nil || err.Error() != testCase.wantError {
+					t.Fatalf("Prepare() error = %v, want %q", err, testCase.wantError)
+				}
+				_ = agentSession.FinishRun(scope)
+				return
+			}
+			if _, err := controller.Prepare(context.Background(), ordinaryConversationRequest("work")); err != nil {
+				t.Fatal(err)
+			}
+			store.failNextMessage(errors.New("message log unavailable"))
+			message := engine.Message{Role: engine.RoleUser, Content: "follow-up"}
+			switch testCase.kind {
+			case "assistant":
+				message = engine.Message{Role: engine.RoleAssistant, Content: "answer"}
+			case "tool":
+				message = engine.Message{Role: engine.RoleUser, Content: "tool output", ToolCallID: "call-1"}
+			}
+			err := controller.RequestChanges(context.Background(), []engine.ConversationChange{{
+				Kind: engine.ConversationAppendMessage, Message: message,
+			}})
+			if err == nil || err.Error() != testCase.wantError {
+				t.Fatalf("error = %v, want %q", err, testCase.wantError)
+			}
+			_ = agentSession.FinishRun(scope)
+		})
+	}
+}
+
+/* failingInitialCompactor fails only the durable session-history compaction,
+ * mirroring a summarizer outage during initial context assembly. */
+type failingInitialCompactor struct {
+	err error
+}
+
+func (c failingInitialCompactor) Compact(_ context.Context, request ContextCompactionRequest) (ContextCompactionProposal, error) {
+	if request.Trigger == ContextCompactionInitialHistory {
+		return ContextCompactionProposal{}, c.err
+	}
+	return ContextCompactionProposal{}, nil
+}
+
+func (failingInitialCompactor) CheckContext(context.Context, ContextBudgetRequest) error {
+	return nil
 }
 
 func TestContextControllerUsesExactPersistedRecordMetadataWhileLive(t *testing.T) {
@@ -486,6 +709,34 @@ func TestAgentSessionManualCompactionCommitsProposal(t *testing.T) {
 	}
 }
 
+/* TestAgentSessionManualCompactionSummarizesRawStoredSummary pins the baseline
+ * manual compaction input: an existing durable summary reaches the summarizer
+ * as its raw text, never wrapped in the projected summary message. */
+func TestAgentSessionManualCompactionSummarizesRawStoredSummary(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store)
+	agentSession, _ := harness.CreateSession(context.Background(), TUIInteractive, SessionOptions{WorkDir: "/workspace"})
+	id := agentSession.Snapshot().ID
+	store.seedMessages(id, []session.MessageRecord{
+		{Seq: 0, RunID: "old", Message: engine.Message{Role: engine.RoleUser, Content: "covered"}},
+		{Seq: 1, RunID: "old", Message: engine.Message{Role: engine.RoleAssistant, Content: "active"}},
+	})
+	store.seedCompactState(id, &session.CompactState{Summary: "earlier summary", CoveredUntilSeq: 0})
+	compactor := &recordingContextCompactor{proposal: ContextCompactionProposal{
+		Changed: true, CompactState: &session.CompactState{Summary: "manual summary", CoveredUntilSeq: 1},
+	}}
+	if _, err := agentSession.CompactContext(context.Background(), compactor, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(compactor.requests) != 1 {
+		t.Fatalf("compaction requests = %d, want 1", len(compactor.requests))
+	}
+	contents := messageContents(compactor.requests[0].Messages)
+	if len(contents) != 2 || contents[0] != "earlier summary" || contents[1] != "active" {
+		t.Fatalf("manual compaction input = %#v, want the raw summary followed by the active records", contents)
+	}
+}
+
 func TestAgentSessionManualCompactionSurvivesContinuationAndReopen(t *testing.T) {
 	store := newLifecycleStore()
 	harness, _ := NewRuntimeHarness(store)
@@ -642,6 +893,28 @@ func (c *recordingContextCompactor) Compact(_ context.Context, request ContextCo
 	request.ToolDefinitions = append([]engine.ToolDefinition(nil), request.ToolDefinitions...)
 	c.requests = append(c.requests, request)
 	return c.proposal, nil
+}
+
+/* blockedBudgetCompactor always refuses the budget check while delegating the
+ * compaction proposal to an inner compactor. */
+type blockedBudgetCompactor struct {
+	inner ContextCompactor
+}
+
+func (c *blockedBudgetCompactor) Compact(ctx context.Context, request ContextCompactionRequest) (ContextCompactionProposal, error) {
+	return c.inner.Compact(ctx, request)
+}
+
+func (*blockedBudgetCompactor) CheckContext(context.Context, ContextBudgetRequest) error {
+	return &ContextBlockedError{UsedTokens: 101, Limit: 100}
+}
+
+func compactionTriggers(compactor *recordingContextCompactor) []ContextCompactionTrigger {
+	triggers := make([]ContextCompactionTrigger, 0, len(compactor.requests))
+	for _, request := range compactor.requests {
+		triggers = append(triggers, request.Trigger)
+	}
+	return triggers
 }
 
 func (*recordingContextCompactor) CheckContext(context.Context, ContextBudgetRequest) error {

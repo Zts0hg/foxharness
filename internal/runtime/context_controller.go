@@ -98,6 +98,15 @@ type ContextController struct {
 	systemPrompt string
 	initialized  bool
 	messages     []engine.Message
+	/* injected mirrors messages one-to-one and marks transient context notices
+	 * that were appended after the previous prepare, so the pre-turn compaction
+	 * input can exclude them the way the baseline did by appending its notices
+	 * after the compaction ran. */
+	injected []bool
+	/* compactedTurn records the turn that already performed a run-local
+	 * compaction, mirroring the baseline justCompacted flag: the turn's budget
+	 * check is suppressed once that compaction committed. */
+	compactedTurn int
 }
 
 type contextTurnKey struct {
@@ -139,7 +148,7 @@ func (s *AgentSession) CompactContext(ctx context.Context, compactor ContextComp
 	if err != nil {
 		return ContextCompactionProposal{}, err
 	}
-	projected := projectStoredContext("", s.record.TranscriptPath(), state, records)[1:]
+	projected := projectCompactionInput(state, records)
 	proposal, err := compactor.Compact(ctx, ContextCompactionRequest{
 		Trigger: ContextCompactionManual, Messages: cloneContextMessages(projected),
 		Records: cloneMessageRecords(records), CompactState: cloneCompactState(state),
@@ -225,16 +234,22 @@ func (c *ContextController) Prepare(ctx context.Context, request engine.Conversa
 			return engine.ConversationProjection{}, err
 		}
 		if compaction != nil {
+			if trigger == ContextCompactionPreTurn || trigger == ContextCompactionReactive {
+				c.compactedTurn = request.Turn
+			}
 			compaction.BeforeMessages = before
 			compaction.AfterMessages = len(c.messages)
 			compactions = append(compactions, *compaction)
 		}
 	}
-	if request.Phase == engine.PhaseAction && len(compactions) == 0 {
+	if request.Phase == engine.PhaseAction && c.compactedTurn != request.Turn {
 		if err := c.checkBudget(ctx, request); err != nil {
 			return engine.ConversationProjection{}, err
 		}
 	}
+	/* The projection the engine invoked now covers every pending notice, so
+	 * the next compaction decision may include them again. */
+	c.injected = make([]bool, len(c.messages))
 	run := c.scope.resolved.Snapshot()
 	return engine.ConversationProjection{
 		Context: engine.RunContext{
@@ -284,8 +299,33 @@ func (c *ContextController) RequestChanges(ctx context.Context, changes []engine
 			}
 		}
 		c.messages = append(c.messages, message)
+		c.injected = append(c.injected, change.Kind == engine.ConversationAppendContextMessage)
 	}
 	return nil
+}
+
+/* pendingInjections returns the transient notices appended since the previous
+ * prepare, in conversation order. */
+func (c *ContextController) pendingInjections() []engine.Message {
+	notices := make([]engine.Message, 0, len(c.messages))
+	for index, message := range c.messages {
+		if c.injected[index] {
+			notices = append(notices, message)
+		}
+	}
+	return notices
+}
+
+/* preparedMessages returns the projection without the pending transient
+ * notices, which the baseline appends only after the pre-turn compaction. */
+func (c *ContextController) preparedMessages() []engine.Message {
+	messages := make([]engine.Message, 0, len(c.messages))
+	for index, message := range c.messages {
+		if !c.injected[index] {
+			messages = append(messages, message)
+		}
+	}
+	return messages
 }
 
 func (c *ContextController) initialize(ctx context.Context) error {
@@ -314,6 +354,7 @@ func (c *ContextController) initialize(ctx context.Context) error {
 		return err
 	}
 	c.messages = projectStoredContext(c.systemPrompt, c.session.record.TranscriptPath(), state, records)
+	c.injected = make([]bool, len(c.messages))
 	c.initialized = true
 	return nil
 }
@@ -326,8 +367,14 @@ func (c *ContextController) compact(ctx context.Context, request engine.Conversa
 	if err != nil {
 		return nil, err
 	}
+	/* The pre-turn decision compacts the projection the previous prepare
+	 * published; the notices appended for this turn follow the compaction. */
+	messages := c.messages
+	if trigger == ContextCompactionPreTurn {
+		messages = c.preparedMessages()
+	}
 	proposal, err := c.compactor.Compact(ctx, ContextCompactionRequest{
-		Trigger: trigger, Messages: cloneContextMessages(c.messages),
+		Trigger: trigger, Messages: cloneContextMessages(messages),
 		ToolDefinitions: cloneContextToolDefinitions(request.ToolDefinitions),
 		Records:         cloneMessageRecords(records), CompactState: cloneCompactState(state),
 		TranscriptPath: c.session.record.TranscriptPath(),
@@ -337,7 +384,7 @@ func (c *ContextController) compact(ctx context.Context, request engine.Conversa
 		if trigger != ContextCompactionInitialHistory && !errors.As(err, &blocked) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, c.wrapInitialCompactionError(trigger, err)
 	}
 	if err := validateCompactionProposal(trigger, proposal, records); err != nil {
 		return nil, err
@@ -345,9 +392,10 @@ func (c *ContextController) compact(ctx context.Context, request engine.Conversa
 	if !proposal.Changed {
 		return nil, nil
 	}
+	pending := c.pendingInjections()
 	if proposal.CompactState != nil {
 		if err := c.session.commitCompactState(proposal.CompactState); err != nil {
-			return nil, err
+			return nil, c.wrapInitialCompactionError(trigger, err)
 		}
 		records, state, err = c.session.contextSnapshot()
 		if err != nil {
@@ -357,7 +405,18 @@ func (c *ContextController) compact(ctx context.Context, request engine.Conversa
 	} else {
 		c.messages = cloneContextMessages(proposal.Messages)
 	}
+	c.messages = append(c.messages, pending...)
 	return &engine.ConversationCompaction{Trigger: string(trigger)}, nil
+}
+
+/* wrapInitialCompactionError keeps the baseline assembly chain on the durable
+ * session-history decision point, which the baseline performed while building
+ * the run's initial context. */
+func (c *ContextController) wrapInitialCompactionError(trigger ContextCompactionTrigger, err error) error {
+	if trigger != ContextCompactionInitialHistory {
+		return err
+	}
+	return fmt.Errorf("组装 Session 上下文失败: %w", err)
 }
 
 func validateCompactionProposal(trigger ContextCompactionTrigger, proposal ContextCompactionProposal, records []session.MessageRecord) error {
@@ -401,7 +460,6 @@ func (s *AgentSession) claimContextPreparation(runID session.RunID, turn int, pr
 	key := contextTurnKey{runID: runID, turn: turn}
 	if !s.contextInitialPrepared[runID] {
 		s.contextInitialPrepared[runID] = true
-		s.contextPreparedTurns[key] = true
 		return ContextCompactionInitialHistory, true
 	}
 	if s.contextPreparedTurns[key] {
@@ -458,7 +516,7 @@ func (s *AgentSession) appendMessageLocked(runID session.RunID, message engine.M
 	record := s.record
 	persisted, err := s.store.AppendMessage(&record, runID, cloneContextMessage(message), display)
 	if err != nil {
-		return fmt.Errorf("commit runtime message: %w", err)
+		return fmt.Errorf("%s: %w", baselineMessageWriteLabel(message), err)
 	}
 	persisted.Message = cloneContextMessage(persisted.Message)
 	s.contextRecords = append(s.contextRecords, persisted)
@@ -466,6 +524,20 @@ func (s *AgentSession) appendMessageLocked(runID session.RunID, message engine.M
 		return fmt.Errorf("persisted runtime message run ID %q does not match %q", persisted.RunID, runID)
 	}
 	return nil
+}
+
+/* baselineMessageWriteLabel names the persisted message kind in the baseline
+ * persistence error chain: user messages, assistant messages, and tool
+ * results each carry their own wording. */
+func baselineMessageWriteLabel(message engine.Message) string {
+	switch {
+	case message.ToolCallID != "":
+		return "写入 Session 工具结果失败"
+	case message.Role == engine.RoleAssistant:
+		return "写入 Session 助手消息失败"
+	default:
+		return "写入 Session 用户消息失败"
+	}
 }
 
 func (s *AgentSession) contextSnapshot() ([]session.MessageRecord, *session.CompactState, error) {
@@ -484,7 +556,7 @@ func (s *AgentSession) ensureContextLoadedLocked() error {
 	record := s.record
 	records, err := s.store.LoadMessageRecords(&record)
 	if err != nil {
-		return fmt.Errorf("load runtime messages: %w", err)
+		return fmt.Errorf("读取 Session 消息历史失败: %w", err)
 	}
 	state, err := s.store.LoadContextCompactState(&record)
 	if err != nil {
@@ -509,6 +581,24 @@ func (s *AgentSession) commitCompactState(state *session.CompactState) error {
 	}
 	s.contextCompactState = cloneCompactState(copy)
 	return nil
+}
+
+/* projectCompactionInput renders the summarizer input for one explicit
+ * compaction: the raw durable summary text followed by the active records,
+ * without the projected system message or summary wrapper. */
+func projectCompactionInput(state *session.CompactState, records []session.MessageRecord) []engine.Message {
+	messages := make([]engine.Message, 0, len(records)+1)
+	covered := int64(-1)
+	if state != nil && state.Summary != "" {
+		covered = state.CoveredUntilSeq
+		messages = append(messages, engine.Message{Role: engine.RoleUser, Content: state.Summary})
+	}
+	for _, record := range records {
+		if record.Seq > covered {
+			messages = append(messages, cloneContextMessage(record.Message))
+		}
+	}
+	return messages
 }
 
 func projectStoredContext(systemPrompt, transcriptPath string, state *session.CompactState, records []session.MessageRecord) []engine.Message {
