@@ -176,7 +176,7 @@ func TestRunnerNormalizesRejectedRequestBeforeAgentResolution(t *testing.T) {
 		ParentSessionID: "parent-session",
 		ParentRunID:     "parent-run",
 		DelegationID:    "tool-call",
-		Agent:           subagent.AgentID("unknown-agent"),
+		Agent:           subagent.AgentID("  unknown-agent  "),
 		Task:            "inspect",
 	})
 
@@ -185,6 +185,11 @@ func TestRunnerNormalizesRejectedRequestBeforeAgentResolution(t *testing.T) {
 	}
 	if result == nil || result.Status != subagent.OutcomeRejected || result.Depth != 1 {
 		t.Fatalf("rejected outcome = %#v, want normalized depth-one rejection", result)
+	}
+	/* The normalized agent identity enters the outcome, so the reported
+	 * rejection names the requested agent without untrimmed whitespace. */
+	if result.Agent != subagent.AgentID("unknown-agent") {
+		t.Fatalf("rejected agent = %q, want the normalized requested agent", result.Agent)
 	}
 	if result.ParentSessionID != "parent-session" || result.ParentRunID != "parent-run" || result.DelegationID != "tool-call" {
 		t.Fatalf("rejected lineage = %#v", result)

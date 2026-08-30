@@ -20,6 +20,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/registryexec"
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 	"github.com/Zts0hg/foxharness/internal/runtimecompaction"
+	"github.com/Zts0hg/foxharness/internal/runtimejournal"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/subagent"
@@ -58,7 +59,38 @@ const (
 
 /* Runner adapts subagent's consumer-owned protocol to runtime.ChildRunner. */
 type Runner struct {
-	config Config
+	config   Config
+	journals childJournalSet
+}
+
+/* childJournalSet keeps one journal per child run so concurrent children never
+ * share run-scoped telemetry state. */
+type childJournalSet struct {
+	mu       sync.Mutex
+	journals map[session.RunID]*runtimejournal.Journal
+}
+
+func (s *childJournalSet) get(assembly foxruntime.RunAssembly) (*runtimejournal.Journal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.journals == nil {
+		s.journals = make(map[session.RunID]*runtimejournal.Journal)
+	}
+	if journal := s.journals[assembly.Run.RunID]; journal != nil {
+		return journal, nil
+	}
+	journal, err := runtimejournal.New(assembly)
+	if err != nil {
+		return nil, err
+	}
+	s.journals[assembly.Run.RunID] = journal
+	return journal, nil
+}
+
+func (s *childJournalSet) remove(runID session.RunID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.journals, runID)
 }
 
 /* New freezes caller-owned configuration for future synchronous invocations. */
@@ -147,6 +179,12 @@ func (r *Runner) Run(ctx context.Context, request subagent.Request) (*subagent.R
 		InitializeSession: func(_ context.Context, snapshot foxruntime.AgentSessionSnapshot) error {
 			return memory.NewSessionStore(r.config.WorkDir, snapshot.RootDir).EnsureFiles()
 		},
+		NewArtifactJournal: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.SessionArtifactJournal, error) {
+			return r.journals.get(assembly)
+		},
+		NewTelemetryJournal: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.TelemetryJournal, error) {
+			return r.journals.get(assembly)
+		},
 		NewModel: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ModelInvoker, error) {
 			compactorMu.Lock()
 			defer compactorMu.Unlock()
@@ -211,6 +249,7 @@ func (r *Runner) Run(ctx context.Context, request subagent.Request) (*subagent.R
 		Task: request.Task, ReadOnly: request.ReadOnly, AllowedTools: request.AllowedTools,
 		Depth: request.Depth, MaxTurns: maxTurns, Cleanup: supervisor,
 	})
+	r.journals.remove(session.RunID(result.RunID))
 	return adaptResult(result), runErr
 }
 
@@ -337,7 +376,10 @@ func adaptResult(result foxruntime.ChildRunResult) *subagent.Result {
 }
 
 func rejectedResult(request subagent.Request, invocationID string) *subagent.Result {
-	agent := request.Agent
+	/* The reported agent is the normalized requested identity, so the outcome
+	 * names the agent the invocation asked for after the same trimming the
+	 * resolution applied. */
+	agent := subagent.AgentID(strings.TrimSpace(string(request.Agent)))
 	if agent == "" {
 		agent = subagent.AgentGeneralPurpose
 	}
