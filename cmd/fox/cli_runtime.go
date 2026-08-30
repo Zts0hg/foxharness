@@ -39,6 +39,18 @@ import (
 )
 
 func newCLIApplication(ctx context.Context, config foxConfig) (*app.RuntimeApplication, error) {
+	workDir, err := filepath.Abs(config.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	/* Session selection runs first, matching the baseline admission order: a
+	 * bad selection is reported before any provider construction, so an
+	 * under-specified LLM configuration cannot mask it. */
+	store := session.NewFileStore(workDir)
+	stored, err := selectCLIStoredSession(store, workDir, config)
+	if err != nil {
+		return nil, err
+	}
 	if err := validateCLILLM(config); err != nil {
 		return nil, err
 	}
@@ -46,9 +58,11 @@ func newCLIApplication(ctx context.Context, config foxConfig) (*app.RuntimeAppli
 	if err != nil {
 		return nil, err
 	}
-	return newCLIApplicationWithProvider(ctx, config, modelProvider)
+	return newCLIApplicationWithSession(ctx, config, modelProvider, stored)
 }
 
+/* newCLIApplicationWithProvider composes the CLI application and selects its
+ * session, for callers that already hold a constructed provider. */
 func newCLIApplicationWithProvider(ctx context.Context, config foxConfig, modelProvider provider.LLMProvider) (*app.RuntimeApplication, error) {
 	if err := validateCLILLM(config); err != nil {
 		return nil, err
@@ -62,6 +76,17 @@ func newCLIApplicationWithProvider(ctx context.Context, config foxConfig, modelP
 	if err != nil {
 		return nil, err
 	}
+	return newCLIApplicationWithSession(ctx, config, modelProvider, stored)
+}
+
+/* newCLIApplicationWithSession composes the CLI application around one
+ * already selected session. */
+func newCLIApplicationWithSession(ctx context.Context, config foxConfig, modelProvider provider.LLMProvider, stored *session.StoredSession) (*app.RuntimeApplication, error) {
+	workDir, err := filepath.Abs(config.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	store := session.NewFileStore(workDir)
 	memoryStore := memory.NewSessionStore(workDir, stored.RootDir)
 	if err := memoryStore.EnsureFiles(); err != nil {
 		return nil, fmt.Errorf("初始化文件记忆失败: %w", err)
@@ -194,8 +219,8 @@ func newCLIApplicationWithProvider(ctx context.Context, config foxConfig, modelP
 			}
 			return nil
 		},
-		AfterRun: func(_ context.Context, result foxruntime.RunResult, runErr error) {
-			if result.RunID == "" || (runErr != nil && result.Outcome.FinalMessage == "" && !result.Outcome.Partial) {
+		AfterRun: func(_ context.Context, result foxruntime.RunResult, _ error) {
+			if !runArmsMemoryExtraction(result) {
 				return
 			}
 			defer func() {
