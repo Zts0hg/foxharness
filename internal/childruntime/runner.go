@@ -186,6 +186,10 @@ func (r *Runner) Run(ctx context.Context, request subagent.Request) (*subagent.R
 			return r.journals.get(assembly)
 		},
 		NewModel: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ModelInvoker, error) {
+			journal, err := r.journals.get(assembly)
+			if err != nil {
+				return nil, err
+			}
 			compactorMu.Lock()
 			defer compactorMu.Unlock()
 			if compactor == nil {
@@ -195,17 +199,21 @@ func (r *Runner) Run(ctx context.Context, request subagent.Request) (*subagent.R
 					return nil, err
 				}
 			}
-			return modelinvoke.New(r.config.Provider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker}), nil
+			return journal.WrapModel(modelinvoke.New(r.config.Provider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker})), nil
 		},
 		NewTools: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {
+			journal, err := r.journals.get(assembly)
+			if err != nil {
+				return nil, err
+			}
 			registry, err := r.buildRegistry(store, assembly, supervisor)
 			if err != nil {
 				return nil, err
 			}
-			return toolruntime.New(
+			return journal.WrapTools(toolruntime.New(
 				registryexec.Capabilities(registry, assembly.AllowedTools, nil), toolresult.OSFileSystem{},
 				filepath.Join(assembly.Session.RootDir, "tool-results"),
-			), nil
+			)), nil
 		},
 		NewPolicy: func(context.Context, foxruntime.RunAssembly) (engine.TurnPolicy, error) {
 			return turnpolicy.New(turnpolicy.Config{}), nil

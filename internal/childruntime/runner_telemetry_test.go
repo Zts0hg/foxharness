@@ -46,4 +46,9 @@ func TestRunnerWritesChildRunMetrics(t *testing.T) {
 	if !strings.Contains(string(content), `"run_summary"`) {
 		t.Fatalf("child metrics = %q, want a run summary record", content)
 	}
+	/* The run summary aggregates the wrapped model calls, so a child run that
+	 * invoked its model reports the call instead of an all-zero summary. */
+	if !strings.Contains(string(content), `"total_model_calls":1`) {
+		t.Fatalf("child metrics = %q, want one recorded model call", content)
+	}
 }
