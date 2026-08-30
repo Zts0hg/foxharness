@@ -150,8 +150,10 @@ var wrapperCommands = map[string]bool{
 // Short generic names (sh, env, open, trap) stay exact matches in
 // detachedShellCommands so unrelated words sharing the prefix stay usable.
 var interpreterNamePrefixes = []string{
-	"awk", "ghci", "julia", "ksh", "lua", "node", "octave", "perl",
-	"php", "python", "pypy", "pwsh", "ruby", "tclsh", "wish", "zsh",
+	"awk", "clisp", "dart", "elixir", "erl", "escript", "ghc", "guile",
+	"java", "jshell", "julia", "ksh", "lua", "node", "octave", "perl",
+	"php", "python", "pypy", "pwsh", "racket", "runghc", "runhaskell",
+	"ruby", "tclsh", "wish", "zsh",
 }
 
 // isDetachedOrInterpreterCommand reports whether a base command name is a
@@ -282,33 +284,37 @@ func baseCommandName(name string) string {
 }
 
 // detachedShellCommands lists shell forms that escape the supervised process
-// tree by design: interpreters and nested shells, scheduler and launcher
-// families (at/batch, cron, systemd-run, launchctl, schtasks, open) whose
-// payload is executed by a system daemon or LaunchServices outside the killed
-// process group, and structural escapers such as timeout that relocate
-// themselves and their payload into a new process group.
+// tree by design: interpreters and nested shells (including the Korn and
+// POSIX family members mksh, oksh, yash, and posh), session multiplexers
+// (screen, tmux, dtach, abduco) that park their payload in a detached
+// session, scheduler and launcher families (at/batch, cron, systemd-run,
+// launchctl, schtasks, open) whose payload is executed by a system daemon or
+// LaunchServices outside the killed process group, and structural escapers
+// such as timeout that relocate themselves and their payload into a new
+// process group.
 // The list is closed on purpose: supervised Bash rejects anything it cannot
 // prove synchronous, so a missed name weakens the cancellation guarantee and
 // must be added as soon as a family is identified.
 var detachedShellCommands = map[string]bool{
-	".": true, "at": true, "atq": true, "atrm": true, "bash": true,
-	"batch": true, "bg": true, "bmake": true, "builtin": true,
-	"bun": true, "csh": true, "command": true, "coproc": true,
-	"crontab": true, "daemon": true, "dash": true, "deno": true,
-	"disown": true, "elvish": true, "env": true, "eval": true,
-	"exec": true, "expect": true, "fish": true, "gawk": true,
-	"ghci": true, "gmake": true, "jruby": true, "ksh": true,
-	"launchctl": true, "make": true, "mapfile": true, "mawk": true,
-	"nawk":   true,
-	"nodejs": true,
-	"nohup":  true, "octave": true, "open": true, "osascript": true,
-	"powershell": true, "pwsh": true, "pythonw": true, "r": true,
+	".": true, "abduco": true, "at": true, "atq": true, "atrm": true,
+	"bash": true, "batch": true, "bg": true, "bmake": true,
+	"builtin": true, "bun": true, "command": true, "coproc": true,
+	"csh": true, "crontab": true, "daemon": true, "dash": true,
+	"deno": true, "disown": true, "dtach": true, "elvish": true,
+	"env": true, "eval": true, "exec": true, "expect": true,
+	"fish": true, "gawk": true, "ghci": true, "gmake": true,
+	"jruby": true, "ksh": true, "launchctl": true, "make": true,
+	"mapfile": true, "mawk": true, "mksh": true, "nawk": true,
+	"nodejs": true, "nohup": true, "octave": true, "oksh": true,
+	"open": true, "osascript": true, "posh": true, "powershell": true,
+	"pwsh": true, "pythonw": true, "r": true, "readarray": true,
 	"rscript": true, "sbcl": true, "screen": true, "schtasks": true,
 	"setsid": true, "sh": true, "shopt": true, "source": true,
-	"readarray": true, "systemd-run": true, "tcsh": true, "timeout": true, "tmux": true,
+	"systemd-run": true, "tcsh": true, "timeout": true, "tmux": true,
 	"trap": true, "wish": true, "xonsh": true, "xargs": true,
 	"genv": true, "gnohup": true, "gtimeout": true, "gxargs": true,
-	"zsh": true,
+	"yash": true,
+	"zsh":  true,
 }
 
 func readOnlyCall(call *syntax.CallExpr, workspace, cwd string) bool {
