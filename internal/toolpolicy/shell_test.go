@@ -133,6 +133,8 @@ func TestAssessSynchronousShellRejectsEscapeWrapperAndExpansionForms(t *testing.
 		"find . $'-exec' sh -c 'setsid sleep 5' ;",
 		"arch -x86_64 screen -dm session 'setsid sleep 5'",
 		"arch -arm64 at now",
+		"timeout 300 go test ./...",
+		"timeout 5 grep pattern file",
 		"SUDO at now",
 		"NICE python3 -c 'print(1)'",
 		"FIND . -exec sh -c 'setsid sleep 5' ;",
@@ -149,8 +151,8 @@ func TestAssessSynchronousShellRejectsEscapeWrapperAndExpansionForms(t *testing.
 	accepted := []string{
 		"go test ./...",
 		"find . -name '*.go'",
-		"timeout 30 go test ./...",
 		"nice -n 5 grep -r pattern .",
+		"arch -x86_64 ls -la",
 		"sudo -l",
 		"watch ls",
 		"stdbuf -o0 cat file",

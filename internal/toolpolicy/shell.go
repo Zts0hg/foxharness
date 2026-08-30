@@ -132,8 +132,7 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 var wrapperCommands = map[string]bool{
 	"arch": true, "busybox": true, "chrt": true, "find": true,
 	"ionice": true, "nice": true, "script": true, "sudo": true,
-	"stdbuf": true, "taskset": true, "timeout": true, "toybox": true,
-	"watch": true,
+	"stdbuf": true, "taskset": true, "toybox": true, "watch": true,
 }
 
 // interpreterNamePrefixes lists interpreter and shell families whose
@@ -278,10 +277,11 @@ func baseCommandName(name string) string {
 }
 
 // detachedShellCommands lists shell forms that escape the supervised process
-// tree by design: interpreters and nested shells, plus scheduler and launcher
+// tree by design: interpreters and nested shells, scheduler and launcher
 // families (at/batch, cron, systemd-run, launchctl, schtasks, open) whose
 // payload is executed by a system daemon or LaunchServices outside the killed
-// process group, so a cancelled call could still produce later side effects.
+// process group, and structural escapers such as timeout that relocate
+// themselves and their payload into a new process group.
 // The list is closed on purpose: supervised Bash rejects anything it cannot
 // prove synchronous, so a missed name weakens the cancellation guarantee and
 // must be added as soon as a family is identified.
@@ -299,7 +299,7 @@ var detachedShellCommands = map[string]bool{
 	"powershell": true, "pwsh": true, "pythonw": true, "r": true,
 	"rscript": true, "sbcl": true, "screen": true, "schtasks": true,
 	"setsid": true, "sh": true, "shopt": true, "source": true,
-	"systemd-run": true, "tcsh": true, "tmux": true,
+	"systemd-run": true, "tcsh": true, "timeout": true, "tmux": true,
 	"trap": true, "wish": true, "xonsh": true, "xargs": true,
 	"zsh": true,
 }
