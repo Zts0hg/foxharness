@@ -232,11 +232,7 @@ func (c *ContextController) Prepare(ctx context.Context, request engine.Conversa
 
 	triggers := c.session.claimContextPreparation(c.scope.run.ID, request.Turn, request.Phase, request.Preparation)
 	compactions := make([]engine.ConversationCompaction, 0, len(triggers))
-	initialClaimed := false
 	for _, trigger := range triggers {
-		if trigger == ContextCompactionInitialHistory {
-			initialClaimed = true
-		}
 		before := len(c.messages)
 		compaction, err := c.compact(ctx, request, trigger)
 		if err != nil {
@@ -255,15 +251,6 @@ func (c *ContextController) Prepare(ctx context.Context, request engine.Conversa
 		if err := c.checkBudget(ctx, request); err != nil {
 			return engine.ConversationProjection{}, err
 		}
-	}
-	/* The projection the engine invoked now covers every pending notice, so
-	 * the next compaction decision may include them again — except after the
-	 * durable session-history decision, whose run-local follow-up at the
-	 * first turn still excludes the notices that predated it, the way the
-	 * baseline appended its turn-one reminders after both decisions ran. */
-	if !initialClaimed {
-		c.injected = make([]bool, len(c.messages))
-		c.injectedTurn = make([]int, len(c.messages))
 	}
 	run := c.scope.resolved.Snapshot()
 	return engine.ConversationProjection{
@@ -326,13 +313,19 @@ func (c *ContextController) RequestChanges(ctx context.Context, changes []engine
 	return nil
 }
 
+/* pendingNotice pairs one transient notice with the turn that produced it. */
+type pendingNotice struct {
+	message engine.Message
+	turn    int
+}
+
 /* pendingInjections returns the transient notices appended since the previous
  * prepare, in conversation order. */
-func (c *ContextController) pendingInjections() []engine.Message {
-	notices := make([]engine.Message, 0, len(c.messages))
+func (c *ContextController) pendingInjections() []pendingNotice {
+	notices := make([]pendingNotice, 0, len(c.messages))
 	for index, message := range c.messages {
 		if c.injected[index] {
-			notices = append(notices, message)
+			notices = append(notices, pendingNotice{message: message, turn: c.injectedTurn[index]})
 		}
 	}
 	return notices
@@ -342,14 +335,27 @@ func (c *ContextController) pendingInjections() []engine.Message {
  * turn produced, in conversation order. A notice with an unknown producing
  * turn is attributed to every turn, so it stays excluded wherever the turn's
  * own notices are excluded. */
-func (c *ContextController) pendingInjectionsForTurn(turn int) []engine.Message {
-	notices := make([]engine.Message, 0, len(c.messages))
+func (c *ContextController) pendingInjectionsForTurn(turn int) []pendingNotice {
+	notices := make([]pendingNotice, 0, len(c.messages))
 	for index, message := range c.messages {
 		if c.injected[index] && (c.injectedTurn[index] == 0 || c.injectedTurn[index] == turn) {
-			notices = append(notices, message)
+			notices = append(notices, pendingNotice{message: message, turn: c.injectedTurn[index]})
 		}
 	}
 	return notices
+}
+
+/* markReappendedNotices resynchronizes the injected-marker bookkeeping with
+ * the projection after a compaction replaced it: the surviving projection is
+ * ordinary history, and only the notices re-appended on top stay pending. */
+func (c *ContextController) markReappendedNotices(notices []pendingNotice) {
+	c.injected = make([]bool, len(c.messages))
+	c.injectedTurn = make([]int, len(c.messages))
+	for index, notice := range notices {
+		position := len(c.messages) - len(notices) + index
+		c.injected[position] = true
+		c.injectedTurn[position] = notice.turn
+	}
 }
 
 /* preparedMessages returns the projection without the pending transient
@@ -423,7 +429,7 @@ func (c *ContextController) compact(ctx context.Context, request engine.Conversa
 	 * end of the previous turn, and the recovery decision sees the live
 	 * projection. The notices each input excluded follow the compaction. */
 	var messages []engine.Message
-	var reappend []engine.Message
+	var reappend []pendingNotice
 	switch trigger {
 	case ContextCompactionInitialHistory:
 		messages = c.preparedMessages()
@@ -465,8 +471,18 @@ func (c *ContextController) compact(ctx context.Context, request engine.Conversa
 	} else {
 		c.messages = cloneContextMessages(proposal.Messages)
 	}
-	c.messages = append(c.messages, reappend...)
+	c.messages = append(c.messages, pendingNoticeMessages(reappend)...)
+	c.markReappendedNotices(reappend)
 	return &engine.ConversationCompaction{Trigger: string(trigger)}, nil
+}
+
+/* pendingNoticeMessages returns the notice messages in their pending order. */
+func pendingNoticeMessages(notices []pendingNotice) []engine.Message {
+	messages := make([]engine.Message, 0, len(notices))
+	for _, notice := range notices {
+		messages = append(messages, notice.message)
+	}
+	return messages
 }
 
 /* wrapInitialCompactionError keeps the baseline assembly chain on the durable

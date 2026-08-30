@@ -115,6 +115,66 @@ func TestContextControllerTurnOneThinkingKeepsPrePrepareNoticesOutOfRunLocal(t *
 	_ = agentSession.FinishRun(scope)
 }
 
+/* TestContextControllerDurableCompactionKeepsNoticeIndexInSync pins the
+ * marker invariant across a committed durable compaction: the projection
+ * rebuild must resynchronize the injected-notice bookkeeping, so the same
+ * prepare's run-local decision still excludes the turn's notices and no
+ * stale mark survives into the next turn. */
+func TestContextControllerDurableCompactionKeepsNoticeIndexInSync(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store)
+	agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	store.seedMessages(agentSession.Snapshot().ID, []session.MessageRecord{
+		{Seq: 0, Message: engine.Message{Role: engine.RoleUser, Content: "covered-0"}},
+		{Seq: 1, Message: engine.Message{Role: engine.RoleAssistant, Content: "covered-1"}},
+		{Seq: 2, Message: engine.Message{Role: engine.RoleUser, Content: "covered-2"}},
+		{Seq: 3, Message: engine.Message{Role: engine.RoleAssistant, Content: "covered-3"}},
+		{Seq: 4, Message: engine.Message{Role: engine.RoleUser, Content: "covered-4"}},
+	})
+	scope, _ := agentSession.BeginRun(context.Background(), RunSpec{Prompt: "work"})
+	compactor := &recordingContextCompactor{proposalFunc: func(request ContextCompactionRequest) (ContextCompactionProposal, error) {
+		if request.Trigger == ContextCompactionInitialHistory {
+			return ContextCompactionProposal{
+				Changed:      true,
+				CompactState: &session.CompactState{Summary: "durable summary", CoveredUntilSeq: 4},
+			}, nil
+		}
+		if request.Trigger == ContextCompactionPreTurn {
+			return ContextCompactionProposal{Changed: true, Messages: append([]engine.Message(nil), request.Messages...)}, nil
+		}
+		return ContextCompactionProposal{}, nil
+	}}
+	controller, _ := agentSession.NewContextController(scope, staticContextCollector("system"), compactor)
+	if err := controller.RequestChanges(context.Background(), []engine.ConversationChange{{
+		Kind: engine.ConversationAppendContextMessage, Source: engine.ConversationSourceReminder, Turn: 1,
+		Message: engine.Message{Role: engine.RoleUser, Content: "turn-one notice"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	request := ordinaryConversationRequest("work")
+	request.Phase = engine.PhaseAction
+	if _, err := controller.Prepare(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(compactor.requests) < 2 {
+		t.Fatalf("compaction requests = %#v", compactor.requests)
+	}
+	if slices.Contains(messageContents(compactor.requests[1].Messages), "turn-one notice") {
+		t.Fatalf("run-local input leaked the turn notice after the durable rebuild: %#v", compactor.requests[1].Messages)
+	}
+	/* The next turn's decision sees the notice as ordinary history again. */
+	next := ordinaryConversationRequest("work")
+	next.Turn = 2
+	projection, err := controller.Prepare(context.Background(), next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(messageContents(projection.Context.Messages), "turn-one notice") {
+		t.Fatalf("projection lost the turn notice across turns: %v", messageContents(projection.Context.Messages))
+	}
+	_ = agentSession.FinishRun(scope)
+}
+
 /* TestContextControllerPreTurnCompactionKeepsPreviousTurnNotices pins the
  * baseline pre-turn compaction input: it covers everything appended through
  * the end of the previous turn — including the previous turn's gate
