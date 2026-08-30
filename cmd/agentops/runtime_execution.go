@@ -29,6 +29,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/subagent"
+	"github.com/Zts0hg/foxharness/internal/todopolicy"
 	"github.com/Zts0hg/foxharness/internal/toolresult"
 	"github.com/Zts0hg/foxharness/internal/toolruntime"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -144,7 +145,7 @@ func (f *agentOpsTaskExecutionFactory) newApplication(
 			return journal.WrapTools(base), nil
 		},
 		NewPolicy: func(context.Context, foxruntime.RunAssembly) (engine.TurnPolicy, error) {
-			return turnpolicy.New(turnpolicy.Config{}), nil
+			return newAgentOpsTurnPolicy(stored.RootDir), nil
 		},
 		NewContext: func(_ context.Context, _ foxruntime.RunAssembly) (foxruntime.ContextCollector, foxruntime.ContextCompactor, error) {
 			collector := foxruntime.NewPromptCollector(f.workDir).WithMemory(workingMemory.WorkingMemoryPath()).WithAutoMemory(autoMemory, automemory.MainMemoryGuidance)
@@ -194,6 +195,18 @@ func (f *agentOpsTaskExecutionFactory) newApplication(
 	}
 	failed = false
 	return application, nil
+}
+
+/* newAgentOpsTurnPolicy builds the run policy for one AgentOps task session
+ * root, binding the TODO completion gate to that session's checklist. */
+func newAgentOpsTurnPolicy(sessionRoot string) engine.TurnPolicy {
+	return turnpolicy.New(turnpolicy.Config{Bind: func(context.Context, engine.RunInput) (turnpolicy.Bindings, error) {
+		return turnpolicy.Bindings{
+			TODOGate: func(context.Context) (string, error) {
+				return todopolicy.CompletionReminder(sessionRoot, true), nil
+			},
+		}, nil
+	}})
 }
 
 func (f *agentOpsTaskExecutionFactory) buildTools(

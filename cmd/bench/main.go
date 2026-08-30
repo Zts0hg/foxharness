@@ -35,6 +35,7 @@ import (
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 	"github.com/Zts0hg/foxharness/internal/runtimecompaction"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/todopolicy"
 	"github.com/Zts0hg/foxharness/internal/toolresult"
 	"github.com/Zts0hg/foxharness/internal/toolruntime"
 	"github.com/Zts0hg/foxharness/internal/tools"
@@ -135,6 +136,18 @@ func executeRepeats(ctx context.Context, c *benchmark.Case, repeat int, execute 
 	return results, false
 }
 
+/* newBenchmarkTurnPolicy builds the run policy for one benchmark session root,
+ * binding the TODO completion gate to that session's checklist. */
+func newBenchmarkTurnPolicy(sessionRoot string) engine.TurnPolicy {
+	return turnpolicy.New(turnpolicy.Config{Bind: func(context.Context, engine.RunInput) (turnpolicy.Bindings, error) {
+		return turnpolicy.Bindings{
+			TODOGate: func(context.Context) (string, error) {
+				return todopolicy.CompletionReminder(sessionRoot, true), nil
+			},
+		}, nil
+	}})
+}
+
 func resultExitCode(results []*benchmark.Result, infrastructureFailed bool) int {
 	if infrastructureFailed {
 		return 2
@@ -169,8 +182,8 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 				toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results"),
 			), nil
 		},
-		NewPolicy: func(context.Context, foxruntime.RunAssembly) (engine.TurnPolicy, error) {
-			return turnpolicy.New(turnpolicy.Config{}), nil
+		NewPolicy: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.TurnPolicy, error) {
+			return newBenchmarkTurnPolicy(assembly.Session.RootDir), nil
 		},
 		NewContext: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.ContextCollector, foxruntime.ContextCompactor, error) {
 			workingMemory := memory.NewSessionStore(workDir, assembly.Session.RootDir).WorkingMemoryPath()
