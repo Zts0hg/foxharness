@@ -450,6 +450,9 @@ func TestTargetPromptTooLongUsesOneReactiveConversationRetry(t *testing.T) {
 	if facts[1].Name != "reactive" || facts[1].Content != "" {
 		t.Fatalf("reactive compaction fact = %#v", facts[1])
 	}
+	if facts[1].BeforeMessages != 9 || facts[1].AfterMessages != 3 {
+		t.Fatalf("reactive compaction message counts = %d/%d, want the reported 9/3", facts[1].BeforeMessages, facts[1].AfterMessages)
+	}
 }
 
 func TestTargetPromptTooLongDoesNotRetryWithoutChangedProjection(t *testing.T) {
@@ -1139,7 +1142,7 @@ func (c *compactingInvocationConversation) Prepare(_ context.Context, request Co
 	c.requests = append(c.requests, request)
 	projection := ConversationProjection{Context: RunContext{Messages: []schema.Message{{Role: schema.RoleUser, Content: request.Input.Prompt}}}}
 	if request.Preparation == ConversationPrepareReactive {
-		projection.Compactions = []ConversationCompaction{{Trigger: "reactive"}}
+		projection.Compactions = []ConversationCompaction{{Trigger: "reactive", BeforeMessages: 9, AfterMessages: 3}}
 	}
 	return projection, nil
 }
@@ -1400,5 +1403,23 @@ func targetPersistedMessage(message schema.Message) string {
 		return fmt.Sprintf("tool_result:%s:%s", message.ToolCallID, message.Content)
 	default:
 		return string(message.Role) + ":" + message.Content
+	}
+}
+
+/* TestTargetRunReportsThinkingPhaseFailure pins the baseline thinking-phase
+ * error wording, so a thinking-phase model failure stays distinguishable from
+ * an action-phase model failure in surfaced run errors. */
+func TestTargetRunReportsThinkingPhaseFailure(t *testing.T) {
+	invoker := modelInvokerFunc(func(_ context.Context, request RunContext) (ModelResult, error) {
+		if request.Phase == PhaseThinking {
+			return ModelResult{}, errors.New("provider unavailable")
+		}
+		return ModelResult{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}}, nil
+	})
+	eng := NewAgentEngine(invoker, &turnBoundaryTargetToolExecutor{}, &targetTestConversation{}, targetTestPolicy{}, nil)
+
+	_, err := eng.Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 2, Thinking: true})
+	if err == nil || err.Error() != "Thinking 阶段生成失败: provider unavailable" {
+		t.Fatalf("Run() error = %v, want the baseline thinking-phase failure wording", err)
 	}
 }

@@ -20,7 +20,7 @@ type ContextBlockedError struct {
 
 /* Error describes the context budget that prevented model invocation. */
 func (e *ContextBlockedError) Error() string {
-	return fmt.Sprintf("runtime context token count (%d) exceeds blocking limit (%d)", e.UsedTokens, e.Limit)
+	return fmt.Sprintf("上下文 token 数 (%d) 超过阻塞阈值 (%d)，无法继续发送请求", e.UsedTokens, e.Limit)
 }
 
 /* ContextCollectionRequest contains frozen run values used to resolve prompt fragments. */
@@ -30,8 +30,9 @@ type ContextCollectionRequest struct {
 	WorkDir           string
 	CollaborationMode string
 	AllowedTools      []string
-	/* RestrictedTools reports whether the run resolves an explicit tool
-	 * restriction, so prompt guidance may be scoped to AllowedTools. */
+	/* RestrictedTools reports a ChildRun profile run, whose prompt guidance
+	 * is always scoped to the resolved AllowedTools snapshot. Main-surface
+	 * runs keep the full base prompt regardless of tool restrictions. */
 	RestrictedTools bool
 	ReadOnly        bool
 }
@@ -218,11 +219,14 @@ func (c *ContextController) Prepare(ctx context.Context, request engine.Conversa
 	trigger, shouldCompact := c.session.claimContextPreparation(c.scope.run.ID, request.Turn, request.Preparation)
 	compactions := make([]engine.ConversationCompaction, 0, 1)
 	if shouldCompact {
+		before := len(c.messages)
 		compaction, err := c.compact(ctx, request, trigger)
 		if err != nil {
 			return engine.ConversationProjection{}, err
 		}
 		if compaction != nil {
+			compaction.BeforeMessages = before
+			compaction.AfterMessages = len(c.messages)
 			compactions = append(compactions, *compaction)
 		}
 	}

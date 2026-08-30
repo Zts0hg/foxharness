@@ -696,3 +696,12 @@ func assertSingleSummaryProjection(t *testing.T, messages []engine.Message, fina
 		t.Fatalf("summary count = %d in %v", count, contents)
 	}
 }
+
+/* TestContextBlockedErrorKeepsBaselineMessage pins the baseline blocking
+ * message so surfaced run errors keep the baseline threshold wording. */
+func TestContextBlockedErrorKeepsBaselineMessage(t *testing.T) {
+	blocked := &ContextBlockedError{UsedTokens: 130000, Limit: 120000}
+	if got, want := blocked.Error(), "上下文 token 数 (130000) 超过阻塞阈值 (120000)，无法继续发送请求"; got != want {
+		t.Fatalf("ContextBlockedError.Error() = %q, want %q", got, want)
+	}
+}

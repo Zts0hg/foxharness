@@ -74,7 +74,7 @@ func TestDiagnosticLoggerEmitsInjectionAndCompletionLines(t *testing.T) {
 	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactSystemReminder, Turn: 1, Name: string(engine.ConversationSourceReminder), Content: "reminder"})
 	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactSystemReminder, Turn: 1, Name: string(engine.ConversationSourceTODOGate), Content: "todo"})
 	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactErrorRecovery, Turn: 1, Content: "recovery"})
-	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactContextCompacted, Turn: 1, Name: "session_history"})
+	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactContextCompacted, Turn: 1, Name: "session_history", BeforeMessages: 9, AfterMessages: 3})
 	observer.Observe(context.Background(), engine.Fact{Kind: engine.FactRunCompleted, Content: "done"})
 
 	for _, want := range []string{
@@ -82,7 +82,7 @@ func TestDiagnosticLoggerEmitsInjectionAndCompletionLines(t *testing.T) {
 		"[Reminder] 已注入系统提醒",
 		"[TODO] Final response blocked until TODO.md is updated",
 		"[Recovery] 已注入错误恢复提示",
-		"[Compactor] 上下文已压缩",
+		"[Compactor] 上下文已压缩: 9 -> 3 条消息（含 boundary + summary）",
 		"[Engine] 模型不再需要调用工具，宣告任务完成！",
 	} {
 		if !strings.Contains(logs.String(), want) {
@@ -150,4 +150,48 @@ func (r modelInvokerRunStub) Invoke(ctx context.Context, request engine.RunConte
 		return r.stub.invoke(ctx, request)
 	}
 	return r.stub.result, nil
+}
+
+/* TestDiagnosticCompactorEmitsCompactionFailureLines verifies the baseline
+ * proactive and reactive compaction failure notices: an ordinary per-turn
+ * compaction failure announces the fallback to the original context, a
+ * prompt-too-long retry failure announces the reactive failure, and
+ * run-failing compactions stay silent because their errors propagate. */
+func TestDiagnosticCompactorEmitsCompactionFailureLines(t *testing.T) {
+	logs := captureDiagnosticLog(t)
+	compactionErr := errors.New("summary provider failed")
+	base := contextCompactorFunc(func(_ context.Context, request ContextCompactionRequest) (ContextCompactionProposal, error) {
+		switch request.Trigger {
+		case ContextCompactionPreTurn, ContextCompactionReactive:
+			return ContextCompactionProposal{}, compactionErr
+		case ContextCompactionInitialHistory:
+			return ContextCompactionProposal{}, &ContextBlockedError{UsedTokens: 101, Limit: 100}
+		}
+		return ContextCompactionProposal{Changed: true, Messages: nil}, nil
+	})
+	wrapped := newDiagnosticLogger(RunAssembly{}).wrapCompactor(base)
+
+	if _, err := wrapped.Compact(context.Background(), ContextCompactionRequest{Trigger: ContextCompactionPreTurn}); err == nil {
+		t.Fatal("pre-turn Compact() error = nil, want the propagated compaction failure")
+	}
+	if _, err := wrapped.Compact(context.Background(), ContextCompactionRequest{Trigger: ContextCompactionReactive}); err == nil {
+		t.Fatal("reactive Compact() error = nil, want the propagated compaction failure")
+	}
+	if _, err := wrapped.Compact(context.Background(), ContextCompactionRequest{Trigger: ContextCompactionInitialHistory}); err == nil {
+		t.Fatal("initial-history Compact() error = nil, want the propagated compaction failure")
+	}
+	if _, err := wrapped.Compact(context.Background(), ContextCompactionRequest{Trigger: ContextCompactionManual}); err != nil {
+		t.Fatalf("manual Compact() error = %v", err)
+	}
+	for _, want := range []string{
+		"[Compactor] 压缩失败，将继续使用原始上下文: summary provider failed",
+		"[Compactor] 响应式压缩失败: summary provider failed",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("diagnostic log is missing %q\nlogs:\n%s", want, logs.String())
+		}
+	}
+	if strings.Count(logs.String(), "[Compactor]") != 2 {
+		t.Fatalf("compaction failure log emitted unexpected extra lines:\n%s", logs.String())
+	}
 }

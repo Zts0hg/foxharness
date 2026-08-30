@@ -25,6 +25,12 @@ func newDiagnosticLogger(assembly RunAssembly) *diagnosticLogger {
 	return &diagnosticLogger{assembly: assembly}
 }
 
+/* logRunFinishFailure announces a failed terminal run write. The failure is
+ * left to the session recovery hook and never changes the run outcome. */
+func logRunFinishFailure(err error) {
+	log.Printf("[Engine] 写入 Run 完成状态失败: %v", err)
+}
+
 /* wrapModel decorates the model invoker with the phase announcement lines. */
 func (d *diagnosticLogger) wrapModel(base engine.ModelInvoker) engine.ModelInvoker {
 	return diagnosticModel{logger: d, base: base}
@@ -34,6 +40,43 @@ func (d *diagnosticLogger) wrapModel(base engine.ModelInvoker) engine.ModelInvok
 func (d *diagnosticLogger) wrapObserver(base engine.Observer) engine.Observer {
 	return &diagnosticObserver{logger: d, base: base}
 }
+
+/* wrapCompactor decorates the run compactor with the baseline compaction
+ * failure notices. Run-failing compactions (initial projection, manual) stay
+ * silent because their errors surface as run failures. */
+func (d *diagnosticLogger) wrapCompactor(base ContextCompactor) ContextCompactor {
+	if isNilRuntimeDependency(base) {
+		return nil
+	}
+	return &diagnosticCompactor{base: base}
+}
+
+type diagnosticCompactor struct {
+	base ContextCompactor
+}
+
+func (c *diagnosticCompactor) Compact(ctx context.Context, request ContextCompactionRequest) (ContextCompactionProposal, error) {
+	proposal, err := c.base.Compact(ctx, request)
+	if err == nil {
+		return proposal, nil
+	}
+	var blocked *ContextBlockedError
+	switch request.Trigger {
+	case ContextCompactionPreTurn:
+		if !errors.As(err, &blocked) {
+			log.Printf("[Compactor] 压缩失败，将继续使用原始上下文: %v", err)
+		}
+	case ContextCompactionReactive:
+		log.Printf("[Compactor] 响应式压缩失败: %v", err)
+	}
+	return proposal, err
+}
+
+func (c *diagnosticCompactor) CheckContext(ctx context.Context, request ContextBudgetRequest) error {
+	return c.base.CheckContext(ctx, request)
+}
+
+var _ ContextCompactor = (*diagnosticCompactor)(nil)
 
 type diagnosticModel struct {
 	logger *diagnosticLogger
@@ -91,7 +134,7 @@ func (o *diagnosticObserver) Observe(ctx context.Context, fact engine.Fact) {
 		log.Printf("[Engine] 引擎启动，Session: %s，WorkDir: %s\n", o.logger.assembly.Session.ID, o.logger.assembly.Session.WorkDir)
 		log.Printf("[Engine] 慢思考模式（Thinking Phase）: %v\n", o.logger.assembly.Spec.Thinking)
 	case engine.FactContextCompacted:
-		log.Printf("[Compactor] 上下文已压缩（trigger: %s）", fact.Name)
+		log.Printf("[Compactor] 上下文已压缩: %d -> %d 条消息（含 boundary + summary）", fact.BeforeMessages, fact.AfterMessages)
 	case engine.FactToolResult:
 		if fact.IsError {
 			log.Printf("  -> ❌ 工具执行报错: %s, 输出：%s\n", fact.Name, fact.FullContent)

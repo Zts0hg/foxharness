@@ -184,6 +184,10 @@ type ConversationRequest struct {
 /* ConversationCompaction describes a committed context reduction represented by a projection. */
 type ConversationCompaction struct {
 	Trigger string
+	/* BeforeMessages and AfterMessages report the model-visible message
+	 * counts surrounding one applied compaction. */
+	BeforeMessages int
+	AfterMessages  int
 }
 
 /* ConversationProjection contains one model-visible context and its committed preparation effects. */
@@ -281,6 +285,10 @@ type Fact struct {
 	FullContent  string
 	ArtifactPath string
 	IsError      bool
+	/* BeforeMessages and AfterMessages mirror the message counts reported by
+	 * one applied context compaction. */
+	BeforeMessages int
+	AfterMessages  int
 }
 
 /* Observer synchronously receives each engine fact exactly once. */
@@ -392,12 +400,12 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 				return e.fail(emit, outcome, "conversation", err)
 			}
 			for _, compaction := range compactions {
-				emit(Fact{Kind: FactContextCompacted, Turn: turn, Phase: PhaseThinking, Name: compaction.Trigger})
+				emit(Fact{Kind: FactContextCompacted, Turn: turn, Phase: PhaseThinking, Name: compaction.Trigger, BeforeMessages: compaction.BeforeMessages, AfterMessages: compaction.AfterMessages})
 			}
 			thinkingContext.ToolDefinitions = nil
 			thinking, err := modelRun.Invoke(ctx, thinkingContext, func(ModelFact) {})
 			if err != nil {
-				return e.fail(emit, outcome, "provider", fmt.Errorf("模型生成失败: %w", err))
+				return e.fail(emit, outcome, "provider", fmt.Errorf("Thinking 阶段生成失败: %w", err))
 			}
 			outcome.Usage = addUsage(outcome.Usage, thinking.Usage)
 			if err := e.requestChanges(ctx, []ConversationChange{{
@@ -414,7 +422,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 			return e.fail(emit, outcome, "conversation", err)
 		}
 		for _, compaction := range compactions {
-			emit(Fact{Kind: FactContextCompacted, Turn: turn, Phase: PhaseAction, Name: compaction.Trigger})
+			emit(Fact{Kind: FactContextCompacted, Turn: turn, Phase: PhaseAction, Name: compaction.Trigger, BeforeMessages: compaction.BeforeMessages, AfterMessages: compaction.AfterMessages})
 		}
 		modelResult, err := modelRun.Invoke(ctx, runContext, emitModelFact)
 		if errors.Is(err, ErrPromptTooLong) {
@@ -424,7 +432,7 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 			}
 			if len(recoveryCompactions) > 0 {
 				for _, compaction := range recoveryCompactions {
-					emit(Fact{Kind: FactContextCompacted, Turn: turn, Phase: PhaseAction, Name: compaction.Trigger})
+					emit(Fact{Kind: FactContextCompacted, Turn: turn, Phase: PhaseAction, Name: compaction.Trigger, BeforeMessages: compaction.BeforeMessages, AfterMessages: compaction.AfterMessages})
 				}
 				modelResult, err = modelRun.Invoke(ctx, retryContext, emitModelFact)
 			}
