@@ -69,6 +69,10 @@ func AssessShell(command, workspace, cwd string) (readOnly bool, risk Risk, pars
 
 // AssessSynchronousShell reports whether a complete shell parse excludes
 // background, detach, process-substitution, and nested interpreter forms.
+// The verdict is name-based: it proves the process-group hygiene of the
+// programs it knows, and cannot prove anything about an untrusted payload a
+// known program executes or an arbitrary binary the workspace contains — a
+// freshly written script is exactly as opaque as any accepted program name.
 func AssessSynchronousShell(command string) (synchronous bool, parsed bool) {
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
 	if err != nil {
@@ -141,7 +145,12 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 	}
 	command := strings.ToLower(baseCommandName(literalWord(call.Args[0])))
 	if command == "git" {
-		return gitInvocationIsSynchronous(call.Args)
+		// Git executes repository-planted configuration programs — textconv
+		// filters declared by .gitattributes, the fsmonitor daemon, hooks —
+		// so no subcommand of an inspected-for tree can be proven
+		// synchronous. The read-only tool keeps its own vetted git
+		// classification.
+		return false
 	}
 	if !wrapperCommands[command] {
 		return true
@@ -152,8 +161,13 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 	// The remaining wrappers take the executed program from their arguments.
 	// A word that is not a plain literal could name any program, and the
 	// gate fails closed, so every argument must be a plain literal none of
-	// which names a detached or scheduler program.
+	// which names a detached or scheduler program. A few wrappers take the
+	// executed program through a named flag instead of a positional word, so
+	// their execution flags are rejected outright.
 	for _, arg := range call.Args[1:] {
+		if text := runtimeStaticText(arg); text != "" && wrapperExecFlags[command][text] {
+			return false
+		}
 		if !synchronousProgramWord(arg) {
 			return false
 		}
@@ -161,67 +175,24 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 	return true
 }
 
-// gitInvocationIsSynchronous reports whether a git invocation provably
-// executes no other program. Git runs configuration-defined aliases, diff
-// helpers, and hooks, so only its read-only subcommands are provable, and an
-// injected -c or --config-env definition before the subcommand could turn
-// even those into arbitrary shell execution. Global options that take a
-// separate value consume that value so it is not mistaken for the subcommand.
-func gitInvocationIsSynchronous(args []*syntax.Word) bool {
-	subcommand := ""
-	for index := 1; index < len(args); index++ {
-		text := literalWord(args[index])
-		if text == "" {
-			// A word that is not a plain literal could carry an injected
-			// configuration definition, so the gate fails closed.
-			return false
-		}
-		if subcommand != "" {
-			continue
-		}
-		if strings.HasPrefix(text, "-c") && !strings.HasPrefix(text, "--") {
-			return false
-		}
-		if text == "--config-env" || strings.HasPrefix(text, "--config-env=") {
-			return false
-		}
-		if !strings.HasPrefix(text, "-") {
-			subcommand = strings.ToLower(text)
-			continue
-		}
-		if gitOptionsTakingSeparateValue[text] {
-			index++
-		}
-	}
-	if subcommand == "" {
-		// A bare option query such as --exec-path or --version runs no
-		// subcommand; only the known passive queries are provable.
-		return gitBareQueries(args)
-	}
-	return gitArgsAllowed([]string{subcommand})
-}
-
-// gitOptionsTakingSeparateValue lists git global options whose value is a
-// separate argument word.
-var gitOptionsTakingSeparateValue = map[string]bool{
-	"-C": true, "--git-dir": true, "--namespace": true,
-	"--super-prefix": true, "--work-tree": true,
-}
-
-// gitBareQueries reports whether a subcommand-less git invocation consists
-// only of passive option queries that print information and execute nothing.
-func gitBareQueries(args []*syntax.Word) bool {
-	passive := map[string]bool{
-		"--exec-path": true, "--help": true, "--html-path": true,
-		"--info-path": true, "--man-page": true, "--version": true,
-	}
-	for index := 1; index < len(args); index++ {
-		text := literalWord(args[index])
-		if text == "" || !passive[text] {
-			return false
-		}
-	}
-	return true
+// wrapperExecFlags lists, per wrapper, the flags whose value is a program to
+// execute. A positional argument reaches the argument screening, but these
+// values would hide behind a flag name, so the flag itself is denied. The
+// match is case-sensitive: tar's -I names the compression program while -i
+// ignores zero blocks.
+var wrapperExecFlags = map[string]map[string]bool{
+	"tar": {
+		"-I": true, "--to-command": true, "--use-compress-program": true,
+	},
+	"bsdtar": {
+		"--to-command": true, "--use-compress-program": true,
+	},
+	"cpio": {
+		"--to-command": true,
+	},
+	"sort": {
+		"--compress-program": true,
+	},
 }
 
 // wrapperCommands lists commands that execute another program named in their
@@ -229,15 +200,17 @@ func gitBareQueries(args []*syntax.Word) bool {
 // escapes the killed process group exactly as if named directly. busybox and
 // toybox are multi-call binaries whose first argument names the program.
 var wrapperCommands = map[string]bool{
-	"arch": true, "bwrap": true, "busybox": true, "caffeinate": true,
-	"chroot": true, "chrt": true, "doas": true, "firejail": true,
+	"arch": true, "bsdtar": true, "bwrap": true, "busybox": true,
+	"caffeinate": true, "chroot": true, "chrt": true, "cpio": true,
+	"doas": true, "firejail": true,
 	"find": true, "flock": true, "gfind": true, "gnice": true,
 	"gruncon": true, "gstdbuf": true, "ionice": true, "ltrace": true,
 	"nice": true, "nsenter": true, "numactl": true, "perf": true,
 	"proxychains": true, "proxychains4": true, "runcon": true,
 	"runuser": true, "script": true, "setarch": true, "setpriv": true,
-	"sshpass": true, "strace": true, "sudo": true, "stdbuf": true,
-	"su": true, "systemd-nspawn": true, "taskset": true, "time": true,
+	"sort": true, "sshpass": true, "strace": true, "sudo": true,
+	"stdbuf": true,
+	"su":     true, "systemd-nspawn": true, "tar": true, "taskset": true, "time": true,
 	"toybox": true, "unshare": true, "valgrind": true, "watch": true,
 }
 
@@ -413,7 +386,7 @@ var detachedShellCommands = map[string]bool{
 	"deno": true, "disown": true, "docker": true, "dtach": true,
 	"dvtm": true, "elvish": true, "env": true, "es": true, "eval": true,
 	"exec": true, "ex": true, "expect": true, "fish": true, "gawk": true,
-	"ghci": true, "gio": true, "gmake": true, "jruby": true, "jjs": true,
+	"ghci": true, "gio": true, "gmake": true, "gpg-agent": true, "jruby": true, "jjs": true,
 	"ksh": true, "kubectl": true, "launchctl": true, "make": true,
 	"mapfile": true, "mawk": true, "mksh": true, "mosh": true,
 	"nawk": true, "nodejs": true, "nohup": true, "nu": true,
@@ -423,7 +396,7 @@ var detachedShellCommands = map[string]bool{
 	"readarray": true, "rsh": true, "rsync": true, "rscript": true,
 	"rvim": true, "rview": true, "sbcl": true, "scp": true,
 	"screen": true, "schtasks": true, "setsid": true, "sftp": true,
-	"sh": true, "shopt": true, "source": true, "ssh": true,
+	"sh": true, "shopt": true, "source": true, "ssh": true, "ssh-agent": true,
 	"start-stop-daemon": true, "systemctl": true, "systemd-run": true,
 	"tcsh": true, "timeout": true, "tmux": true, "trap": true,
 	"vi": true, "view": true, "wish": true, "xdg-open": true,
@@ -444,7 +417,10 @@ func readOnlyCall(call *syntax.CallExpr, workspace, cwd string) bool {
 	}
 	args := make([]string, 0, len(call.Args)-1)
 	for _, arg := range call.Args[1:] {
-		text := literalWord(arg)
+		/* Escaped literals carry their runtime text after backslash
+		 * resolution, so the unescaped form is what the read-only tables and
+		 * flag checks must classify. */
+		text := unescapeShellText(literalWord(arg))
 		if text == "" {
 			return false
 		}
