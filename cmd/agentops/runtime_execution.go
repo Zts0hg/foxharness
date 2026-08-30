@@ -176,7 +176,7 @@ func (f *agentOpsTaskExecutionFactory) newApplication(
 			WorkDir: f.workDir, LogDir: f.logDir, Task: request.Task.Text,
 		},
 		AfterRun: func(_ context.Context, result foxruntime.RunResult, _ error) {
-			if result.RunID == "" {
+			if !result.ReturnedResult() {
 				return
 			}
 			defer func() {

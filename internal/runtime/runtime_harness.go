@@ -87,6 +87,14 @@ func (r RunResult) ReturnsPartialResult() bool {
 	return errors.As(r.Outcome.Err, &blocked)
 }
 
+/* ReturnedResult reports whether one finished run produced the baseline
+ * result post-run consumers arm on: a run identity plus a result the caller
+ * can consume. The baseline fired its post-run hooks whenever its Run
+ * returned a result, which mid-run persistence and model failures never did. */
+func (r RunResult) ReturnedResult() bool {
+	return r.RunID != "" && r.ReturnsPartialResult()
+}
+
 /* HarnessDependencies contains immutable factories and shared dependency hooks. */
 type HarnessDependencies struct {
 	InitializeSession   func(context.Context, AgentSessionSnapshot) error

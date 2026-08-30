@@ -190,7 +190,7 @@ func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request
 		},
 		RunSpec: runSpec,
 		AfterRun: func(_ context.Context, result foxruntime.RunResult, _ error) {
-			if result.RunID == "" {
+			if !result.ReturnedResult() {
 				return
 			}
 			defer func() {

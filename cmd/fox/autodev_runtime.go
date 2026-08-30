@@ -236,7 +236,7 @@ func (f *autodevRuntimeCoreFactory) New(ctx context.Context, workDir, model stri
 			return nil
 		},
 		AfterRun: func(_ context.Context, result foxruntime.RunResult, _ error) {
-			if result.RunID == "" {
+			if !result.ReturnedResult() {
 				return
 			}
 			asset := assets.lookup(result.RunID)
