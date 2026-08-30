@@ -165,7 +165,7 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 	// executed program through a named flag instead of a positional word, so
 	// their execution flags are rejected outright.
 	for _, arg := range call.Args[1:] {
-		if text := runtimeStaticText(arg); text != "" && wrapperExecFlags[command][text] {
+		if text := runtimeStaticText(arg); text != "" && wrapperExecFlagForbidden(command, text) {
 			return false
 		}
 		if !synchronousProgramWord(arg) {
@@ -173,6 +173,26 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 		}
 	}
 	return true
+}
+
+/* wrapperExecFlagForbidden reports whether one argument word names or binds
+ * an execution flag of the wrapper. A long flag binds its value with an
+ * equals sign, and a short flag bundles the value directly onto itself —
+ * tar -Ish executes sh — so short flags match every spelling that starts
+ * with them. */
+func wrapperExecFlagForbidden(command string, text string) bool {
+	for flag := range wrapperExecFlags[command] {
+		if strings.HasPrefix(flag, "--") {
+			if text == flag || strings.HasPrefix(text, flag+"=") {
+				return true
+			}
+			continue
+		}
+		if strings.HasPrefix(text, flag) {
+			return true
+		}
+	}
+	return false
 }
 
 // wrapperExecFlags lists, per wrapper, the flags whose value is a program to
@@ -225,15 +245,16 @@ var wrapperCommands = map[string]bool{
 // Short generic names (sh, env, open, trap) stay exact matches in
 // detachedShellCommands so unrelated words sharing the prefix stay usable.
 var interpreterNamePrefixes = []string{
-	"awk", "bash", "cabal", "ccl", "clisp", "clojure", "csc", "csh",
-	"csi", "dash", "dart", "dotnet", "elixir", "emacs", "erb", "erl",
-	"escript", "ghc", "gnuplot", "gdb", "groovy", "guile", "ipython",
-	"irb", "java", "jshell", "jrunscript", "julia", "kotlin", "ksh",
-	"lua", "lisp", "lldb", "mono", "mysql", "node", "npm", "npx",
-	"nvim", "octave", "perl", "php", "pnpm", "psql", "python", "pypy",
-	"pwsh", "racket", "runghc", "runhaskell", "ruby", "scala",
-	"scheme", "sqlite", "stack", "swift", "tclsh", "tsx", "ts-node",
-	"vim", "wish", "yarn", "zsh",
+	"awk", "bash", "cabal", "ccl", "chezscheme", "clisp", "clojure",
+	"csc", "csh", "csi", "dash", "dart", "dotnet", "elixir", "emacs",
+	"erb", "erl", "escript", "gforth", "ghc", "gdb", "gnuplot",
+	"groovy", "guile", "ipython", "irb", "janet", "java", "jshell",
+	"jrunscript", "julia", "kotlin", "ksh",
+	"lua", "lisp", "lldb", "mono", "mysql", "newlisp", "node", "npm",
+	"npx", "nvim", "ocaml", "octave", "perl", "php", "pnpm", "psql",
+	"python", "pypy", "pwsh", "racket", "runghc", "runhaskell", "ruby",
+	"scala", "scheme", "sqlite", "stack", "swift", "tclsh", "tsx",
+	"ts-node", "vim", "wish", "yarn", "zsh",
 }
 
 // isDetachedOrInterpreterCommand reports whether a base command name is a
@@ -386,7 +407,8 @@ var detachedShellCommands = map[string]bool{
 	"daemon": true, "dash": true,
 	"deno": true, "disown": true, "docker": true, "dtach": true,
 	"dvtm": true, "elvish": true, "env": true, "es": true, "eval": true,
-	"exec": true, "ex": true, "expect": true, "fish": true, "gawk": true,
+	"daemonize": true, "exec": true, "ex": true, "expect": true,
+	"fish": true, "gawk": true,
 	"ghci": true, "gio": true, "gmake": true, "gpg-agent": true,
 	"jjs": true, "jruby": true,
 	"kill": true, "killall": true, "ksh": true, "kubectl": true,
