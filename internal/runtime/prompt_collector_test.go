@@ -21,7 +21,7 @@ func TestPromptCollectorCollectPreservesProfileErrorContext(t *testing.T) {
 		prefix  string
 	}{
 		{profile: CLIExec, prefix: "组装系统提示词失败: 读取 AGENTS.md 失败:"},
-		{profile: ChildRun, prefix: "compose child prompt: 读取 AGENTS.md 失败:"},
+		{profile: ChildRun, prefix: "组装系统提示词失败: 读取 AGENTS.md 失败:"},
 	}
 	for _, test := range tests {
 		t.Run(string(test.profile), func(t *testing.T) {

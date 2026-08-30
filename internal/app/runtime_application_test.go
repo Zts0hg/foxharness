@@ -187,3 +187,77 @@ func (s *runtimeSessionStub) Run(ctx context.Context, spec foxruntime.RunSpec) (
 	}
 	return s.result, s.runErr
 }
+
+/* TestRuntimeApplicationHidesMetadataOnMidRunFailures pins the baseline CLI
+ * contract: failures where the baseline engine returned no result produce no
+ * outcome, so the caller prints only the session and transcript lines, while
+ * the partial-evidence failures keep their outcome. */
+func TestRuntimeApplicationHidesMetadataOnMidRunFailures(t *testing.T) {
+	tests := []struct {
+		name        string
+		outcome     engine.RunOutcome
+		wantOutcome bool
+	}{
+		{
+			name:        "thinking phase failure",
+			outcome:     engine.RunOutcome{ErrorKind: "provider", FinalMessage: "partial text", Err: errors.New("Thinking 阶段生成失败: unavailable")},
+			wantOutcome: false,
+		},
+		{
+			name:        "model generation failure",
+			outcome:     engine.RunOutcome{ErrorKind: "provider", FinalMessage: "partial text", Err: errors.New("模型生成失败: unavailable")},
+			wantOutcome: false,
+		},
+		{
+			name:        "assistant message persistence failure",
+			outcome:     engine.RunOutcome{ErrorKind: "conversation", FinalMessage: "partial text", Err: errors.New("写入 Session 助手消息失败: disk full")},
+			wantOutcome: false,
+		},
+		{
+			name:        "tool result persistence failure",
+			outcome:     engine.RunOutcome{ErrorKind: "tool", FinalMessage: "partial text", Err: errors.New("写入 Session 工具结果失败: disk full")},
+			wantOutcome: false,
+		},
+		{
+			name:        "turn limit failure",
+			outcome:     engine.RunOutcome{ErrorKind: "turn_limit", Partial: true, Err: errors.New("超过最大 Turn 数限制: 3")},
+			wantOutcome: true,
+		},
+		{
+			name:        "completion gate failure",
+			outcome:     engine.RunOutcome{ErrorKind: "policy", Partial: true, FinalMessage: "almost done", Err: errors.New("completion gate remained unsatisfied after reminder: finish")},
+			wantOutcome: true,
+		},
+		{
+			name:        "blocked budget failure",
+			outcome:     engine.RunOutcome{ErrorKind: "conversation", FinalMessage: "partial text", Err: &foxruntime.ContextBlockedError{UsedTokens: 130000, Limit: 120000}},
+			wantOutcome: true,
+		},
+		{
+			name:        "successful run",
+			outcome:     engine.RunOutcome{FinalMessage: "done"},
+			wantOutcome: true,
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			runErr := testCase.outcome.Err
+			runner := &runtimeSessionStub{result: foxruntime.RunResult{
+				SessionID: session.ID("s"), RunID: session.RunID("run-1"), Outcome: testCase.outcome,
+			}, runErr: runErr}
+			application, err := NewRuntimeApplication(RuntimeApplicationConfig{
+				Session: runner, Info: SessionInfo{ID: "s", Directory: "/s"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := application.Run(context.Background(), RunCommand{Prompt: "task"}, nil)
+			if !errors.Is(err, runErr) {
+				t.Fatalf("Run() error = %v, want %v", err, runErr)
+			}
+			if got := outcome != nil; got != testCase.wantOutcome {
+				t.Fatalf("Run() outcome = %#v, want outcome %v", outcome, testCase.wantOutcome)
+			}
+		})
+	}
+}

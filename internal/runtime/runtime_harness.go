@@ -71,6 +71,22 @@ type RunResult struct {
 	CommittedMessage string
 }
 
+/* ReturnsPartialResult reports whether one finished run still carries the
+ * result the caller consumes. Completed runs always do; a failed run only
+ * carries the baseline partial evidence — turn-exhausted, gate-reminder, and
+ * blocked-budget failures — while mid-run persistence and model failures
+ * return no result at all. */
+func (r RunResult) ReturnsPartialResult() bool {
+	if r.Outcome.Err == nil {
+		return true
+	}
+	if r.Outcome.Partial {
+		return true
+	}
+	var blocked *ContextBlockedError
+	return errors.As(r.Outcome.Err, &blocked)
+}
+
 /* HarnessDependencies contains immutable factories and shared dependency hooks. */
 type HarnessDependencies struct {
 	InitializeSession   func(context.Context, AgentSessionSnapshot) error

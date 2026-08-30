@@ -71,7 +71,9 @@ func (a *RuntimeApplication) Run(ctx context.Context, command RunCommand, sink N
 	if a.config.AfterRun != nil {
 		a.config.AfterRun(ctx, result, runErr)
 	}
-	if result.RunID == "" {
+	/* Mid-run failures return no baseline result, so the caller presents only
+	 * the session and transcript lines instead of run metadata. */
+	if result.RunID == "" || !result.ReturnsPartialResult() {
 		return nil, runErr
 	}
 	outcome := MapRuntimeRunResult(result)

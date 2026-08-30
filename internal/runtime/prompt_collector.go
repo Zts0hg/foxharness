@@ -109,9 +109,6 @@ func (c *PromptCollector) Collect(_ context.Context, request ContextCollectionRe
 	}
 	fragments, err := clone.composeFragments(request.Prompt)
 	if err != nil {
-		if request.Profile == ChildRun {
-			return nil, fmt.Errorf("compose child prompt: %w", err)
-		}
 		return nil, fmt.Errorf("组装系统提示词失败: %w", err)
 	}
 	return fragments, nil
