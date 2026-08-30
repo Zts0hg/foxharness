@@ -412,12 +412,17 @@ func (e *AgentEngine) Run(ctx context.Context, input RunInput) (RunOutcome, erro
 				return e.fail(emit, outcome, "provider", fmt.Errorf("Thinking 阶段生成失败: %w", err))
 			}
 			outcome.Usage = addUsage(outcome.Usage, thinking.Usage)
-			if err := e.requestChanges(ctx, turn, []ConversationChange{{
-				Kind:    ConversationAppendContextMessage,
-				Source:  ConversationSourceThinking,
-				Message: schema.NormalizeMessage(thinking.Message),
-			}}); err != nil {
-				return e.fail(emit, outcome, "conversation", err)
+			/* The baseline appended the thinking response only when it
+			 * carried content, so an empty thinking message never enters the
+			 * action projection or the later compaction inputs. */
+			if thinking.Message.Content != "" {
+				if err := e.requestChanges(ctx, turn, []ConversationChange{{
+					Kind:    ConversationAppendContextMessage,
+					Source:  ConversationSourceThinking,
+					Message: schema.NormalizeMessage(thinking.Message),
+				}}); err != nil {
+					return e.fail(emit, outcome, "conversation", err)
+				}
 			}
 		}
 

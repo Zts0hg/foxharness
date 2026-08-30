@@ -54,6 +54,51 @@ func (stampRecordingRunPolicy) AfterTools(context.Context, ToolState) (PolicyCha
 	return PolicyChanges{}, nil
 }
 
+/* sourceRecordingConversation records each change source and content it receives. */
+type sourceRecordingConversation struct {
+	sources  []ConversationChangeSource
+	contents []string
+}
+
+func (c *sourceRecordingConversation) Prepare(_ context.Context, request ConversationRequest) (ConversationProjection, error) {
+	return ConversationProjection{Context: RunContext{
+		Messages: []schema.Message{{Role: schema.RoleUser, Content: request.Input.Prompt}},
+	}}, nil
+}
+
+func (c *sourceRecordingConversation) RequestChanges(_ context.Context, changes []ConversationChange) error {
+	for _, change := range changes {
+		c.sources = append(c.sources, change.Source)
+		c.contents = append(c.contents, change.Message.Content)
+	}
+	return nil
+}
+
+/* TestTargetEngineSkipsEmptyThinkingResponse pins the baseline thinking guard:
+ * the freeze point appended the thinking response to the conversation only
+ * when it carried content, so an empty thinking message never reaches the
+ * action projection. */
+func TestTargetEngineSkipsEmptyThinkingResponse(t *testing.T) {
+	conversation := &sourceRecordingConversation{}
+	responses := []ModelResult{
+		{Message: schema.Message{Role: schema.RoleAssistant, Content: ""}},
+		{Message: schema.Message{Role: schema.RoleAssistant, Content: "done"}},
+	}
+	calls := 0
+	model := modelInvokerFunc(func(_ context.Context, runContext RunContext) (ModelResult, error) {
+		result := responses[min(calls, len(responses)-1)]
+		calls++
+		return result, nil
+	})
+	_, _ = NewAgentEngine(model, &recordingTargetToolExecutor{}, conversation, stampRecordingPolicy{}, nil).
+		Run(context.Background(), RunInput{Prompt: "work", MaxTurns: 3, Thinking: true})
+	for index, source := range conversation.sources {
+		if source == ConversationSourceThinking && conversation.contents[index] == "" {
+			t.Fatalf("empty thinking response reached the conversation: %v/%v", conversation.sources, conversation.contents)
+		}
+	}
+}
+
 /* TestTargetEngineStampsConversationChangesWithTheProducingTurn pins the
  * attribution the compaction controller needs: every change the engine hands
  * to the conversation carries the turn that produced it, so the pre-turn
