@@ -12,6 +12,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/childruntime"
+	"github.com/Zts0hg/foxharness/internal/compaction"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/permission"
@@ -481,20 +482,29 @@ func TestTUIRuntimeNonPlanRunDrainsSkillActivationsWithoutSkillTool(t *testing.T
 
 func TestTUIRuntimeAfterRunReleasesAssemblyResourcesOnEarlyFailure(t *testing.T) {
 	runID := session.RunID("run-failed")
+	sessionID := session.ID("session-failed")
+	resource := &tuiSessionResources{
+		stored:     &session.StoredSession{ID: sessionID},
+		compactors: map[session.RunID]*compaction.Compactor{runID: {}},
+	}
 	composition := &tuiRuntimeComposition{
-		runs: map[session.RunID]tuiRunResources{runID: {}},
+		resources: map[session.ID]*tuiSessionResources{sessionID: resource},
+		runs:      map[session.RunID]tuiRunResources{runID: {}},
 		journals: tuiJournalSet{journals: map[session.RunID]*runtimejournal.Journal{
 			runID: nil,
 		}},
 	}
 
-	composition.afterRun(nil, foxruntime.RunResult{RunID: runID}, errors.New("assembly failed"))
+	composition.afterRun(resource, foxruntime.RunResult{RunID: runID}, errors.New("assembly failed"))
 
 	if len(composition.runs) != 0 {
 		t.Fatalf("run resources retained after failure: %#v", composition.runs)
 	}
 	if len(composition.journals.journals) != 0 {
 		t.Fatalf("journal retained after failure: %#v", composition.journals.journals)
+	}
+	if len(resource.compactors) != 0 {
+		t.Fatalf("compactor retained after failure: %#v", resource.compactors)
 	}
 }
 
@@ -648,4 +658,46 @@ type approvePlanPort struct{}
 
 func (approvePlanPort) ReviewPlan(_ context.Context, request app.PlanReviewRequest) (app.PlanReviewResponse, error) {
 	return app.PlanReviewResponse{CorrelationID: request.Correlation.ID, Decision: app.PlanApproved}, nil
+}
+
+/* TestTUIInteractiveTargetTodoGateStaysOffForEmptyResolvedSurface verifies the
+ * resolved-surface gate: an explicit allowed-tools restriction that resolves
+ * to an empty surface leaves the model no update_todo, so the TODO completion
+ * gate must stay disarmed and the run completes normally. */
+func TestTUIInteractiveTargetTodoGateStaysOffForEmptyResolvedSurface(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workDir := t.TempDir()
+	model := &targetTUIProvider{}
+	config := foxConfig{
+		WorkDir: workDir, Model: "tui-model", MaxTurns: 4,
+		ResolvedLLM: llmconfig.ResolvedConfig{Protocol: "openai", BaseURL: "https://example.test", Model: "tui-model"},
+	}
+	startup, err := newTUIStartupWithProviderFactory(context.Background(), config, tui.Interactions{
+		Permissions: denyPermissionPort{}, Questions: cancelQuestionPort{}, PlanReview: cancelPlanPort{},
+	}, func(llmconfig.ResolvedConfig) (provider.LLMProvider, error) { return model, nil }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer startup.Close(context.Background())
+
+	sessionDirectory := startup.Application.State().Session.Directory
+	if err := os.WriteFile(filepath.Join(sessionDirectory, "TODO.md"), []byte("# TODO\n\n- [ ] unfinished item\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := startup.Application.Run(context.Background(), app.RunCommand{
+		Prompt: "deny-all todo", AllowedTools: []string{},
+	}, nil)
+	if err != nil || outcome == nil || outcome.FinalMessage != "done:deny-all todo" {
+		t.Fatalf("deny-all run with an incomplete TODO.md = %#v/%v, want a normal completion", outcome, err)
+	}
+	calls := 0
+	for _, observation := range model.snapshot() {
+		if strings.HasPrefix(lastDirectUserMessage(observation.messages), "deny-all todo") {
+			calls++
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("deny-all run with an incomplete TODO.md consumed %d model calls, want 1", calls)
+	}
 }

@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/app"
@@ -23,6 +25,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/interactionruntime"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/memory"
+	"github.com/Zts0hg/foxharness/internal/metrics"
 	"github.com/Zts0hg/foxharness/internal/middleware"
 	"github.com/Zts0hg/foxharness/internal/modelinvoke"
 	"github.com/Zts0hg/foxharness/internal/permission"
@@ -55,7 +58,44 @@ type tuiSessionResources struct {
 	checkpointer checkpoint.Checkpointer
 	messageID    *runtimeMessageID
 	compactorsMu sync.Mutex
-	compactors   map[string]*compaction.Compactor
+	compactors   map[session.RunID]*compaction.Compactor
+	/* contextUsed and contextWindow hold the latest tool-overhead-inclusive
+	 * context estimate published by the engine turn flow. */
+	contextUsed   atomic.Int64
+	contextWindow atomic.Int64
+}
+
+/* publishContextEstimate records one engine-published context estimate. */
+func (r *tuiSessionResources) publishContextEstimate(used int, window int) {
+	r.contextUsed.Store(int64(used))
+	r.contextWindow.Store(int64(window))
+}
+
+/* contextEstimatePublisher republishes the live context estimate each time the
+ * engine prepares an invocation, so presentation reads the same
+ * tool-overhead-inclusive estimate the engine budgets against. */
+type contextEstimatePublisher struct {
+	inner     foxruntime.ContextCompactor
+	mechanism *compaction.Compactor
+	publish   func(used int, window int)
+}
+
+func (p *contextEstimatePublisher) Compact(ctx context.Context, request foxruntime.ContextCompactionRequest) (foxruntime.ContextCompactionProposal, error) {
+	p.publishEstimate(request.Messages, request.ToolDefinitions)
+	return p.inner.Compact(ctx, request)
+}
+
+func (p *contextEstimatePublisher) CheckContext(ctx context.Context, request foxruntime.ContextBudgetRequest) error {
+	p.publishEstimate(request.Messages, request.ToolDefinitions)
+	return p.inner.CheckContext(ctx, request)
+}
+
+func (p *contextEstimatePublisher) publishEstimate(messages []engine.Message, definitions []engine.ToolDefinition) {
+	if p.publish == nil {
+		return
+	}
+	overhead := metrics.EstimateToolDefinitions(metrics.RoughEstimator{}, definitions)
+	p.publish(p.mechanism.Estimate(messages)+overhead, p.mechanism.ContextWindow())
 }
 
 type tuiRunResources struct {
@@ -66,10 +106,10 @@ type tuiRunResources struct {
 	// surface actually exposes the skill tool; the activation drain is gated
 	// on it, matching the baseline registry-exposure gate.
 	skillExposedToModel bool
-	// todoUpdateExposedToModel mirrors whether the run's allowed-tools
-	// restriction keeps update_todo reachable. The TODO completion gate can
-	// demand nothing else, so it must stay disarmed when this is false. An
-	// empty restriction leaves every registered tool exposed.
+	// todoUpdateExposedToModel mirrors whether the resolved post-ceiling tool
+	// intersection keeps update_todo reachable. The TODO completion gate can
+	// demand nothing else, so it must stay disarmed when this is false. A nil
+	// restriction leaves every registered tool exposed.
 	todoUpdateExposedToModel bool
 }
 
@@ -323,7 +363,7 @@ func (c *tuiRuntimeComposition) initializeSession(_ context.Context, snapshot fo
 	}
 	c.resources[snapshot.ID] = &tuiSessionResources{
 		stored: stored, memory: memoryStore, checkpointer: checkpointer,
-		messageID: &runtimeMessageID{}, compactors: make(map[string]*compaction.Compactor),
+		messageID: &runtimeMessageID{}, compactors: make(map[session.RunID]*compaction.Compactor),
 	}
 	return nil
 }
@@ -376,22 +416,31 @@ func (c *tuiRuntimeComposition) changeModel(model string) error {
 	return nil
 }
 
-func (c *tuiRuntimeComposition) compactor(resource *tuiSessionResources, model string, modelProvider provider.LLMProvider) (*compaction.Compactor, error) {
+/* compactor returns the one compactor owned by a run. A new run always starts
+ * from a fresh instance, so the first threshold check runs with zero tool
+ * overhead and a cleared failure breaker instead of inheriting the previous
+ * run's mutable compaction state. */
+func (c *tuiRuntimeComposition) compactor(resource *tuiSessionResources, assembly foxruntime.RunAssembly, modelProvider provider.LLMProvider) (*compaction.Compactor, error) {
 	resource.compactorsMu.Lock()
 	defer resource.compactorsMu.Unlock()
-	if current := resource.compactors[model]; current != nil {
+	if current := resource.compactors[assembly.Run.RunID]; current != nil {
 		return current, nil
 	}
+	created, err := newTUICompactor(resource, assembly.Run.Model, modelProvider)
+	if err != nil {
+		return nil, err
+	}
+	resource.compactors[assembly.Run.RunID] = created
+	return created, nil
+}
+
+/* newTUICompactor builds an unshared compactor for one explicit operation. */
+func newTUICompactor(resource *tuiSessionResources, model string, modelProvider provider.LLMProvider) (*compaction.Compactor, error) {
 	config := compaction.DefaultCompactionConfig()
 	config.Model = model
 	config.SessionDir = resource.stored.RootDir
 	config.TranscriptPath = resource.stored.TranscriptPath()
-	created, err := compaction.NewCompactor(modelProvider, config)
-	if err != nil {
-		return nil, err
-	}
-	resource.compactors[model] = created
-	return created, nil
+	return compaction.NewCompactor(modelProvider, config)
 }
 
 func (c *tuiRuntimeComposition) newModel(_ context.Context, assembly foxruntime.RunAssembly) (engine.ModelInvoker, error) {
@@ -403,7 +452,7 @@ func (c *tuiRuntimeComposition) newModel(_ context.Context, assembly foxruntime.
 	if err != nil {
 		return nil, err
 	}
-	compactor, err := c.compactor(resource, assembly.Run.Model, modelProvider)
+	compactor, err := c.compactor(resource, assembly, modelProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -452,7 +501,7 @@ func (c *tuiRuntimeComposition) newTools(_ context.Context, assembly foxruntime.
 	c.runs[assembly.Run.RunID] = tuiRunResources{
 		hooks: hooks, tracker: tracker, lifecycle: lifecycle,
 		skillExposedToModel:      skillRegistered && (len(capabilityNames) == 0 || containsToolName(capabilityNames, "skill")),
-		todoUpdateExposedToModel: len(assembly.AllowedTools) == 0 || containsToolName(assembly.AllowedTools, "update_todo"),
+		todoUpdateExposedToModel: resolvedSurfaceExposesTodoUpdate(assembly.AllowedTools),
 	}
 	c.mu.Unlock()
 	resultHook := combineResultHooks(conditionalSkillHook(c.registry), hooks.RecordCallback(tracker))
@@ -562,7 +611,7 @@ func (c *tuiRuntimeComposition) newContext(_ context.Context, assembly foxruntim
 	if err != nil {
 		return nil, nil, err
 	}
-	compactor, err := c.compactor(resource, assembly.Run.Model, modelProvider)
+	compactor, err := c.compactor(resource, assembly, modelProvider)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -577,7 +626,10 @@ func (c *tuiRuntimeComposition) newContext(_ context.Context, assembly foxruntim
 			window := compaction.NewModelRegistry().Lookup(assembly.Run.Model)
 			return skilltool.FormatSkillsWithinBudget(c.registry.ModelInvocable(), window)
 		})
-	return collector, runtimecompaction.New(compactor), nil
+	return collector, &contextEstimatePublisher{
+		inner: runtimecompaction.New(compactor), mechanism: compactor,
+		publish: resource.publishContextEstimate,
+	}, nil
 }
 
 func (c *tuiRuntimeComposition) bind(agentSession *foxruntime.AgentSession) (app.InteractiveRuntimeBinding, error) {
@@ -649,6 +701,13 @@ func (c *tuiRuntimeComposition) sessionState(resource *tuiSessionResources) app.
 	}
 }
 
+/* runArmsMemoryExtraction reports whether one finished run arms the post-run
+ * memory extraction hook: the run must have returned a baseline result, which
+ * mid-run persistence and model failures never do. */
+func runArmsMemoryExtraction(result foxruntime.RunResult) bool {
+	return result.RunID != "" && result.ReturnsPartialResult()
+}
+
 func (c *tuiRuntimeComposition) afterRun(resource *tuiSessionResources, result foxruntime.RunResult, runErr error) {
 	if result.RunID == "" {
 		return
@@ -658,7 +717,8 @@ func (c *tuiRuntimeComposition) afterRun(resource *tuiSessionResources, result f
 	delete(c.runs, result.RunID)
 	c.mu.Unlock()
 	c.journals.remove(result.RunID)
-	if runErr != nil && result.Outcome.FinalMessage == "" && !result.Outcome.Partial {
+	resource.releaseCompactor(result.RunID)
+	if !runArmsMemoryExtraction(result) {
 		return
 	}
 	if run.hooks == nil || (run.lifecycle != nil && !run.lifecycle.MemoryExtractionAllowed()) {
@@ -670,6 +730,23 @@ func (c *tuiRuntimeComposition) afterRun(resource *tuiSessionResources, result f
 		}
 	}()
 	run.hooks.FireTrackedContext(c.extractionCtx, &c.extraction, resource.stored, string(result.RunID), run.tracker)
+}
+
+/* releaseCompactor drops one finished run's compactor so the next run on the
+ * same session and model cannot inherit its mutable state. */
+func (r *tuiSessionResources) releaseCompactor(runID session.RunID) {
+	r.compactorsMu.Lock()
+	defer r.compactorsMu.Unlock()
+	delete(r.compactors, runID)
+}
+
+/* resolvedSurfaceExposesTodoUpdate reports whether the resolved run surface
+ * still exposes update_todo. A nil restriction means the profile ceiling
+ * applied unchanged, so every registered tool is reachable; an explicit list
+ * is exposed only when the resolved intersection keeps the tool, so a list
+ * that resolves to nothing never arms the TODO completion gate. */
+func resolvedSurfaceExposesTodoUpdate(resolved []string) bool {
+	return resolved == nil || containsToolName(resolved, "update_todo")
 }
 
 func containsToolName(names []string, target string) bool {
@@ -820,7 +897,7 @@ func (c *tuiRuntimeComposition) compact(ctx context.Context, agentSession *foxru
 	if err != nil {
 		return app.CompactOutcome{}, err
 	}
-	mechanism, err := c.compactor(resource, model, modelProvider)
+	mechanism, err := newTUICompactor(resource, model, modelProvider)
 	if err != nil {
 		return app.CompactOutcome{}, err
 	}
@@ -931,7 +1008,7 @@ func (c *tuiRuntimeComposition) restoreLatestInput(ctx context.Context, agentSes
 func conversationContent(records []session.MessageRecord, sequence int64) string {
 	for _, record := range records {
 		if record.Seq == sequence {
-			return record.HumanContent()
+			return strings.TrimSpace(record.HumanContent())
 		}
 	}
 	return ""
@@ -953,6 +1030,11 @@ func tuiProjectedMessages(state *session.CompactState, records []session.Message
 }
 
 func (c *tuiRuntimeComposition) contextUsage(resource *tuiSessionResources) string {
+	if used := resource.contextUsed.Load(); used > 0 {
+		if window := resource.contextWindow.Load(); window > 0 {
+			return formatTUIContextUsage(int(used), int(window))
+		}
+	}
 	records, err := session.NewMessageLog(resource.stored).LoadRecords()
 	if err != nil {
 		return "unknown"
