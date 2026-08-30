@@ -137,9 +137,10 @@ func (tree *unixTree) signalLocked(force bool) error {
 	if tree.forceCalled {
 		return nil
 	}
-	if err := tree.observeUnexpectedAnchorExitLocked(); err != nil {
-		return err
-	}
+	/* An anchor that died early is reported as evidence, but the group
+	 * members — the command shell and its children — are still alive, so the
+	 * signal goes out regardless of the anchor's fate. */
+	anchorErr := tree.observeUnexpectedAnchorExitLocked()
 	signal := syscall.SIGTERM
 	if force {
 		signal = syscall.SIGKILL
@@ -148,6 +149,7 @@ func (tree *unixTree) signalLocked(force bool) error {
 	if err == nil && force {
 		tree.forceCalled = true
 	}
+	err = errors.Join(err, anchorErr)
 	if err != nil {
 		return fmt.Errorf("signal owned process group %d with %s: %w", tree.groupID, signal, err)
 	}
