@@ -110,7 +110,7 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 	if !wrapperCommands[command] {
 		return true
 	}
-	if command == "find" {
+	if command == "find" || command == "gfind" {
 		return findExecWordsAreSynchronous(call.Args)
 	}
 	// The remaining wrappers take the executed program from their arguments.
@@ -130,9 +130,13 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 // escapes the killed process group exactly as if named directly. busybox and
 // toybox are multi-call binaries whose first argument names the program.
 var wrapperCommands = map[string]bool{
-	"arch": true, "busybox": true, "chrt": true, "find": true,
-	"ionice": true, "nice": true, "script": true, "sudo": true,
-	"stdbuf": true, "taskset": true, "toybox": true, "watch": true,
+	"arch": true, "busybox": true, "chroot": true, "chrt": true,
+	"caffeinate": true, "doas": true, "find": true, "gfind": true,
+	"gnice": true,
+	"gstdbuf": true, "ionice": true, "nice": true, "nsenter": true,
+	"runuser": true, "script": true, "setarch": true, "setpriv": true,
+	"strace": true, "sudo": true, "stdbuf": true, "su": true,
+	"taskset": true, "toybox": true, "watch": true,
 }
 
 // interpreterNamePrefixes lists interpreter and shell families whose
@@ -301,6 +305,7 @@ var detachedShellCommands = map[string]bool{
 	"setsid": true, "sh": true, "shopt": true, "source": true,
 	"systemd-run": true, "tcsh": true, "timeout": true, "tmux": true,
 	"trap": true, "wish": true, "xonsh": true, "xargs": true,
+	"genv": true, "gnohup": true, "gtimeout": true, "gxargs": true,
 	"zsh": true,
 }
 
