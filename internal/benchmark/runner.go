@@ -35,6 +35,7 @@ type Runner struct {
 	cleanupTimeout  func() time.Duration
 	createWorkspace func() (string, error)
 	removeWorkspace func(context.Context, string) error
+	closeSession    func(*foxruntime.AgentSession, time.Duration) error
 }
 
 const (
@@ -228,23 +229,34 @@ func (r *Runner) RunRepeat(ctx context.Context, c *Case, repeatIndex int) (retur
 	} else {
 		result.RuntimeStatus = RuntimeStatusCompleted
 	}
-	if cleanupErr := closeRuntimeSession(harness.Session, r.cleanupTimeoutOrDefault()); cleanupErr != nil {
-		result.Success = false
-		result.Status = ResultStatusInfrastructureFailed
+	if cleanupErr := r.closeRuntimeSession(harness.Session); cleanupErr != nil {
+		/* A close or recovery failure is evidence, not a verdict: the run
+		 * already finished, so the repeat keeps its outcome and the remaining
+		 * repeats still execute. */
 		result.CleanupError = cleanupErr.Error()
-		result.InfrastructureError = cleanupErr.Error()
-		result.Error = cleanupErr.Error()
-		result.TerminalCause = cleanupErr.Error()
-		return result, cleanupErr
+		if result.InfrastructureError == "" {
+			result.InfrastructureError = cleanupErr.Error()
+		} else {
+			result.InfrastructureError = errors.Join(errors.New(result.InfrastructureError), cleanupErr).Error()
+		}
 	}
 
-	validationResults := ValidateAll(caseCtx, workspace, caseSnapshot.Validations)
+	/* The close window above can outlive the case deadline; a run that
+	 * already completed still gets its evaluation instead of failing every
+	 * validation against a consumed deadline. */
+	validateCtx := caseCtx
+	if caseCtx.Err() != nil && err == nil {
+		validateCtx = context.WithoutCancel(caseCtx)
+	}
+	validationResults := ValidateAll(validateCtx, workspace, caseSnapshot.Validations)
 	result.Validations = validationResults
 	validationsPassed := allPassed(validationResults)
 	if !validationsPassed {
 		result.EvaluationError = "one or more validations failed"
 	}
-	if caseCtx.Err() != nil {
+	/* An expired case deadline must not consume a run that already completed:
+	 * the close window above runs after the verdict evidence exists. */
+	if caseCtx.Err() != nil && err != nil {
 		contextFailure(result, caseCtx.Err())
 	} else if err != nil {
 		result.Status = ResultStatusFailed
@@ -280,6 +292,13 @@ func normalizeRuntimeError(err error) error {
 		return err
 	}
 	return &normalizedRuntimeError{message: strings.TrimPrefix(err.Error(), contextPrefix), cause: err}
+}
+
+func (r *Runner) closeRuntimeSession(agentSession *foxruntime.AgentSession) error {
+	if r.closeSession != nil {
+		return r.closeSession(agentSession, r.cleanupTimeoutOrDefault())
+	}
+	return closeRuntimeSession(agentSession, r.cleanupTimeoutOrDefault())
 }
 
 func closeRuntimeSession(agentSession *foxruntime.AgentSession, timeout time.Duration) error {

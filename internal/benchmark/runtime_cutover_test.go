@@ -59,14 +59,21 @@ func TestM14RuntimeCleanupFailureRetainsStartedRuntimeEvidence(t *testing.T) {
 		)
 	})
 	result, err := runner.RunCase(context.Background(), &Case{ID: "cleanup", Fixture: fixture, Prompt: "run", MaxTurns: 1})
-	if err == nil || result.Status != ResultStatusInfrastructureFailed || result.CleanupError == "" {
-		t.Fatalf("cleanup result/error = %#v/%v", result, err)
+	if err != nil {
+		t.Fatalf("cleanup error = %v, want the close failure recorded without failing the repeat", err)
+	}
+	defer os.RemoveAll(result.Workspace)
+	if result.CleanupError == "" || result.InfrastructureError == "" {
+		t.Fatalf("cleanup evidence = %q/%q, want both recorded", result.CleanupError, result.InfrastructureError)
 	}
 	/* A failed terminal run write never fails the run; the recovery failure
 	 * surfaces through the cleanup evidence while the runtime run stays
-	 * completed with its started run identifier. */
+	 * completed with its started run identifier and verdict. */
 	if result.RuntimeStatus != RuntimeStatusCompleted || result.RunID == "" || result.RuntimeCause != "" {
 		t.Fatalf("runtime evidence lost to cleanup failure: %#v", result)
+	}
+	if !result.Success || result.Status != ResultStatusCompleted {
+		t.Fatalf("completed repeat flipped by close failure: %#v", result)
 	}
 }
 
