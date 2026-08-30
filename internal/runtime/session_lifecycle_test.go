@@ -318,20 +318,22 @@ type lifecycleObserver struct{}
 func (lifecycleObserver) ObserveRunFact(context.Context, RuntimeFact) {}
 
 type lifecycleStore struct {
-	mu          sync.Mutex
-	sessions    map[session.ID]*session.StoredSession
-	starts      int
-	finishes    int
-	startErr    error
-	finishErr   error
-	lastCreate  session.CreateOptions
-	runSession  session.ID
-	openID      session.ID
-	messages    map[session.ID][]session.MessageRecord
-	compact     map[session.ID]*session.CompactState
-	messageErr  error
-	loadErr     error
-	messageTime time.Time
+	mu             sync.Mutex
+	sessions       map[session.ID]*session.StoredSession
+	starts         int
+	finishes       int
+	startErr       error
+	finishErr      error
+	lastCreate     session.CreateOptions
+	runSession     session.ID
+	openID         session.ID
+	compactLoadErr error
+	compactSaveErr error
+	messages       map[session.ID][]session.MessageRecord
+	compact        map[session.ID]*session.CompactState
+	messageErr     error
+	loadErr        error
+	messageTime    time.Time
 }
 
 func newLifecycleStore() *lifecycleStore {
@@ -439,12 +441,22 @@ func (s *lifecycleStore) AppendMessage(storedSession *session.StoredSession, run
 func (s *lifecycleStore) LoadContextCompactState(storedSession *session.StoredSession) (*session.CompactState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.compactLoadErr != nil {
+		err := s.compactLoadErr
+		s.compactLoadErr = nil
+		return nil, err
+	}
 	return cloneCompactState(s.compact[storedSession.ID]), nil
 }
 
 func (s *lifecycleStore) SaveContextCompactState(storedSession *session.StoredSession, state *session.CompactState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.compactSaveErr != nil {
+		err := s.compactSaveErr
+		s.compactSaveErr = nil
+		return err
+	}
 	s.compact[storedSession.ID] = cloneCompactState(state)
 	return nil
 }
@@ -533,6 +545,18 @@ func (s *lifecycleStore) compactState(id session.ID) *session.CompactState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return cloneCompactState(s.compact[id])
+}
+
+func (s *lifecycleStore) failNextCompactLoad(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.compactLoadErr = err
+}
+
+func (s *lifecycleStore) failNextCompactSave(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.compactSaveErr = err
 }
 
 func (s *lifecycleStore) failNextMessage(err error) {

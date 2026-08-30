@@ -12,7 +12,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
@@ -215,7 +214,6 @@ func (r *Runner) RunRepeat(ctx context.Context, c *Case, repeatIndex int) (retur
 		result.RunID = string(runResult.RunID)
 	}
 	if err != nil {
-		err = normalizeRuntimeError(err)
 		result.Error = err.Error()
 		result.RuntimeError = err.Error()
 		result.RuntimeCause = err.Error()
@@ -276,22 +274,6 @@ func (r *Runner) RunRepeat(ctx context.Context, c *Case, repeatIndex int) (retur
 	}
 
 	return result, nil
-}
-
-type normalizedRuntimeError struct {
-	message string
-	cause   error
-}
-
-func (e *normalizedRuntimeError) Error() string { return e.message }
-func (e *normalizedRuntimeError) Unwrap() error { return e.cause }
-
-func normalizeRuntimeError(err error) error {
-	const contextPrefix = "collect runtime context: "
-	if err == nil || !strings.HasPrefix(err.Error(), contextPrefix) {
-		return err
-	}
-	return &normalizedRuntimeError{message: strings.TrimPrefix(err.Error(), contextPrefix), cause: err}
 }
 
 func (r *Runner) closeRuntimeSession(agentSession *foxruntime.AgentSession) error {

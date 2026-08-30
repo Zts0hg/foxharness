@@ -393,10 +393,10 @@ func TestContextControllerUsesExactPersistedRecordMetadataWhileLive(t *testing.T
 	if _, err := controller.Prepare(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	if len(compactor.requests) != 2 || len(compactor.requests[1].Records) != 1 {
+	if len(compactor.requests) != 3 || len(compactor.requests[2].Records) != 1 {
 		t.Fatalf("compactor requests = %#v", compactor.requests)
 	}
-	if got := compactor.requests[1].Records[0].Time; !got.Equal(fixed) {
+	if got := compactor.requests[2].Records[0].Time; !got.Equal(fixed) {
 		t.Fatalf("live record time = %v, want persisted %v", got, fixed)
 	}
 	_ = agentSession.FinishRun(scope)
@@ -565,9 +565,17 @@ func TestContextControllerCommitsCompactionProposalThroughAgentSession(t *testin
 	harness, _ := NewRuntimeHarness(store)
 	agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
 	scope, _ := agentSession.BeginRun(context.Background(), RunSpec{Prompt: "work"})
-	compactor := &recordingContextCompactor{proposal: ContextCompactionProposal{
-		Changed:      true,
-		CompactState: &session.CompactState{Summary: "summary", CoveredUntilSeq: 0},
+	compactor := &recordingContextCompactor{proposalFunc: func(request ContextCompactionRequest) (ContextCompactionProposal, error) {
+		if request.Trigger == ContextCompactionPreTurn {
+			return ContextCompactionProposal{Changed: true, Messages: []engine.Message{
+				{Role: engine.RoleSystem, Content: "system"},
+				{Role: engine.RoleUser, Content: "summary"},
+			}}, nil
+		}
+		return ContextCompactionProposal{
+			Changed:      true,
+			CompactState: &session.CompactState{Summary: "summary", CoveredUntilSeq: 0},
+		}, nil
 	}}
 	controller, _ := agentSession.NewContextController(scope, staticContextCollector("system"), compactor)
 	request := ordinaryConversationRequest("work")
@@ -580,7 +588,7 @@ func TestContextControllerCommitsCompactionProposalThroughAgentSession(t *testin
 	if got := messageContents(projection.Context.Messages); len(got) != 2 || got[0] != "system" || !strings.Contains(got[1], "summary") {
 		t.Fatalf("compacted projection = %v", got)
 	}
-	if len(compactor.requests) != 1 || compactor.requests[0].Trigger != ContextCompactionInitialHistory || compactor.requests[0].ToolDefinitions[0].Name != "read_file" {
+	if len(compactor.requests) != 2 || compactor.requests[0].Trigger != ContextCompactionInitialHistory || compactor.requests[0].ToolDefinitions[0].Name != "read_file" {
 		t.Fatalf("compaction request = %#v", compactor.requests)
 	}
 	state := store.compactState(agentSession.Snapshot().ID)
@@ -858,8 +866,9 @@ func (c staticContextCollector) Collect(context.Context, ContextCollectionReques
 }
 
 type recordingContextCompactor struct {
-	proposal ContextCompactionProposal
-	requests []ContextCompactionRequest
+	proposal     ContextCompactionProposal
+	proposalFunc func(ContextCompactionRequest) (ContextCompactionProposal, error)
+	requests     []ContextCompactionRequest
 }
 
 type contextCompactorFunc func(context.Context, ContextCompactionRequest) (ContextCompactionProposal, error)
@@ -892,6 +901,9 @@ func (c *recordingContextCompactor) Compact(_ context.Context, request ContextCo
 	request.Messages = append([]engine.Message(nil), request.Messages...)
 	request.ToolDefinitions = append([]engine.ToolDefinition(nil), request.ToolDefinitions...)
 	c.requests = append(c.requests, request)
+	if c.proposalFunc != nil {
+		return c.proposalFunc(request)
+	}
 	return c.proposal, nil
 }
 

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -36,14 +37,40 @@ func TestContextControllerAdmitsTurnOneInjectionsBeforeTheFirstPrepare(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(compactor.requests) != 1 || compactor.requests[0].Trigger != ContextCompactionInitialHistory {
-		t.Fatalf("compaction requests = %#v, want one initial-history decision", compactor.requests)
+	if len(compactor.requests) != 2 || compactor.requests[0].Trigger != ContextCompactionInitialHistory {
+		t.Fatalf("compaction requests = %#v, want the turn-one durable and run-local decisions", compactor.requests)
 	}
-	if slices.Contains(messageContents(compactor.requests[0].Messages), "queued activation") {
-		t.Fatalf("initial compaction input carried the turn-one notice: %#v", compactor.requests[0].Messages)
+	for _, request := range compactor.requests {
+		if slices.Contains(messageContents(request.Messages), "queued activation") {
+			t.Fatalf("compaction input carried the turn-one notice: %#v", request.Messages)
+		}
 	}
 	if !slices.Contains(messageContents(projection.Context.Messages), "queued activation") {
 		t.Fatalf("projection lost the turn-one notice: %v", messageContents(projection.Context.Messages))
+	}
+	_ = agentSession.FinishRun(scope)
+}
+
+/* TestContextControllerTurnOneWithoutThinkingKeepsBothDecisionPoints pins the
+ * baseline turn shape on the default no-thinking path: the single first-turn
+ * prepare runs the durable session-history decision and still runs the
+ * run-local decision the baseline executed at every turn start. */
+func TestContextControllerTurnOneWithoutThinkingKeepsBothDecisionPoints(t *testing.T) {
+	store := newLifecycleStore()
+	harness, _ := NewRuntimeHarness(store)
+	agentSession, _ := harness.CreateSession(context.Background(), CLIExec, SessionOptions{WorkDir: "/workspace"})
+	scope, _ := agentSession.BeginRun(context.Background(), RunSpec{Prompt: "work"})
+	compactor := &recordingContextCompactor{}
+	controller, _ := agentSession.NewContextController(scope, staticContextCollector("system"), compactor)
+	request := ordinaryConversationRequest("work")
+	request.Phase = engine.PhaseAction
+	if _, err := controller.Prepare(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	got := compactionTriggers(compactor)
+	want := []ContextCompactionTrigger{ContextCompactionInitialHistory, ContextCompactionPreTurn}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("no-thinking turn 1 compaction triggers = %v, want %v", got, want)
 	}
 	_ = agentSession.FinishRun(scope)
 }
@@ -84,10 +111,12 @@ func TestContextControllerPreTurnCompactionKeepsPreviousTurnNotices(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(compactor.requests) < 2 {
+	if len(compactor.requests) < 3 {
 		t.Fatalf("compaction requests = %#v", compactor.requests)
 	}
-	input := messageContents(compactor.requests[1].Messages)
+	/* The turn-two prepare carries the run-local decision, after the
+	 * no-thinking turn one consumed both of its decision points. */
+	input := messageContents(compactor.requests[2].Messages)
 	if !slices.Contains(input, "previous turn gate reminder") {
 		t.Fatalf("pre-turn compaction input lost the previous turn's notice: %v", input)
 	}

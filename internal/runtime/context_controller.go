@@ -230,9 +230,9 @@ func (c *ContextController) Prepare(ctx context.Context, request engine.Conversa
 		return engine.ConversationProjection{}, err
 	}
 
-	trigger, shouldCompact := c.session.claimContextPreparation(c.scope.run.ID, request.Turn, request.Preparation)
-	compactions := make([]engine.ConversationCompaction, 0, 1)
-	if shouldCompact {
+	triggers := c.session.claimContextPreparation(c.scope.run.ID, request.Turn, request.Phase, request.Preparation)
+	compactions := make([]engine.ConversationCompaction, 0, len(triggers))
+	for _, trigger := range triggers {
 		before := len(c.messages)
 		compaction, err := c.compact(ctx, request, trigger)
 		if err != nil {
@@ -380,7 +380,7 @@ func (c *ContextController) initialize(ctx context.Context) error {
 			RestrictedTools: c.scope.resolved.restrictedTools, ReadOnly: run.ReadOnly,
 		})
 		if err != nil {
-			return fmt.Errorf("collect runtime context: %w", err)
+			return err
 		}
 		c.systemPrompt = prompt.Render(append([]prompt.Fragment(nil), fragments...))
 		c.collected = true
@@ -502,22 +502,34 @@ func validateCompactionProposal(trigger ContextCompactionTrigger, proposal Conte
 	return nil
 }
 
-func (s *AgentSession) claimContextPreparation(runID session.RunID, turn int, preparation engine.ConversationPreparation) (ContextCompactionTrigger, bool) {
+/* claimContextPreparation reserves the run's compaction decision points for
+ * one prepare and reports the triggers that prepare must run. The baseline
+ * ran a durable session-history decision while building the run's initial
+ * context and a run-local decision at every turn start, so a first turn
+ * without a thinking phase — whose single prepare would otherwise carry only
+ * the durable decision — claims both, while a thinking turn claims the
+ * durable one on its thinking prepare and the run-local one on its action
+ * prepare. */
+func (s *AgentSession) claimContextPreparation(runID session.RunID, turn int, phase engine.Phase, preparation engine.ConversationPreparation) []ContextCompactionTrigger {
 	if preparation == engine.ConversationPrepareReactive {
-		return ContextCompactionReactive, true
+		return []ContextCompactionTrigger{ContextCompactionReactive}
 	}
 	s.contextMu.Lock()
 	defer s.contextMu.Unlock()
 	key := contextTurnKey{runID: runID, turn: turn}
 	if !s.contextInitialPrepared[runID] {
 		s.contextInitialPrepared[runID] = true
-		return ContextCompactionInitialHistory, true
+		if turn == 1 && phase != engine.PhaseThinking {
+			s.contextPreparedTurns[key] = true
+			return []ContextCompactionTrigger{ContextCompactionInitialHistory, ContextCompactionPreTurn}
+		}
+		return []ContextCompactionTrigger{ContextCompactionInitialHistory}
 	}
 	if s.contextPreparedTurns[key] {
-		return "", false
+		return nil
 	}
 	s.contextPreparedTurns[key] = true
-	return ContextCompactionPreTurn, true
+	return []ContextCompactionTrigger{ContextCompactionPreTurn}
 }
 
 func (s *AgentSession) releaseRunContext(runID session.RunID) {
@@ -611,7 +623,9 @@ func (s *AgentSession) ensureContextLoadedLocked() error {
 	}
 	state, err := s.store.LoadContextCompactState(&record)
 	if err != nil {
-		return fmt.Errorf("load runtime compact state: %w", err)
+		/* The baseline loaded the compact state while assembling the run's
+		 * initial context, so a load failure carries the assembly chain. */
+		return fmt.Errorf("组装 Session 上下文失败: %w", err)
 	}
 	s.contextRecords = cloneMessageRecords(records)
 	s.contextCompactState = cloneCompactState(state)
@@ -627,8 +641,11 @@ func (s *AgentSession) commitCompactState(state *session.CompactState) error {
 	}
 	record := s.record
 	copy := cloneCompactState(state)
+	/* The error is returned bare: the durable decision wraps it with the
+	 * baseline assembly chain, and the manual operation surfaces it the way
+	 * the baseline's manual compaction did. */
 	if err := s.store.SaveContextCompactState(&record, copy); err != nil {
-		return fmt.Errorf("commit runtime compact state: %w", err)
+		return err
 	}
 	s.contextCompactState = cloneCompactState(copy)
 	return nil

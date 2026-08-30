@@ -81,8 +81,20 @@ type contextEstimatePublisher struct {
 }
 
 func (p *contextEstimatePublisher) Compact(ctx context.Context, request foxruntime.ContextCompactionRequest) (foxruntime.ContextCompactionProposal, error) {
+	proposal, err := p.inner.Compact(ctx, request)
+	if err != nil {
+		return proposal, err
+	}
+	/* The baseline published the estimate from the compacted history, so a
+	 * committed message projection republishes from the result. The durable
+	 * session-history proposal rebuilds the projection, and the same
+	 * prepare's budget check republishes the post-build estimate. */
+	if proposal.Changed && len(proposal.Messages) > 0 {
+		p.publishEstimate(proposal.Messages, request.ToolDefinitions)
+		return proposal, nil
+	}
 	p.publishEstimate(request.Messages, request.ToolDefinitions)
-	return p.inner.Compact(ctx, request)
+	return proposal, nil
 }
 
 func (p *contextEstimatePublisher) CheckContext(ctx context.Context, request foxruntime.ContextBudgetRequest) error {
@@ -198,9 +210,10 @@ func newTUIStartupWithProviderFactory(
 	providerFactory tuiProviderFactory,
 	onModelChange func(string) error,
 ) (tui.Startup, error) {
-	if err := validateCLILLM(config); err != nil {
-		return tui.Startup{}, err
-	}
+	/* Session selection runs first, matching the baseline admission order
+	 * shared with the CLI entry: a bad selection is reported before any
+	 * provider construction, so an under-specified LLM configuration cannot
+	 * mask it. */
 	workDir, err := filepath.Abs(config.WorkDir)
 	if err != nil {
 		return tui.Startup{}, err
@@ -208,6 +221,9 @@ func newTUIStartupWithProviderFactory(
 	store := session.NewFileStore(workDir)
 	stored, err := selectCLIStoredSession(store, workDir, config)
 	if err != nil {
+		return tui.Startup{}, err
+	}
+	if err := validateCLILLM(config); err != nil {
 		return tui.Startup{}, err
 	}
 	homeDir, _ := os.UserHomeDir()
@@ -705,7 +721,7 @@ func (c *tuiRuntimeComposition) sessionState(resource *tuiSessionResources) app.
  * memory extraction hook: the run must have returned a baseline result, which
  * mid-run persistence and model failures never do. */
 func runArmsMemoryExtraction(result foxruntime.RunResult) bool {
-	return result.RunID != "" && result.ReturnsPartialResult()
+	return result.ReturnedResult()
 }
 
 func (c *tuiRuntimeComposition) afterRun(resource *tuiSessionResources, result foxruntime.RunResult, runErr error) {
