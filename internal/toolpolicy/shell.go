@@ -468,7 +468,7 @@ var detachedShellCommands = map[string]bool{
 	"octave": true, "oksh": true, "open": true, "osascript": true,
 	"osh": true, "podman": true, "posh": true, "powershell": true,
 	"psql": true, "pwsh": true, "pythonw": true, "r": true, "rc": true,
-	"readarray": true, "rsh": true, "rsync": true, "rscript": true,
+	"readarray": true, "rbash": true, "rksh": true, "rsh": true, "rsync": true, "rscript": true,
 	"rvim": true, "rview": true, "sash": true, "sbcl": true, "scp": true,
 	"sed":    true,
 	"screen": true, "schtasks": true, "setsid": true, "sftp": true,

@@ -120,6 +120,11 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (string, error)
 	if t.runner == nil || !t.runner.DelegationAllowed() {
 		return "", fmt.Errorf("delegate_task is unavailable under the parent permission policy")
 	}
+	/* The baseline failed closed before any child work when the parent
+	 * surface carried no permission coordination. */
+	if !t.runner.PermissionEnforced() {
+		return "", fmt.Errorf("delegate_task requires child permission coordination")
+	}
 
 	readOnly := true
 	if input.ReadOnly != nil {

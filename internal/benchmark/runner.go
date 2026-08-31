@@ -253,6 +253,13 @@ func (r *Runner) RunRepeat(ctx context.Context, c *Case, repeatIndex int) (retur
 	if !validationsPassed {
 		result.EvaluationError = "one or more validations failed"
 	}
+	/* A cancelled parent cancels the whole case even when the deadline-freed
+	 * window above produced validations, the way the baseline classified a
+	 * cancelled case ahead of its completion. */
+	if ctx.Err() != nil {
+		contextFailure(result, ctx.Err())
+		return result, nil
+	}
 	/* An expired case deadline must not consume a run that already completed:
 	 * the close window above runs after the verdict evidence exists. */
 	if caseCtx.Err() != nil && err != nil {

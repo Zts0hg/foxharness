@@ -924,11 +924,11 @@ func (c *tuiRuntimeComposition) compact(ctx context.Context, agentSession *foxru
 	}
 	mechanism, err := newTUICompactor(resource, model, modelProvider)
 	if err != nil {
-		return app.CompactOutcome{}, err
+		return app.CompactOutcome{}, fmt.Errorf("failed to create compactor: %w", err)
 	}
 	records, err := session.NewMessageLog(resource.stored).LoadRecords()
 	if err != nil {
-		return app.CompactOutcome{}, err
+		return app.CompactOutcome{}, fmt.Errorf("failed to load message history: %w", err)
 	}
 	state, err := session.LoadCompactState(resource.stored)
 	if err != nil {

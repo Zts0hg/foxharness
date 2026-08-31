@@ -54,18 +54,18 @@ func (r *recordingRunner) Run(_ context.Context, request Request) (*Result, erro
 func (r *recordingRunner) PermissionEnforced() bool { return r.enforce }
 func (r *recordingRunner) DelegationAllowed() bool  { return r.allow || r.enforce }
 
-func TestCLIExecUndecoratedDelegationRunsWhenProfileAllowsNoCoordinator(t *testing.T) {
+func TestCLIExecDelegationFailsClosedWithoutACoordinator(t *testing.T) {
 	runner := &recordingRunner{
 		allow:  true,
 		result: &Result{SessionID: "child-session", Report: "done", Status: OutcomeSucceeded},
 	}
 	tool := NewTool(runner, "parent-session")
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"inspect"}`))
-	if err != nil {
-		t.Fatalf("Execute() error = %v, want CLI profile delegation without a coordinator", err)
+	if err == nil || !strings.Contains(err.Error(), "delegate_task requires child permission coordination") {
+		t.Fatalf("Execute() error = %v, want the baseline fail-closed coordination error", err)
 	}
-	if runner.calls != 1 || !strings.Contains(result, "child-session") {
-		t.Fatalf("delegation result/calls = %q/%d", result, runner.calls)
+	if runner.calls != 0 || result != "" {
+		t.Fatalf("delegation ran without a coordinator: calls=%d result=%q", runner.calls, result)
 	}
 }
 

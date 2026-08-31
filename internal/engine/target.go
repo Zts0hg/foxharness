@@ -581,7 +581,10 @@ func (e *AgentEngine) executeTools(
 	if err := e.requestChanges(ctx, turn, changes); err != nil {
 		return state, err
 	}
-	return state, ctx.Err()
+	/* The baseline did not abort the run on a context that died during tool
+	 * execution: the results stand as observations and the next model
+	 * invocation surfaces the cancellation through its own wrapped error. */
+	return state, nil
 }
 
 /* emitInjectionFacts publishes the canonical injection observations for one

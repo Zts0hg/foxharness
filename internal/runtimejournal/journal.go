@@ -137,6 +137,15 @@ func (j *Journal) RecordTelemetry(_ context.Context, fact foxruntime.RuntimeFact
 	if fact.Fact.Kind == engine.FactToolCall {
 		j.startTool(fact.Fact)
 	}
+	if fact.Fact.Turn > 0 {
+		j.turn(fact.Fact.Turn)
+	}
+	if fact.Fact.Kind == engine.FactSystemReminder && fact.Fact.Turn > 0 {
+		switch fact.Fact.Name {
+		case string(engine.ConversationSourceCompletionGate), string(engine.ConversationSourceTODOGate):
+			j.finishBlockedTurn(fact.Fact.Turn, fact.Fact.Name)
+		}
+	}
 	j.annotateInjection(fact.Fact)
 	if fact.Fact.Kind != engine.FactRunCompleted && fact.Fact.Kind != engine.FactRunError {
 		return j.takeErrors()
@@ -198,8 +207,9 @@ func (j *Journal) takeErrors() error {
 }
 
 type turnObservation struct {
-	span  *tracing.Span
-	ended bool
+	span         *tracing.Span
+	ended        bool
+	finalPending bool
 }
 
 type toolObservation struct {
@@ -300,8 +310,38 @@ func (j *Journal) finishOpenTurns(failed bool, failure string) {
 		attributes["error"] = failure
 	}
 	for _, observation := range open {
+		if status == "ok" && observation.finalPending {
+			observation.span.End("ok", map[string]any{"tool_calls": 0, "final": true})
+			continue
+		}
 		observation.span.End(status, attributes)
 	}
+}
+
+/* deferTurnFinal holds a completed model turn open: the completion and TODO
+ * gate decisions follow the model response and either continue the run with
+ * a blocked_by annotation or confirm the turn as final. */
+func (j *Journal) deferTurnFinal(turn int) {
+	j.stateMu.Lock()
+	defer j.stateMu.Unlock()
+	observation := j.turns[turn]
+	if observation != nil && !observation.ended {
+		observation.finalPending = true
+	}
+}
+
+/* finishBlockedTurn ends one deferred turn the way the baseline recorded a
+ * gate-blocked response: successful, not final, named by the blocking gate. */
+func (j *Journal) finishBlockedTurn(turn int, gate string) {
+	j.stateMu.Lock()
+	observation := j.turns[turn]
+	if observation == nil || observation.ended || !observation.finalPending {
+		j.stateMu.Unlock()
+		return
+	}
+	observation.ended = true
+	j.stateMu.Unlock()
+	observation.span.End("ok", map[string]any{"tool_calls": 0, "final": false, "blocked_by": gate})
 }
 
 type journalModel struct {
@@ -376,7 +416,7 @@ func (m journalModelRun) Invoke(ctx context.Context, request engine.RunContext, 
 	} else {
 		span.End("ok", map[string]any{"content_bytes": len(result.Message.Content), "tool_calls": len(result.Message.ToolCalls)})
 		if request.Phase == engine.PhaseAction && len(result.Message.ToolCalls) == 0 {
-			m.journal.finishTurn(request.Turn, "ok", map[string]any{"tool_calls": 0, "final": true})
+			m.journal.deferTurnFinal(request.Turn)
 		}
 	}
 	return result, err

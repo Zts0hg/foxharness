@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
@@ -168,4 +169,48 @@ func TestTargetEngineRecordsCompactionBeforeTurnNotices(t *testing.T) {
 	if !slices.Equal(kinds, want) {
 		t.Fatalf("recorded fact order = %v, want %v", kinds, want)
 	}
+}
+
+/* TestTargetEngineSurfacesMidToolCancellationThroughTheModelCall pins the
+ * baseline cancellation path: a context that dies during tool execution does
+ * not fail the run with a bare context error; the next model invocation
+ * surfaces it through the baseline's wrapped provider error. */
+func TestTargetEngineSurfacesMidToolCancellationThroughTheModelCall(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	conversation := &sourceRecordingConversation{}
+	toolExecutor := &cancellingToolExecutor{cancel: cancel}
+	eng := NewAgentEngine(
+		modelInvokerFunc(func(callCtx context.Context, _ RunContext) (ModelResult, error) {
+			if callCtx.Err() != nil {
+				return ModelResult{}, callCtx.Err()
+			}
+			return ModelResult{Message: schema.Message{
+				Role: schema.RoleAssistant, Content: "working",
+				ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "inspect"}},
+			}}, nil
+		}),
+		toolExecutor, conversation, stampRecordingPolicy{}, nil,
+	)
+	_, err := eng.Run(ctx, RunInput{Prompt: "work", MaxTurns: 3})
+	cancel()
+	if err == nil || !strings.Contains(err.Error(), "模型生成失败: context canceled") {
+		t.Fatalf("run error = %v, want the baseline wrapped provider cancellation", err)
+	}
+}
+
+/* cancellingToolExecutor cancels the run context during execution and
+ * completes successfully, the way a tool that lost its context does. */
+type cancellingToolExecutor struct {
+	cancel context.CancelFunc
+}
+
+func (e *cancellingToolExecutor) Snapshot(context.Context) (ToolSnapshot, error) {
+	return targetToolSnapshot{}, nil
+}
+
+func (e *cancellingToolExecutor) Execute(_ context.Context, _ ToolSnapshot, calls []schema.ToolCall) (ToolBatch, error) {
+	e.cancel()
+	return ToolBatch{Results: []ToolExecutionResult{{
+		CallID: calls[0].ID, FullContent: "ok", ModelContent: "ok", ObserverContent: "ok",
+	}}}, nil
 }

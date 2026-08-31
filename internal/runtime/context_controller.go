@@ -247,8 +247,10 @@ func (c *ContextController) Prepare(ctx context.Context, request engine.Conversa
 			if trigger == ContextCompactionPreTurn || trigger == ContextCompactionReactive {
 				c.compactedTurn = request.Turn
 			}
-			compaction.BeforeMessages = before
-			compaction.AfterMessages = len(c.messages)
+			if compaction.BeforeMessages == 0 && compaction.AfterMessages == 0 {
+				compaction.BeforeMessages = before
+				compaction.AfterMessages = len(c.messages)
+			}
 			compactions = append(compactions, *compaction)
 		}
 	}
@@ -446,6 +448,13 @@ func (c *ContextController) compact(ctx context.Context, request engine.Conversa
 	default:
 		messages = c.messages
 	}
+	/* The pre-turn announcement reports the projection the decision
+	 * compacted, before the turn's notices rejoin it, the way the baseline
+	 * logged its turn-start compaction. */
+	beforeCount, afterCount := 0, 0
+	if trigger == ContextCompactionPreTurn {
+		beforeCount = len(messages)
+	}
 	proposal, err := c.compactor.Compact(ctx, ContextCompactionRequest{
 		Trigger: trigger, Messages: cloneContextMessages(messages),
 		ToolDefinitions: cloneContextToolDefinitions(request.ToolDefinitions),
@@ -479,7 +488,13 @@ func (c *ContextController) compact(ctx context.Context, request engine.Conversa
 	}
 	c.messages = append(c.messages, pendingNoticeMessages(reappend)...)
 	c.markReappendedNotices(reappend)
-	return &engine.ConversationCompaction{Trigger: string(trigger)}, nil
+	result := &engine.ConversationCompaction{Trigger: string(trigger)}
+	if trigger == ContextCompactionPreTurn {
+		afterCount = len(c.messages) - len(reappend)
+		result.BeforeMessages = beforeCount
+		result.AfterMessages = afterCount
+	}
+	return result, nil
 }
 
 /* pendingNoticeMessages returns the notice messages in their pending order. */
