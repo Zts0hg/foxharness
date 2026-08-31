@@ -53,6 +53,12 @@ func TestUnixTreeSignalsTheGroupAfterAnUnexpectedAnchorExit(t *testing.T) {
 	if err := tree.Close(2 * time.Second); err != nil {
 		t.Fatalf("close after the group kill = %v", err)
 	}
+	/* The test owns the started command and must reap it: the killed shell
+	 * lingers as a zombie holding the group identity until waited, exactly
+	 * like the production runner reaps through its own Wait. */
+	if err := cmd.Wait(); err != nil {
+		t.Logf("direct command wait = %v", err)
+	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if err := syscall.Kill(-tree.groupID, 0); err != nil {
