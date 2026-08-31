@@ -20,121 +20,231 @@ import (
 	"flag"
 	"log"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/benchmark"
 	"github.com/Zts0hg/foxharness/internal/compaction"
-	prompt "github.com/Zts0hg/foxharness/internal/context"
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/memory"
+	"github.com/Zts0hg/foxharness/internal/modelinvoke"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/registryexec"
+	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
+	"github.com/Zts0hg/foxharness/internal/runtimecompaction"
 	"github.com/Zts0hg/foxharness/internal/session"
+	"github.com/Zts0hg/foxharness/internal/todopolicy"
+	"github.com/Zts0hg/foxharness/internal/toolresult"
+	"github.com/Zts0hg/foxharness/internal/toolruntime"
 	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/turnpolicy"
 )
 
 func main() {
-	casePath := flag.String("case", "", "benchmark case yaml path")
-	outPath := flag.String("out", "benchmark-result.json", "result json path")
-	repeat := flag.Int("repeat", 1, "number of times to repeat the benchmark")
-	flag.Parse()
+	os.Exit(run(os.Args[1:]))
+}
 
-	if *casePath == "" {
-		log.Fatal("请通过 -case 指定 benchmark case")
-	}
+type benchmarkOptions struct {
+	casePath string
+	outPath  string
+	repeat   int
+}
 
-	c, err := benchmark.LoadCase(*casePath)
-	if err != nil {
-		log.Fatal(err)
-	}
+type benchmarkCommandDependencies struct {
+	loadCase     func(string) (*benchmark.Case, error)
+	execute      func(context.Context, *benchmark.Case, int) ([]*benchmark.Result, bool)
+	printSummary func([]*benchmark.Result)
+	writeJSON    func(string, []*benchmark.Result) error
+}
 
-	runner := benchmark.NewRunner(buildHarness)
-	var results []*benchmark.Result
+func newBenchmarkFlagSet() (*flag.FlagSet, *benchmarkOptions) {
+	flags := flag.NewFlagSet("bench", flag.ContinueOnError)
+	options := &benchmarkOptions{}
+	flags.StringVar(&options.casePath, "case", "", "benchmark case yaml path")
+	flags.StringVar(&options.outPath, "out", "benchmark-result.json", "result json path")
+	flags.IntVar(&options.repeat, "repeat", 1, "number of times to repeat the benchmark")
+	return flags, options
+}
 
-	for i := 0; i < *repeat; i++ {
-		result, err := runner.RunCase(context.Background(), c)
-		if err != nil {
-			log.Fatal(err)
-		}
-		results = append(results, result)
-	}
+func run(args []string) int {
+	return runWithDependencies(args, defaultBenchmarkCommandDependencies())
+}
 
-	benchmark.PrintSummary(results)
-	if err := benchmark.WriteJSON(*outPath, results); err != nil {
-		log.Fatal(err)
+func defaultBenchmarkCommandDependencies() benchmarkCommandDependencies {
+	return benchmarkCommandDependencies{
+		loadCase: benchmark.LoadCase,
+		execute: func(ctx context.Context, c *benchmark.Case, repeat int) ([]*benchmark.Result, bool) {
+			runner := benchmark.NewRunner(buildHarness)
+			return executeRepeats(ctx, c, repeat, runner.RunRepeat)
+		},
+		printSummary: benchmark.PrintSummary,
+		writeJSON:    benchmark.WriteJSON,
 	}
 }
 
-// buildHarness creates an AgentEngine and Session for a benchmark run.
-// It sets up the LLM provider, tool registry, memory store, and session
-// manager configured for the given benchmark case.
+func runWithDependencies(args []string, dependencies benchmarkCommandDependencies) int {
+	flags, options := newBenchmarkFlagSet()
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		log.Print("benchmark 不接受位置参数")
+		return 2
+	}
+	if options.repeat <= 0 {
+		log.Print("-repeat 必须是正整数")
+		return 2
+	}
+
+	if options.casePath == "" {
+		log.Print("请通过 -case 指定 benchmark case")
+		return 2
+	}
+
+	c, err := dependencies.loadCase(options.casePath)
+	if err != nil {
+		log.Print(err)
+		return 2
+	}
+
+	results, infrastructureFailed := dependencies.execute(context.Background(), c, options.repeat)
+
+	dependencies.printSummary(results)
+	if err := dependencies.writeJSON(options.outPath, results); err != nil {
+		log.Print(err)
+		return 2
+	}
+	return resultExitCode(results, infrastructureFailed)
+}
+
+type repeatExecutor func(context.Context, *benchmark.Case, int) (*benchmark.Result, error)
+
+func executeRepeats(ctx context.Context, c *benchmark.Case, repeat int, execute repeatExecutor) ([]*benchmark.Result, bool) {
+	var results []*benchmark.Result
+	for index := 1; index <= repeat; index++ {
+		result, err := execute(ctx, c, index)
+		if result != nil {
+			results = append(results, result)
+		}
+		if err != nil {
+			log.Print(err)
+			return results, true
+		}
+	}
+	return results, false
+}
+
+/* newBenchmarkTurnPolicy builds the run policy for one benchmark session root,
+ * binding the TODO completion gate to that session's checklist. */
+func newBenchmarkTurnPolicy(sessionRoot string) engine.TurnPolicy {
+	return turnpolicy.New(turnpolicy.Config{Bind: func(context.Context, engine.RunInput) (turnpolicy.Bindings, error) {
+		return turnpolicy.Bindings{
+			TODOGate: func(context.Context) (string, error) {
+				return todopolicy.CompletionReminder(sessionRoot, true), nil
+			},
+		}, nil
+	}})
+}
+
+func resultExitCode(results []*benchmark.Result, infrastructureFailed bool) int {
+	if infrastructureFailed {
+		return 2
+	}
+	for _, result := range results {
+		if result == nil || result.Status == benchmark.ResultStatusInfrastructureFailed {
+			return 2
+		}
+		if !result.Success {
+			return 1
+		}
+	}
+	return 0
+}
+
+/* buildHarness composes one isolated BenchmarkEval runtime session. */
 func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benchmark.Harness, error) {
-	_ = ctx
-	manager := session.NewManager(workDir)
-	sess, err := manager.Create(session.CreateOptions{
-		Source:  session.SOURCECLI,
-		WorkDir: workDir,
-	})
+	store := session.NewFileStore(workDir)
+	var llmProvider provider.LLMProvider
+	var compactor *compaction.Compactor
+	dependencies := foxruntime.HarnessDependencies{
+		InitializeSession: func(_ context.Context, snapshot foxruntime.AgentSessionSnapshot) error {
+			return memory.NewSessionStore(workDir, snapshot.RootDir).EnsureFiles()
+		},
+		NewModel: func(context.Context, foxruntime.RunAssembly) (engine.ModelInvoker, error) {
+			return modelinvoke.New(llmProvider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker}), nil
+		},
+		NewTools: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {
+			registry := buildBenchmarkRegistry(workDir, &session.StoredSession{RootDir: assembly.Session.RootDir})
+			return toolruntime.New(
+				registryexec.Capabilities(registry, assembly.AllowedTools, nil),
+				toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results"),
+			), nil
+		},
+		NewPolicy: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.TurnPolicy, error) {
+			return newBenchmarkTurnPolicy(assembly.Session.RootDir), nil
+		},
+		NewContext: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.ContextCollector, foxruntime.ContextCompactor, error) {
+			workingMemory := memory.NewSessionStore(workDir, assembly.Session.RootDir).WorkingMemoryPath()
+			collector := foxruntime.NewPromptCollector(workDir).WithMemory(workingMemory)
+			return collector, runtimecompaction.New(compactor), nil
+		},
+	}
+	runtimeHarness, err := foxruntime.NewRuntimeHarness(store, dependencies)
 	if err != nil {
 		return nil, err
 	}
-
-	composer := prompt.NewComposer(workDir).WithMemory(sess.MemoryPath())
-	store := memory.NewSessionStore(workDir, sess.RootDir)
-	if err := store.EnsureFiles(); err != nil {
+	agentSession, err := runtimeHarness.CreateSession(ctx, foxruntime.BenchmarkEval, foxruntime.SessionOptions{WorkDir: workDir})
+	if err != nil {
 		return nil, err
 	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = agentSession.Close(context.Background())
+		}
+	}()
+
 	homeDir, _ := os.UserHomeDir()
 	llmConfig, err := resolveBenchmarkLLMConfig(homeDir, os.Getenv)
 	if err != nil {
 		return nil, err
 	}
-	llmProvider, err := provider.NewProvider(llmConfig)
+	llmProvider, err = provider.NewProvider(llmConfig)
 	if err != nil {
 		return nil, err
 	}
-	registry := buildBenchmarkRegistry(workDir, sess)
-
-	eng := engine.NewAgentEngine(
-		llmProvider,
-		registry,
-		workDir,
-		composer,
-		engine.Config{
-			MaxTurns:         c.MaxTurns,
-			ProviderProtocol: llmConfig.Protocol,
-			Model:            llmConfig.Model,
-		},
-	)
+	maxTurns := c.MaxTurns
+	runSpec := foxruntime.RunSpec{
+		Prompt: c.Prompt, ProviderProtocol: llmConfig.Protocol, Model: llmConfig.Model,
+		WorkDir: workDir, BenchmarkCase: c.ID, MaxTurns: &maxTurns,
+	}
+	if c.TimeoutSeconds > 0 {
+		taskTimeout := time.Duration(c.TimeoutSeconds) * time.Second
+		runSpec.TaskTimeout = &taskTimeout
+	}
+	runtimeSpec, err := benchmark.ResolveRuntimeSpec(runSpec)
+	if err != nil {
+		return nil, err
+	}
 	compCfg := compaction.DefaultCompactionConfig()
-	compCfg.Model = llmConfig.Model
-	compCfg.SessionDir = sess.RootDir
-	compCfg.TranscriptPath = sess.TranscriptPath()
-	compactor, err := compaction.NewCompactor(llmProvider, compCfg)
+	compCfg.Model = runtimeSpec.Model
+	compCfg.SessionDir = agentSession.Snapshot().RootDir
+	compCfg.TranscriptPath = filepath.Join(agentSession.Snapshot().RootDir, "transcript.jsonl")
+	compactor, err = compaction.NewCompactor(llmProvider, compCfg)
 	if err != nil {
 		return nil, err
 	}
-	eng.WithCompactor(compactor)
-
+	failed = false
 	return &benchmark.Harness{
-		Engine:  eng,
-		Session: sess,
-		RuntimeFidelity: benchmark.RuntimeFidelity{
-			SharedInvariants: []string{
-				"todo tool surface",
-				"context compaction",
-				"structured tool failure semantics",
-			},
-			IntentionalDifferences: []string{
-				"no interactive approval surface",
-				"no TUI ask_user_question surface",
-			},
-			Warning: "benchmark runtime intentionally reports product-runtime differences",
-		},
+		Session:         agentSession,
+		RunSpec:         runSpec,
+		RuntimeFidelity: runtimeSpec.Fidelity(),
 	}, nil
 }
 
-func buildBenchmarkRegistry(workDir string, sess *session.Session) tools.Registry {
+func buildBenchmarkRegistry(workDir string, sess *session.StoredSession) tools.Registry {
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
 	registry.Register(tools.NewWriteFileTool(workDir))

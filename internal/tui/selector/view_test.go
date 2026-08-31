@@ -4,16 +4,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/app"
 )
 
 func TestSelectorListView(t *testing.T) {
-	view := New(selectorMessages(), selectorCheckpointer{stats: &checkpoint.DiffStats{
+	messages := selectorMessages()
+	messages[0].Diff = app.RewindDiff{
 		FilesChanged: 1,
 		Insertions:   2,
 		Deletions:    2,
 		ChangedFiles: []string{"internal/xlsx_generator.py"},
-	}}).View()
+	}
+	view := New(messages).View()
 	plain := stripSelectorANSI(view)
 	for _, want := range []string{
 		"Rewind",
@@ -33,7 +35,7 @@ func TestSelectorListView(t *testing.T) {
 }
 
 func TestSelectorListViewNoCodeChanges(t *testing.T) {
-	view := New(selectorMessages(), selectorCheckpointer{stats: &checkpoint.DiffStats{}}).View()
+	view := New(selectorMessages()).View()
 	plain := stripSelectorANSI(view)
 	if !strings.Contains(plain, "No code changes") {
 		t.Fatalf("list view missing no-code-changes summary:\n%s", plain)
@@ -41,13 +43,14 @@ func TestSelectorListViewNoCodeChanges(t *testing.T) {
 }
 
 func TestSelectorPreviewView(t *testing.T) {
-	cp := selectorCheckpointer{stats: &checkpoint.DiffStats{
+	messages := selectorMessages()
+	messages[0].Diff = app.RewindDiff{
 		FilesChanged: 1,
 		Insertions:   2,
 		Deletions:    3,
 		ChangedFiles: []string{"internal/main.go"},
-	}}
-	m := New(selectorMessages(), cp)
+	}
+	m := New(messages)
 	next, _ := m.Update(keyMsg("up"))
 	m = next.(Model)
 	next, _ = m.Update(keyMsg("enter"))

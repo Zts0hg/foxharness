@@ -1,19 +1,13 @@
 package autodev
 
-import (
-	"context"
+import "context"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
-)
-
-// Reporter receives every observable autodev event. It embeds
-// engine.Reporter so the same reporter can be passed to CoreRunner.Run and
-// stream the core Agent's messages and tool calls, and it adds the
+// Reporter receives every observable autodev event. It embeds CoreReporter so
+// the same reporter can stream core messages and tool calls, and it adds the
 // control-plane orchestration events so nothing material happens silently
 // (REQ-024, REQ-026, NFR-004).
 type Reporter interface {
-	engine.Reporter
+	CoreReporter
 
 	// OnItemStart announces that item processing began (index/total are
 	// 1-based progress within this run).
@@ -24,7 +18,7 @@ type Reporter interface {
 	OnStageStart(ctx context.Context, slug, stage string)
 	// OnEngineerDecision streams an ask_user_question exchange answered by
 	// the engineer Agent on the user's behalf.
-	OnEngineerDecision(ctx context.Context, questions []tools.Question, answers []tools.Answer)
+	OnEngineerDecision(ctx context.Context, questions []Question, answers []Answer)
 	// OnEngineerReview streams the corrective instruction the engineer
 	// Agent fed back after reviewing a core run.
 	OnEngineerReview(ctx context.Context, stage, instruction string)
@@ -34,6 +28,9 @@ type Reporter interface {
 	OnGate(ctx context.Context, result GateResult)
 	// OnIssue reports the verified GitHub issue number.
 	OnIssue(ctx context.Context, number int)
+	// OnRemoteEvent consumes one durable logical event idempotently. A
+	// delivery error leaves the event pending for a later retry.
+	OnRemoteEvent(ctx context.Context, event RemoteEvent) error
 	// OnPR reports the verified pull-request number.
 	OnPR(ctx context.Context, number int)
 	// OnItemDone announces that the item completed and was recorded done.

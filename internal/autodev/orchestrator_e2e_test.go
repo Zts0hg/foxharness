@@ -11,9 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 // e2eItemState is the simulated ground truth for one item's worktree,
@@ -33,6 +30,7 @@ type e2eWorld struct {
 	repoRoot  string
 	byWorkDir map[string]*e2eItemState
 	issues    map[string]int
+	markers   map[string]int
 	prs       map[string]int
 	prBodies  map[string]string
 	issueSeq  int
@@ -53,82 +51,95 @@ func (w *e2eWorld) state(dir string) *e2eItemState {
 // answer from the per-worktree state.
 type e2eGit struct{ world *e2eWorld }
 
-func (g *e2eGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+func (g *e2eGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
 	w := g.world
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	switch args[0] {
 	case "rev-parse":
 		if len(args) > 1 && args[1] == "--is-inside-work-tree" {
-			return "true\n", nil
+			return stdoutResult("true\n"), nil
 		}
 		if w.state(dir).pushed || w.state(dir).committed {
-			return "tip-" + filepath.Base(dir) + "\n", nil
+			return stdoutResult("tip-" + filepath.Base(dir) + "\n"), nil
 		}
-		return "base\n", nil
+		return stdoutResult("base\n"), nil
 	case "worktree":
 		switch args[1] {
 		case "add":
-			path := args[3]
-			if args[2] != "-b" {
-				path = args[2]
+			worktreePath := args[2]
+			if args[2] == "-b" {
+				worktreePath = args[4]
 			}
-			if err := os.MkdirAll(path, 0o755); err != nil {
-				return "", err
+			if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+				return CommandResult{}, err
 			}
-			return "", nil
+			return CommandResult{}, nil
 		case "remove":
-			return "", os.RemoveAll(args[len(args)-1])
+			return CommandResult{}, os.RemoveAll(args[len(args)-1])
 		}
 	case "status":
 		st := w.state(dir)
 		if st.dirty || st.staged {
-			return " M code.go\n", nil
+			return stdoutResult(" M code.go\n"), nil
 		}
-		return "", nil
+		return CommandResult{}, nil
 	case "diff":
 		st := w.state(dir)
 		if len(args) > 1 && args[1] == "--cached" {
 			if st.staged {
-				return "code.go\n", nil
+				return stdoutResult("code.go\n"), nil
 			}
-			return "", nil
+			return CommandResult{}, nil
 		}
 		if st.committed {
-			return "code.go\n", nil
+			return stdoutResult("code.go\n"), nil
 		}
-		return "", nil
+		return CommandResult{}, nil
 	case "rev-list":
 		if w.state(dir).committed {
-			return "1\n", nil
+			return stdoutResult("1\n"), nil
 		}
-		return "0\n", nil
+		return stdoutResult("0\n"), nil
 	case "ls-remote":
 		if w.state(dir).pushed {
-			return "tip-" + filepath.Base(dir) + "\trefs/heads/x\n", nil
+			return stdoutResult("tip-" + filepath.Base(dir) + "\trefs/heads/x\n"), nil
 		}
-		return "", nil
+		return CommandResult{}, nil
 	}
-	return "", fmt.Errorf("unexpected git args %v", args)
+	return CommandResult{}, fmt.Errorf("unexpected git args %v", args)
 }
 
 // e2eExec simulates the gate commands and read-only gh queries.
 type e2eExec struct{ world *e2eWorld }
 
-func (e *e2eExec) Run(ctx context.Context, dir string, name string, args ...string) (string, error) {
+func (e *e2eExec) Run(ctx context.Context, dir string, name string, args ...string) (CommandResult, error) {
 	w := e.world
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if name == "go" || name == "gofmt" {
-		return "", nil
+		return CommandResult{}, nil
 	}
 	if name != "gh" {
-		return "", errors.New("unexpected command " + name)
+		return CommandResult{}, errors.New("unexpected command " + name)
 	}
 	switch args[0] {
 	case "auth":
-		return "Logged in", nil
+		return stdoutResult("Logged in"), nil
 	case "issue":
+		if len(args) >= 3 && args[1] == "view" {
+			number, err := strconv.Atoi(args[2])
+			if err != nil {
+				return CommandResult{}, err
+			}
+			for marker, bound := range w.markers {
+				if bound == number {
+					return stdoutResult(fmt.Sprintf(`{"number":%d,"title":"renamed","body":%q,"state":"CLOSED"}`,
+						number, marker)), nil
+				}
+			}
+			return stdoutResult("issue not found"), errors.New("exit status 1")
+		}
 		title := ""
 		for i, a := range args {
 			if a == "--search" && i+1 < len(args) {
@@ -136,17 +147,42 @@ func (e *e2eExec) Run(ctx context.Context, dir string, name string, args ...stri
 			}
 		}
 		if n, ok := w.issues[title]; ok {
-			return fmt.Sprintf(`[{"number":%d,"title":%q}]`, n, title), nil
+			return stdoutResult(fmt.Sprintf(`[{"number":%d,"title":%q}]`, n, title)), nil
 		}
-		return "[]", nil
+		return stdoutResult("[]"), nil
+	case "api":
+		marker := markerFromSearchArgs(args)
+		if number, ok := w.markers[marker]; ok {
+			return stdoutResult(fmt.Sprintf(`[{"items":[{"number":%d,"body":%q,"state":"OPEN"}]}]`, number, marker)), nil
+		}
+		return stdoutResult(`[{"items":[]}]`), nil
 	case "pr":
-		branch := args[2]
-		if n, ok := w.prs[branch]; ok {
-			return fmt.Sprintf(`{"number":%d,"body":%q}`, n, w.prBodies[branch]), nil
+		if args[1] == "list" {
+			branch := ""
+			for i, arg := range args {
+				if arg == "--head" && i+1 < len(args) {
+					branch = args[i+1]
+				}
+			}
+			if n, ok := w.prs[branch]; ok {
+				return stdoutResult(fmt.Sprintf(`[{"number":%d,"body":%q,"baseRefName":"main","headRefName":%q}]`,
+					n, w.prBodies[branch], branch)), nil
+			}
+			return stdoutResult("[]"), nil
 		}
-		return "no pull requests found", errors.New("exit status 1")
+		number, err := strconv.Atoi(args[2])
+		if err != nil {
+			return CommandResult{}, err
+		}
+		for branch, n := range w.prs {
+			if n == number {
+				return stdoutResult(fmt.Sprintf(`{"number":%d,"body":%q,"baseRefName":"main","headRefName":%q}`,
+					n, w.prBodies[branch], branch)), nil
+			}
+		}
+		return stdoutResult("pull request not found"), errors.New("exit status 1")
 	}
-	return "", errors.New("unexpected gh args")
+	return CommandResult{}, errors.New("unexpected gh args")
 }
 
 // e2eCore simulates the core Agent: it reacts to each seeded prompt by
@@ -157,7 +193,7 @@ type e2eCore struct {
 	title   string
 	branch  string
 	issueN  *int
-	asker   tools.UserAsker
+	asker   QuestionAsker
 	runs    int
 }
 
@@ -166,13 +202,15 @@ type e2eCore struct {
 // the unbounded RunStep loop.
 const maxE2ERuns = 60
 
-func (c *e2eCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*engine.RunResult, error) {
+func (c *e2eCore) Run(ctx context.Context, attempt CoreAttempt, r CoreReporter) CoreOutcome {
+	prompt := attempt.Prompt
 	w := c.world
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	c.runs++
 	if c.runs > maxE2ERuns {
-		return nil, fmt.Errorf("e2e core exceeded %d runs; last prompt: %.120s", maxE2ERuns, prompt)
+		err := fmt.Errorf("e2e core exceeded %d runs; last prompt: %.120s", maxE2ERuns, prompt)
+		return CoreOutcome{Attempt: attempt, Status: CoreOutcomeFailed, SessionID: "test-session", RunID: "test-run", Cause: err, RetryClass: CoreRetryNever, Lifecycle: CoreLifecycleEvidence{RunStarted: true}}
 	}
 	st := w.state(c.workDir)
 	lower := strings.ToLower(prompt)
@@ -212,14 +250,31 @@ func (c *e2eCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*e
 	case strings.Contains(lower, "gh issue create"):
 		w.issueSeq++
 		w.issues[c.title] = w.issueSeq
+		w.markers[issueMarkerFromPrompt(prompt)] = w.issueSeq
 		*c.issueN = w.issueSeq
 	}
-	return &engine.RunResult{FinalMessage: "done"}, nil
+	return successfulCoreOutcome(attempt, "done")
 }
 
-func (c *e2eCore) SetUserAsker(a tools.UserAsker) { c.asker = a }
-func (c *e2eCore) SetModel(model string) error    { return nil }
-func (c *e2eCore) WorkDir() string                { return c.workDir }
+func (c *e2eCore) Drain(context.Context) error { return nil }
+func (c *e2eCore) Close(context.Context) error { return nil }
+
+func issueMarkerFromPrompt(prompt string) string {
+	const prefix = "<!-- fox-autodev-item-id:"
+	start := strings.Index(prompt, prefix)
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(prompt[start:], "-->")
+	if end < 0 {
+		return ""
+	}
+	return prompt[start : start+end+3]
+}
+
+func (c *e2eCore) SetUserAsker(a QuestionAsker) { c.asker = a }
+func (c *e2eCore) SetModel(model string) error  { return nil }
+func (c *e2eCore) WorkDir() string              { return c.workDir }
 func (c *e2eCore) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	return fmt.Sprintf("PROMPT[%s|%s]", command, args), nil
 }
@@ -313,6 +368,7 @@ func TestOrchestratorEndToEndDrainsBacklog(t *testing.T) {
 		repoRoot:  repoRoot,
 		byWorkDir: map[string]*e2eItemState{},
 		issues:    map[string]int{},
+		markers:   map[string]int{},
 		prs:       map[string]int{},
 		prBodies:  map[string]string{},
 	}

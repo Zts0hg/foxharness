@@ -17,16 +17,16 @@ type fakeGit struct {
 	errs    map[string]error
 }
 
-func (f *fakeGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+func (f *fakeGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
 	key := strings.Join(args, " ")
 	f.calls = append(f.calls, key)
 	f.dirs = append(f.dirs, dir)
 	if f.errs != nil {
 		if err, ok := f.errs[key]; ok {
-			return f.outputs[key], err
+			return stdoutResult(f.outputs[key]), err
 		}
 	}
-	return f.outputs[key], nil
+	return stdoutResult(f.outputs[key]), nil
 }
 
 func TestWorktreeCreateAddsBranchInSiblingDir(t *testing.T) {
@@ -110,6 +110,50 @@ func TestWorktreeCreateReattachesExistingBranchWithoutDir(t *testing.T) {
 	want := "worktree add " + wt.Path + " auto/engine-memory"
 	if len(git.calls) == 0 || git.calls[len(git.calls)-1] != want {
 		t.Errorf("git calls = %v, want %q last (reuse the recorded branch)", git.calls, want)
+	}
+}
+
+func TestWorktreeCreateResumeRejectsMalformedLedgerPathComponents(t *testing.T) {
+	tests := []struct {
+		name string
+		item LedgerItem
+	}{
+		{
+			name: "slug-traversal",
+			item: LedgerItem{
+				Slug:   "../../outside",
+				Status: StatusInProgress,
+				Branch: "topic",
+			},
+		},
+		{
+			name: "auto-branch-traversal",
+			item: LedgerItem{
+				Slug:   "safe",
+				Status: StatusInProgress,
+				Branch: "auto/../../outside",
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			git := &fakeGit{}
+			mgr := NewWorktreeManager(git, repoRoot, "../wt-malformed", "main", "origin")
+
+			wt, err := mgr.Create(context.Background(), tc.item)
+			if err == nil {
+				t.Fatalf("Create returned %+v, want malformed ledger path components rejected", wt)
+			}
+			if !strings.Contains(err.Error(), "invalid") {
+				t.Fatalf("Create error = %v, want invalid ledger state", err)
+			}
+			for _, call := range git.calls {
+				if strings.HasPrefix(call, "worktree add") {
+					t.Fatalf("git calls = %v, want no worktree add after malformed ledger state", git.calls)
+				}
+			}
+		})
 	}
 }
 
@@ -596,9 +640,9 @@ func TestWorktreeCreateDegradedScenariosRealGit(t *testing.T) {
 		t.Helper()
 		out, err := git.Run(ctx, repoRoot, args...)
 		if err != nil {
-			t.Fatalf("git %s failed: %v (%s)", strings.Join(args, " "), err, out)
+			t.Fatalf("git %s failed: %v (%s)", strings.Join(args, " "), err, out.Output())
 		}
-		return out
+		return out.Stdout
 	}
 	mustGit("init")
 	mustGit("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "init")
@@ -639,8 +683,8 @@ func TestWorktreeCreateDegradedScenariosRealGit(t *testing.T) {
 		if wt.Branch != "auto/stale-2" || wt.Path != filepath.Join(root, "stale-2") || wt.Resumed {
 			t.Errorf("got %+v, want a fresh auto/stale-2 worktree at %s", wt, filepath.Join(root, "stale-2"))
 		}
-		if out, err := git.Run(ctx, wt.Path, "rev-parse", "--abbrev-ref", "HEAD"); err != nil || strings.TrimSpace(out) != "auto/stale-2" {
-			t.Errorf("worktree HEAD = %q (err %v), want auto/stale-2 checked out", strings.TrimSpace(out), err)
+		if out, err := git.Run(ctx, wt.Path, "rev-parse", "--abbrev-ref", "HEAD"); err != nil || strings.TrimSpace(out.Stdout) != "auto/stale-2" {
+			t.Errorf("worktree HEAD = %q (err %v), want auto/stale-2 checked out", strings.TrimSpace(out.Stdout), err)
 		}
 	})
 
@@ -684,10 +728,10 @@ func TestWorktreeCreateDegradedScenariosRealGit(t *testing.T) {
 		mustGit("worktree", "add", "-b", "auto/pub", pubPath, "main")
 		if out, err := git.Run(ctx, pubPath, "-c", "user.name=t", "-c", "user.email=t@t",
 			"commit", "--allow-empty", "-m", "work"); err != nil {
-			t.Fatalf("commit in worktree failed: %v (%s)", err, out)
+			t.Fatalf("commit in worktree failed: %v (%s)", err, out.Output())
 		}
 		if out, err := git.Run(ctx, pubPath, "push", "origin", "auto/pub"); err != nil {
-			t.Fatalf("push failed: %v (%s)", err, out)
+			t.Fatalf("push failed: %v (%s)", err, out.Output())
 		}
 
 		wt, err := mgr.Create(ctx, LedgerItem{Slug: "pub", Status: StatusPending})
@@ -768,10 +812,10 @@ func TestWorktreeCreateDegradedScenariosRealGit(t *testing.T) {
 		mustGit("worktree", "add", "-b", "auto/pubd", pubdPath, "main")
 		if out, err := git.Run(ctx, pubdPath, "-c", "user.name=t", "-c", "user.email=t@t",
 			"commit", "--allow-empty", "-m", "work"); err != nil {
-			t.Fatalf("commit in worktree failed: %v (%s)", err, out)
+			t.Fatalf("commit in worktree failed: %v (%s)", err, out.Output())
 		}
 		if out, err := git.Run(ctx, pubdPath, "push", "origin", "auto/pubd"); err != nil {
-			t.Fatalf("push failed: %v (%s)", err, out)
+			t.Fatalf("push failed: %v (%s)", err, out.Output())
 		}
 		if err := os.WriteFile(filepath.Join(pubdPath, "debris.txt"), []byte("inspection debris"), 0o644); err != nil {
 			t.Fatal(err)

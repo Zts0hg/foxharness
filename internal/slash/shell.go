@@ -14,6 +14,8 @@ import (
 // execution. Callers may override per-call via ExecuteEmbeddedShell.
 const DefaultShellTimeout = 30 * time.Second
 
+const maxEmbeddedShellOutputBytes = 1 << 20
+
 // shellEmbedRe matches the !`command` syntax. The non-greedy capture
 // stops at the first backtick so multiple embeddings on one line are
 // parsed independently.
@@ -76,12 +78,17 @@ func runShellOnce(parent context.Context, command, workDir string, timeout time.
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
-	output, err := cmd.Output()
+	output := &boundedShellOutput{}
+	cmd.Stdout = output
+	err := cmd.Run()
 	switch {
 	case errors.Is(parent.Err(), context.Canceled):
 		return "", fmt.Errorf("canceled")
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return "", fmt.Errorf("timeout after %s", timeout)
+	}
+	if output.overflow {
+		return "", fmt.Errorf("stdout exceeded %d bytes", maxEmbeddedShellOutputBytes)
 	}
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -90,7 +97,27 @@ func runShellOnce(parent context.Context, command, workDir string, timeout time.
 		}
 		return "", err
 	}
-	return string(output), nil
+	return string(output.data), nil
+}
+
+type boundedShellOutput struct {
+	data     []byte
+	overflow bool
+}
+
+func (o *boundedShellOutput) Write(p []byte) (int, error) {
+	remaining := maxEmbeddedShellOutputBytes - len(o.data)
+	if remaining > 0 {
+		keep := len(p)
+		if keep > remaining {
+			keep = remaining
+		}
+		o.data = append(o.data, p[:keep]...)
+	}
+	if len(p) > remaining {
+		o.overflow = true
+	}
+	return len(p), nil
 }
 
 func formatShellError(command string, err error) string {

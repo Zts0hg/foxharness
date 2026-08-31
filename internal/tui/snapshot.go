@@ -8,14 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Zts0hg/foxharness/internal/checkpoint"
-	"github.com/Zts0hg/foxharness/internal/collaboration"
-	"github.com/Zts0hg/foxharness/internal/compaction"
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/effort"
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/permission"
-	"github.com/Zts0hg/foxharness/internal/session"
-	"github.com/Zts0hg/foxharness/internal/tools"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -167,7 +161,7 @@ func RenderSceneANSI(name string, width, height int) (string, error) {
 // RenderSessionANSI renders a real session's model-visible message records — as
 // the TUI transcript would show them — to a deterministic ANSI frame. Records
 // are converted with the same history→entry mapping the live TUI uses.
-func RenderSessionANSI(records []session.MessageRecord, width, height int) string {
+func RenderSessionANSI(records []app.ConversationRecord, width, height int) string {
 	m := baseSnapshotModel()
 	if entries := entriesFromMessageHistory(records); len(entries) > 0 {
 		m.entries = entries
@@ -211,31 +205,25 @@ func buildTranscriptScene() Model {
 func buildSidebarScene() Model {
 	m := baseSnapshotModel()
 	m.sidebarVisible = true
-	m.sidebarDocuments = loadSidebarDocuments(
-		m.runner.WorkDir(),
-		m.runner.SessionDir(),
-		m.runner.AutoMemoryIndex(),
-	)
+	state := m.runner.State()
+	m.sidebarDocuments = loadSidebarDocuments(state.WorkDir, state.Session.Directory, state.AutoMemoryIndex)
 	return m
 }
 
 func buildPermissionFormScene() Model {
 	m := baseSnapshotModel()
-	m.permissionForm = newPermissionForm(permission.NewState(permission.ModeAsk, false).Snapshot())
+	m.permissionForm = newPermissionForm(app.PermissionState{
+		SelectedMode: app.PermissionModeAsk, EffectiveMode: app.PermissionModeAsk,
+	})
 	return m
 }
 
 func buildApprovalFormScene() Model {
 	m := baseSnapshotModel()
 	m.approvalForm = newApprovalForm(permissionRequest{
-		approval: permission.ApprovalRequest{
-			Request: permission.Request{
-				ToolName:  "bash",
-				Action:    "run a shell command",
-				Arguments: `{"command":"rm -rf build/"}`,
-				CWD:       "/repo",
-				Risk:      permission.RiskHigh,
-			},
+		approval: app.PermissionRequest{
+			ToolName: "bash", Action: "run a shell command",
+			Arguments: `{"command":"rm -rf build/"}`, CWD: "/repo", Risk: "high",
 		},
 	})
 	return m
@@ -244,7 +232,7 @@ func buildApprovalFormScene() Model {
 func buildPlanFormScene() Model {
 	m := baseSnapshotModel()
 	m.planForm = newPlanReviewForm(planReviewRequest{
-		planMarkdown: "# Refactor sidebar layout\n\n1. Clamp long titles to panel width\n2. Add an overflow ellipsis\n3. Cover with a golden snapshot scene",
+		request: app.PlanReviewRequest{PlanMarkdown: "# Refactor sidebar layout\n\n1. Clamp long titles to panel width\n2. Add an overflow ellipsis\n3. Cover with a golden snapshot scene"},
 	})
 	return m
 }
@@ -252,16 +240,16 @@ func buildPlanFormScene() Model {
 func buildAskFormScene() Model {
 	m := baseSnapshotModel()
 	m.askForm = newAskForm(askRequest{
-		questions: []tools.Question{
+		request: app.QuestionRequest{Questions: []app.Question{
 			{
 				Header: "Approach",
 				Prompt: "Which rendering approach should we use for snapshots?",
-				Options: []tools.Option{
+				Options: []app.QuestionOption{
 					{Label: "freeze", Description: "Faithful terminal-screenshot PNG via charmbracelet/freeze"},
 					{Label: "pure-go", Description: "Self-built ANSI-to-PNG renderer, deterministic but approximate"},
 				},
 			},
-		},
+		}},
 	})
 	return m
 }
@@ -278,10 +266,10 @@ func buildEffortFormScene() Model {
 
 func buildSelectorScene() Model {
 	m := baseSnapshotModel()
-	sel := selector.New([]checkpoint.SelectableMessage{
-		{Seq: 1, Content: "add render subcommand skeleton", Timestamp: fixedSnapshotTime},
-		{Seq: 2, Content: "seed transcript and sidebar scenes", Timestamp: fixedSnapshotTime},
-	}, nil)
+	sel := selector.New([]app.RewindTarget{
+		{Sequence: 1, Content: "add render subcommand skeleton", Timestamp: fixedSnapshotTime},
+		{Sequence: 2, Content: "seed transcript and sidebar scenes", Timestamp: fixedSnapshotTime},
+	})
 	m.rewindSelector = &sel
 	return m
 }
@@ -292,40 +280,54 @@ func buildSelectorScene() Model {
 // output.
 type snapshotRunner struct{}
 
-func (snapshotRunner) RunInCollaborationMode(ctx context.Context, prompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
+func (snapshotRunner) Run(context.Context, app.RunCommand, app.NotificationSink) (*app.RunOutcome, error) {
 	return nil, nil
 }
 
-func (snapshotRunner) NewSession(ctx context.Context) (string, error) { return "snapshot", nil }
-
-func (snapshotRunner) SessionID() string { return "snapshot" }
-
-func (snapshotRunner) SessionDir() string { return "" }
-
-func (snapshotRunner) WorkDir() string { return "." }
-
-func (snapshotRunner) AutoMemoryIndex() string {
-	return "- Prefer edit_file over write_file for existing code\n- Interact in Chinese; keep code and specs in English"
+func (snapshotRunner) State() app.InteractiveSessionState {
+	return app.InteractiveSessionState{
+		Session: app.SessionInfo{ID: "snapshot"}, WorkDir: ".", Model: "glm-4.5-air",
+		ContextUsage: "12%", CollaborationMode: "default",
+		AutoMemoryIndex: "- Prefer edit_file over write_file for existing code\n- Interact in Chinese; keep code and specs in English",
+		RunCapabilities: app.RunCapabilities{ToolRestrictions: true, EffortOverrides: true},
+	}
 }
 
-func (snapshotRunner) Model() string { return "glm-4.5-air" }
-
-func (snapshotRunner) SetModel(model string) error { return nil }
-
-func (snapshotRunner) ContextUsage() string { return "12%" }
-
-func (snapshotRunner) MessageHistory() ([]session.MessageRecord, error) { return nil, nil }
-
-func (snapshotRunner) TruncateMessageHistory(seq int64) error { return nil }
-
-func (snapshotRunner) RestoreSessionStateBeforeMessage(seq int64) (bool, error) { return false, nil }
-
-func (snapshotRunner) Checkpointer() checkpoint.Checkpointer { return nil }
-
-func (snapshotRunner) CollaborationMode() collaboration.Mode { return collaboration.Normalize("") }
-
-func (snapshotRunner) SetCollaborationMode(mode collaboration.Mode) {}
-
-func (snapshotRunner) CompactNow(ctx context.Context, customInstructions string) (*compaction.CompactResult, error) {
+func (snapshotRunner) Conversation(context.Context) ([]app.ConversationRecord, error) {
 	return nil, nil
+}
+func (snapshotRunner) ProjectInputHistory(context.Context, int) ([]string, error) { return nil, nil }
+func (snapshotRunner) RewindTargets(context.Context) ([]app.RewindTarget, error)  { return nil, nil }
+func (snapshotRunner) NewSession(context.Context, app.NewSessionCommand) (app.InteractiveSessionState, error) {
+	return snapshotRunner{}.State(), nil
+}
+func (snapshotRunner) UpdateModel(context.Context, app.ModelCommand) (app.InteractiveSessionState, error) {
+	return snapshotRunner{}.State(), nil
+}
+func (snapshotRunner) UpdateEffort(context.Context, app.EffortCommand) app.InteractiveSessionState {
+	return snapshotRunner{}.State()
+}
+func (snapshotRunner) UpdateCollaborationMode(context.Context, app.CollaborationCommand) app.InteractiveSessionState {
+	return snapshotRunner{}.State()
+}
+func (snapshotRunner) Compact(context.Context, app.CompactCommand) (app.CompactOutcome, error) {
+	return app.CompactOutcome{}, nil
+}
+func (snapshotRunner) Rewind(context.Context, app.RewindCommand) app.RewindOutcome {
+	return app.RewindOutcome{}
+}
+func (snapshotRunner) RestoreLatestInput(context.Context) (app.RestoreInputOutcome, error) {
+	return app.RestoreInputOutcome{}, nil
+}
+func (snapshotRunner) PermissionState() app.PermissionState {
+	return app.PermissionState{SelectedMode: app.PermissionModeAsk, EffectiveMode: app.PermissionModeAsk}
+}
+func (snapshotRunner) UpdatePermissionMode(context.Context, app.PermissionModeCommand) app.PermissionState {
+	return snapshotRunner{}.PermissionState()
+}
+func (snapshotRunner) ActivateFullAccess(context.Context, app.FullAccessCommand) app.PermissionState {
+	return app.PermissionState{SelectedMode: app.PermissionModeFullAccess, EffectiveMode: app.PermissionModeFullAccess}
+}
+func (snapshotRunner) ClearPermissionGrants(context.Context) app.PermissionGrantClearOutcome {
+	return app.PermissionGrantClearOutcome{State: snapshotRunner{}.PermissionState()}
 }

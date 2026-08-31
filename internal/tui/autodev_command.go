@@ -28,6 +28,7 @@ func (m Model) handleAutodevCommand(backlogPath string) (tea.Model, tea.Cmd) {
 	runCtx, cancel := context.WithCancel(m.ctx)
 	m.cancelRun = cancel
 	m.running = true
+	operationID := m.beginOperation()
 	m.runStartedAt = m.nowTime()
 	m.spinnerFrame = 0
 	m.status = "autodev running"
@@ -36,7 +37,7 @@ func (m Model) handleAutodevCommand(backlogPath string) (tea.Model, tea.Cmd) {
 	launcher := m.autodevLauncher
 	events := m.events
 	return m, func() tea.Msg {
-		err := launcher(runCtx, backlogPath, NewTUIReporter(events))
-		return runFinishedMsg{err: err}
+		err := launcher(runCtx, backlogPath, newTUIReporterForOperation(events, operationID))
+		return runFinishedMsg{operationID: operationID, err: err}
 	}
 }

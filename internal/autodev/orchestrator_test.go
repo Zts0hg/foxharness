@@ -7,12 +7,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 // eventRecorder captures the orchestration event sequence for ordering
@@ -51,20 +49,28 @@ func (r *eventRecorder) OnItemDone(ctx context.Context, item LedgerItem) {
 	r.add("done:" + item.Slug)
 }
 
+func (r *eventRecorder) OnRemoteEvent(ctx context.Context, event RemoteEvent) error {
+	r.add(fmt.Sprintf("issue:%d", event.Number))
+	return r.TerminalReporter.OnRemoteEvent(ctx, event)
+}
+
 // stubCore is a no-op CoreRunner for orchestrator flow tests.
 type stubCore struct {
 	workDir string
-	asker   tools.UserAsker
+	asker   QuestionAsker
 	runs    int
 }
 
-func (c *stubCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*engine.RunResult, error) {
+func (c *stubCore) Run(ctx context.Context, attempt CoreAttempt, r CoreReporter) CoreOutcome {
 	c.runs++
-	return &engine.RunResult{FinalMessage: "ok"}, nil
+	return successfulCoreOutcome(attempt, "ok")
 }
-func (c *stubCore) SetUserAsker(a tools.UserAsker) { c.asker = a }
-func (c *stubCore) SetModel(model string) error    { return nil }
-func (c *stubCore) WorkDir() string                { return c.workDir }
+
+func (c *stubCore) Drain(context.Context) error  { return nil }
+func (c *stubCore) Close(context.Context) error  { return nil }
+func (c *stubCore) SetUserAsker(a QuestionAsker) { c.asker = a }
+func (c *stubCore) SetModel(model string) error  { return nil }
+func (c *stubCore) WorkDir() string              { return c.workDir }
 func (c *stubCore) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	return fmt.Sprintf("PROMPT[%s|%s]", command, args), nil
 }
@@ -93,7 +99,7 @@ type orchestraGit struct {
 	insideWT bool
 }
 
-func (g *orchestraGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+func (g *orchestraGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
 	g.mu.Lock()
 	g.calls = append(g.calls, strings.Join(args, " "))
 	g.mu.Unlock()
@@ -101,23 +107,23 @@ func (g *orchestraGit) Run(ctx context.Context, dir string, args ...string) (str
 	case "rev-parse":
 		if len(args) > 1 && args[1] == "--is-inside-work-tree" {
 			if g.insideWT {
-				return "true\n", nil
+				return stdoutResult("true\n"), nil
 			}
-			return "fatal: not a git repository", errors.New("exit status 128")
+			return stdoutResult("fatal: not a git repository"), errors.New("exit status 128")
 		}
-		return "abc123\n", nil
+		return stdoutResult("abc123\n"), nil
 	case "status":
-		return "", nil
+		return CommandResult{}, nil
 	case "rev-list":
-		return "1\n", nil
+		return stdoutResult("1\n"), nil
 	case "ls-remote":
-		return "abc123\trefs/heads/x\n", nil
+		return stdoutResult("abc123\trefs/heads/x\n"), nil
 	case "diff":
-		return "", nil
+		return CommandResult{}, nil
 	case "worktree":
-		return "", nil
+		return CommandResult{}, nil
 	}
-	return "", nil
+	return CommandResult{}, nil
 }
 
 // orchestraGH serves gh auth/issue/pr queries from in-memory state.
@@ -127,22 +133,36 @@ type orchestraGH struct {
 	authOK   bool
 	issueSeq int
 	issues   map[string]int
+	markers  map[string]int
 }
 
-func (g *orchestraGH) Run(ctx context.Context, dir string, name string, args ...string) (string, error) {
+func (g *orchestraGH) Run(ctx context.Context, dir string, name string, args ...string) (CommandResult, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls = append(g.calls, name+" "+strings.Join(args, " "))
 	if name != "gh" {
-		return "", errors.New("unexpected command")
+		return CommandResult{}, errors.New("unexpected command")
 	}
 	switch args[0] {
 	case "auth":
 		if g.authOK {
-			return "Logged in to github.com", nil
+			return stdoutResult("Logged in to github.com"), nil
 		}
-		return "you are not logged in", errors.New("exit status 1")
+		return stdoutResult("you are not logged in"), errors.New("exit status 1")
 	case "issue":
+		if len(args) >= 3 && args[1] == "view" {
+			number, err := strconv.Atoi(args[2])
+			if err != nil {
+				return CommandResult{}, err
+			}
+			for marker, bound := range g.markers {
+				if bound == number {
+					return stdoutResult(fmt.Sprintf(`{"number":%d,"title":"renamed","body":%q,"state":"CLOSED"}`,
+						number, marker)), nil
+				}
+			}
+			return stdoutResult("issue not found"), errors.New("exit status 1")
+		}
 		title := ""
 		for i, a := range args {
 			if a == "--search" && i+1 < len(args) {
@@ -156,15 +176,43 @@ func (g *orchestraGH) Run(ctx context.Context, dir string, name string, args ...
 			g.issueSeq++
 			g.issues[title] = g.issueSeq
 		}
-		return fmt.Sprintf(`[{"number":%d,"title":%q}]`, g.issues[title], title), nil
+		return stdoutResult(fmt.Sprintf(`[{"number":%d,"title":%q}]`, g.issues[title], title)), nil
+	case "api":
+		marker := markerFromSearchArgs(args)
+		if g.markers == nil {
+			g.markers = map[string]int{}
+		}
+		if number, ok := g.markers[marker]; ok {
+			return stdoutResult(fmt.Sprintf(`[{"items":[{"number":%d,"body":%q,"state":"OPEN"}]}]`, number, marker)), nil
+		}
+		g.issueSeq++
+		g.markers[marker] = g.issueSeq
+		if g.issues == nil {
+			g.issues = map[string]int{}
+		}
+		g.issues[marker] = g.issueSeq
+		return stdoutResult(`[{"items":[]}]`), nil
 	case "pr":
 		links := make([]string, 0, len(g.issues))
 		for _, n := range g.issues {
 			links = append(links, fmt.Sprintf("Closes #%d", n))
 		}
-		return fmt.Sprintf(`{"number":%d,"body":%q}`, 1000+len(g.issues), strings.Join(links, "\n")), nil
+		head := "auto/unknown"
+		if args[1] == "list" {
+			for i, arg := range args {
+				if arg == "--head" && i+1 < len(args) {
+					head = args[i+1]
+				}
+			}
+		}
+		record := fmt.Sprintf(`{"number":%d,"body":%q,"baseRefName":"main","headRefName":%q}`,
+			1000+len(g.issues), strings.Join(links, "\n"), head)
+		if args[1] == "list" {
+			return stdoutResult("[" + record + "]"), nil
+		}
+		return stdoutResult(record), nil
 	}
-	return "", errors.New("unexpected gh args")
+	return CommandResult{}, errors.New("unexpected gh args")
 }
 
 // trivialStages returns a pipeline whose stages verify immediately, for
@@ -359,14 +407,15 @@ func TestOrchestratorResumesInProgressFromRecordedStage(t *testing.T) {
 	led.Mark("first-item", func(it *LedgerItem) {
 		it.Status = StatusInProgress
 		it.Branch = "auto/first-item"
-		it.Stage = "plan-to-tasks"
+		it.Stage = StagePlanToTasks
+		it.StageState = StageStateRunning
 		it.FeatureDir = ".codexspec/specs/2026-0610-1200ab-first"
 	})
 	if err := led.Save(); err != nil {
 		t.Fatal(err)
 	}
 	wtPath := filepath.Join(filepath.Dir(repoRoot), filepath.Base(repoRoot)+"-worktrees", "first-item")
-	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(wtPath, ".codexspec", "specs", "2026-0610-1200ab-first"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -409,7 +458,11 @@ func TestOrchestratorSkipsDoneItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	led.Seed(items)
-	led.Mark("first-item", func(it *LedgerItem) { it.Status = StatusDone })
+	led.Mark("first-item", func(it *LedgerItem) {
+		it.Status = StatusDone
+		it.Stage = StageDone
+		it.StageState = StageStateVerified
+	})
 	if err := led.Save(); err != nil {
 		t.Fatal(err)
 	}

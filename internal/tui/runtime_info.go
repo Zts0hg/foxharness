@@ -7,18 +7,24 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 )
 
 const gitBranchTimeout = 500 * time.Millisecond
 
 func (m *Model) refreshRuntimeInfo() {
-	m.sessionID = m.runner.SessionID()
-	m.modelName = m.runner.Model()
-	m.project = projectFolderName(m.runner.WorkDir())
-	m.gitBranch = gitBranchForWorkDir(m.runner.WorkDir())
-	m.contextUsage = normalizeContextUsage(m.runner.ContextUsage())
-	m.collaborationMode = collaboration.Normalize(m.runner.CollaborationMode())
+	state := m.runner.State()
+	m.applyRuntimeState(state)
+}
+
+func (m *Model) applyRuntimeState(state app.InteractiveSessionState) {
+	m.sessionID = state.Session.ID
+	m.modelName = state.Model
+	m.project = projectFolderName(state.WorkDir)
+	m.gitBranch = gitBranchForWorkDir(state.WorkDir)
+	m.contextUsage = normalizeContextUsage(state.ContextUsage)
+	m.collaborationMode = collaboration.Normalize(collaboration.Mode(state.CollaborationMode))
 }
 
 func projectFolderName(workDir string) string {

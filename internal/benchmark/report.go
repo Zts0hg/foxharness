@@ -9,6 +9,14 @@ import (
 // WriteJSON serializes benchmark results as indented JSON and writes them to
 // the file at path, appending a trailing newline.
 func WriteJSON(path string, results []*Result) error {
+	for index, result := range results {
+		if result == nil {
+			return fmt.Errorf("benchmark 结果[%d] 不能为 nil", index)
+		}
+		if result.SchemaVersion != ResultSchemaVersion {
+			return fmt.Errorf("benchmark 结果[%d] schema_version=%d，期望 %d", index, result.SchemaVersion, ResultSchemaVersion)
+		}
+	}
 	data, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
 		return fmt.Errorf("序列化 benchmark 结果失败: %w", err)

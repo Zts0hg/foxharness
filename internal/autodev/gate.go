@@ -5,61 +5,75 @@ import (
 	"strings"
 )
 
-// GateRunner executes the completion gate inside an item's worktree:
-// go build ./..., go test ./..., and gofmt -l . (REQ-018). The test gate is
-// mandatory — a config that disables it is overridden with a warning —
-// while build and gofmt may be skipped (each skip warns prominently).
+// GateRunner executes the completion gate inside an item's worktree.
 type GateRunner struct {
 	exec     ExecRunner
 	reporter Reporter
 }
 
-// NewGateRunner creates a GateRunner over exec, reporting warnings and
-// results through reporter (which may be nil).
 func NewGateRunner(exec ExecRunner, reporter Reporter) *GateRunner {
 	return &GateRunner{exec: exec, reporter: reporter}
 }
 
 var _ GateChecker = (*GateRunner)(nil)
 
-// Check runs the configured gates in workDir and aggregates the outcome.
-// The returned error is reserved for infrastructure failures; a failing
-// gate is reported through GateResult, not an error.
 func (g *GateRunner) Check(ctx context.Context, workDir string, cfg GateConfig) (GateResult, error) {
 	if !cfg.Test {
 		cfg.Test = true
 		g.warn(ctx, "WARNING: the test gate is mandatory and cannot be disabled; running go test anyway (REQ-018)")
 	}
 
-	result := GateResult{Passed: true}
-	result.Steps = append(result.Steps, g.step(ctx, workDir, "build", cfg.Build, func() (string, bool) {
-		out, err := g.exec.Run(ctx, workDir, "go", "build", "./...")
-		return out, err == nil
-	}))
-	result.Steps = append(result.Steps, g.step(ctx, workDir, "test", cfg.Test, func() (string, bool) {
-		out, err := g.exec.Run(ctx, workDir, "go", "test", "./...")
-		return out, err == nil
-	}))
-	result.Steps = append(result.Steps, g.step(ctx, workDir, "gofmt", cfg.Gofmt, func() (string, bool) {
-		out, err := g.exec.Run(ctx, workDir, "gofmt", "-l", ".")
-		return out, err == nil && strings.TrimSpace(out) == ""
-	}))
+	type gateCommand struct {
+		name    string
+		enabled bool
+		program string
+		args    []string
+		accept  func(CommandResult, error) bool
+	}
+	commands := []gateCommand{
+		{name: "build", enabled: cfg.Build, program: "go", args: []string{"build", "./..."}, accept: func(_ CommandResult, err error) bool { return err == nil }},
+		{name: "test", enabled: cfg.Test, program: "go", args: []string{"test", "./..."}, accept: func(_ CommandResult, err error) bool { return err == nil }},
+		{name: "gofmt", enabled: cfg.Gofmt, program: "gofmt", args: []string{"-l", "."}, accept: func(r CommandResult, err error) bool {
+			return err == nil && strings.TrimSpace(r.Stdout) == ""
+		}},
+	}
 
-	for _, s := range result.Steps {
-		if !s.Skipped && !s.Passed {
+	result := GateResult{Passed: true}
+	for _, command := range commands {
+		if err := ctx.Err(); err != nil {
+			result.Passed = false
+			return result, err
+		}
+		if !command.enabled {
+			g.warn(ctx, "WARNING: the "+command.name+" gate is disabled by configuration; skipping it weakens the completion gate")
+			result.Steps = append(result.Steps, GateStep{Name: command.name, Skipped: true})
+			continue
+		}
+		stepCtx, cancel := withDefaultTimeout(ctx, gateTimeout)
+		commandResult, runErr := g.exec.Run(stepCtx, workDir, command.program, command.args...)
+		cancel()
+		output := commandResult.Output()
+		truncated := commandResult.OverflowError() != nil
+		if truncated {
+			output = strings.TrimSpace(output) + "\n[output truncated: " + commandResult.OverflowError().Error() + "]"
+		}
+		result.Steps = append(result.Steps, GateStep{
+			Name:            command.name,
+			Passed:          command.accept(commandResult, runErr),
+			Output:          output,
+			OutputTruncated: truncated,
+		})
+		if ctx.Err() != nil {
+			result.Passed = false
+			return result, ctx.Err()
+		}
+	}
+	for _, step := range result.Steps {
+		if !step.Skipped && !step.Passed {
 			result.Passed = false
 		}
 	}
 	return result, nil
-}
-
-func (g *GateRunner) step(ctx context.Context, workDir, name string, enabled bool, run func() (string, bool)) GateStep {
-	if !enabled {
-		g.warn(ctx, "WARNING: the "+name+" gate is disabled by configuration; skipping it weakens the completion gate")
-		return GateStep{Name: name, Skipped: true}
-	}
-	out, passed := run()
-	return GateStep{Name: name, Passed: passed, Output: out}
 }
 
 func (g *GateRunner) warn(ctx context.Context, msg string) {

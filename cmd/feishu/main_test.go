@@ -36,6 +36,30 @@ func TestConfiguredLLMProviderMissingConfigDoesNotMentionLegacyDefaults(t *testi
 	}
 }
 
+func TestDeliveryStoreUsesExplicitUserStateAndSurvivesReopen(t *testing.T) {
+	home := t.TempDir()
+	store, err := newDeliveryStore(home)
+	if err != nil {
+		t.Fatalf("newDeliveryStore() error = %v", err)
+	}
+	accepted, err := store.Reserve("message-1")
+	if err != nil || !accepted {
+		t.Fatalf("first Reserve() = %v, %v", accepted, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".foxharness", "feishu", "deliveries.json")); err != nil {
+		t.Fatalf("delivery authority Stat() error = %v", err)
+	}
+
+	reopened, err := newDeliveryStore(home)
+	if err != nil {
+		t.Fatalf("reopen newDeliveryStore() error = %v", err)
+	}
+	accepted, err = reopened.Reserve("message-1")
+	if err != nil || accepted {
+		t.Fatalf("reopened Reserve() = %v, %v", accepted, err)
+	}
+}
+
 type mapEnv map[string]string
 
 func (m mapEnv) Lookup(name string) string {

@@ -1,8 +1,12 @@
 package autodev
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,6 +34,194 @@ func TestLoadLedgerMissingFileYieldsEmptyLedger(t *testing.T) {
 	}
 	if got := len(led.Pending()); got != 0 {
 		t.Errorf("Pending() len = %d, want 0", got)
+	}
+}
+
+func TestLedgerValidatesRemoteEventOutboxIdentity(t *testing.T) {
+	title, description := "Durable event", "persist issue observation"
+	bytes, hash := requirementRevisionIdentity(title, description)
+	valid := LedgerItem{
+		ItemID:           "item-durable-event",
+		Slug:             "durable-event",
+		Title:            title,
+		Description:      description,
+		RequirementBytes: bytes,
+		RequirementHash:  hash,
+		RevisionFrozen:   true,
+		SourceState:      SourceStateCurrent,
+		Priority:         PriorityHigh,
+		Status:           StatusInProgress,
+		Stage:            StageIssue,
+		StageState:       StageStateVerified,
+		Issue:            31,
+		Outbox: []RemoteEventRecord{{
+			EventID: "issue:item-durable-event:31",
+			ItemID:  "item-durable-event",
+			Kind:    RemoteEventIssue,
+			Number:  31,
+		}},
+	}
+
+	tests := []struct {
+		name string
+		mut  func(*LedgerItem)
+	}{
+		{name: "empty-event-id", mut: func(item *LedgerItem) { item.Outbox[0].EventID = "" }},
+		{name: "wrong-item-id", mut: func(item *LedgerItem) { item.Outbox[0].ItemID = "another-item" }},
+		{name: "wrong-kind", mut: func(item *LedgerItem) { item.Outbox[0].Kind = "pr" }},
+		{name: "wrong-number", mut: func(item *LedgerItem) { item.Outbox[0].Number = 0 }},
+		{name: "unstable-event-id", mut: func(item *LedgerItem) { item.Outbox[0].EventID = "random-id" }},
+		{name: "duplicate-event-id", mut: func(item *LedgerItem) { item.Outbox = append(item.Outbox, item.Outbox[0]) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := valid
+			item.Outbox = append([]RemoteEventRecord(nil), valid.Outbox...)
+			tt.mut(&item)
+			if err := validateLedgerItems([]*LedgerItem{&item}, ledgerSchemaVersion); err == nil {
+				t.Fatal("validateLedgerItems returned nil for invalid outbox")
+			}
+		})
+	}
+	if err := validateLedgerItems([]*LedgerItem{&valid}, ledgerSchemaVersion); err != nil {
+		t.Fatalf("valid outbox rejected: %v", err)
+	}
+}
+
+func TestLoadLedgerRejectsMalformedPathIdentityFields(t *testing.T) {
+	path := ledgerPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("legacy-slug-traversal", func(t *testing.T) {
+		raw := `{"version":1,"items":[{"slug":"../outside","title":"Escape","priority":"high","status":"in-progress","stage":"spec-to-plan","stage_state":"running"}]}`
+		if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := LoadLedger(path, newTestClock())
+		if err == nil {
+			t.Fatal("LoadLedger accepted a ledger slug that can escape the managed worktree root")
+		}
+		var invalid *InvalidLedgerStateError
+		if !errors.As(err, &invalid) || !strings.Contains(err.Error(), "slug") {
+			t.Fatalf("LoadLedger error = %v, want invalid slug state", err)
+		}
+	})
+
+	t.Run("auto-branch-traversal", func(t *testing.T) {
+		title, description := "Safe item", "safe description"
+		bytes, hash := requirementRevisionIdentity(title, description)
+		item := &LedgerItem{
+			ItemID:           "item-safe",
+			Slug:             "safe-item",
+			Title:            title,
+			Description:      description,
+			RequirementBytes: bytes,
+			RequirementHash:  hash,
+			RevisionFrozen:   true,
+			SourceState:      SourceStateCurrent,
+			Priority:         PriorityHigh,
+			Status:           StatusInProgress,
+			Branch:           "auto/../../outside",
+			Stage:            StageSpecToPlan,
+			StageState:       StageStateRunning,
+		}
+		payload, err := json.Marshal(ledgerFile{Version: ledgerSchemaVersion, Items: []*LedgerItem{item}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, payload, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err = LoadLedger(path, newTestClock())
+		if err == nil {
+			t.Fatal("LoadLedger accepted an auto branch whose suffix can escape the managed worktree root")
+		}
+		var invalid *InvalidLedgerStateError
+		if !errors.As(err, &invalid) || !strings.Contains(err.Error(), "branch") {
+			t.Fatalf("LoadLedger error = %v, want invalid branch state", err)
+		}
+	})
+}
+
+func TestWorkflowIssueBindingRequiresPendingOutboxInSameMutation(t *testing.T) {
+	before := happyItem()
+	after := before
+	after.Status = StatusInProgress
+	after.Stage = StageIssue
+	after.StageState = StageStateVerified
+	after.Issue = 31
+	if err := validateWorkflowMutation(before, after); err == nil {
+		t.Fatal("issue binding without its pending outbox event was accepted")
+	}
+
+	after.Outbox = []RemoteEventRecord{{
+		EventID: "issue:item-test:31",
+		ItemID:  before.ItemID,
+		Kind:    RemoteEventIssue,
+		Number:  31,
+	}}
+	if err := validateWorkflowMutation(before, after); err != nil {
+		t.Fatalf("atomic issue binding and outbox event rejected: %v", err)
+	}
+}
+
+func TestWorkflowCannotRewriteDurableIssueOrOutboxDelivery(t *testing.T) {
+	before := happyItem()
+	before.Issue = 31
+	before.Outbox = []RemoteEventRecord{{
+		EventID:   "issue:item-test:31",
+		ItemID:    before.ItemID,
+		Kind:      RemoteEventIssue,
+		Number:    31,
+		Delivered: true,
+	}}
+
+	changedIssue := cloneLedgerItem(before)
+	changedIssue.Issue = 32
+	if err := validateWorkflowMutation(before, changedIssue); err == nil {
+		t.Fatal("recorded issue binding rewrite was accepted")
+	}
+
+	reopened := cloneLedgerItem(before)
+	reopened.Outbox[0].Delivered = false
+	if err := validateWorkflowMutation(before, reopened); err == nil {
+		t.Fatal("delivered outbox event was allowed to become pending")
+	}
+}
+
+func TestLedgerGetReturnsIndependentOutboxCopy(t *testing.T) {
+	led, err := LoadLedger(ledgerPath(t), newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	led.Seed([]Item{{Title: "Outbox copy", Description: "protect authority"}})
+	item, _ := led.Get("outbox-copy")
+	if err := led.Mark(item.Slug, func(it *LedgerItem) {
+		it.Status = StatusInProgress
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Mark(item.Slug, func(it *LedgerItem) {
+		it.Stage = StageIssue
+		it.StageState = StageStateVerified
+		it.Issue = 31
+		it.Outbox = append(it.Outbox, RemoteEventRecord{
+			EventID: issueEventID(it.ItemID, 31),
+			ItemID:  it.ItemID,
+			Kind:    RemoteEventIssue,
+			Number:  31,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	copy, _ := led.Get(item.Slug)
+	copy.Outbox[0].Delivered = true
+	again, _ := led.Get(item.Slug)
+	if again.Outbox[0].Delivered {
+		t.Fatal("mutating the value returned by Get changed authoritative outbox state")
 	}
 }
 
@@ -70,6 +262,8 @@ func TestSeedNeverOverridesExistingLedgerStatus(t *testing.T) {
 	led.Seed([]Item{{Title: "Ship it", Priority: PriorityHigh}})
 	led.Mark("ship-it", func(it *LedgerItem) {
 		it.Status = StatusDone
+		it.Stage = StageDone
+		it.StageState = StageStateVerified
 		it.Issue = 31
 		it.PR = 32
 	})
@@ -183,6 +377,40 @@ func TestMarkStampsUpdatedAtFromClock(t *testing.T) {
 	}
 }
 
+func TestLedgerCommitFailureDoesNotMutateAuthoritativeMemory(t *testing.T) {
+	path := ledgerPath(t)
+	led, err := LoadLedger(path, newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	led.Seed([]Item{{Title: "Atomic transition", Priority: PriorityHigh}})
+	if err := led.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err = led.Commit("atomic-transition", func(it *LedgerItem) {
+		it.Status = StatusDone
+		it.Stage = StageDone
+		it.StageState = StageStateVerified
+	})
+	if err == nil {
+		t.Fatal("Commit returned nil, want persistence failure")
+	}
+	item, ok := led.Get("atomic-transition")
+	if !ok {
+		t.Fatal("item disappeared after failed Commit")
+	}
+	if item.Status != StatusPending || item.Stage != "" {
+		t.Fatalf("item after failed Commit = %+v, want original pending state", item)
+	}
+}
+
 func TestSaveAndReloadRoundTrip(t *testing.T) {
 	path := ledgerPath(t)
 	clk := newTestClock()
@@ -195,7 +423,8 @@ func TestSaveAndReloadRoundTrip(t *testing.T) {
 	led.Mark("round-trip", func(it *LedgerItem) {
 		it.Status = StatusInProgress
 		it.Branch = "auto/round-trip"
-		it.Stage = "spec-to-plan"
+		it.Stage = StageSpecToPlan
+		it.StageState = StageStateRunning
 		it.Issue = 7
 		it.PR = 8
 		it.FeatureDir = ".codexspec/specs/2026-0610-1200ab-x"
@@ -234,6 +463,87 @@ func TestSaveAndReloadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLoadLedgerMigratesKnownLegacyStageAndWritesCurrentVersion(t *testing.T) {
+	path := ledgerPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"items":[{"slug":"legacy","title":"Legacy","priority":"high","status":"in-progress","stage":"spec-to-plan"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	led, err := LoadLedger(path, newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, ok := led.Get("legacy")
+	if !ok {
+		t.Fatal("legacy item missing")
+	}
+	if item.Stage != StageSpecToPlan || item.StageState != StageStateRunning {
+		t.Fatalf("legacy stage = %q/%q, want %q/%q", item.Stage, item.StageState, StageSpecToPlan, StageStateRunning)
+	}
+	if err := led.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"version": 3`) || !strings.Contains(string(data), `"stage_state": "running"`) {
+		t.Fatalf("migrated ledger = %s, want versioned running state", data)
+	}
+}
+
+func TestDVAUT010LoadSchemaV2PreservesBehaviorAndUpgradesOnSave(t *testing.T) {
+	path := ledgerPath(t)
+	seeded, err := LoadLedger(path, newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seeded.Seed([]Item{{Title: "Schema compatibility", Description: "preserve v2 state"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := seeded.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prior ledgerFile
+	if err := json.Unmarshal(data, &prior); err != nil {
+		t.Fatal(err)
+	}
+	prior.Version = 2
+	data, err = json.Marshal(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := LoadLedger(path, newTestClock())
+	if err != nil {
+		t.Fatalf("LoadLedger(schema v2) = %v", err)
+	}
+	loaded, ok := ledger.Get("schema-compatibility")
+	if !ok || loaded.ItemID == "" || len(loaded.CoreAttempts) != 0 {
+		t.Fatalf("schema v2 item = %#v", loaded)
+	}
+	if err := ledger.Save(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(upgraded), `"version": 3`) {
+		t.Fatalf("upgraded ledger = %s", upgraded)
+	}
+}
+
 func TestSaveIsAtomicAndLeavesNoTempFiles(t *testing.T) {
 	path := ledgerPath(t)
 	led, err := LoadLedger(path, newTestClock())
@@ -264,6 +574,221 @@ func TestSaveIsAtomicAndLeavesNoTempFiles(t *testing.T) {
 	if _, err := LoadLedger(path, newTestClock()); err != nil {
 		t.Fatalf("reload after Save returned error: %v", err)
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("ledger permissions = %o, want 600", got)
+	}
+}
+
+type scriptedLedgerTempFile struct {
+	events     *[]string
+	shortWrite bool
+	writeErr   error
+	syncErr    error
+	closeErr   error
+}
+
+func (f *scriptedLedgerTempFile) Name() string { return "/fixture/ledger.tmp" }
+
+func (f *scriptedLedgerTempFile) Write(p []byte) (int, error) {
+	*f.events = append(*f.events, "write")
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	if f.shortWrite {
+		return len(p) - 1, nil
+	}
+	return len(p), nil
+}
+
+func (f *scriptedLedgerTempFile) Sync() error {
+	*f.events = append(*f.events, "sync-file")
+	return f.syncErr
+}
+
+func (f *scriptedLedgerTempFile) Close() error {
+	*f.events = append(*f.events, "close-file")
+	return f.closeErr
+}
+
+type scriptedLedgerDirFile struct {
+	events   *[]string
+	syncErr  error
+	closeErr error
+}
+
+func (f *scriptedLedgerDirFile) Sync() error {
+	*f.events = append(*f.events, "sync-dir")
+	return f.syncErr
+}
+
+func (f *scriptedLedgerDirFile) Close() error {
+	*f.events = append(*f.events, "close-dir")
+	return f.closeErr
+}
+
+func TestCPAUT006LedgerPersistenceFailureMatrix(t *testing.T) {
+	type failureCase struct {
+		name          string
+		stage         string
+		want          string
+		wantCommitted bool
+		wantCleanup   bool
+	}
+	for _, tc := range []failureCase{
+		{name: "directory", stage: "mkdir", want: "create ledger dir"},
+		{name: "encode", stage: "encode", want: "encode ledger"},
+		{name: "create", stage: "create", want: "create ledger temp file"},
+		{name: "write", stage: "write", want: "write ledger", wantCleanup: true},
+		{name: "short write", stage: "short-write", want: "write ledger", wantCleanup: true},
+		{name: "file sync", stage: "sync-file", want: "flush ledger", wantCleanup: true},
+		{name: "file close", stage: "close-file", want: "close ledger temp file", wantCleanup: true},
+		{name: "rename", stage: "rename", want: "commit ledger", wantCleanup: true},
+		{name: "directory open", stage: "open-dir", want: "open ledger dir for flush", wantCommitted: true},
+		{name: "directory sync", stage: "sync-dir", want: "flush ledger dir", wantCommitted: true},
+		{name: "directory close", stage: "close-dir", want: "close ledger dir after flush", wantCommitted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			injected := errors.New("injected " + tc.stage + " failure")
+			expected := injected
+			if tc.stage == "short-write" {
+				expected = io.ErrShortWrite
+			}
+			var events []string
+			temp := &scriptedLedgerTempFile{events: &events}
+			dir := &scriptedLedgerDirFile{events: &events}
+			ops := ledgerPersistenceOps{
+				mkdirAll: func(string, os.FileMode) error {
+					events = append(events, "mkdir")
+					if tc.stage == "mkdir" {
+						return injected
+					}
+					return nil
+				},
+				encode: func(ledgerFile) ([]byte, error) {
+					events = append(events, "encode")
+					if tc.stage == "encode" {
+						return nil, injected
+					}
+					return []byte(`{"version":3,"items":[]}`), nil
+				},
+				createTemp: func(string, string) (ledgerTempFile, error) {
+					events = append(events, "create")
+					if tc.stage == "create" {
+						return nil, injected
+					}
+					return temp, nil
+				},
+				rename: func(string, string) error {
+					events = append(events, "rename")
+					if tc.stage == "rename" {
+						return injected
+					}
+					return nil
+				},
+				remove: func(string) error {
+					events = append(events, "remove")
+					return nil
+				},
+				openDir: func(string) (ledgerDirFile, error) {
+					events = append(events, "open-dir")
+					if tc.stage == "open-dir" {
+						return nil, injected
+					}
+					return dir, nil
+				},
+				syncDir: true,
+			}
+			switch tc.stage {
+			case "write":
+				temp.writeErr = injected
+			case "short-write":
+				temp.shortWrite = true
+			case "sync-file":
+				temp.syncErr = injected
+			case "close-file":
+				temp.closeErr = injected
+			case "sync-dir":
+				dir.syncErr = injected
+			case "close-dir":
+				dir.closeErr = injected
+			}
+
+			led, err := LoadLedger(filepath.Join(t.TempDir(), "autodev-state.json"), newTestClock())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := led.Seed([]Item{{Title: "Durable transition", Priority: PriorityHigh}}); err != nil {
+				t.Fatal(err)
+			}
+			led.persistence = ops
+			err = led.Commit("durable-transition", func(item *LedgerItem) {
+				item.Status = StatusInProgress
+			})
+			if !errors.Is(err, expected) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Commit error = %v, want injected error classified as %q", err, tc.want)
+			}
+			item, ok := led.Get("durable-transition")
+			if !ok {
+				t.Fatal("ledger item disappeared")
+			}
+			if gotCommitted := item.Status == StatusInProgress; gotCommitted != tc.wantCommitted {
+				t.Fatalf("in-memory committed = %t, want %t after %s; events=%v", gotCommitted, tc.wantCommitted, tc.stage, events)
+			}
+			gotCleanup := false
+			for _, event := range events {
+				gotCleanup = gotCleanup || event == "remove"
+			}
+			if gotCleanup != tc.wantCleanup {
+				t.Fatalf("temp cleanup = %t, want %t after %s; events=%v", gotCleanup, tc.wantCleanup, tc.stage, events)
+			}
+		})
+	}
+}
+
+func TestCPAUT006LedgerReportsTempCloseAndCleanupFailures(t *testing.T) {
+	writeErr := errors.New("injected write failure")
+	closeErr := errors.New("injected close failure")
+	removeErr := errors.New("injected cleanup failure")
+	var events []string
+	temp := &scriptedLedgerTempFile{events: &events, writeErr: writeErr, closeErr: closeErr}
+	led, err := LoadLedger(filepath.Join(t.TempDir(), "autodev-state.json"), newTestClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Seed([]Item{{Title: "Cleanup evidence", Priority: PriorityHigh}}); err != nil {
+		t.Fatal(err)
+	}
+	led.persistence = ledgerPersistenceOps{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		encode:   func(ledgerFile) ([]byte, error) { return []byte(`{}`), nil },
+		createTemp: func(string, string) (ledgerTempFile, error) {
+			return temp, nil
+		},
+		rename: func(string, string) error { return nil },
+		remove: func(string) error {
+			events = append(events, "remove")
+			return removeErr
+		},
+		openDir: func(string) (ledgerDirFile, error) {
+			return &scriptedLedgerDirFile{events: &events}, nil
+		},
+		syncDir: true,
+	}
+	err = led.Commit("cleanup-evidence", func(item *LedgerItem) {
+		item.Status = StatusInProgress
+	})
+	for _, want := range []error{writeErr, closeErr, removeErr} {
+		if !errors.Is(err, want) {
+			t.Errorf("Commit error = %v, want joined %v", err, want)
+		}
+	}
+	if item, _ := led.Get("cleanup-evidence"); item.Status != StatusPending {
+		t.Fatalf("item status = %s, want pending after pre-commit cleanup failure", item.Status)
+	}
 }
 
 func TestSeedDisambiguatesSlugCollisions(t *testing.T) {
@@ -272,8 +797,8 @@ func TestSeedDisambiguatesSlugCollisions(t *testing.T) {
 		t.Fatalf("LoadLedger returned error: %v", err)
 	}
 	led.Seed([]Item{
-		{Title: "Same title", Priority: PriorityHigh},
-		{Title: "Same title", Priority: PriorityLow},
+		{SourceID: "same-title-high", Title: "Same title", Priority: PriorityHigh},
+		{SourceID: "same-title-low", Title: "Same title", Priority: PriorityLow},
 	})
 
 	pending := led.Pending()

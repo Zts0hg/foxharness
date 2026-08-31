@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/Zts0hg/foxharness/internal/toolprotocol"
 )
 
 // ForkRunner is the dependency the Executor uses to delegate fork-mode
@@ -13,11 +15,11 @@ import (
 // Implementations should treat task as the fully-processed user prompt,
 // agentType as the optional agent identifier from the command's
 // frontmatter, and allowedTools as the per-call tool allow-list copied
-// from the command's `allowed-tools` frontmatter (nil/empty = no
-// restriction). The runner is expected to enforce the allow-list by
-// constructing the sub-agent's tool registry with the same filter the
-// TUI path uses; otherwise fork-mode skills with `allowed-tools` would
-// silently escape the restriction.
+// from the command's `allowed-tools` frontmatter. nil means no restriction;
+// a non-nil empty slice means the command explicitly declared deny-all. The
+// runner is expected to enforce the allow-list by constructing the sub-agent's
+// tool registry with the same filter the TUI path uses; otherwise fork-mode
+// skills with `allowed-tools` would silently escape the restriction.
 type ForkRunner interface {
 	Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error)
 }
@@ -103,9 +105,9 @@ type ExecutionResult struct {
 	Content string
 
 	// AllowedTools mirrors the command's `allowed-tools` frontmatter.
-	// When non-empty, the caller must restrict the next agent turn to
-	// these tools — typically by wrapping the tool registry in
-	// NewFilteredRegistry. nil means "no restriction".
+	// When non-nil, the caller must restrict the next agent turn to these
+	// tools — typically by wrapping the tool registry in NewFilteredRegistry.
+	// nil means "no restriction"; a non-nil empty slice means explicit deny-all.
 	AllowedTools []string
 
 	// Fork is true when the result came from a fork-mode sub-agent.
@@ -169,7 +171,7 @@ func (e *Executor) Plan(cmd *Command, rawArgs, sessionID string) (ExecutionPlan,
 		Template:     template,
 		Commands:     commands,
 		Fork:         isForkMode(cmd),
-		AllowedTools: append([]string(nil), cmd.Frontmatter.AllowedTools...),
+		AllowedTools: cloneAllowedTools(cmd.Frontmatter.AllowedTools),
 		Effort:       cmd.Frontmatter.Effort,
 		Hooks:        hooks,
 		variables: map[string]string{
@@ -212,14 +214,14 @@ func (e *Executor) Execute(ctx context.Context, cmd *Command, rawArgs, sessionID
 		if e.forkRunner == nil {
 			return ExecutionResult{}, errors.New("fork mode unavailable: no runner configured")
 		}
-		allowedCopy := append([]string(nil), plan.AllowedTools...)
+		allowedCopy := forkAllowedTools(ctx, plan.AllowedTools)
 		out, forkErr := e.forkRunner.Run(ctx, processed, cmd.Frontmatter.Agent, allowedCopy)
 		// Fork mode completes synchronously inside Execute, so the
 		// after-hook runs here — regardless of forkErr — to mirror
 		// "after the command's execution completes".
 		_ = ExecuteAfterHook(ctx, plan.Hooks, shellWorkDir, e.hookTimeout)
 		if forkErr != nil {
-			return ExecutionResult{}, forkErr
+			return ExecutionResult{Content: out, Fork: true}, forkErr
 		}
 		return ExecutionResult{Content: out, Fork: true}, nil
 	}
@@ -239,7 +241,7 @@ func (e *Executor) Execute(ctx context.Context, cmd *Command, rawArgs, sessionID
 	}
 	return ExecutionResult{
 		Content:      processed,
-		AllowedTools: append([]string(nil), plan.AllowedTools...),
+		AllowedTools: cloneAllowedTools(plan.AllowedTools),
 		Effort:       plan.Effort,
 		AfterHook:    afterHook,
 	}, nil
@@ -247,4 +249,31 @@ func (e *Executor) Execute(ctx context.Context, cmd *Command, rawArgs, sessionID
 
 func isForkMode(cmd *Command) bool {
 	return cmd.Frontmatter.Context == "fork"
+}
+
+func cloneAllowedTools(tools []string) []string {
+	/* Appending onto nil keeps an empty clone nil, the way the baseline's
+	 * clone did, so an empty list stays an unrestricted surface. */
+	return append([]string(nil), tools...)
+}
+
+func forkAllowedTools(ctx context.Context, commandAllowed []string) []string {
+	if !toolprotocol.HasCapabilities(ctx) {
+		return cloneAllowedTools(commandAllowed)
+	}
+	parentAllowed := toolprotocol.CapabilitiesFromContext(ctx)
+	if commandAllowed == nil {
+		return parentAllowed
+	}
+	allowed := make(map[string]struct{}, len(commandAllowed))
+	for _, name := range commandAllowed {
+		allowed[name] = struct{}{}
+	}
+	result := make([]string, 0, len(parentAllowed))
+	for _, name := range parentAllowed {
+		if _, ok := allowed[name]; ok {
+			result = append(result, name)
+		}
+	}
+	return result
 }

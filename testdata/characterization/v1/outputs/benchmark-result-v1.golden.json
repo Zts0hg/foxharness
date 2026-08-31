@@ -1,0 +1,106 @@
+[
+  {
+    "schema_version": 1,
+    "case_id": "schema-golden",
+    "repeat_index": 1,
+    "run_id": "RUN_ID",
+    "case_definition_id": "cd52214aa0a9265da8689fe95c30b9f1737b32be03a9205deee6964d60a6abb6",
+    "fixture_id": "9821b5fd14b8379aad22e782c92cd585d9cdc0a79451ab011c3dfddfb0f25281",
+    "success": true,
+    "status": "completed",
+    "runtime_status": "completed",
+    "provider_protocol": "test-protocol",
+    "model": "test-model",
+    "case_deadline": "2000-01-02T03:04:05Z",
+    "workspace": "WORKSPACE",
+    "session_id": "SESSION_ID",
+    "duration_ms": 0,
+    "validations": [
+      {
+        "type": "command",
+        "passed": true,
+        "status": "passed",
+        "deadline": "2000-01-02T03:06:05Z"
+      }
+    ],
+    "runtime_fidelity": {
+      "spec": {
+        "provider_protocol": "test-protocol",
+        "model": "test-model",
+        "max_turns": 1,
+        "tool_surface": [
+          "read_file"
+        ],
+        "prompt_policy": "base_project_session_memory",
+        "memory_policy": "session_only",
+        "compaction_policy": "automatic_selected_model",
+        "permission_policy": "none",
+        "observation_policy": "structured_result",
+        "interaction_policy": "headless"
+      },
+      "shared_invariants": [
+        "structured tool failure semantics",
+        "context compaction"
+      ],
+      "intentional_differences": [
+        "no interactive approval surface",
+        "no TUI ask_user_question surface"
+      ],
+      "warning": "benchmark runtime intentionally reports product-runtime differences"
+    }
+  },
+  {
+    "schema_version": 1,
+    "case_id": "schema-golden-failure",
+    "repeat_index": 2,
+    "run_id": "RUN_ID",
+    "case_definition_id": "a9c414d4605b710b6930f1bab7de4984e1e6b809a86997ae7383d711094ea129",
+    "fixture_id": "9821b5fd14b8379aad22e782c92cd585d9cdc0a79451ab011c3dfddfb0f25281",
+    "success": false,
+    "status": "failed",
+    "terminal_cause": "组装系统提示词失败: compose failure",
+    "runtime_status": "failed",
+    "runtime_cause": "组装系统提示词失败: compose failure",
+    "provider_protocol": "test-protocol",
+    "model": "test-model",
+    "case_deadline": "2000-01-02T03:04:05Z",
+    "workspace": "WORKSPACE",
+    "session_id": "SESSION_ID",
+    "duration_ms": 0,
+    "error": "组装系统提示词失败: compose failure",
+    "runtime_error": "组装系统提示词失败: compose failure",
+    "validations": [
+      {
+        "type": "command",
+        "passed": true,
+        "status": "passed",
+        "deadline": "2000-01-02T03:06:05Z"
+      }
+    ],
+    "runtime_fidelity": {
+      "spec": {
+        "provider_protocol": "test-protocol",
+        "model": "test-model",
+        "max_turns": 1,
+        "tool_surface": [
+          "read_file"
+        ],
+        "prompt_policy": "base_project_session_memory",
+        "memory_policy": "session_only",
+        "compaction_policy": "automatic_selected_model",
+        "permission_policy": "none",
+        "observation_policy": "structured_result",
+        "interaction_policy": "headless"
+      },
+      "shared_invariants": [
+        "structured tool failure semantics",
+        "context compaction"
+      ],
+      "intentional_differences": [
+        "no interactive approval surface",
+        "no TUI ask_user_question surface"
+      ],
+      "warning": "benchmark runtime intentionally reports product-runtime differences"
+    }
+  }
+]

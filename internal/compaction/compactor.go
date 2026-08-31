@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Zts0hg/foxharness/internal/prompt"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
 )
@@ -269,19 +270,9 @@ func (c *Compactor) SummarizeWithInstructions(ctx context.Context, messages []sc
 // without acknowledging the summary and links to the full transcript for
 // detail recovery when the transcript path is non-empty.
 func BuildSummaryMessage(summary, transcriptPath string) schema.Message {
-	body := strings.TrimSpace(summary)
-	var b strings.Builder
-	b.WriteString("## Compacted Context Summary\n\n")
-	b.WriteString("This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion.\n\n")
-	b.WriteString(body)
-	b.WriteString("\n\n")
-	if transcriptPath != "" {
-		b.WriteString(fmt.Sprintf("If you need specific details from before compaction, read the full transcript at: %s\n\n", transcriptPath))
-	}
-	b.WriteString("Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary.")
 	return schema.Message{
 		Role:    schema.RoleUser,
-		Content: b.String(),
+		Content: prompt.CompactedSummary(summary, transcriptPath),
 	}
 }
 

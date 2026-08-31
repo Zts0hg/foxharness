@@ -1,0 +1,8 @@
+{
+ "id": "run-baseline-0001",
+ "session_id": "session-baseline-0001",
+ "root_dir": "SESSION_ROOT/runs/run-baseline-0001",
+ "prompt": "Inspect the runtime boundary.",
+ "started_at": "2026-08-10T08:01:00Z",
+ "ended_at": "2026-08-10T08:05:00Z"
+}

@@ -2,6 +2,8 @@ package slash
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +124,33 @@ func TestExecuteEmbeddedShell_NilCtxStillWorks(t *testing.T) {
 	if got != "hi there" {
 		t.Errorf("got %q", got)
 	}
+}
+
+func TestExecuteEmbeddedShellRejectsOverflow(t *testing.T) {
+	t.Setenv("FOX_SLASH_SHELL_OVERFLOW_HELPER", "1")
+	command := fmt.Sprintf("%q -test.run '^TestSlashShellOverflowHelper$'", os.Args[0])
+
+	got, err := ExecuteEmbeddedShell(context.Background(), "output="+"!`"+command+"`", t.TempDir(), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "[ERROR:") || !strings.Contains(got, "exceeded") {
+		prefix := got
+		if len(prefix) > 128 {
+			prefix = prefix[:128]
+		}
+		t.Fatalf("overflow result len=%d prefix=%q, want explicit bounded-output error", len(got), prefix)
+	}
+	if len(got) > 4096 {
+		t.Fatalf("overflow result retained %d bytes, want compact error", len(got))
+	}
+}
+
+func TestSlashShellOverflowHelper(t *testing.T) {
+	if os.Getenv("FOX_SLASH_SHELL_OVERFLOW_HELPER") != "1" {
+		return
+	}
+	_, _ = os.Stdout.WriteString(strings.Repeat("x", (1<<20)+1))
 }
 
 func TestExecuteEmbeddedShell_WorkDir(t *testing.T) {

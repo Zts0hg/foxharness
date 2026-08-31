@@ -1,0 +1,202 @@
+{
+  "version": "v1",
+  "baseline_status": "frozen",
+  "baseline_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+  "fixtures": [
+    {
+      "path": "outputs/benchmark-result-v1.golden.json",
+      "sha256": "3742b89671e8b3e66c79ab7e355a2ae68e15ffd290c5a1260d264c6229b0f854",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "BenchmarkEval",
+      "semantics": "Exact corrected benchmark result schema for one successful and one runtime-failed repeat after volatile provenance normalization.",
+      "normalization": [
+        "workspace path -> WORKSPACE",
+        "session identifier -> SESSION_ID",
+        "run identifier -> RUN_ID",
+        "duration_ms -> 0",
+        "case and validation deadlines -> fixed UTC timestamps"
+      ]
+    },
+    {
+      "path": "outputs/cli-runtime-failure.stderr",
+      "sha256": "dad2f6cfd263ec3197a339bfc92e30b9321d518822ea98b6bd9904927fc55769",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Exact CLI lifecycle stderr ordering for a runtime failure after removal of the standard logger timestamp prefix.",
+      "normalization": [
+        "standard logger timestamp prefix removed",
+        "session identifier -> SESSION_ID",
+        "session root path -> SESSION_ROOT",
+        "runtime error text -> RUNTIME_ERROR"
+      ]
+    },
+    {
+      "path": "outputs/cli-runtime-failure.stdout",
+      "sha256": "e0deeae74260f1e28ec37790894fc628265ddbd52a53a0bf234ed7ed5cc6f852",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Exact CLI stdout for a failed run with no final message and with persisted artifact locations retained.",
+      "normalization": [
+        "session identifier -> SESSION_ID",
+        "run identifier -> RUN_ID",
+        "session root path -> SESSION_ROOT"
+      ]
+    },
+    {
+      "path": "outputs/cli-success.stderr",
+      "sha256": "cf10b6a56ea6f01461188563173cd816dde90422f7abc6e3646d8a05bd233a1d",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Exact CLI lifecycle stderr ordering for a successful run after removal of the standard logger timestamp prefix.",
+      "normalization": [
+        "standard logger timestamp prefix removed",
+        "session identifier -> SESSION_ID",
+        "session root path -> SESSION_ROOT"
+      ]
+    },
+    {
+      "path": "outputs/cli-success.stdout",
+      "sha256": "01d3e367db3dd0a15e8dd9e94b1fc5cf0d38980bd2edbbdacc6c2fbd4c86bb0f",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Exact CLI stdout ordering and spacing for a successful run with a final message and persisted artifact locations.",
+      "normalization": [
+        "session identifier -> SESSION_ID",
+        "run identifier -> RUN_ID",
+        "session root path -> SESSION_ROOT"
+      ]
+    },
+    {
+      "path": "sessions/context-lifecycle/PLAN.md",
+      "sha256": "a6b0277ebd4fd09fa4fe4149453a6ca361f245921476c9effc39e5c9bafd0ec7",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Current session-local plan state after the second run."
+    },
+    {
+      "path": "sessions/context-lifecycle/TODO.md",
+      "sha256": "ab6716cae99a00925d79ef2547e6f614783d3d66a05c1eb7fa6262658f246c8e",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Current session-local TODO state after the second run."
+    },
+    {
+      "path": "sessions/context-lifecycle/checkpoints.jsonl",
+      "sha256": "3aea82f8e979bb14279737287d03092f777bff921a7619d21f9fc03d1eb9b62c",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec/TUIInteractive",
+      "semantics": "Append-only checkpoint snapshots for two rewind targets and two file versions.",
+      "normalization": [
+        "tracked workspace root -> WORKSPACE"
+      ]
+    },
+    {
+      "path": "sessions/context-lifecycle/checkpoints/000001-main.go",
+      "sha256": "55a60bb97151b2b4b680462447ce60ec34511b14fa10d77440c97b9777101566",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec/TUIInteractive",
+      "semantics": "First immutable workspace file backup referenced by checkpoints.jsonl."
+    },
+    {
+      "path": "sessions/context-lifecycle/checkpoints/000002-main.go",
+      "sha256": "74c54f515ba90fd3e50a48c1035de17c9ff815cf2fb733aae18a603350c06740",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec/TUIInteractive",
+      "semantics": "Second immutable workspace file backup referenced by checkpoints.jsonl."
+    },
+    {
+      "path": "sessions/context-lifecycle/compact_state.json",
+      "sha256": "c7682ee900b5313950a38b5ebfd21e426fb5a7a8ac1845367451efe17943d925",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Persisted automatic-compaction summary and inclusive covered message sequence."
+    },
+    {
+      "path": "sessions/context-lifecycle/messages.jsonl",
+      "sha256": "25624c9f22d2e03e61677246b77e2c30842c881908a05039dc1a6bee70d2c7fb",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Raw model-visible history across two runs, including usage, a tool call, its result, and continuation."
+    },
+    {
+      "path": "sessions/context-lifecycle/runs/run-baseline-0001/metrics.jsonl",
+      "sha256": "09f56be133689146e5c036d64273779c95b4713149d81242351682e81b19971a",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Run-one model, tool, and summary metrics journal with fixed observations."
+    },
+    {
+      "path": "sessions/context-lifecycle/runs/run-baseline-0001/run.json",
+      "sha256": "a44716f5051f47d47746fd1f85239a277c6a8fb4ed57c4e93806b0d6dd6e21a8",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Completed first-run metadata and original prompt.",
+      "normalization": [
+        "run root path prefix -> SESSION_ROOT"
+      ]
+    },
+    {
+      "path": "sessions/context-lifecycle/runs/run-baseline-0001/trace.jsonl",
+      "sha256": "1f4a88e4f7d1ac86261510a9f397e5dd46287967e47dfa47d5dcf7aa6d8741ac",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Run-one start and terminal trace events with stable correlation and timing."
+    },
+    {
+      "path": "sessions/context-lifecycle/runs/run-baseline-0002/metrics.jsonl",
+      "sha256": "a9db7ea5b379a01931fb042b2d3d8ca38eb87224ee3d9a041c51c10734e73fc0",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Run-two model and summary metrics journal with fixed observations."
+    },
+    {
+      "path": "sessions/context-lifecycle/runs/run-baseline-0002/run.json",
+      "sha256": "f55d98faf6b3f28b6b8e6eb30c45d081c0c9db46ec0fa2035e1fc91566e8870d",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Completed continuation-run metadata and original prompt.",
+      "normalization": [
+        "run root path prefix -> SESSION_ROOT"
+      ]
+    },
+    {
+      "path": "sessions/context-lifecycle/runs/run-baseline-0002/trace.jsonl",
+      "sha256": "5371518a251aa688e02cf94635f666997624247ba03e165c766e50fbd9391691",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Run-two start and terminal trace events with stable correlation and timing."
+    },
+    {
+      "path": "sessions/context-lifecycle/session.json",
+      "sha256": "46a987dbb31128b24121f0052e0ccab43714cee9850be406bda1bdea11daf73d",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "CLI-source persisted session identity, workspace, storage root, and creation time.",
+      "normalization": [
+        "workspace path -> WORKSPACE",
+        "session root path -> SESSION_ROOT"
+      ]
+    },
+    {
+      "path": "sessions/context-lifecycle/state_history.jsonl",
+      "sha256": "e0e26f1f50c9bc0f3dda1463ea820b71ebbbb19f1fb357bfbbc17950c52ec629",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec/TUIInteractive",
+      "semantics": "First-write-wins PLAN/TODO snapshots for absent and existing state before user messages."
+    },
+    {
+      "path": "sessions/context-lifecycle/transcript.jsonl",
+      "sha256": "d96b0e25bd2e6a5684ed4068234cf5c9892ebf2efdd9a001351786627c1c364c",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "User-visible session event journal across the original and continuation runs."
+    },
+    {
+      "path": "sessions/context-lifecycle/working_memory.md",
+      "sha256": "18c3582c37196b5b248994dcfab0859d7a1523a4472d8bb3992b1e19a9c3e613",
+      "source_commit": "9d5f010e64920adc72ec262c1031d3956d883156",
+      "source": "CLIExec",
+      "semantics": "Session working-memory content consumed by resumed context preparation."
+    }
+  ]
+}

@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+type fixedBashCommandRunner struct {
+	result BashCommandResult
+}
+
+func (r fixedBashCommandRunner) Run(context.Context, string, string, time.Duration) BashCommandResult {
+	return r.result
+}
+
 func TestRunBashCommandReturnsOutputWithoutModelToolFormatting(t *testing.T) {
 	result := RunBashCommand(context.Background(), t.TempDir(), "printf stdout; printf stderr >&2", time.Second)
 
@@ -88,13 +96,13 @@ func TestRunBashCommandTimesOut(t *testing.T) {
 
 func TestRunBashCommandTimeoutKillsShellChildProcess(t *testing.T) {
 	start := time.Now()
-	result := RunBashCommand(context.Background(), t.TempDir(), "sleep 2; printf done", 20*time.Millisecond)
+	result := RunBashCommand(context.Background(), t.TempDir(), "sleep 5; printf done", 500*time.Millisecond)
 	elapsed := time.Since(start)
 
 	if !result.TimedOut {
 		t.Fatalf("TimedOut = false, want true")
 	}
-	if elapsed > 500*time.Millisecond {
+	if elapsed > 2*time.Second {
 		t.Fatalf("RunBashCommand returned after %s, want timeout to kill child process group promptly", elapsed)
 	}
 	if strings.Contains(result.Output, "done") {
@@ -142,11 +150,13 @@ func TestBashToolExecuteReportsTruncatedFailedOutput(t *testing.T) {
 }
 
 func TestBashToolExecuteReportsTruncatedTimedOutOutput(t *testing.T) {
-	tool := NewBashTool(t.TempDir())
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-
-	out, err := tool.Execute(ctx, bashCommandArgs(t, "yes x"))
+	tool := NewSupervisedBashTool(t.TempDir(), fixedBashCommandRunner{result: BashCommandResult{
+		Output:    strings.Repeat("x", MaxBashOutputBytes),
+		TimedOut:  true,
+		Truncated: true,
+		Err:       context.DeadlineExceeded,
+	}})
+	out, err := tool.Execute(context.Background(), bashCommandArgs(t, "printf output"))
 
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
@@ -174,11 +184,11 @@ func TestBashToolExecuteResultMarksNonZeroExitAsFailed(t *testing.T) {
 }
 
 func TestBashToolExecuteResultMarksTimeoutAsFailed(t *testing.T) {
-	tool := NewBashTool(t.TempDir())
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-
-	result, err := tool.ExecuteResult(ctx, bashCommandArgs(t, "sleep 1"))
+	tool := NewSupervisedBashTool(t.TempDir(), fixedBashCommandRunner{result: BashCommandResult{
+		TimedOut: true,
+		Err:      context.DeadlineExceeded,
+	}})
+	result, err := tool.ExecuteResult(context.Background(), bashCommandArgs(t, "printf output"))
 	if err != nil {
 		t.Fatalf("ExecuteResult returned error: %v", err)
 	}

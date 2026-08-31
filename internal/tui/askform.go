@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -41,7 +41,7 @@ type askForm struct {
 	selected  []map[int]bool // per-question toggled real-option indices
 	otherText [][]rune       // per-question free-text buffer
 
-	answers   []tools.Answer // collected at submit time; read by the model
+	answers   []app.QuestionAnswer // collected at submit time; read by the model
 	done      bool
 	cancelled bool
 }
@@ -49,7 +49,7 @@ type askForm struct {
 // newAskForm creates an overlay for the given request, positioned at its first
 // question.
 func newAskForm(req askRequest) *askForm {
-	n := len(req.questions)
+	n := len(req.request.Questions)
 	f := &askForm{
 		req:       req,
 		selected:  make([]map[int]bool, n),
@@ -61,12 +61,12 @@ func newAskForm(req askRequest) *askForm {
 	return f
 }
 
-func (f *askForm) submitTab() int { return len(f.req.questions) }
+func (f *askForm) submitTab() int { return len(f.req.request.Questions) }
 func (f *askForm) onSubmit() bool { return f.tab == f.submitTab() }
-func (f *askForm) multiTab() bool { return len(f.req.questions) > 1 }
+func (f *askForm) multiTab() bool { return len(f.req.request.Questions) > 1 }
 
 // current returns the question for the active tab. Only valid when !onSubmit.
-func (f *askForm) current() tools.Question { return f.req.questions[f.tab] }
+func (f *askForm) current() app.Question { return f.req.request.Questions[f.tab] }
 
 // otherRow is the cursor index of the free-text row for the active question.
 func (f *askForm) otherRow() int { return len(f.current().Options) }
@@ -95,7 +95,7 @@ func (f *askForm) answered(i int) bool {
 
 // allAnswered reports whether every question has an answer.
 func (f *askForm) allAnswered() bool {
-	for i := range f.req.questions {
+	for i := range f.req.request.Questions {
 		if !f.answered(i) {
 			return false
 		}
@@ -253,7 +253,7 @@ func (f *askForm) cancel() tea.Cmd {
 // omitting unanswered questions (partial answers are allowed, REQ-021).
 func (f *askForm) collect() {
 	f.answers = f.answers[:0]
-	for i, q := range f.req.questions {
+	for i, q := range f.req.request.Questions {
 		if !f.answered(i) {
 			continue
 		}
@@ -274,10 +274,10 @@ func (f *askForm) collect() {
 		if len(labels) != 1 {
 			preview = ""
 		}
-		f.answers = append(f.answers, tools.Answer{
-			QuestionText: q.Prompt,
-			Value:        strings.Join(labels, ", "),
-			Preview:      preview,
+		f.answers = append(f.answers, app.QuestionAnswer{
+			QuestionID: q.ID, QuestionText: q.Prompt,
+			Value:   strings.Join(labels, ", "),
+			Preview: preview,
 		})
 	}
 }
@@ -379,7 +379,7 @@ func (f *askForm) submitView() string {
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("Review your answers"))
 	b.WriteString("\n\n")
-	for i, q := range f.req.questions {
+	for i, q := range f.req.request.Questions {
 		b.WriteString(" ● " + q.Prompt + "\n")
 		if val := f.answerValue(i); val != "" {
 			b.WriteString("   → " + val + "\n")
@@ -403,7 +403,7 @@ func (f *askForm) submitView() string {
 
 // answerValue renders question i's current answer for the review list.
 func (f *askForm) answerValue(i int) string {
-	q := f.req.questions[i]
+	q := f.req.request.Questions[i]
 	var labels []string
 	for j := 0; j < len(q.Options); j++ {
 		if f.selected[i][j] {
@@ -418,8 +418,8 @@ func (f *askForm) answerValue(i int) string {
 
 // tabBar renders the question tabs plus the Submit tab.
 func (f *askForm) tabBar() string {
-	tabs := make([]string, 0, len(f.req.questions)+1)
-	for i, q := range f.req.questions {
+	tabs := make([]string, 0, len(f.req.request.Questions)+1)
+	for i, q := range f.req.request.Questions {
 		mark := "☐"
 		if f.answered(i) {
 			mark = "☒"
@@ -437,7 +437,7 @@ func (f *askForm) styleTab(s string, active bool) string {
 	return hintStyle.Render(s)
 }
 
-func tabTitle(q tools.Question, i int) string {
+func tabTitle(q app.Question, i int) string {
 	if q.Header != "" {
 		return q.Header
 	}

@@ -1,29 +1,19 @@
-// Package agentops provides an automated incident-analysis agent that receives
-// tasks from team IM (e.g. Feishu), searches local service logs, and runs an
-// LLM-powered engine loop to diagnose root causes and propose fixes. It
-// integrates context compaction, sub-agent delegation, and unified permission
-// approval so that high-risk operations require human confirmation.
+/*
+Package agentops provides incident task policy, scheduling, presentation, and
+the AgentOps-owned log-search capability over application execution ports.
+*/
 package agentops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
-	"strings"
+	"reflect"
+	"sync"
 	"time"
 
-	"github.com/Zts0hg/foxharness/internal/approval"
-	"github.com/Zts0hg/foxharness/internal/automemory"
-	"github.com/Zts0hg/foxharness/internal/compaction"
-	prompt "github.com/Zts0hg/foxharness/internal/context"
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/memory"
-	"github.com/Zts0hg/foxharness/internal/permission"
-	"github.com/Zts0hg/foxharness/internal/provider"
-	"github.com/Zts0hg/foxharness/internal/schema"
-	"github.com/Zts0hg/foxharness/internal/session"
-	"github.com/Zts0hg/foxharness/internal/subagent"
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/app"
 )
 
 // Messenger abstracts the ability to send a plain-text message to a chat
@@ -35,89 +25,187 @@ type Messenger interface {
 	SendText(ctx context.Context, chatID, text string) error
 }
 
-// Runner orchestrates a single AgentOps incident-analysis task.  It creates a
-// session, wires up tools (log search, file I/O, bash, sub-agent) with unified
-// permission approval, and drives the engine loop to completion.
+/* Runner owns AgentOps scheduling and terminal presentation over an application port. */
 type Runner struct {
-	provider           provider.LLMProvider
-	workDir            string
-	logDir             string
-	messenger          Messenger
-	sessions           *session.Manager
-	approvalStore      *approval.Store
-	maxConcurrentTasks int
-	taskTimeout        time.Duration
-	runTask            func(context.Context, Task) error
+	executionFactory        TaskExecutionFactory
+	messenger               Messenger
+	maxConcurrentTasks      int
+	taskTimeout             time.Duration
+	runTask                 func(context.Context, Task) error
+	taskOutcomeObserver     TaskOutcomeObserver
+	deliveryFailureObserver DeliveryFailureObserver
+}
+
+/* WithDeliveryFailureObserver installs the non-blocking delivery failure observer. */
+func (r *Runner) WithDeliveryFailureObserver(observer DeliveryFailureObserver) *Runner {
+	r.deliveryFailureObserver = observer
+	return r
 }
 
 const (
-	defaultMaxConcurrentTasks = 4
-	defaultTaskTimeout        = 5 * time.Minute
+	defaultMaxConcurrentTasks  = 4
+	defaultTaskTimeout         = 5 * time.Minute
+	defaultTerminalSendTimeout = 10 * time.Second
 )
 
-// NewRunner constructs a Runner with the given LLM provider, working and log
-// directories, messenger for user notifications, and approval store for
-// danger-action gating.
-func NewRunner(
-	p provider.LLMProvider,
-	workDir, logDir string,
-	messenger Messenger,
-	approvalStore *approval.Store,
-) *Runner {
+/* NewRunner constructs an AgentOps control-plane runner over an application execution factory. */
+func NewRunner(executionFactory TaskExecutionFactory, messenger Messenger) *Runner {
 	return &Runner{
-		provider:           p,
-		workDir:            workDir,
-		logDir:             logDir,
-		messenger:          messenger,
-		sessions:           session.NewManager(workDir),
-		approvalStore:      approvalStore,
-		maxConcurrentTasks: defaultMaxConcurrentTasks,
-		taskTimeout:        defaultTaskTimeout,
+		executionFactory:    executionFactory,
+		messenger:           messenger,
+		maxConcurrentTasks:  defaultMaxConcurrentTasks,
+		taskTimeout:         defaultTaskTimeout,
+		taskOutcomeObserver: loggingTaskOutcomeObserver{},
 	}
 }
 
-// Start consumes tasks until ctx is cancelled or the channel is closed, running
-// at most the configured number of tasks concurrently.
+// Start consumes every accepted task until the producer closes the channel and
+// waits for all workers. Cancellation is propagated to each task but does not
+// make the consumer abandon tasks already accepted by the upstream lifecycle.
 func (r *Runner) Start(ctx context.Context, tasks <-chan Task) {
 	permits := make(chan struct{}, r.concurrentTaskLimit())
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case task, ok := <-tasks:
-			if !ok {
-				return
-			}
-			select {
-			case permits <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
-			go func(task Task) {
-				defer func() {
-					<-permits
-					if rec := recover(); rec != nil {
-						log.Printf("[AgentOps] task=%s panic recovered: %v", task.TaskID, rec)
-					}
-				}()
-				r.Run(ctx, task)
-			}(task)
-		}
+	var workers sync.WaitGroup
+	for task := range tasks {
+		permits <- struct{}{}
+		workers.Add(1)
+		go func(task Task) {
+			defer workers.Done()
+			outcome := r.executeTask(ctx, task)
+			<-permits
+			r.completeTask(task, outcome)
+		}(task)
 	}
+	workers.Wait()
 }
 
-// Run executes the task to completion.  On failure it logs the error and
-// attempts to notify the originating chat.
+// Run executes one task and publishes exactly one correlated terminal outcome.
 func (r *Runner) Run(ctx context.Context, task Task) {
+	r.completeTask(task, r.executeTask(ctx, task))
+}
+
+// NotifyCancellation publishes the cancellation terminal reply for a task the
+// coordinated shutdown could not hand to the runner's consumer, keeping the
+// one-terminal-outcome-per-task rule intact for work accepted before shutdown.
+func (r *Runner) NotifyCancellation(task Task) {
+	r.completeTask(task, TaskOutcome{
+		TaskID: task.TaskID,
+		ChatID: task.ChatID,
+		Status: TaskOutcomeCancelled,
+		Reason: TaskOutcomeReasonCancellation,
+		Error:  context.Canceled.Error(),
+	})
+}
+
+func (r *Runner) executeTask(ctx context.Context, task Task) (outcome TaskOutcome) {
 	runCtx, cancel := context.WithTimeout(ctx, r.taskTimeoutOrDefault())
 	defer cancel()
-
-	if err := r.taskRunner()(runCtx, task); err != nil {
-		log.Printf("[AgentOps] task=%s failed: %v", task.TaskID, err)
-		if r.messenger != nil {
-			_ = r.messenger.SendText(ctx, task.ChatID, fmt.Sprintf("AgentOps 任务失败： %v", err))
-		}
+	outcome = TaskOutcome{
+		TaskID: task.TaskID,
+		ChatID: task.ChatID,
+		Status: TaskOutcomeCompleted,
+		Reason: TaskOutcomeReasonCompleted,
 	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			outcome.Status = TaskOutcomeFailed
+			outcome.Reason = TaskOutcomeReasonPanic
+			outcome.Error = fmt.Sprintf("task panic: %v", rec)
+		}
+	}()
+	if err := runCtx.Err(); err != nil {
+		outcome.Error = err.Error()
+		outcome.Status = TaskOutcomeCancelled
+		if errors.Is(err, context.DeadlineExceeded) {
+			outcome.Reason = TaskOutcomeReasonTimeout
+		} else {
+			outcome.Reason = TaskOutcomeReasonCancellation
+		}
+		return outcome
+	}
+
+	err := r.taskRunner()(runCtx, task)
+	if err == nil {
+		return outcome
+	}
+	outcome.Error = err.Error()
+	switch {
+	case errors.Is(runCtx.Err(), context.DeadlineExceeded), errors.Is(err, context.DeadlineExceeded):
+		outcome.Status = TaskOutcomeCancelled
+		outcome.Reason = TaskOutcomeReasonTimeout
+	case errors.Is(runCtx.Err(), context.Canceled), errors.Is(err, context.Canceled):
+		outcome.Status = TaskOutcomeCancelled
+		outcome.Reason = TaskOutcomeReasonCancellation
+	default:
+		outcome.Status = TaskOutcomeFailed
+		outcome.Reason = TaskOutcomeReasonFailure
+	}
+	return outcome
+}
+
+func (r *Runner) completeTask(task Task, outcome TaskOutcome) {
+	if outcome.Status != TaskOutcomeCompleted {
+		log.Printf("[AgentOps] task=%s failed: %s", task.TaskID, outcome.Error)
+	}
+	r.observeTaskOutcome(outcome)
+	if outcome.Status == TaskOutcomeCompleted {
+		return
+	}
+	deliveryCtx, cancel := context.WithTimeout(context.Background(), defaultTerminalSendTimeout)
+	defer cancel()
+	r.sendTerminalFailure(deliveryCtx, task, outcome)
+}
+
+func (r *Runner) observeTaskOutcome(outcome TaskOutcome) {
+	if r.taskOutcomeObserver == nil {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[AgentOps] task=%s outcome observer panic recovered: %v", outcome.TaskID, rec)
+		}
+	}()
+	r.taskOutcomeObserver.ObserveTaskOutcome(outcome)
+}
+
+func (r *Runner) sendTerminalFailure(ctx context.Context, task Task, outcome TaskOutcome) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[AgentOps] task=%s terminal delivery panic recovered: %v", task.TaskID, rec)
+		}
+	}()
+	stage := DeliveryStageFailure
+	switch outcome.Reason {
+	case TaskOutcomeReasonPanic:
+		stage = DeliveryStagePanicFailure
+	case TaskOutcomeReasonTimeout, TaskOutcomeReasonCancellation:
+		stage = DeliveryStageCancellation
+	}
+	_ = r.deliverTaskText(ctx, task, stage, fmt.Sprintf("AgentOps 任务失败： %s", outcome.Error))
+}
+
+func (r *Runner) deliverTaskText(ctx context.Context, task Task, stage DeliveryStage, text string) error {
+	if isNilAgentOpsDependency(r.messenger) {
+		r.observeDeliveryFailure(DeliveryFailure{TaskID: task.TaskID, ChatID: task.ChatID, Stage: stage, Cause: errMessengerUnavailable})
+		return errMessengerUnavailable
+	}
+	err := r.messenger.SendText(ctx, task.ChatID, truncateAgentOpsText(text))
+	if err != nil {
+		r.observeDeliveryFailure(DeliveryFailure{TaskID: task.TaskID, ChatID: task.ChatID, Stage: stage, Cause: err})
+	}
+	return err
+}
+
+func (r *Runner) observeDeliveryFailure(failure DeliveryFailure) {
+	if r.deliveryFailureObserver == nil {
+		log.Printf("[AgentOps Delivery] task=%s chat=%s stage=%s failed: %v", failure.TaskID, failure.ChatID, failure.Stage, failure.Cause)
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[AgentOps] task=%s delivery observer panic recovered: %v", failure.TaskID, rec)
+		}
+	}()
+	r.deliveryFailureObserver.ObserveDeliveryFailure(failure)
 }
 
 func (r *Runner) concurrentTaskLimit() int {
@@ -142,67 +230,39 @@ func (r *Runner) taskRunner() func(context.Context, Task) error {
 }
 
 func (r *Runner) run(ctx context.Context, task Task) error {
-	sess, err := r.sessions.Create(session.CreateOptions{
-		Source:  session.SOURCEFeishu,
-		WorkDir: r.workDir,
-		UserID:  task.SenderID,
-		ChatID:  task.ChatID,
-	})
+	if isNilAgentOpsDependency(r.executionFactory) {
+		return errors.New("AgentOps task execution factory is required")
+	}
+	prompt := BuildPrompt(task)
+	prepared, err := r.executionFactory.PrepareTask(ctx, TaskExecutionRequest{Task: task, Prompt: prompt})
 	if err != nil {
 		return err
 	}
-
-	_ = r.messenger.SendText(
+	_ = r.deliverTaskText(
 		ctx,
-		task.ChatID,
-		fmt.Sprintf("已创建 AgentOps Session: %s\n开始分析。", sess.ID),
+		task,
+		DeliveryStageSession,
+		fmt.Sprintf("已创建 AgentOps Session: %s\n开始分析。", prepared.Session.ID),
 	)
-
-	store := memory.NewSessionStore(r.workDir, sess.RootDir)
-	if err := store.EnsureFiles(); err != nil {
+	if prepared.Start == nil {
+		return errors.New("AgentOps task application initializer is required")
+	}
+	application, err := prepared.Start(ctx)
+	if err != nil {
 		return err
 	}
-
-	taskPrompt := BuildPrompt(task)
-
-	autoStore := automemory.NewStore(r.sessions.HomeDir(), r.workDir)
-	hooks := automemory.NewPerRunHooks(r.provider, autoStore, r.workDir)
-	tracker := hooks.NewTracker()
-
-	registry := r.buildRegistry(task, sess)
-	composer := r.buildComposer(sess, autoStore)
-
-	eng := engine.NewAgentEngine(
-		r.provider,
-		registry,
-		r.workDir,
-		composer,
-		engine.Config{
-			MaxTurns:     24,
-			OnToolCalled: hooks.RecordCallback(tracker),
-		},
-	)
-	compCfg := compaction.DefaultCompactionConfig()
-	compCfg.SessionDir = sess.RootDir
-	compCfg.TranscriptPath = sess.TranscriptPath()
-	compactor, err := compaction.NewCompactor(r.provider, compCfg)
-	if err != nil {
-		return fmt.Errorf("初始化 Compactor 失败: %w", err)
+	if isNilAgentOpsDependency(application) {
+		return errors.New("AgentOps task application is required")
 	}
-	eng.WithCompactor(compactor)
-
-	result, err := eng.Run(ctx, sess, taskPrompt)
-	if result != nil {
-		r.fireMemoryExtraction(hooks, sess, result.RunID, tracker)
-	}
+	result, err := r.runTaskApplication(ctx, task, prepared.Session.ID, prompt, application)
 	if err != nil {
 		return err
 	}
 
 	final := "任务执行完成。"
 	runID := ""
-	tracePath := sess.TracePath()
-	metricsPath := sess.MetricsPath()
+	tracePath := prepared.TracePath
+	metricsPath := prepared.MetricsPath
 	if result != nil && result.FinalMessage != "" {
 		final = result.FinalMessage
 	}
@@ -218,96 +278,61 @@ func (r *Runner) run(ctx context.Context, task Task) error {
 
 	final += fmt.Sprintf(
 		"\n\nSession: %s\nRun: %s\nTrace: %s\nMetrics: %s",
-		sess.ID,
+		prepared.Session.ID,
 		runID,
 		tracePath,
 		metricsPath,
 	)
 
-	return r.messenger.SendText(ctx, task.ChatID, final)
-
+	terminalCtx, cancelTerminal := context.WithTimeout(context.Background(), defaultTerminalSendTimeout)
+	defer cancelTerminal()
+	_ = r.deliverTaskText(terminalCtx, task, DeliveryStageFinal, final)
+	return nil
 }
 
-// buildComposer assembles the system-prompt composer for a task, injecting the
-// cross-session persistent memory index when a store is available (REQ-006).
-func (r *Runner) buildComposer(sess *session.Session, store *automemory.Store) *prompt.Composer {
-	composer := prompt.NewComposer(r.workDir).WithMemory(sess.MemoryPath())
-	if store != nil {
-		composer = composer.WithAutoMemory(store)
-	}
-	return composer
-}
-
-// fireMemoryExtraction launches the post-run memory extraction hook (PLD-8). It
-// is fire-and-forget and panic-guarded so it can never disturb the task result.
-func (r *Runner) fireMemoryExtraction(hooks *automemory.PerRunHooks, sess *session.Session, runID string, tracker *automemory.Tracker) {
-	if hooks == nil {
-		return
-	}
+func (r *Runner) runTaskApplication(
+	ctx context.Context,
+	task Task,
+	sessionID string,
+	prompt string,
+	application TaskApplication,
+) (result *app.RunOutcome, err error) {
 	defer func() {
-		if rec := recover(); rec != nil {
-			log.Printf("[AgentOps] memory extraction launch panic recovered: %v", rec)
+		drainErr := r.drainApplication(ctx, task, sessionID, application)
+		if recovered := recover(); recovered != nil {
+			if drainErr != nil {
+				panic(fmt.Sprintf("%v; cleanup failed: %v", recovered, drainErr))
+			}
+			panic(recovered)
+		}
+		err = errors.Join(err, drainErr)
+	}()
+	return application.Run(ctx, app.RunCommand{Prompt: prompt}, nil)
+}
+
+func (r *Runner) drainApplication(ctx context.Context, task Task, sessionID string, application TaskApplication) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("drain AgentOps task %s session %s: panic: %v", task.TaskID, sessionID, recovered)
 		}
 	}()
-	hooks.Fire(sess, runID, tracker)
+	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultTerminalSendTimeout)
+	defer cancel()
+	if err := application.Drain(drainCtx); err != nil {
+		return fmt.Errorf("drain AgentOps task %s session %s: %w", task.TaskID, sessionID, err)
+	}
+	return nil
 }
 
-func (r *Runner) buildRegistry(task Task, sess *session.Session) tools.Registry {
-	registry := tools.NewRegistry()
-	evidenceProvider := agentOpsPermissionEvidenceProvider(sess, BuildPrompt(task))
-	var approver permission.UserApprover
-	if r.messenger != nil && r.approvalStore != nil {
-		approver = approval.NewPermissionApprover(task.ChatID, r.messenger, r.approvalStore)
+func isNilAgentOpsDependency(value any) bool {
+	if value == nil {
+		return true
 	}
-	coordinator := permission.NewCoordinator(permission.Config{
-		State:     permission.NewState(permission.ModeAsk, false),
-		Workspace: r.workDir,
-		CWD:       r.workDir,
-		Source:    permission.SourceMain,
-		Approver:  approver,
-		Evidence:  evidenceProvider,
-	})
-
-	registry.Register(NewLogSearchTool(r.logDir))
-	registry.Register(tools.NewReadFileTool(r.workDir))
-	registry.Register(tools.NewWriteFileTool(r.workDir))
-	registry.Register(tools.NewBashTool(r.workDir))
-	registry.Register(tools.NewEditFileTool(r.workDir))
-	registry.Register(tools.NewReadTodoTool(sess.RootDir))
-	registry.Register(tools.NewUpdateTodoTool(sess.RootDir))
-
-	subManager := subagent.NewManager(r.provider, r.workDir).
-		WithPermission(coordinator).
-		WithParentEvidence(evidenceProvider)
-	registry.Register(subagent.NewTool(subManager, sess.ID))
-
-	return permission.DecorateRegistry(registry, coordinator, evidenceProvider)
-}
-
-func agentOpsPermissionEvidenceProvider(sess *session.Session, currentPrompt string) permission.EvidenceProvider {
-	return func(request permission.Request) permission.Evidence {
-		var messages []schema.Message
-		if sess != nil {
-			records, err := session.NewMessageLog(sess).LoadRecords()
-			if err == nil {
-				messages = make([]schema.Message, 0, len(records)+1)
-				for _, record := range records {
-					messages = append(messages, record.Message)
-				}
-			}
-		}
-		if strings.TrimSpace(currentPrompt) != "" && !agentOpsContainsDirectUserMessage(messages, currentPrompt) {
-			messages = append(messages, schema.Message{Role: schema.RoleUser, Content: currentPrompt})
-		}
-		return permission.BuildEvidence(messages, nil, request)
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
 	}
-}
-
-func agentOpsContainsDirectUserMessage(messages []schema.Message, content string) bool {
-	for _, message := range messages {
-		if message.Role == schema.RoleUser && message.ToolCallID == "" && message.Content == content {
-			return true
-		}
-	}
-	return false
 }

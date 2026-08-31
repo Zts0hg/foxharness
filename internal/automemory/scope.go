@@ -46,7 +46,7 @@ type Dirs struct {
 
 // NewDirs constructs a Dirs rooted at homeDir for the project at workDir. The
 // workDir is normalized to an absolute cleaned path so the derived project key
-// matches session.Manager (which absolutizes before keying) regardless of
+// matches session.FileStore (which absolutizes before keying) regardless of
 // whether the caller passed a relative or absolute path.
 func NewDirs(homeDir, workDir string) Dirs {
 	return Dirs{homeDir: homeDir, workDir: absWorkDir(workDir)}

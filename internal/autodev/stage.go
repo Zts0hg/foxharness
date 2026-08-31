@@ -3,14 +3,17 @@ package autodev
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
-	"path/filepath"
+	"path"
 	"regexp"
 	"strings"
 	"time"
 )
+
+var coreLifecycleTimeout = 2 * time.Minute
 
 // GateChecker runs the completion gate inside a worktree. gate.go provides
 // the production implementation; the implement stage's Verify depends on
@@ -48,9 +51,15 @@ type Stage struct {
 	// Skip reports that the step's outcome already exists so the step can
 	// be skipped entirely (resume idempotency). May be nil.
 	Skip func(ctx context.Context, sc *StageContext) bool
+	// Preflight performs an error-capable idempotency check before Skip.
+	// It is used when ambiguous ground truth must fail rather than retry.
+	Preflight func(ctx context.Context, sc *StageContext) (skip bool, err error)
 	// Verify is the read-only ground-truth predicate deciding advancement,
 	// returning ok or a gap describing precisely what is still missing.
 	Verify func(ctx context.Context, sc *StageContext) (ok bool, gap string)
+	// VerifyWithError is the error-capable form used by identity-sensitive
+	// verification. When present it is authoritative over Verify.
+	VerifyWithError func(ctx context.Context, sc *StageContext) (ok bool, gap string, err error)
 }
 
 // StageMachine drives one step at a time through the supervised loop:
@@ -60,6 +69,10 @@ type Stage struct {
 type StageMachine struct {
 	engineer EngineerAgent
 	reporter Reporter
+}
+
+type coreRunnerReplacer interface {
+	Replace(context.Context) error
 }
 
 // NewStageMachine creates a StageMachine supervised by engineer and
@@ -72,9 +85,32 @@ func NewStageMachine(engineer EngineerAgent, reporter Reporter) *StageMachine {
 // design (REQ-027: no abandonment budget) and exits only on Verify success,
 // a hard runner error, or context cancellation.
 func (m *StageMachine) RunStep(ctx context.Context, core CoreRunner, sc *StageContext, st Stage) error {
+	return m.runStep(ctx, core, sc, st, false)
+}
+
+// ResumeStep verifies a durably running stage before driving the core again.
+// This closes the crash window between external completion and the ledger's
+// verified transition without changing fresh-stage behavior.
+func (m *StageMachine) ResumeStep(ctx context.Context, core CoreRunner, sc *StageContext, st Stage) error {
+	return m.runStep(ctx, core, sc, st, true)
+}
+
+func (m *StageMachine) runStep(ctx context.Context, core CoreRunner, sc *StageContext, st Stage, verifyFirst bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	sc.Stage = st.Name
 	if m.reporter != nil {
 		m.reporter.OnStageStart(ctx, sc.Slug, st.Name)
+	}
+	if st.Preflight != nil {
+		skip, err := st.Preflight(ctx, sc)
+		if err != nil {
+			return fmt.Errorf("preflight step %s: %w", st.Name, err)
+		}
+		if skip {
+			return nil
+		}
 	}
 
 	if st.Skip != nil && st.Skip(ctx, sc) {
@@ -83,17 +119,49 @@ func (m *StageMachine) RunStep(ctx context.Context, core CoreRunner, sc *StageCo
 		}
 		return nil
 	}
+	if verifyFirst && (st.Verify != nil || st.VerifyWithError != nil) {
+		ok, gap, err := verifyStage(ctx, sc, st)
+		if err != nil {
+			return fmt.Errorf("verify step %s: %w", st.Name, err)
+		}
+		if m.reporter != nil {
+			m.reporter.OnVerify(ctx, st.Name, ok, gap)
+		}
+		if ok {
+			if m.reporter != nil {
+				m.reporter.OnInfo(ctx, fmt.Sprintf("step %s already verified; skipping", st.Name))
+			}
+			return nil
+		}
+	}
 	if st.Prepare != nil {
-		if err := st.Prepare(ctx, sc); err != nil {
+		attemptCtx, cancel := withDefaultTimeout(ctx, stageAttemptTimeout)
+		err := st.Prepare(attemptCtx, sc)
+		attemptErr := attemptCtx.Err()
+		cancel()
+		if err != nil {
 			return fmt.Errorf("prepare step %s: %w", st.Name, err)
+		}
+		if attemptErr != nil {
+			return attemptErr
 		}
 	}
 	if st.Control != nil {
-		if err := st.Control(ctx, sc); err != nil {
+		attemptCtx, cancel := withDefaultTimeout(ctx, stageAttemptTimeout)
+		err := st.Control(attemptCtx, sc)
+		attemptErr := attemptCtx.Err()
+		cancel()
+		if err != nil {
 			return fmt.Errorf("control step %s: %w", st.Name, err)
 		}
-		if st.Verify != nil {
-			ok, gap := st.Verify(ctx, sc)
+		if attemptErr != nil {
+			return attemptErr
+		}
+		if st.Verify != nil || st.VerifyWithError != nil {
+			ok, gap, err := verifyStage(ctx, sc, st)
+			if err != nil {
+				return fmt.Errorf("verify control step %s: %w", st.Name, err)
+			}
 			if m.reporter != nil {
 				m.reporter.OnVerify(ctx, st.Name, ok, gap)
 			}
@@ -104,9 +172,15 @@ func (m *StageMachine) RunStep(ctx context.Context, core CoreRunner, sc *StageCo
 		return nil
 	}
 
-	msg, err := m.seedPrompt(ctx, core, sc, st)
+	attemptCtx, cancel := withDefaultTimeout(ctx, stageAttemptTimeout)
+	msg, err := m.seedPrompt(attemptCtx, core, sc, st)
+	attemptErr := attemptCtx.Err()
+	cancel()
 	if err != nil {
 		return err
+	}
+	if attemptErr != nil {
+		return attemptErr
 	}
 
 	for {
@@ -114,22 +188,87 @@ func (m *StageMachine) RunStep(ctx context.Context, core CoreRunner, sc *StageCo
 			return err
 		}
 
-		res, err := core.Run(ctx, msg, m.reporter)
-		if err != nil {
-			return fmt.Errorf("core run for step %s: %w", st.Name, err)
+		attempt := newCoreAttempt(sc, msg)
+		if err := recordCoreAttempt(sc, runningCoreAttemptRecord(sc, attempt)); err != nil {
+			return err
+		}
+		attemptCtx, cancel := withDefaultTimeout(ctx, stageAttemptTimeout)
+		outcome := runCoreAttempt(attemptCtx, core, attempt, m.reporter)
+		attemptErr := attemptCtx.Err()
+		cancel()
+		var contractErr error
+		if outcome.Attempt != attempt {
+			contractErr = fmt.Errorf("core run for step %s returned mismatched attempt correlation", st.Name)
+			outcome.Attempt = attempt
+			outcome.Status = CoreOutcomeFailed
+			outcome.Cause = errors.Join(outcome.Cause, contractErr)
+			outcome.RetryClass = CoreRetryNever
+		}
+		if err := outcome.Validate(); err != nil {
+			return &CoreOutcomeError{Outcome: outcome, Err: fmt.Errorf("core run for step %s returned invalid outcome: %w", st.Name, err)}
+		}
+		if outcome.Lifecycle.RunStarted {
+			if drainErr := drainCore(ctx, core); drainErr != nil {
+				lifecycleErr := &CoreLifecycleError{Operation: "drain", Err: errors.Join(outcome.Cause, drainErr)}
+				outcome.Status = CoreOutcomeFailed
+				outcome.Cause = lifecycleErr
+				outcome.RetryClass = CoreRetryNever
+				if err := recordCoreAttempt(sc, terminalCoreAttemptRecord(sc, outcome)); err != nil {
+					return &CoreOutcomeError{Outcome: outcome, Err: errors.Join(outcome.Cause, err)}
+				}
+				return &CoreOutcomeError{Outcome: outcome, Err: lifecycleErr}
+			}
+			outcome.Lifecycle.DrainCompleted = true
 		}
 
-		ok, gap := st.Verify(ctx, sc)
-		if m.reporter != nil {
-			m.reporter.OnVerify(ctx, st.Name, ok, gap)
+		ok := false
+		gap := ""
+		var verifyErr error
+		if outcome.Lifecycle.RunStarted {
+			verifyCtx, verifyCancel := coreVerificationContext(ctx, outcome)
+			ok, gap, verifyErr = verifyStage(verifyCtx, sc, st)
+			if m.reporter != nil {
+				m.reporter.OnVerify(verifyCtx, st.Name, ok, gap)
+			}
+			verifyCancel()
+		} else {
+			gap = "the core attempt did not start"
+			if outcome.Cause != nil {
+				gap += ": " + outcome.Cause.Error()
+			}
+		}
+		if err := recordCoreAttempt(sc, terminalCoreAttemptRecord(sc, outcome)); err != nil {
+			return &CoreOutcomeError{Outcome: outcome, Err: errors.Join(outcome.Cause, err)}
+		}
+		if verifyErr != nil {
+			return &CoreOutcomeError{Outcome: outcome, Err: errors.Join(outcome.Cause, fmt.Errorf("verify step %s: %w", st.Name, verifyErr))}
+		}
+		if contractErr != nil {
+			return &CoreOutcomeError{Outcome: outcome, Err: outcome.Cause}
 		}
 		if ok {
+			if outcome.Status == CoreOutcomeCancelled {
+				return &CoreOutcomeError{Outcome: outcome, Verified: true}
+			}
 			return nil
 		}
+		if outcome.Status == CoreOutcomeCancelled ||
+			(outcome.Status != CoreOutcomeSucceeded && outcome.RetryClass == CoreRetryNever) {
+			return &CoreOutcomeError{Outcome: outcome}
+		}
+		if attemptErr != nil && outcome.Status != CoreOutcomeCancelled {
+			return &CoreOutcomeError{Outcome: outcome, Err: errors.Join(outcome.Cause, attemptErr)}
+		}
 
-		correction, err := m.engineer.Review(ctx, res, gap, *sc)
+		attemptCtx, cancel = withDefaultTimeout(ctx, stageAttemptTimeout)
+		correction, err := m.engineer.Review(attemptCtx, outcome.reviewEvidence(), gap, *sc)
+		attemptErr = attemptCtx.Err()
+		cancel()
 		if err != nil {
 			return fmt.Errorf("engineer review for step %s: %w", st.Name, err)
+		}
+		if attemptErr != nil {
+			return attemptErr
 		}
 		// An engineer approval cannot advance a failing step (TC-025): the
 		// ground truth wins, so a synthesized correction keeps the loop
@@ -142,8 +281,73 @@ func (m *StageMachine) RunStep(ctx context.Context, core CoreRunner, sc *StageCo
 		if m.reporter != nil {
 			m.reporter.OnEngineerReview(ctx, st.Name, correction)
 		}
+		if outcome.RetryClass == CoreRetryFreshRunner {
+			replacer, ok := core.(coreRunnerReplacer)
+			if !ok {
+				return &CoreOutcomeError{Outcome: outcome, Err: errors.Join(outcome.Cause, errors.New("fresh core runner required but replacement is unavailable"))}
+			}
+			replaceCtx, replaceCancel := context.WithTimeout(context.WithoutCancel(ctx), coreLifecycleTimeout)
+			err := replacer.Replace(replaceCtx)
+			replaceCancel()
+			if err != nil {
+				return &CoreOutcomeError{Outcome: outcome, Err: errors.Join(outcome.Cause, fmt.Errorf("replace core runner: %w", err))}
+			}
+		}
 		msg = correction
 	}
+}
+
+func runCoreAttempt(ctx context.Context, core CoreRunner, attempt CoreAttempt, reporter Reporter) (outcome CoreOutcome) {
+	defer func() {
+		if value := recover(); value != nil {
+			outcome = CoreOutcome{
+				Attempt:    attempt,
+				Status:     CoreOutcomeStartFailed,
+				Cause:      &CorePanicError{Value: value},
+				RetryClass: CoreRetryNever,
+			}
+		}
+	}()
+	return core.Run(ctx, attempt, reporter)
+}
+
+func coreVerificationContext(ctx context.Context, outcome CoreOutcome) (context.Context, context.CancelFunc) {
+	if outcome.Status == CoreOutcomeCancelled || ctx.Err() != nil {
+		return context.WithTimeout(context.WithoutCancel(ctx), stageAttemptTimeout)
+	}
+	return context.WithCancel(ctx)
+}
+
+func recordCoreAttempt(sc *StageContext, record CoreAttemptRecord) error {
+	if sc.RecordCoreAttempt == nil {
+		return nil
+	}
+	if err := sc.RecordCoreAttempt(record); err != nil {
+		var commitErr *LedgerCommitError
+		if errors.As(err, &commitErr) {
+			return err
+		}
+		return &LedgerCommitError{Operation: "core-attempt-" + record.AttemptID + "-" + string(record.State), Err: err}
+	}
+	return nil
+}
+
+func drainCore(ctx context.Context, core CoreRunner) error {
+	drainParent := ctx
+	if ctx.Err() != nil {
+		drainParent = context.WithoutCancel(ctx)
+	}
+	drainCtx, cancel := context.WithTimeout(drainParent, coreLifecycleTimeout)
+	defer cancel()
+	return core.Drain(drainCtx)
+}
+
+func verifyStage(ctx context.Context, sc *StageContext, st Stage) (bool, string, error) {
+	if st.VerifyWithError != nil {
+		return st.VerifyWithError(ctx, sc)
+	}
+	ok, gap := st.Verify(ctx, sc)
+	return ok, gap, nil
 }
 
 func (m *StageMachine) seedPrompt(ctx context.Context, core CoreRunner, sc *StageContext, st Stage) (string, error) {
@@ -206,7 +410,7 @@ func RequirementsFirstPipeline(deps PipelineDeps) []Stage {
 			Name:    "generate-spec",
 			Command: "codexspec:generate-spec",
 			Args: func(sc *StageContext) string {
-				return filepath.Join(sc.FeatureDir, "requirements.md")
+				return path.Join(sc.FeatureDir, "requirements.md")
 			},
 			Verify: verifyReviewedArtifact("spec.md", "review-spec.md"),
 		},
@@ -214,7 +418,7 @@ func RequirementsFirstPipeline(deps PipelineDeps) []Stage {
 			Name:    "spec-to-plan",
 			Command: "codexspec:spec-to-plan",
 			Args: func(sc *StageContext) string {
-				return filepath.Join(sc.FeatureDir, "spec.md")
+				return path.Join(sc.FeatureDir, "spec.md")
 			},
 			Verify: verifyReviewedArtifact("plan.md", "review-plan.md"),
 		},
@@ -222,7 +426,7 @@ func RequirementsFirstPipeline(deps PipelineDeps) []Stage {
 			Name:    "plan-to-tasks",
 			Command: "codexspec:plan-to-tasks",
 			Args: func(sc *StageContext) string {
-				return filepath.Join(sc.FeatureDir, "plan.md")
+				return path.Join(sc.FeatureDir, "plan.md")
 			},
 			Verify: verifyReviewedArtifact("tasks.md", "review-tasks.md"),
 		},
@@ -230,7 +434,7 @@ func RequirementsFirstPipeline(deps PipelineDeps) []Stage {
 			Name:    "implement-tasks",
 			Command: "codexspec:implement-tasks",
 			Args: func(sc *StageContext) string {
-				return filepath.Join(sc.FeatureDir, "tasks.md")
+				return path.Join(sc.FeatureDir, "tasks.md")
 			},
 			Verify: verifyImplement(deps),
 		},
@@ -247,17 +451,44 @@ func materializeRequirements(clock Clock) func(ctx context.Context, sc *StageCon
 			if err != nil {
 				return err
 			}
-			sc.FeatureDir = filepath.Join(specsRelDir, name)
+			sc.FeatureDir = path.Join(specsRelDir, name)
 		}
-		reqPath := filepath.Join(sc.WorkDir, sc.FeatureDir, "requirements.md")
-		if info, err := os.Stat(reqPath); err == nil && info.Size() > 0 {
-			return nil
-		}
-		if err := os.MkdirAll(filepath.Dir(reqPath), 0o755); err != nil {
+		workspace, err := openFeatureWorkspace(sc.WorkDir, sc.FeatureDir, true)
+		if err != nil {
 			return err
 		}
-		return os.WriteFile(reqPath, []byte(requirementsDocument(sc, clock.Now())), 0o644)
+		defer workspace.Close()
+		document := requirementsDocument(sc, clock.Now())
+		existing, err := workspace.readRegular("requirements.md")
+		if err == nil {
+			if requirementsDocumentMatches(existing, sc) {
+				return nil
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect requirements artifact: %w", err)
+		}
+		return workspace.writeRegular("requirements.md", []byte(document), 0o644)
 	}
+}
+
+func requirementsDocumentMatches(existing []byte, sc *StageContext) bool {
+	title := strings.TrimSpace(sc.Item.Title)
+	if title == "" {
+		title = sc.Slug
+	}
+	if title == "" {
+		title = "Autodev backlog item"
+	}
+	statement := authoritativeRequirement(title, sc.Item.Description)
+	bytes, hash := sc.RequirementBytes, sc.RequirementHash
+	if hash == "" {
+		bytes, hash = requirementIdentity(statement)
+	}
+	doc := string(existing)
+	return strings.Contains(doc, fmt.Sprintf("**Item ID**: `%s`", sc.ItemID)) &&
+		strings.Contains(doc, fmt.Sprintf("**Requirement Bytes**: %d", bytes)) &&
+		strings.Contains(doc, fmt.Sprintf("**Requirement SHA-256**: `%s`", hash)) &&
+		strings.Contains(doc, "## Authoritative Requirement\n\n"+statement+"\n\n## Constraints")
 }
 
 // verifySpecArtifact passes when the named artifact exists non-empty in
@@ -272,13 +503,18 @@ func verifySpecArtifact(artifact string) func(ctx context.Context, sc *StageCont
 }
 
 func nonEmptyFile(sc *StageContext, artifact string) (bool, string) {
-	path := filepath.Join(sc.FeatureDir, artifact)
-	info, err := os.Stat(filepath.Join(sc.WorkDir, path))
+	artifactPath := path.Join(sc.FeatureDir, artifact)
+	workspace, err := openFeatureWorkspace(sc.WorkDir, sc.FeatureDir, false)
 	if err != nil {
-		return false, fmt.Sprintf("%s does not exist", path)
+		return false, fmt.Sprintf("%s is unavailable: %v", artifactPath, err)
 	}
-	if info.Size() == 0 {
-		return false, fmt.Sprintf("%s exists but is empty", path)
+	defer workspace.Close()
+	size, err := workspace.regularSize(artifact)
+	if err != nil {
+		return false, fmt.Sprintf("%s is unavailable: %v", artifactPath, err)
+	}
+	if size == 0 {
+		return false, fmt.Sprintf("%s exists but is empty", artifactPath)
 	}
 	return true, ""
 }
@@ -291,7 +527,27 @@ func verifyReviewedArtifact(artifact, review string) func(ctx context.Context, s
 		if ok, gap := verifySpecArtifact(review)(ctx, sc); !ok {
 			return false, gap
 		}
-		status, err := readReviewStatus(filepath.Join(sc.WorkDir, sc.FeatureDir, review))
+		workspace, err := openFeatureWorkspace(sc.WorkDir, sc.FeatureDir, false)
+		if err != nil {
+			return false, err.Error()
+		}
+		defer workspace.Close()
+		artifactInfo, err := workspace.regularInfo(artifact)
+		if err != nil {
+			return false, fmt.Sprintf("inspect reviewed artifact: %v", err)
+		}
+		reviewInfo, err := workspace.regularInfo(review)
+		if err != nil {
+			return false, fmt.Sprintf("inspect review artifact: %v", err)
+		}
+		if reviewInfo.ModTime().Before(artifactInfo.ModTime()) {
+			return false, fmt.Sprintf("%s is stale: it predates %s", path.Join(sc.FeatureDir, review), path.Join(sc.FeatureDir, artifact))
+		}
+		data, err := workspace.readRegular(review)
+		if err != nil {
+			return false, fmt.Sprintf("read review status: %v", err)
+		}
+		status, err := readReviewStatus(data, path.Join(sc.FeatureDir, review))
 		if err != nil {
 			return false, err.Error()
 		}
@@ -299,21 +555,17 @@ func verifyReviewedArtifact(artifact, review string) func(ctx context.Context, s
 		case "PASS", "PASS_WITH_WARNINGS":
 			return true, ""
 		default:
-			return false, fmt.Sprintf("%s reports Overall Status %s", filepath.Join(sc.FeatureDir, review), status)
+			return false, fmt.Sprintf("%s reports Overall Status %s", path.Join(sc.FeatureDir, review), status)
 		}
 	}
 }
 
 var reviewStatusRE = regexp.MustCompile(`(?im)\*\*Overall Status\*\*\s*:\s*([A-Z_]+)`)
 
-func readReviewStatus(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read review status: %w", err)
-	}
+func readReviewStatus(data []byte, artifactPath string) (string, error) {
 	m := reviewStatusRE.FindSubmatch(data)
 	if len(m) != 2 {
-		return "", fmt.Errorf("%s has no parseable Overall Status", path)
+		return "", fmt.Errorf("%s has no parseable Overall Status", artifactPath)
 	}
 	return string(m[1]), nil
 }
@@ -352,12 +604,12 @@ func requirementsDocument(sc *StageContext, now time.Time) string {
 	if title == "" {
 		title = "Autodev backlog item"
 	}
-	statement := strings.TrimSpace(sc.Item.Description)
-	if statement == "" {
-		statement = title
+	statement := authoritativeRequirement(title, sc.Item.Description)
+	requirementBytes, requirementHash := sc.RequirementBytes, sc.RequirementHash
+	if requirementHash == "" {
+		requirementBytes, requirementHash = requirementIdentity(statement)
 	}
-	statementLine := oneLine(statement, 4000)
-	featureName := filepath.Base(sc.FeatureDir)
+	featureName := path.Base(sc.FeatureDir)
 	featureID := featureName
 	if len(featureID) >= len("2006-0102-1504ab") {
 		featureID = featureID[:len("2006-0102-1504ab")]
@@ -369,6 +621,9 @@ func requirementsDocument(sc *StageContext, now time.Time) string {
 	b.WriteString("This file is generated by fox autodev from a backlog item. The backlog item is treated as the confirmed user input for unattended development.\n")
 	b.WriteString("-->\n\n")
 	fmt.Fprintf(&b, "**Feature ID**: `%s`\n", featureID)
+	fmt.Fprintf(&b, "**Item ID**: `%s`\n", sc.ItemID)
+	fmt.Fprintf(&b, "**Requirement Bytes**: %d\n", requirementBytes)
+	fmt.Fprintf(&b, "**Requirement SHA-256**: `%s`\n", requirementHash)
 	b.WriteString("**Status**: Confirmed\n")
 	fmt.Fprintf(&b, "**Last Confirmed**: %s\n\n", confirmedAt)
 	b.WriteString("## Authority Rules\n\n")
@@ -378,10 +633,16 @@ func requirementsDocument(sc *StageContext, now time.Time) string {
 	b.WriteString("## Needs\n\n")
 	fmt.Fprintf(&b, "### NEED-001: %s\n\n", title)
 	b.WriteString("- **Status**: confirmed\n")
-	fmt.Fprintf(&b, "- **Statement**: %s\n", statementLine)
+	b.WriteString("- **Statement**: See the complete authoritative requirement below.\n")
 	b.WriteString("- **Rationale**: This behavior is required by the autodev backlog item.\n")
-	fmt.Fprintf(&b, "- **User Evidence**: \"%s\"\n", oneLine(title+": "+statementLine, 500))
+	fmt.Fprintf(&b, "- **User Evidence**: \"%s\"\n", oneLine(title+": "+statement, 500))
 	fmt.Fprintf(&b, "- **Confirmed At**: %s\n\n", confirmedAt)
+	b.WriteString("## Authoritative Requirement\n\n")
+	b.WriteString(statement)
+	if !strings.HasSuffix(statement, "\n") {
+		b.WriteByte('\n')
+	}
+	b.WriteByte('\n')
 	b.WriteString("## Constraints\n\n")
 	b.WriteString("No confirmed constraints were supplied by the backlog item.\n\n")
 	b.WriteString("## Decisions\n\n")
@@ -394,7 +655,7 @@ func requirementsDocument(sc *StageContext, now time.Time) string {
 	b.WriteString("No superseded entries.\n\n")
 	b.WriteString("## Confirmation Log\n\n")
 	fmt.Fprintf(&b, "### Session %s\n\n", confirmedAt)
-	fmt.Fprintf(&b, "- **Summary Presented**: %s\n", oneLine(statementLine, 500))
+	fmt.Fprintf(&b, "- **Summary Presented**: %s\n", oneLine(statement, 500))
 	b.WriteString("- **User Confirmation**: The backlog item is treated as confirmed input for unattended autodev.\n")
 	b.WriteString("- **Entries Confirmed**: NEED-001\n")
 	return b.String()
@@ -420,11 +681,13 @@ func verifyImplement(deps PipelineDeps) func(ctx context.Context, sc *StageConte
 			return false, gateGap(result)
 		}
 
-		dirty, dirtyErr := deps.Git.Run(ctx, sc.WorkDir, "status", "--porcelain")
+		dirtyResult, runErr := deps.Git.Run(ctx, sc.WorkDir, "status", "--porcelain")
+		dirty, dirtyErr := strictCommandStdout(dirtyResult, runErr)
 		if dirtyErr == nil && strings.TrimSpace(dirty) != "" {
 			return true, ""
 		}
-		diff, diffErr := deps.Git.Run(ctx, sc.WorkDir, "diff", sc.BaseBranch+"...HEAD", "--name-only")
+		diffResult, runErr := deps.Git.Run(ctx, sc.WorkDir, "diff", sc.BaseBranch+"...HEAD", "--name-only")
+		diff, diffErr := strictCommandStdout(diffResult, runErr)
 		if diffErr == nil && strings.TrimSpace(diff) != "" {
 			return true, ""
 		}
@@ -443,14 +706,19 @@ func verifyTasksComplete(sc *StageContext) (bool, string) {
 	if sc.FeatureDir == "" {
 		return false, "no feature directory is bound for this item"
 	}
-	path := filepath.Join(sc.WorkDir, sc.FeatureDir, "tasks.md")
-	data, err := os.ReadFile(path)
+	artifactPath := path.Join(sc.FeatureDir, "tasks.md")
+	workspace, err := openFeatureWorkspace(sc.WorkDir, sc.FeatureDir, false)
 	if err != nil {
-		return false, fmt.Sprintf("%s does not exist", filepath.Join(sc.FeatureDir, "tasks.md"))
+		return false, fmt.Sprintf("%s is unavailable: %v", artifactPath, err)
+	}
+	defer workspace.Close()
+	data, err := workspace.readRegular("tasks.md")
+	if err != nil {
+		return false, fmt.Sprintf("%s is unavailable: %v", artifactPath, err)
 	}
 	matches := taskCheckboxRE.FindAllSubmatch(data, -1)
 	if len(matches) == 0 {
-		return false, fmt.Sprintf("%s contains no markdown task checkboxes", filepath.Join(sc.FeatureDir, "tasks.md"))
+		return false, fmt.Sprintf("%s contains no markdown task checkboxes", artifactPath)
 	}
 	var unchecked int
 	for _, m := range matches {
@@ -459,7 +727,7 @@ func verifyTasksComplete(sc *StageContext) (bool, string) {
 		}
 	}
 	if unchecked > 0 {
-		return false, fmt.Sprintf("%s has %d unchecked task checkbox(es)", filepath.Join(sc.FeatureDir, "tasks.md"), unchecked)
+		return false, fmt.Sprintf("%s has %d unchecked task checkbox(es)", artifactPath, unchecked)
 	}
 	return true, ""
 }

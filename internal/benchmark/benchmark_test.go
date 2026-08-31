@@ -8,11 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	foxruntime "github.com/Zts0hg/foxharness/internal/runtime"
 	"github.com/Zts0hg/foxharness/internal/schema"
-	"github.com/Zts0hg/foxharness/internal/session"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 type benchmarkFinalProvider struct{}
@@ -95,10 +93,11 @@ func TestValidateAllCoversSuccessAndFailurePaths(t *testing.T) {
 func TestWriteJSONWritesIndentedResultsWithTrailingNewline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "report.json")
 	results := []*Result{{
-		CaseID:    "case-1",
-		Success:   true,
-		Workspace: "/tmp/work",
-		SessionID: "sess",
+		SchemaVersion: ResultSchemaVersion,
+		CaseID:        "case-1",
+		Success:       true,
+		Workspace:     "/tmp/work",
+		SessionID:     "sess",
 		RuntimeFidelity: RuntimeFidelity{
 			SharedInvariants:       []string{"tool surface"},
 			IntentionalDifferences: []string{"no interactive approval"},
@@ -128,24 +127,33 @@ func TestWriteJSONWritesIndentedResultsWithTrailingNewline(t *testing.T) {
 	}
 }
 
+func TestWriteJSONRejectsMissingOrUnsupportedSchemaVersion(t *testing.T) {
+	for _, results := range [][]*Result{
+		{nil},
+		{{CaseID: "missing-version"}},
+		{{SchemaVersion: ResultSchemaVersion + 1, CaseID: "future-version"}},
+	} {
+		if err := WriteJSON(filepath.Join(t.TempDir(), "report.json"), results); err == nil {
+			t.Fatalf("WriteJSON(%#v) error = nil", results)
+		}
+	}
+}
+
 func TestRunCaseIncludesRuntimeFidelityMetadata(t *testing.T) {
 	fixture := t.TempDir()
 	runner := NewRunner(func(ctx context.Context, workDir string, c *Case) (*Harness, error) {
-		manager := session.NewManagerWithHome(workDir, t.TempDir())
-		sess, err := manager.Create(session.CreateOptions{Source: session.SOURCECLI, WorkDir: workDir})
+		spec := NewRuntimeSpec("test", "model", 1, nil)
+		harness, err := newTargetBenchmarkHarness(ctx, workDir, t.TempDir(), spec, benchmarkFinalProvider{},
+			func(foxruntime.RunAssembly) benchmarkPromptComposer { return benchmarkComposer{} }, nil)
 		if err != nil {
 			return nil, err
 		}
-		eng := engine.NewAgentEngine(benchmarkFinalProvider{}, tools.NewRegistry(), workDir, benchmarkComposer{}, engine.Config{MaxTurns: 1})
-		return &Harness{
-			Engine:  eng,
-			Session: sess,
-			RuntimeFidelity: RuntimeFidelity{
-				SharedInvariants:       []string{"canonical tools"},
-				IntentionalDifferences: []string{"no interactive approval"},
-				Warning:                "benchmark runtime differs from product runtime",
-			},
-		}, nil
+		harness.RuntimeFidelity = RuntimeFidelity{
+			SharedInvariants:       []string{"canonical tools"},
+			IntentionalDifferences: []string{"no interactive approval"},
+			Warning:                "benchmark runtime differs from product runtime",
+		}
+		return harness, nil
 	})
 
 	result, err := runner.RunCase(context.Background(), &Case{
@@ -161,5 +169,8 @@ func TestRunCaseIncludesRuntimeFidelityMetadata(t *testing.T) {
 	}
 	if len(result.RuntimeFidelity.SharedInvariants) != 1 || result.RuntimeFidelity.SharedInvariants[0] != "canonical tools" {
 		t.Fatalf("SharedInvariants = %+v", result.RuntimeFidelity.SharedInvariants)
+	}
+	if _, err := os.Stat(result.Workspace); err != nil {
+		t.Fatalf("successful workspace was not retained: %v", err)
 	}
 }

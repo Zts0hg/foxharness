@@ -1,0 +1,7 @@
+The next step is characterization coverage.
+
+Session:  SESSION_ID
+Transcript:  SESSION_ROOT/transcript.jsonl
+Run:  RUN_ID
+Metrics:  SESSION_ROOT/runs/RUN_ID/metrics.jsonl
+Trace:  SESSION_ROOT/runs/RUN_ID/trace.jsonl

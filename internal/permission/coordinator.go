@@ -236,7 +236,15 @@ func (r *Registry) Execute(ctx context.Context, call schema.ToolCall) schema.Too
 			assessment = candidate
 		}
 	}
-	if err := r.coordinator.authorize(ctx, call, r.evidence, assessment); err != nil {
+	evidenceProvider := func(request Request) Evidence {
+		evidence := BuildEvidence(nil, nil, request)
+		if r.evidence != nil {
+			evidence = r.evidence(request)
+		}
+		evidence.Correlation.ToolCallID = call.ID
+		return evidence
+	}
+	if err := r.coordinator.authorize(ctx, call, evidenceProvider, assessment); err != nil {
 		return schema.ToolResult{ToolCallID: call.ID, Output: "Tool execution denied by permission policy: " + err.Error(), IsError: true}
 	}
 	return r.base.Execute(ctx, call)

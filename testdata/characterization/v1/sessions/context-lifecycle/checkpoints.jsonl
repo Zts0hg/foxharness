@@ -1,0 +1,2 @@
+{"seq":0,"action":"snapshot","snapshot":{"message_id":"message-baseline-0001","tracked_file_backups":{"WORKSPACE/main.go":{"backup_file_name":"000001-main.go","version":1,"backup_time":"2026-08-10T08:00:45Z"}},"timestamp":"2026-08-10T08:00:45Z"}}
+{"seq":1,"action":"snapshot","snapshot":{"message_id":"message-baseline-0002","tracked_file_backups":{"WORKSPACE/main.go":{"backup_file_name":"000002-main.go","version":2,"backup_time":"2026-08-10T08:05:50Z"}},"timestamp":"2026-08-10T08:05:50Z"}}

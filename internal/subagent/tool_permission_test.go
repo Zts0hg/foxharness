@@ -6,13 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/toolpolicy"
 )
 
 func TestDelegateTaskPermissionAssessmentUsesExecutionDefaults(t *testing.T) {
-	manager := NewManager(nil, t.TempDir()).WithPermission(permission.NewCoordinator(permission.Config{}))
-	tool := NewTool(manager, "parent")
+	tool := NewTool(&recordingRunner{enforce: true}, "parent")
 	tests := []struct {
 		name     string
 		args     string
@@ -44,7 +42,7 @@ func TestDelegateTaskPermissionAssessmentUsesExecutionDefaults(t *testing.T) {
 }
 
 func TestDelegateTaskPermissionAssessmentFailsClosedForInvalidTask(t *testing.T) {
-	tool := NewTool(NewManager(nil, t.TempDir()), "parent")
+	tool := NewTool(&recordingRunner{}, "parent")
 	assessment, err := tool.AssessPermission(toolpolicy.Context{}, json.RawMessage(`{"task":""}`))
 	if err != nil {
 		t.Fatalf("AssessPermission() error = %v", err)

@@ -14,6 +14,7 @@ require (
 	github.com/openai/openai-go/v3 v3.33.0
 	github.com/sergi/go-diff v1.4.0
 	github.com/yuin/goldmark v1.7.13
+	golang.org/x/sys v0.38.0
 	golang.org/x/term v0.36.0
 	gopkg.in/yaml.v3 v3.0.1
 	mvdan.cc/sh/v3 v3.12.0
@@ -48,6 +49,5 @@ require (
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
 )

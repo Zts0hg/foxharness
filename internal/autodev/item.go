@@ -36,10 +36,27 @@ const (
 	StatusDone       Status = "done"
 )
 
+// ItemID is the immutable control-plane identity assigned to one normalized
+// backlog item and retained for its entire ledger history.
+type ItemID string
+
+// SourceState records whether a ledger item is present in the current
+// backlog or retained as non-runnable recovery/history state.
+type SourceState string
+
+const (
+	SourceStateCurrent    SourceState = "current"
+	SourceStateOrphaned   SourceState = "orphaned"
+	SourceStateBlocked    SourceState = "blocked"
+	SourceStateHistorical SourceState = "historical"
+)
+
 // Item is one backlog requirement parsed from the backlog markdown file.
 // The backlog supplies the item set, the ordering input (Priority), and the
 // Description; the ledger supplies the authoritative processing status.
 type Item struct {
+	// SourceID is the optional explicit **ID** value from the backlog.
+	SourceID string
 	// Type is the bracketed category from the heading, e.g. "feature".
 	Type string
 	// Title is the heading text after the type bracket.
@@ -76,6 +93,9 @@ type GateStep struct {
 	Skipped bool
 	// Output is the raw command output, kept for diagnostics.
 	Output string
+	// OutputTruncated reports that stdout or stderr exceeded its independent
+	// capture ceiling. Exit status remains authoritative for ordinary gates.
+	OutputTruncated bool
 }
 
 // GateResult aggregates the completion-gate outcome for one worktree.
@@ -97,11 +117,42 @@ type PublishResult struct {
 	PR int
 }
 
+type RemoteEventKind string
+
+const RemoteEventIssue RemoteEventKind = "issue"
+
+// RemoteEvent is one stable logical observation delivered at least once.
+type RemoteEvent struct {
+	EventID string          `json:"event_id"`
+	ItemID  ItemID          `json:"item_id"`
+	Kind    RemoteEventKind `json:"kind"`
+	Number  int             `json:"number"`
+}
+
+// RemoteEventRecord is the durable outbox state for one logical event.
+type RemoteEventRecord struct {
+	EventID   string          `json:"event_id"`
+	ItemID    ItemID          `json:"item_id"`
+	Kind      RemoteEventKind `json:"kind"`
+	Number    int             `json:"number"`
+	Delivered bool            `json:"delivered"`
+}
+
+func (e RemoteEventRecord) event() RemoteEvent {
+	return RemoteEvent{EventID: e.EventID, ItemID: e.ItemID, Kind: e.Kind, Number: e.Number}
+}
+
 // StageContext carries the per-item state threaded through stage prompts,
 // engineer decisions, deterministic controls, and Verify predicates.
 type StageContext struct {
 	// Item is the backlog requirement being processed.
 	Item Item
+	// ItemID is the immutable ledger identity for the requirement.
+	ItemID ItemID
+	// RequirementBytes is the authoritative requirement's UTF-8 byte length.
+	RequirementBytes int
+	// RequirementHash is the authoritative requirement's SHA-256 identity.
+	RequirementHash string
 	// Slug is the item's unique kebab-case identifier.
 	Slug string
 	// WorkDir is the item's worktree directory (the core Agent's scope).
@@ -127,4 +178,9 @@ type StageContext struct {
 	Issue int
 	// PR is the pull-request number once verified.
 	PR int
+	// CoreAttemptOrdinal is the last durable attempt ordinal for this stage.
+	CoreAttemptOrdinal int
+	// RecordCoreAttempt persists running and terminal attempt evidence. The
+	// orchestrator installs it before production core execution.
+	RecordCoreAttempt func(CoreAttemptRecord) error
 }

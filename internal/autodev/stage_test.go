@@ -9,9 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"time"
 )
 
 // fakeCore is a scripted CoreRunner. Each Run invocation executes the next
@@ -21,11 +19,18 @@ type fakeCore struct {
 	workDir string
 	prompts []string
 	effects []func()
-	asker   tools.UserAsker
+	asker   QuestionAsker
 }
 
-func (f *fakeCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*engine.RunResult, error) {
-	f.prompts = append(f.prompts, prompt)
+func successfulCoreOutcome(attempt CoreAttempt, message string) CoreOutcome {
+	return CoreOutcome{
+		Attempt: attempt, Status: CoreOutcomeSucceeded, SessionID: "test-session", RunID: "test-run", PartialMessage: message,
+		RetryClass: CoreRetryNever, Lifecycle: CoreLifecycleEvidence{RunStarted: true},
+	}
+}
+
+func (f *fakeCore) Run(ctx context.Context, attempt CoreAttempt, r CoreReporter) CoreOutcome {
+	f.prompts = append(f.prompts, attempt.Prompt)
 	if len(f.effects) > 0 {
 		effect := f.effects[0]
 		f.effects = f.effects[1:]
@@ -33,12 +38,15 @@ func (f *fakeCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*
 			effect()
 		}
 	}
-	return &engine.RunResult{FinalMessage: "done, I believe"}, nil
+	return successfulCoreOutcome(attempt, "done, I believe")
 }
 
-func (f *fakeCore) SetUserAsker(a tools.UserAsker) { f.asker = a }
-func (f *fakeCore) SetModel(model string) error    { return nil }
-func (f *fakeCore) WorkDir() string                { return f.workDir }
+func (f *fakeCore) Drain(context.Context) error { return nil }
+func (f *fakeCore) Close(context.Context) error { return nil }
+
+func (f *fakeCore) SetUserAsker(a QuestionAsker) { f.asker = a }
+func (f *fakeCore) SetModel(model string) error  { return nil }
+func (f *fakeCore) WorkDir() string              { return f.workDir }
 
 func (f *fakeCore) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	return fmt.Sprintf("PROMPT[%s|%s]", command, args), nil
@@ -52,7 +60,7 @@ type reviewingEngineer struct {
 	gaps        []string
 }
 
-func (r *reviewingEngineer) Review(ctx context.Context, res *engine.RunResult, gap string, c StageContext) (string, error) {
+func (r *reviewingEngineer) Review(ctx context.Context, evidence CoreReviewEvidence, gap string, c StageContext) (string, error) {
 	r.reviewCalls++
 	r.gaps = append(r.gaps, gap)
 	if len(r.reviews) == 0 {
@@ -314,6 +322,35 @@ func TestGenerationVerifyRequiresArtifactAndPassingReview(t *testing.T) {
 	}
 }
 
+func TestCPAUT016ReviewedArtifactRejectsStalePassingReview(t *testing.T) {
+	workDir := t.TempDir()
+	featureDir := filepath.Join(".codexspec", "specs", "2026-0610-1200ab-stale-review")
+	sc := &StageContext{WorkDir: workDir, FeatureDir: featureDir}
+	verify := RequirementsFirstPipeline(PipelineDeps{Clock: newTestClock()})[1].Verify
+	writeArtifact(t, workDir, featureDir, "spec.md", "# Current spec\n")
+	writeArtifact(t, workDir, featureDir, "review-spec.md", "# Review\n\n- **Overall Status**: PASS\n")
+
+	artifactPath := filepath.Join(workDir, featureDir, "spec.md")
+	reviewPath := filepath.Join(workDir, featureDir, "review-spec.md")
+	artifactTime := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(artifactPath, artifactTime, artifactTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(reviewPath, artifactTime.Add(-time.Minute), artifactTime.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	if ok, gap := verify(context.Background(), sc); ok || !strings.Contains(strings.ToLower(gap), "stale") {
+		t.Fatalf("Verify = %v, gap = %q, want stale passing review rejected", ok, gap)
+	}
+	if err := os.Chtimes(reviewPath, artifactTime.Add(time.Minute), artifactTime.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if ok, gap := verify(context.Background(), sc); !ok {
+		t.Fatalf("Verify rejected a fresh passing review: %s", gap)
+	}
+}
+
 func TestPlanAndTasksVerifyRequireArtifactsAndReviews(t *testing.T) {
 	workDir := t.TempDir()
 	featureDir := filepath.Join(".codexspec", "specs", "2026-0610-1200ab-feature")
@@ -370,18 +407,18 @@ type fakeDiffGit struct {
 	diff   string
 }
 
-func (g *fakeDiffGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+func (g *fakeDiffGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
 	if len(args) > 0 && args[0] == "status" {
-		return g.status, nil
+		return stdoutResult(g.status), nil
 	}
-	return g.diff, nil
+	return stdoutResult(g.diff), nil
 }
 
 // erroringGit fails every git invocation, simulating a broken git binary.
 type erroringGit struct{}
 
-func (erroringGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
-	return "git: not found", fmt.Errorf("exec git: not found")
+func (erroringGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
+	return stdoutResult("git: not found"), fmt.Errorf("exec git: not found")
 }
 
 func TestImplementVerifySurfacesGitErrors(t *testing.T) {

@@ -93,6 +93,22 @@ func TestParseMissingStatusDefaultsToPending(t *testing.T) {
 	}
 }
 
+func TestParseOptionalSourceID(t *testing.T) {
+	path := writeBacklog(t, `## [feature] Stable identity
+
+**ID**: REQ-agent-runtime
+**Description**: Something.
+`)
+
+	items, err := Parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].SourceID != "REQ-agent-runtime" {
+		t.Fatalf("items = %+v, want parsed source ID", items)
+	}
+}
+
 func TestParseMissingPriorityDefaultsToLow(t *testing.T) {
 	path := writeBacklog(t, `## [feature] No priority here
 

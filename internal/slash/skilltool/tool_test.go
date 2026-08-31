@@ -3,12 +3,15 @@ package skilltool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/slash"
 	"github.com/Zts0hg/foxharness/internal/toolpolicy"
+	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 func newRegistryWithSkill(t *testing.T, c *slash.Command) *slash.Registry {
@@ -24,11 +27,59 @@ func newRegistryWithSkill(t *testing.T, c *slash.Command) *slash.Registry {
 type forkRunnerStub struct {
 	report       string
 	allowedTools []string
+	err          error
 }
 
 func (s *forkRunnerStub) Run(ctx context.Context, task string, agentType string, allowedTools []string) (string, error) {
 	s.allowedTools = append([]string(nil), allowedTools...)
-	return s.report, nil
+	return s.report, s.err
+}
+
+func TestSkillToolExecuteRetainsForkPartialOutcomeWithError(t *testing.T) {
+	cmd := &slash.Command{
+		Type:    slash.CommandPrompt,
+		Name:    "inspect",
+		Content: "Inspect",
+		Frontmatter: slash.Frontmatter{
+			UserInvocable: true,
+			Context:       "fork",
+		},
+	}
+	registry := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
+	registry.Register(cmd)
+	terminalErr := errors.New("child failed")
+	runner := &forkRunnerStub{report: "typed partial outcome", err: terminalErr}
+	tool := NewSkillTool(registry, slash.NewExecutor(slash.WithForkRunner(runner)), func() string { return "parent" })
+	raw, _ := json.Marshal(map[string]string{"name": "inspect"})
+
+	output, err := tool.Execute(context.Background(), raw)
+	if !errors.Is(err, terminalErr) || output != "typed partial outcome" {
+		t.Fatalf("skill fork output/error = %q/%v, want retained partial and terminal error", output, err)
+	}
+}
+
+func TestSkillToolRegistryRetainsForkPartialOutcomeAndFailure(t *testing.T) {
+	cmd := &slash.Command{
+		Type:    slash.CommandPrompt,
+		Name:    "inspect",
+		Content: "Inspect",
+		Frontmatter: slash.Frontmatter{
+			UserInvocable: true,
+			Context:       "fork",
+		},
+	}
+	skillRegistry := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
+	skillRegistry.Register(cmd)
+	runner := &forkRunnerStub{report: "typed partial outcome", err: errors.New("child failed")}
+	tool := NewSkillTool(skillRegistry, slash.NewExecutor(slash.WithForkRunner(runner)), func() string { return "parent" })
+	registry := tools.NewRegistry()
+	registry.Register(tool)
+	raw, _ := json.Marshal(map[string]string{"name": "inspect"})
+
+	result := registry.Execute(context.Background(), schema.ToolCall{ID: "fork-skill", Name: "skill", Arguments: raw})
+	if !result.IsError || !strings.Contains(result.Output, "typed partial outcome") || !strings.Contains(result.Output, "child failed") {
+		t.Fatalf("fork skill registry result = %#v, want partial outcome and terminal failure", result)
+	}
 }
 
 func statFile(p string) (os.FileInfo, error) { return os.Stat(p) }
@@ -187,6 +238,28 @@ func TestSkillTool_Execute_InlineAllowedToolsRefused(t *testing.T) {
 	_, err := tool.Execute(context.Background(), args)
 	if err == nil {
 		t.Fatal("expected inline+allowed-tools to be refused for model invocation")
+	}
+	if !strings.Contains(err.Error(), "context: fork") {
+		t.Errorf("refusal must hint at fork mode: %v", err)
+	}
+}
+
+func TestSkillTool_Execute_InlineExplicitEmptyAllowedToolsRefused(t *testing.T) {
+	cmd := &slash.Command{
+		Type:    slash.CommandPrompt,
+		Name:    "scan",
+		Content: "Scan body",
+		Frontmatter: slash.Frontmatter{
+			UserInvocable: true,
+			AllowedTools:  []string{},
+			// Context defaults to inline; explicit empty still means a restriction.
+		},
+	}
+	tool := NewSkillTool(newRegistryWithSkill(t, cmd), slash.NewExecutor(), func() string { return "" })
+	args, _ := json.Marshal(map[string]string{"name": "scan", "arguments": ""})
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil {
+		t.Fatal("expected inline+explicit-empty allowed-tools to be refused for model invocation")
 	}
 	if !strings.Contains(err.Error(), "context: fork") {
 		t.Errorf("refusal must hint at fork mode: %v", err)

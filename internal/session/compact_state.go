@@ -19,7 +19,7 @@ type CompactState struct {
 
 // LoadCompactState loads the persisted compaction state for a session. Missing
 // state returns an empty value.
-func LoadCompactState(s *Session) (*CompactState, error) {
+func LoadCompactState(s *StoredSession) (*CompactState, error) {
 	data, err := os.ReadFile(s.CompactStatePath())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -36,7 +36,7 @@ func LoadCompactState(s *Session) (*CompactState, error) {
 }
 
 // SaveCompactState persists the session compaction state.
-func SaveCompactState(s *Session, state *CompactState) error {
+func SaveCompactState(s *StoredSession, state *CompactState) error {
 	if state == nil {
 		return nil
 	}
@@ -45,4 +45,14 @@ func SaveCompactState(s *Session, state *CompactState) error {
 		return fmt.Errorf("写入 Compact State 失败: %w", err)
 	}
 	return nil
+}
+
+/* LoadContextCompactState reads the persisted projection state for runtime. */
+func (s *FileStore) LoadContextCompactState(storedSession *StoredSession) (*CompactState, error) {
+	return LoadCompactState(storedSession)
+}
+
+/* SaveContextCompactState writes one runtime-authorized projection state. */
+func (s *FileStore) SaveContextCompactState(storedSession *StoredSession, state *CompactState) error {
+	return SaveCompactState(storedSession, state)
 }

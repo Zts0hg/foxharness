@@ -28,6 +28,13 @@ func NewFilteredRegistry(base Registry, allowed []string) Registry {
 	for _, name := range allowed {
 		set[name] = true
 	}
+	if resolver, ok := base.(interface{ canonicalToolName(string) string }); ok {
+		for _, definition := range base.GetAvailableTools() {
+			if set[resolver.canonicalToolName(definition.Name)] {
+				set[definition.Name] = true
+			}
+		}
+	}
 	return &filteredRegistry{base: base, allowed: set}
 }
 
@@ -64,6 +71,7 @@ func (f *filteredRegistry) Execute(ctx context.Context, call schema.ToolCall) sc
 			IsError:    true,
 		}
 	}
+	ctx = withToolCapabilities(ctx, f.GetAvailableTools())
 	return f.base.Execute(ctx, call)
 }
 

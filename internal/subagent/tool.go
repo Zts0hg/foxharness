@@ -3,26 +3,28 @@ package subagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/toolpolicy"
+	"github.com/Zts0hg/foxharness/internal/toolprotocol"
 )
 
 // Tool implements the agent tool interface for delegating tasks to a
 // subagent. It is registered under the name "delegate_task" and accepts a
 // task description and optional read-only flag as JSON input.
 type Tool struct {
-	manager         *Manager
+	runner          Runner
 	ParentSessionID string
 }
 
-// NewTool creates a delegate_task tool backed by the given Manager and
+// NewTool creates a delegate_task tool backed by the given Runner and
 // associated with the specified parent session.
-func NewTool(manager *Manager, parentSessionID string) *Tool {
+func NewTool(runner Runner, parentSessionID string) *Tool {
 	return &Tool{
-		manager:         manager,
+		runner:          runner,
 		ParentSessionID: parentSessionID,
 	}
 }
@@ -78,7 +80,7 @@ func (t *Tool) AssessPermission(_ toolpolicy.Context, raw json.RawMessage) (tool
 	if input.ReadOnly != nil {
 		readOnly = *input.ReadOnly
 	}
-	nested := t.manager != nil && t.manager.permissions != nil
+	nested := t.runner != nil && t.runner.PermissionEnforced()
 	assessment := toolpolicy.Assessment{
 		Behavior:          toolpolicy.BehaviorReviewable,
 		Action:            fmt.Sprintf("%s read_only=%t task=%s", t.Name(), readOnly, strings.TrimSpace(input.Task)),
@@ -102,7 +104,7 @@ func (t *Tool) AssessPermission(_ toolpolicy.Context, raw json.RawMessage) (tool
 	return assessment, nil
 }
 
-// Execute parses the JSON input, delegates the task to the subagent Manager,
+// Execute parses the JSON input, delegates the task through the subagent Runner,
 // and returns the session ID and report. It defaults to read-only mode when
 // the read_only field is omitted.
 func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
@@ -115,20 +117,34 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (string, error)
 	if input.Task == "" {
 		return "", fmt.Errorf("task 不能为空")
 	}
+	if t.runner == nil || !t.runner.DelegationAllowed() {
+		return "", fmt.Errorf("delegate_task is unavailable under the parent permission policy")
+	}
+	/* The baseline failed closed before any child work when the parent
+	 * surface carried no permission coordination. */
+	if !t.runner.PermissionEnforced() {
+		return "", fmt.Errorf("delegate_task requires child permission coordination")
+	}
 
 	readOnly := true
 	if input.ReadOnly != nil {
 		readOnly = *input.ReadOnly
 	}
 
-	result, err := t.manager.Run(ctx, Request{
+	invocation, _ := toolprotocol.FromContext(ctx)
+	allowedTools := toolprotocol.CapabilitiesFromContext(ctx)
+	result, err := t.runner.Run(ctx, Request{
 		ParentSessionID: t.ParentSessionID,
+		ParentRunID:     invocation.RunID,
+		DelegationID:    invocation.ToolCallID,
 		Task:            input.Task,
 		ReadOnly:        readOnly,
+		Depth:           1,
+		AllowedTools:    allowedTools,
 	})
 
 	if err != nil {
-		return "", err
+		return FormatFailureOutcome(result, err), &OutcomeError{Outcome: result, Err: err}
 	}
 
 	return fmt.Sprintf(
@@ -136,4 +152,18 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (string, error)
 		result.SessionID,
 		result.Report,
 	), nil
+}
+
+// ExecuteResult preserves a failed ChildRun's correlated outcome in the model-
+// visible tool result while marking it as a failure.
+func (t *Tool) ExecuteResult(ctx context.Context, raw json.RawMessage) (toolprotocol.ExecutionResult, error) {
+	output, err := t.Execute(ctx, raw)
+	if err == nil {
+		return toolprotocol.ExecutionResult{Output: output}, nil
+	}
+	var outcomeErr *OutcomeError
+	if errors.As(err, &outcomeErr) {
+		return toolprotocol.ExecutionResult{Output: output, Failed: true}, nil
+	}
+	return toolprotocol.ExecutionResult{}, err
 }

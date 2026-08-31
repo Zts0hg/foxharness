@@ -28,7 +28,7 @@ type PerRunHooks struct {
 
 	// FireFunc, when non-nil, replaces the default async extraction launcher.
 	// Tests use it to observe or simulate the hook synchronously.
-	FireFunc func(sess *session.Session, runID string, tracker *Tracker)
+	FireFunc func(sess *session.StoredSession, runID string, tracker *Tracker)
 }
 
 // NewPerRunHooks builds hooks bound to a provider, memory store, and working
@@ -69,7 +69,7 @@ func (h *PerRunHooks) RecordCallback(tracker *Tracker) func(schema.ToolCall, sch
 // an inline memory write this run, the extractor skips itself (mutual
 // exclusion). The launch call does not recover; callers that want launch-panic
 // isolation wrap the call.
-func (h *PerRunHooks) Fire(sess *session.Session, runID string, tracker *Tracker) {
+func (h *PerRunHooks) Fire(sess *session.StoredSession, runID string, tracker *Tracker) {
 	if h.FireFunc != nil {
 		h.FireFunc(sess, runID, tracker)
 		return
@@ -80,21 +80,34 @@ func (h *PerRunHooks) Fire(sess *session.Session, runID string, tracker *Tracker
 // FireTracked is like Fire but registers the launch on the provided WaitGroup so
 // a short-lived runner (e.g. the one-shot CLI) can Wait for extraction to finish
 // before the process exits, preventing the detached goroutine from being killed
-// mid-call. The wait is bounded by extractionTimeout. Long-lived runners should
-// use Fire instead.
-func (h *PerRunHooks) FireTracked(wg *sync.WaitGroup, sess *session.Session, runID string, tracker *Tracker) {
+// mid-call. The wait is bounded by extractionTimeout. Item-scoped runtimes may
+// instead use FireTrackedContext to link cancellation to their owner.
+func (h *PerRunHooks) FireTracked(wg *sync.WaitGroup, sess *session.StoredSession, runID string, tracker *Tracker) {
+	h.FireTrackedContext(context.Background(), wg, sess, runID, tracker)
+}
+
+// FireTrackedContext tracks extraction while linking it to the lifecycle
+// owned by the caller. The extraction timeout remains an independent ceiling.
+func (h *PerRunHooks) FireTrackedContext(parent context.Context, wg *sync.WaitGroup, sess *session.StoredSession, runID string, tracker *Tracker) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		h.fireWithTimeout(sess, runID, tracker)
+		h.fireWithContext(parent, sess, runID, tracker)
 	}()
 }
 
 // fireWithTimeout runs the extraction pass under a timeout-bounded context so a
 // slow or unreachable provider cannot make the pass (or a caller draining it)
 // hang indefinitely.
-func (h *PerRunHooks) fireWithTimeout(sess *session.Session, runID string, tracker *Tracker) {
-	ctx, cancel := context.WithTimeout(context.Background(), extractionTimeout)
+func (h *PerRunHooks) fireWithTimeout(sess *session.StoredSession, runID string, tracker *Tracker) {
+	h.fireWithContext(context.Background(), sess, runID, tracker)
+}
+
+func (h *PerRunHooks) fireWithContext(parent context.Context, sess *session.StoredSession, runID string, tracker *Tracker) {
+	ctx, cancel := context.WithTimeout(parent, extractionTimeout)
 	defer cancel()
 	h.RunExtraction(ctx, sess, runID, tracker)
 }
@@ -103,8 +116,8 @@ func (h *PerRunHooks) fireWithTimeout(sess *session.Session, runID string, track
 // run's messages (by run ID) and runs the isolated Extractor under ctx. Filtering
 // by run ID is timing-independent, so a delayed extraction never picks up a
 // later run's messages. Extractor.Run recovers its own panics.
-func (h *PerRunHooks) RunExtraction(ctx context.Context, sess *session.Session, runID string, tracker *Tracker) {
-	messages, err := session.NewMessageLog(sess).LoadMessagesForRun(runID)
+func (h *PerRunHooks) RunExtraction(ctx context.Context, sess *session.StoredSession, runID string, tracker *Tracker) {
+	messages, err := session.NewMessageLog(sess).LoadMessagesForRun(session.RunID(runID))
 	if err != nil {
 		log.Printf("[automemory] extraction skipped: failed to load run messages: %v", err)
 		return
@@ -116,6 +129,6 @@ func (h *PerRunHooks) RunExtraction(ctx context.Context, sess *session.Session, 
 
 // fireExtractionAsync is retained as the historical default FireFunc for tests
 // that override Fire via the FireFunc field.
-func (h *PerRunHooks) fireExtractionAsync(sess *session.Session, runID string, tracker *Tracker) {
+func (h *PerRunHooks) fireExtractionAsync(sess *session.StoredSession, runID string, tracker *Tracker) {
 	go h.fireWithTimeout(sess, runID, tracker)
 }

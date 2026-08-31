@@ -2,17 +2,21 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
+	"github.com/Zts0hg/foxharness/internal/configcmd"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -42,6 +46,77 @@ func TestParseArgsDefaultsToTUI(t *testing.T) {
 	}
 	if cfg.MaxTurns != 0 {
 		t.Fatalf("MaxTurns = %d, want 0 for unlimited", cfg.MaxTurns)
+	}
+}
+
+func TestUITUI001LaunchRoutingHelpAndErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		wantMode   launchMode
+		wantPrompt string
+	}{
+		{name: "default", wantMode: launchTUI},
+		{name: "positional prompt", args: []string{"inspect", "main.go"}, wantMode: launchTUI, wantPrompt: "inspect main.go"},
+		{name: "prompt flag", args: []string{"-prompt", "inspect main.go"}, wantMode: launchTUI, wantPrompt: "inspect main.go"},
+		{name: "explicit tui", args: []string{"-tui", "inspect"}, wantMode: launchTUI, wantPrompt: "inspect"},
+		{name: "exec", args: []string{"exec", "inspect"}, wantMode: launchPrint, wantPrompt: "inspect"},
+		{name: "print", args: []string{"-p", "inspect"}, wantMode: launchPrint, wantPrompt: "inspect"},
+		{name: "autodev", args: []string{"autodev", "WORK.md"}, wantMode: launchAutodev, wantPrompt: "WORK.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, mode, err := parseArgs(tc.args, io.Discard)
+			if err != nil || mode != tc.wantMode || cfg.Prompt != tc.wantPrompt {
+				t.Fatalf("parseArgs(%#v) = mode %v prompt %q error %v; want %v/%q", tc.args, mode, cfg.Prompt, err, tc.wantMode, tc.wantPrompt)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "exec with tui", args: []string{"exec", "-tui", "inspect"}, want: "-tui/-interactive 不能和 exec、-p/-print 或 autodev 同时使用"},
+		{name: "print with interactive", args: []string{"-p", "-interactive", "inspect"}, want: "-tui/-interactive 不能和 exec、-p/-print 或 autodev 同时使用"},
+		{name: "two prompt sources", args: []string{"-prompt", "flag", "position"}, want: "不能同时使用 -prompt 和位置参数 prompt"},
+		{name: "autodev with print", args: []string{"autodev", "-p"}, want: "-p/-print 不能和 autodev 同时使用"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := parseArgs(tc.args, io.Discard)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("parseArgs(%#v) error = %v, want %q", tc.args, err, tc.want)
+			}
+		})
+	}
+
+	var help bytes.Buffer
+	_, _, err := parseArgs([]string{"-help"}, &help)
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("parseArgs(-help) error = %v, want flag.ErrHelp", err)
+	}
+	helpText := help.String()
+	ordered := []string{
+		"Usage:\n",
+		"fox [options] [prompt]       start the interactive TUI",
+		"fox exec [options] [prompt]  run once and print the result",
+		"fox -p [options] [prompt]    run once and print the result",
+		"fox autodev [backlog-path]   drain the backlog autonomously (SDD pipeline per item)",
+		"fox render [options]         render a built-in TUI scene to a self-contained HTML snapshot",
+		"Options:\n",
+	}
+	position := -1
+	for _, fragment := range ordered {
+		next := strings.Index(helpText[position+1:], fragment)
+		if next < 0 {
+			t.Fatalf("help missing ordered fragment %q:\n%s", fragment, helpText)
+		}
+		position += next + 1
+	}
+	for _, option := range []string{"-C string", "-continue", "-effort string", "-interactive", "-max-turns int", "-new", "-prompt string", "-session string", "-tui"} {
+		if !strings.Contains(helpText, option) {
+			t.Fatalf("help missing option %q:\n%s", option, helpText)
+		}
 	}
 }
 
@@ -182,7 +257,7 @@ func TestValidateEffortConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := app.CLIConfig{EffortOverride: tt.effort}
+			cfg := foxConfig{EffortOverride: tt.effort}
 			err := validateEffortConfig(&cfg, llmconfig.ResolvedConfig{Protocol: tt.protocol})
 			if tt.wantErr {
 				if err == nil {
@@ -208,13 +283,13 @@ func TestApplyPersistedEffortUsesProtocolPreferenceUnlessCLIOverrideSet(t *testi
 		},
 	})
 
-	cfg := app.CLIConfig{}
+	cfg := foxConfig{}
 	applyPersistedEffort(home, &cfg, llmconfig.ResolvedConfig{Protocol: llmconfig.ProtocolOpenAI})
 	if cfg.EffortOverride != "minimal" {
 		t.Fatalf("EffortOverride = %q, want minimal", cfg.EffortOverride)
 	}
 
-	cfg = app.CLIConfig{EffortOverride: "high"}
+	cfg = foxConfig{EffortOverride: "high"}
 	applyPersistedEffort(home, &cfg, llmconfig.ResolvedConfig{Protocol: llmconfig.ProtocolOpenAI})
 	if cfg.EffortOverride != "high" {
 		t.Fatalf("EffortOverride = %q, want CLI override high", cfg.EffortOverride)
@@ -334,6 +409,66 @@ func TestParseArgsAutodevRejectsInteractive(t *testing.T) {
 	_, _, err := parseArgs([]string{"autodev", "-tui"}, io.Discard)
 	if err == nil {
 		t.Fatal("parseArgs returned nil error, want conflict for autodev + -tui")
+	}
+}
+
+func TestUIAUT001AutodevRoutingMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		wantPrompt string
+		check      func(t *testing.T, cfg foxConfig)
+	}{
+		{name: "default backlog", args: []string{"autodev"}},
+		{name: "single positional backlog", args: []string{"autodev", "missing-but-uninterpreted.md"}, wantPrompt: "missing-but-uninterpreted.md"},
+		{name: "prompt backlog", args: []string{"autodev", "-prompt", "PROMPT.md"}, wantPrompt: "PROMPT.md"},
+		{name: "short workdir", args: []string{"autodev", "-C", "/repo", "WORK.md"}, wantPrompt: "WORK.md", check: func(t *testing.T, cfg foxConfig) {
+			if cfg.WorkDir != "/repo" {
+				t.Fatalf("WorkDir = %q, want /repo", cfg.WorkDir)
+			}
+		}},
+		{name: "long workdir and runtime options", args: []string{"autodev", "-workdir", "/repo", "-llm-provider", "fixture", "-protocol", "claude", "-base-url", "http://fixture", "-auth", "none", "-model", "model-x", "-max-turns", "17", "WORK.md"}, wantPrompt: "WORK.md", check: func(t *testing.T, cfg foxConfig) {
+			if cfg.WorkDir != "/repo" || cfg.LLM.ProviderID != "fixture" || cfg.LLM.Protocol != "claude" || cfg.LLM.BaseURL != "http://fixture" || cfg.LLM.Auth != "none" || cfg.Model != "model-x" || cfg.MaxTurns != 17 {
+				t.Fatalf("resolved parse snapshot = %+v", cfg)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, mode, err := parseArgs(tc.args, io.Discard)
+			if err != nil || mode != launchAutodev || cfg.Prompt != tc.wantPrompt {
+				t.Fatalf("parseArgs(%v) = mode %v prompt %q error %v", tc.args, mode, cfg.Prompt, err)
+			}
+			if tc.check != nil {
+				tc.check(t, cfg)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "duplicate positional backlog", args: []string{"autodev", "ONE.md", "TWO.md"}, want: "autodev 最多接受一个 backlog-path 位置参数"},
+		{name: "flag and positional backlog", args: []string{"autodev", "-prompt", "ONE.md", "TWO.md"}, want: "不能同时使用 -prompt 和位置参数 prompt"},
+		{name: "print conflict", args: []string{"autodev", "-print"}, want: "-p/-print 不能和 autodev 同时使用"},
+		{name: "tui conflict", args: []string{"autodev", "-interactive"}, want: "-tui/-interactive 不能和 exec、-p/-print 或 autodev 同时使用"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := parseArgs(tc.args, io.Discard)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("parseArgs(%v) error = %v, want %q", tc.args, err, tc.want)
+			}
+		})
+	}
+
+	var help bytes.Buffer
+	_, _, err := parseArgs([]string{"autodev", "-help"}, &help)
+	if !errors.Is(err, flag.ErrHelp) || !strings.Contains(help.String(), "fox autodev [backlog-path]") {
+		t.Fatalf("autodev help error/output = %v / %q", err, help.String())
+	}
+	if _, _, err := parseArgs([]string{"autodev", "-unknown"}, io.Discard); err == nil {
+		t.Fatal("unknown autodev flag was accepted")
 	}
 }
 
@@ -483,6 +618,76 @@ func TestExitCodeForError(t *testing.T) {
 	}
 }
 
+func TestAutodevSignalsCancelRunAndMapExitStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sig  os.Signal
+		code int
+	}{
+		{name: "interrupt", sig: os.Interrupt, code: 130},
+		{name: "terminate", sig: syscall.SIGTERM, code: 143},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			signals := make(chan os.Signal, 1)
+			signals <- tc.sig
+			err := runAutodevWithSignals(context.Background(), signals, func(ctx context.Context) error {
+				<-ctx.Done()
+				return ctx.Err()
+			})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("run error = %v, want cancellation-compatible signal error", err)
+			}
+			if got := exitCodeForError(err); got != tc.code {
+				t.Fatalf("exit code = %d, want %d", got, tc.code)
+			}
+		})
+	}
+}
+
+func TestUIAUT002TerminalOutcomeAndStreamContract(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		err        error
+		wantCode   int
+		wantStderr string
+	}{
+		{name: "drained", wantCode: 0},
+		{name: "precondition", err: &autodev.PreconditionError{Reason: "gh unavailable"}, wantCode: 2, wantStderr: "autodev precondition failed: gh unavailable\n"},
+		{name: "ordinary failure", err: errors.New("pipeline failed"), wantCode: 1, wantStderr: "pipeline failed\n"},
+		{name: "cancelled without signal", err: context.Canceled, wantCode: 1, wantStderr: "context canceled\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			if got := reportAutodevResult(tc.err, &stderr); got != tc.wantCode || stderr.String() != tc.wantStderr {
+				t.Fatalf("reportAutodevResult = %d / %q, want %d / %q", got, stderr.String(), tc.wantCode, tc.wantStderr)
+			}
+		})
+	}
+
+	var stdout bytes.Buffer
+	reporter := autodev.NewTerminalReporter(&stdout)
+	ctx := context.Background()
+	reporter.OnRunStart(ctx, "session-1", "run-1")
+	reporter.OnMessage(ctx, "first line\nsecond line")
+	reporter.OnRunError(ctx, "session-1", "run-1", errors.New("model failed"))
+	reporter.OnItemStart(ctx, 1, 1, autodev.LedgerItem{Slug: "item", Priority: autodev.PriorityHigh})
+	reporter.OnStageStart(ctx, "item", "generate-spec")
+	reporter.OnVerify(ctx, "generate-spec", false, "spec missing")
+	reporter.OnInfo(ctx, "retaining worktree")
+	wantOrder := []string{"run run-1 started", "first line\n           second line", "run run-1 error: model failed", "item 1/1", "[stage] generate-spec", "NOT DONE: spec missing", "retaining worktree"}
+	position := -1
+	for _, want := range wantOrder {
+		next := strings.Index(stdout.String()[position+1:], want)
+		if next < 0 {
+			t.Fatalf("terminal stream missing ordered %q:\n%s", want, stdout.String())
+		}
+		position += next + 1
+	}
+	if !strings.HasSuffix(stdout.String(), "\n") {
+		t.Fatalf("terminal stream is not line-oriented: %q", stdout.String())
+	}
+}
+
 type mapEnv map[string]string
 
 func (m mapEnv) Lookup(name string) string {
@@ -540,6 +745,176 @@ func TestReadPromptReadsStdinForDash(t *testing.T) {
 	if prompt != "inspect main.go" {
 		t.Fatalf("prompt = %q, want %q", prompt, "inspect main.go")
 	}
+}
+
+func TestUICLI001RoutingPromptAcquisitionAndConflicts(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		stdin      string
+		wantPrompt string
+	}{
+		{name: "exec positional", args: []string{"exec", "  inspect  ", "main.go"}, wantPrompt: "inspect   main.go"},
+		{name: "short print positional", args: []string{"-p", "inspect"}, wantPrompt: "inspect"},
+		{name: "long print flag prompt", args: []string{"-print", "-prompt", "  inspect main.go  "}, wantPrompt: "inspect main.go"},
+		{name: "exec absent prompt reads stdin", args: []string{"exec"}, stdin: "  stdin task\n", wantPrompt: "stdin task"},
+		{name: "exec dash reads stdin", args: []string{"exec", "-"}, stdin: "\n dash task \n", wantPrompt: "dash task"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, mode, err := parseArgs(tc.args, io.Discard)
+			if err != nil || mode != launchPrint {
+				t.Fatalf("parseArgs() = mode %v error %v, want print/nil", mode, err)
+			}
+			withProcessStdin(t, tc.stdin, func() {
+				got, err := readPrompt(cfg.Prompt)
+				if err != nil || got != tc.wantPrompt {
+					t.Fatalf("readPrompt(%q) = %q, %v; want %q", cfg.Prompt, got, err, tc.wantPrompt)
+				}
+			})
+		})
+	}
+
+	t.Run("explicit prompt does not consume stdin", func(t *testing.T) {
+		previous := os.Stdin
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdin = r
+		t.Cleanup(func() { os.Stdin = previous; _ = r.Close() })
+		if _, err := io.WriteString(w, "unconsumed"); err != nil {
+			t.Fatal(err)
+		}
+		_ = w.Close()
+		got, err := readPrompt(" explicit task ")
+		if err != nil || got != "explicit task" {
+			t.Fatalf("readPrompt() = %q, %v", got, err)
+		}
+		remaining, err := io.ReadAll(r)
+		if err != nil || string(remaining) != "unconsumed" {
+			t.Fatalf("stdin after explicit prompt = %q, %v", remaining, err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "prompt sources", args: []string{"exec", "-prompt", "flag", "position"}, want: "不能同时使用 -prompt 和位置参数 prompt"},
+		{name: "exec interactive", args: []string{"exec", "-interactive", "task"}, want: "-tui/-interactive 不能和 exec、-p/-print 或 autodev 同时使用"},
+		{name: "print tui", args: []string{"-print", "-tui", "task"}, want: "-tui/-interactive 不能和 exec、-p/-print 或 autodev 同时使用"},
+		{name: "autodev print", args: []string{"autodev", "-print"}, want: "-p/-print 不能和 autodev 同时使用"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := parseArgs(tc.args, io.Discard)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("parseArgs(%v) error = %v, want %q", tc.args, err, tc.want)
+			}
+		})
+	}
+
+	withProcessStdin(t, " \n\t", func() {
+		if _, err := readPrompt(""); err == nil || err.Error() != "prompt 不能为空，请使用位置参数、-prompt 或通过 stdin 输入" {
+			t.Fatalf("whitespace prompt error = %v", err)
+		}
+	})
+}
+
+func TestUICLI002ResolutionFlagsOnboardingAndErrorPrecedence(t *testing.T) {
+	cfg, mode, err := parseArgs([]string{"exec", "-llm-provider", "profile", "-protocol", "claude", "-model", "claude-model", "-effort", "max", "-thinking", "task"}, io.Discard)
+	if err != nil || mode != launchPrint {
+		t.Fatalf("parseArgs() = mode %v error %v", mode, err)
+	}
+	if cfg.LLM.ProviderID != "profile" || cfg.LLM.Protocol != llmconfig.ProtocolClaude || cfg.Model != "claude-model" || cfg.EffortOverride != "max" || !cfg.EnableThinking {
+		t.Fatalf("resolved CLI flags = %#v", cfg)
+	}
+	if err := validateEffortConfig(&cfg, llmconfig.ResolvedConfig{Protocol: llmconfig.ProtocolClaude}); err != nil || cfg.EffortOverride != "max" {
+		t.Fatalf("Claude max effort = %q, %v", cfg.EffortOverride, err)
+	}
+	cfg.EffortOverride = "minimal"
+	if err := validateEffortConfig(&cfg, llmconfig.ResolvedConfig{Protocol: llmconfig.ProtocolClaude}); err == nil {
+		t.Fatal("Claude accepted OpenAI-only minimal effort")
+	}
+
+	home := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestUICLI002FirstRunProcessHelper$")
+	cmd.Env = append(os.Environ(),
+		"FOX_UI_CLI_FIRST_RUN_HELPER=1",
+		"HOME="+home,
+		"FOXHARNESS_LLM_PROVIDER=",
+		"FOXHARNESS_LLM_PROTOCOL=",
+		"FOXHARNESS_LLM_BASE_URL=",
+		"FOXHARNESS_LLM_MODEL=",
+		"FOXHARNESS_LLM_AUTH=",
+		"FOXHARNESS_LLM_API_KEY_ENV=",
+		"FOXHARNESS_LLM_API_KEY=",
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err = cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("first-run process error = %v, want exit 1", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("first-run stdout = %q, want empty", stdout.String())
+	}
+	if got, want := stderr.String(), configcmd.OnboardingMessage()+"\n"; got != want {
+		t.Fatalf("first-run stderr = %q, want %q", got, want)
+	}
+	if strings.Contains(stderr.String(), "prompt 不能为空") {
+		t.Fatalf("prompt validation incorrectly preceded configuration resolution: %q", stderr.String())
+	}
+}
+
+func TestUICLI002FirstRunProcessHelper(t *testing.T) {
+	if os.Getenv("FOX_UI_CLI_FIRST_RUN_HELPER") != "1" {
+		return
+	}
+	os.Args = []string{"fox", "exec"}
+	main()
+}
+
+func TestUICLI004RuntimeErrorsExitOne(t *testing.T) {
+	if os.Getenv("FOX_UI_CLI_EXIT_HELPER") == "1" {
+		exitWithError(errors.New("runtime failed"))
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestUICLI004RuntimeErrorsExitOne$")
+	cmd.Env = append(os.Environ(), "FOX_UI_CLI_EXIT_HELPER=1")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("process error = %v, want exit 1", err)
+	}
+	if stdout.Len() != 0 || stderr.String() != "runtime failed\n" {
+		t.Fatalf("process stdout/stderr = %q/%q", stdout.String(), stderr.String())
+	}
+}
+
+func withProcessStdin(t *testing.T, content string, fn func()) {
+	t.Helper()
+	previous := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = r
+	defer func() {
+		os.Stdin = previous
+		_ = r.Close()
+	}()
+	if _, err := io.WriteString(w, content); err != nil {
+		_ = w.Close()
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fn()
 }
 
 func TestRunRenderListPrintsScenes(t *testing.T) {

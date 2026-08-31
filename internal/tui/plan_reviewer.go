@@ -3,17 +3,17 @@ package tui
 import (
 	"context"
 
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 type planReviewRequest struct {
-	planMarkdown string
-	reply        chan planReviewResult
+	request app.PlanReviewRequest
+	reply   chan planReviewResult
 }
 
 type planReviewResult struct {
-	review    tools.PlanReview
+	response  app.PlanReviewResponse
 	cancelled bool
 }
 
@@ -33,27 +33,27 @@ func (r *PlanReviewer) Requests() <-chan planReviewRequest {
 }
 
 // ReviewPlan blocks until the TUI approves, continues planning, or cancels.
-func (r *PlanReviewer) ReviewPlan(ctx context.Context, planMarkdown string) (tools.PlanReview, error) {
+func (r *PlanReviewer) ReviewPlan(ctx context.Context, request app.PlanReviewRequest) (app.PlanReviewResponse, error) {
 	reply := make(chan planReviewResult, 1)
-	req := planReviewRequest{planMarkdown: planMarkdown, reply: reply}
+	req := planReviewRequest{request: request, reply: reply}
 	select {
 	case r.requests <- req:
 	case <-ctx.Done():
-		return tools.PlanReview{}, ctx.Err()
+		return app.PlanReviewResponse{}, ctx.Err()
 	}
 
 	select {
 	case result := <-reply:
 		if result.cancelled {
-			return tools.PlanReview{}, tools.ErrPlanReviewCancelled
+			return app.PlanReviewResponse{CorrelationID: request.Correlation.ID}, app.ErrPlanReviewCancelled
 		}
-		return result.review, nil
+		return result.response, nil
 	case <-ctx.Done():
-		return tools.PlanReview{}, ctx.Err()
+		return app.PlanReviewResponse{}, ctx.Err()
 	}
 }
 
-var _ tools.PlanReviewer = (*PlanReviewer)(nil)
+var _ app.PlanReviewPort = (*PlanReviewer)(nil)
 
 type planReviewMsg struct {
 	req planReviewRequest

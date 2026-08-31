@@ -2,21 +2,43 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/slash"
 )
+
+func TestHandlePromptCommandReadyRetainsForkPartialOutcomeAsFailure(t *testing.T) {
+	m := Model{running: true, runStartedAt: time.Now(), cancelRun: func() {}}
+	next, _ := m.handlePromptCommandReady(promptCommandReadyMsg{
+		result: slash.ExecutionResult{Content: "Status: failed\n\nPartial Report:\ncommitted partial", Fork: true},
+		err:    errors.New("provider failed"),
+	})
+	got := next.(Model)
+	if got.status != "Command failed" || got.running || got.cancelRun != nil {
+		t.Fatalf("fork failure state = status %q running %t cancel nil %t", got.status, got.running, got.cancelRun == nil)
+	}
+	for _, want := range []string{"Status: failed", "Partial Report:", "committed partial", "provider failed"} {
+		if !entriesContain(got.entries, "error", want) {
+			t.Fatalf("fork failure transcript missing %q: %#v", want, got.entries)
+		}
+	}
+	if entriesContain(got.entries, "assistant", "committed partial") {
+		t.Fatalf("fork partial outcome was presented as success: %#v", got.entries)
+	}
+}
 
 type restrictedFakeRunner struct {
 	*fakeRunner
 	restrictedRuns   []string
 	restrictedAllow  []string
 	restrictedModes  []collaboration.Mode
-	restrictedResult *engine.RunResult
+	restrictedResult *app.RunOutcome
 }
 
 type effortFakeRunner struct {
@@ -35,35 +57,38 @@ func (r *recordingTUIForkRunner) Run(context.Context, string, string, []string) 
 	return "fork report", nil
 }
 
-func (r *restrictedFakeRunner) RunRestrictedInCollaborationMode(ctx context.Context, prompt string, allowed []string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
-	r.restrictedRuns = append(r.restrictedRuns, prompt)
-	r.restrictedAllow = append([]string(nil), allowed...)
-	r.restrictedModes = append(r.restrictedModes, collaboration.Normalize(mode))
+func (r *restrictedFakeRunner) Run(ctx context.Context, command app.RunCommand, sink app.NotificationSink) (*app.RunOutcome, error) {
+	if command.AllowedTools == nil {
+		return r.fakeRunner.Run(ctx, command, sink)
+	}
+	r.restrictedRuns = append(r.restrictedRuns, command.Prompt)
+	r.restrictedAllow = append([]string{}, command.AllowedTools...)
+	r.restrictedModes = append(r.restrictedModes, collaboration.Normalize(collaboration.Mode(command.CollaborationMode)))
 	// Emit a minimal run lifecycle through the reporter so the TUI's
 	// channelReporter pipeline completes — without delegating to the
 	// underlying fakeRunner.RunInCollaborationMode (which would mutate fakeRunner.runs and
 	// hide whether the unrestricted path was used).
 	runID := "restricted-1"
-	reporter.OnRunStart(ctx, r.fakeRunner.sessionID, runID)
-	reporter.OnMessage(ctx, "restricted answer: "+prompt)
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationRunStarted, SessionID: r.fakeRunner.sessionID, RunID: runID})
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationMessage, SessionID: r.fakeRunner.sessionID, RunID: runID, Content: "restricted answer: " + command.Prompt})
 	if r.restrictedResult != nil {
-		reporter.OnRunComplete(ctx, *r.restrictedResult)
-		return r.restrictedResult, nil
+		notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationRunCompleted, SessionID: r.fakeRunner.sessionID, RunID: r.restrictedResult.RunID})
+		return &app.RunOutcome{FinalMessage: r.restrictedResult.FinalMessage, SessionID: r.restrictedResult.SessionID, RunID: r.restrictedResult.RunID}, nil
 	}
-	res := &engine.RunResult{
-		FinalMessage: "restricted answer: " + prompt,
+	res := &app.RunOutcome{
+		FinalMessage: "restricted answer: " + command.Prompt,
 		SessionID:    r.fakeRunner.sessionID,
 		RunID:        runID,
 	}
-	reporter.OnRunComplete(ctx, *res)
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationRunCompleted, SessionID: r.fakeRunner.sessionID, RunID: runID})
 	return res, nil
 }
 
-func (r *effortFakeRunner) RunWithDisplayAndEffortInCollaborationMode(ctx context.Context, prompt string, displayPrompt string, effort string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
-	r.effortRuns = append(r.effortRuns, prompt)
-	r.effortDisplays = append(r.effortDisplays, displayPrompt)
-	r.effortValues = append(r.effortValues, effort)
-	return r.fakeRunner.runInCollaborationMode(ctx, prompt, mode, reporter)
+func (r *effortFakeRunner) Run(ctx context.Context, command app.RunCommand, sink app.NotificationSink) (*app.RunOutcome, error) {
+	r.effortRuns = append(r.effortRuns, command.Prompt)
+	r.effortDisplays = append(r.effortDisplays, command.DisplayPrompt)
+	r.effortValues = append(r.effortValues, command.Effort)
+	return r.fakeRunner.Run(ctx, command, sink)
 }
 
 func newRegistryWithPromptCommand(t *testing.T, name, body string) *slash.Registry {
@@ -452,6 +477,36 @@ func TestModel_AllowedTools_RoutesToRunRestricted(t *testing.T) {
 	}
 }
 
+func TestModel_ExplicitEmptyAllowedTools_UsesRegularRun(t *testing.T) {
+	runner := &restrictedFakeRunner{fakeRunner: newFakeRunner()}
+	r := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
+	r.Register(&slash.Command{
+		Type:        slash.CommandPrompt,
+		Name:        "emptyallow",
+		Description: "emptyallow",
+		Source:      slash.SourceProject,
+		Content:     "Run normally",
+		Frontmatter: slash.Frontmatter{
+			UserInvocable: true,
+			AllowedTools:  []string{},
+		},
+	})
+	m := NewModel(context.Background(), runner, Config{}).WithRegistry(r, slash.NewExecutor())
+
+	m, _ = update(t, m, keyRunes("/emptyallow"))
+	m = drivePromptCommand(t, m)
+
+	/* The baseline routed a run through the restricted runner only when the
+	 * allowed-tools list carried entries, so an empty list stays a regular
+	 * run. */
+	if len(runner.fakeRunner.runs) != 1 {
+		t.Fatalf("expected regular run for explicit empty allowed-tools, got %v; restricted=%v status=%q", runner.fakeRunner.runs, runner.restrictedRuns, m.status)
+	}
+	if len(runner.restrictedRuns) != 0 {
+		t.Errorf("restricted run should not be called, got %v", runner.restrictedRuns)
+	}
+}
+
 func TestModel_NoAllowedTools_UsesRegularRun(t *testing.T) {
 	runner := &restrictedFakeRunner{fakeRunner: newFakeRunner()}
 	r := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
@@ -572,6 +627,7 @@ func TestModel_AllowedTools_UnsupportedRunner_ErrorsOut(t *testing.T) {
 	// command with allowed-tools must show an error rather than silently
 	// falling through to an unrestricted Run.
 	runner := newFakeRunner()
+	runner.supportRestrictions = false
 	r := slash.NewRegistry(t.TempDir()).WithoutDiscovery()
 	r.Register(&slash.Command{
 		Type:        slash.CommandPrompt,

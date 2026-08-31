@@ -6,22 +6,20 @@ import (
 	"io"
 	"strings"
 	"sync"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 // TerminalReporter streams the full autodev interaction — engineer
 // messages, core LLM output, tool calls, and every control-plane action —
 // as a readable line-oriented log, normally to stdout (REQ-024).
 type TerminalReporter struct {
-	mu  sync.Mutex
-	out io.Writer
+	mu        sync.Mutex
+	out       io.Writer
+	delivered map[string]struct{}
 }
 
 // NewTerminalReporter creates a TerminalReporter writing to out.
 func NewTerminalReporter(out io.Writer) *TerminalReporter {
-	return &TerminalReporter{out: out}
+	return &TerminalReporter{out: out, delivered: make(map[string]struct{})}
 }
 
 var _ Reporter = (*TerminalReporter)(nil)
@@ -32,27 +30,27 @@ func (r *TerminalReporter) printf(format string, args ...any) {
 	fmt.Fprintf(r.out, format+"\n", args...)
 }
 
-// OnRunStart implements engine.Reporter.
+// OnRunStart implements CoreReporter.
 func (r *TerminalReporter) OnRunStart(ctx context.Context, sessionID, runID string) {
 	r.printf("  core   → run %s started", runID)
 }
 
-// OnThinking implements engine.Reporter.
+// OnThinking implements CoreReporter.
 func (r *TerminalReporter) OnThinking(ctx context.Context, turn int) {
 	r.printf("  core   → thinking (turn %d)", turn)
 }
 
-// OnCompaction implements engine.Reporter.
+// OnCompaction implements CoreReporter.
 func (r *TerminalReporter) OnCompaction(ctx context.Context, scope string) {
 	r.printf("  core   → context compacted (%s)", scope)
 }
 
-// OnToolCall implements engine.Reporter.
+// OnToolCall implements CoreReporter.
 func (r *TerminalReporter) OnToolCall(ctx context.Context, toolName, args string) {
 	r.printf("  core   → tool %s %s", toolName, oneLine(args, 160))
 }
 
-// OnToolResult implements engine.Reporter.
+// OnToolResult implements CoreReporter.
 func (r *TerminalReporter) OnToolResult(ctx context.Context, toolName, result string, isError bool) {
 	marker := "✓"
 	if isError {
@@ -61,7 +59,7 @@ func (r *TerminalReporter) OnToolResult(ctx context.Context, toolName, result st
 	r.printf("  core   ← tool %s %s %s", toolName, marker, oneLine(result, 160))
 }
 
-// OnMessage implements engine.Reporter.
+// OnMessage implements CoreReporter.
 func (r *TerminalReporter) OnMessage(ctx context.Context, content string) {
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -70,12 +68,12 @@ func (r *TerminalReporter) OnMessage(ctx context.Context, content string) {
 	r.printf("  core   → %s", indentContinuations(content))
 }
 
-// OnRunComplete implements engine.Reporter.
-func (r *TerminalReporter) OnRunComplete(ctx context.Context, result engine.RunResult) {
+// OnRunComplete implements CoreReporter.
+func (r *TerminalReporter) OnRunComplete(ctx context.Context, result CoreRunResult) {
 	r.printf("  core   → run %s complete", result.RunID)
 }
 
-// OnRunError implements engine.Reporter.
+// OnRunError implements CoreReporter.
 func (r *TerminalReporter) OnRunError(ctx context.Context, sessionID, runID string, err error) {
 	r.printf("  core   ✗ run %s error: %v", runID, err)
 }
@@ -96,7 +94,7 @@ func (r *TerminalReporter) OnStageStart(ctx context.Context, slug, stage string)
 }
 
 // OnEngineerDecision implements Reporter.
-func (r *TerminalReporter) OnEngineerDecision(ctx context.Context, questions []tools.Question, answers []tools.Answer) {
+func (r *TerminalReporter) OnEngineerDecision(ctx context.Context, questions []Question, answers []Answer) {
 	for _, q := range questions {
 		r.printf("  core   → asks: %s", oneLine(q.Prompt, 160))
 	}
@@ -138,6 +136,30 @@ func (r *TerminalReporter) OnGate(ctx context.Context, result GateResult) {
 // OnIssue implements Reporter.
 func (r *TerminalReporter) OnIssue(ctx context.Context, number int) {
 	r.printf("[remote] issue #%d", number)
+}
+
+// OnRemoteEvent consumes one logical event idempotently within this process.
+func (r *TerminalReporter) OnRemoteEvent(ctx context.Context, event RemoteEvent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.delivered == nil {
+		r.delivered = make(map[string]struct{})
+	}
+	if _, ok := r.delivered[event.EventID]; ok {
+		return nil
+	}
+	var err error
+	switch event.Kind {
+	case RemoteEventIssue:
+		_, err = fmt.Fprintf(r.out, "[remote] issue #%d\n", event.Number)
+	default:
+		return fmt.Errorf("unsupported remote event kind %q", event.Kind)
+	}
+	if err != nil {
+		return err
+	}
+	r.delivered[event.EventID] = struct{}{}
+	return nil
 }
 
 // OnPR implements Reporter.

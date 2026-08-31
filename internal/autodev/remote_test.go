@@ -1,17 +1,34 @@
 package autodev
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/Zts0hg/foxharness/internal/engine"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
+
+type recordingRemoteEventReporter struct {
+	Reporter
+	terminal *TerminalReporter
+	events   []RemoteEvent
+	timeline *[]string
+}
+
+func (r *recordingRemoteEventReporter) OnRemoteEvent(ctx context.Context, event RemoteEvent) error {
+	r.events = append(r.events, event)
+	if r.timeline != nil {
+		*r.timeline = append(*r.timeline, "event:"+event.EventID)
+	}
+	if r.terminal != nil {
+		return r.terminal.OnRemoteEvent(ctx, event)
+	}
+	return nil
+}
 
 // repoState models the ground truth the fake core mutates and the fake
 // git/gh runners observe — the same separation the real system has.
@@ -24,6 +41,8 @@ type repoState struct {
 	issues      map[int]string
 	prBody      string
 	prNumber    int
+	prBase      string
+	prHead      string
 }
 
 // remoteGit is a read-only fake GitRunner over repoState. It fails the test
@@ -34,32 +53,32 @@ type remoteGit struct {
 	calls []string
 }
 
-func (g *remoteGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+func (g *remoteGit) Run(ctx context.Context, dir string, args ...string) (CommandResult, error) {
 	key := strings.Join(args, " ")
 	g.calls = append(g.calls, key)
 	switch args[0] {
 	case "status":
 		if g.state.dirty || g.state.staged {
-			return " M foo.go\n", nil
+			return stdoutResult(" M foo.go\n"), nil
 		}
-		return "", nil
+		return CommandResult{}, nil
 	case "diff":
 		if g.state.staged {
-			return "foo.go\n", nil
+			return stdoutResult("foo.go\n"), nil
 		}
-		return "", nil
+		return CommandResult{}, nil
 	case "rev-list":
-		return strconv.Itoa(g.state.commitCount) + "\n", nil
+		return stdoutResult(strconv.Itoa(g.state.commitCount) + "\n"), nil
 	case "rev-parse":
-		return g.state.localTip + "\n", nil
+		return stdoutResult(g.state.localTip + "\n"), nil
 	case "ls-remote":
 		if g.state.remoteTip == "" {
-			return "", nil
+			return CommandResult{}, nil
 		}
-		return g.state.remoteTip + "\trefs/heads/auto/x\n", nil
+		return stdoutResult(g.state.remoteTip + "\trefs/heads/auto/x\n"), nil
 	default:
 		g.t.Errorf("control plane ran a non-read-only git command: git %s", key)
-		return "", errors.New("forbidden")
+		return CommandResult{}, errors.New("forbidden")
 	}
 }
 
@@ -71,12 +90,12 @@ type remoteGH struct {
 	calls []string
 }
 
-func (g *remoteGH) Run(ctx context.Context, dir string, name string, args ...string) (string, error) {
+func (g *remoteGH) Run(ctx context.Context, dir string, name string, args ...string) (CommandResult, error) {
 	key := name + " " + strings.Join(args, " ")
 	g.calls = append(g.calls, key)
 	if name != "gh" {
 		g.t.Errorf("unexpected exec command %q", key)
-		return "", errors.New("forbidden")
+		return CommandResult{}, errors.New("forbidden")
 	}
 	switch {
 	case len(args) >= 2 && args[0] == "issue" && args[1] == "list":
@@ -89,15 +108,51 @@ func (g *remoteGH) Run(ctx context.Context, dir string, name string, args ...str
 			out += fmt.Sprintf(`{"number":%d,"title":%q}`, n, title)
 			first = false
 		}
-		return out + "]", nil
-	case len(args) >= 2 && args[0] == "pr" && args[1] == "view":
-		if g.state.prNumber == 0 {
-			return "no pull requests found", errors.New("exit status 1")
+		return stdoutResult(out + "]"), nil
+	case len(args) >= 3 && args[0] == "issue" && args[1] == "view":
+		number, err := strconv.Atoi(args[2])
+		if err != nil {
+			return CommandResult{}, err
 		}
-		return fmt.Sprintf(`{"number":%d,"body":%q}`, g.state.prNumber, g.state.prBody), nil
+		title, ok := g.state.issues[number]
+		if !ok {
+			return stdoutResult("issue not found"), errors.New("exit status 1")
+		}
+		return stdoutResult(fmt.Sprintf(`{"number":%d,"title":%q,"body":%q,"state":"CLOSED"}`,
+			number, title, issueMarker("item-test"))), nil
+	case len(args) >= 2 && args[0] == "api" && args[1] == "--paginate":
+		marker := markerFromSearchArgs(args)
+		items := ""
+		for n := range g.state.issues {
+			if items != "" {
+				items += ","
+			}
+			items += fmt.Sprintf(`{"number":%d,"body":%q,"state":"OPEN"}`, n, marker)
+		}
+		return stdoutResult(`[{"items":[` + items + `]}]`), nil
+	case len(args) >= 2 && args[0] == "pr" && (args[1] == "list" || args[1] == "view"):
+		if g.state.prNumber == 0 {
+			if args[1] == "list" {
+				return stdoutResult("[]"), nil
+			}
+			return stdoutResult("pull request not found"), errors.New("exit status 1")
+		}
+		base, head := g.state.prBase, g.state.prHead
+		if base == "" {
+			base = "main"
+		}
+		if head == "" {
+			head = "auto/x"
+		}
+		record := fmt.Sprintf(`{"number":%d,"body":%q,"baseRefName":%q,"headRefName":%q}`,
+			g.state.prNumber, g.state.prBody, base, head)
+		if args[1] == "list" {
+			return stdoutResult("[" + record + "]"), nil
+		}
+		return stdoutResult(record), nil
 	default:
 		g.t.Errorf("control plane ran a non-read-only gh command: %s", key)
-		return "", errors.New("forbidden")
+		return CommandResult{}, errors.New("forbidden")
 	}
 }
 
@@ -108,8 +163,8 @@ type remoteCore struct {
 	effects []func()
 }
 
-func (c *remoteCore) Run(ctx context.Context, prompt string, r engine.Reporter) (*engine.RunResult, error) {
-	c.prompts = append(c.prompts, prompt)
+func (c *remoteCore) Run(ctx context.Context, attempt CoreAttempt, r CoreReporter) CoreOutcome {
+	c.prompts = append(c.prompts, attempt.Prompt)
 	if len(c.effects) > 0 {
 		effect := c.effects[0]
 		c.effects = c.effects[1:]
@@ -117,12 +172,15 @@ func (c *remoteCore) Run(ctx context.Context, prompt string, r engine.Reporter) 
 			effect()
 		}
 	}
-	return &engine.RunResult{FinalMessage: "step attempted"}, nil
+	return successfulCoreOutcome(attempt, "step attempted")
 }
 
-func (c *remoteCore) SetUserAsker(a tools.UserAsker) {}
-func (c *remoteCore) SetModel(model string) error    { return nil }
-func (c *remoteCore) WorkDir() string                { return "/wt" }
+func (c *remoteCore) Drain(context.Context) error { return nil }
+func (c *remoteCore) Close(context.Context) error { return nil }
+
+func (c *remoteCore) SetUserAsker(a QuestionAsker) {}
+func (c *remoteCore) SetModel(model string) error  { return nil }
+func (c *remoteCore) WorkDir() string              { return "/wt" }
 func (c *remoteCore) StagePrompt(ctx context.Context, command, args string) (string, error) {
 	return fmt.Sprintf("PROMPT[%s|%s]", command, args), nil
 }
@@ -146,12 +204,28 @@ func newPublisher(t *testing.T, state *repoState) (*RemotePublisher, *remoteGit,
 }
 
 func happyItem() LedgerItem {
-	return LedgerItem{Slug: "x", Title: "Engine memory writes", Status: StatusInProgress, Branch: "auto/x"}
+	return LedgerItem{ItemID: "item-test", Slug: "x", Title: "Engine memory writes", Status: StatusInProgress, Branch: "auto/x"}
+}
+
+func recordRemoteItem(item *LedgerItem, snapshots *[]LedgerItem) func(string, func(*LedgerItem)) error {
+	return func(_ string, mut func(*LedgerItem)) error {
+		mut(item)
+		if snapshots != nil {
+			*snapshots = append(*snapshots, *item)
+		}
+		return nil
+	}
 }
 
 func TestPublishDrivesOrderedSequence(t *testing.T) {
 	state := &repoState{dirty: true, localTip: "aaa111", issues: map[int]string{}}
-	pub, _, _, _ := newPublisher(t, state)
+	git := &remoteGit{t: t, state: state}
+	gh := &remoteGH{t: t, state: state}
+	baseReporter := NewTerminalReporter(io.Discard)
+	var timeline []string
+	reporter := &recordingRemoteEventReporter{Reporter: baseReporter, timeline: &timeline}
+	machine := NewStageMachine(&reviewingEngineer{}, reporter)
+	pub := NewRemotePublisher(machine, git, gh, reporter, remoteConfig())
 	core := &remoteCore{effects: []func(){
 		func() { state.staged = true },
 		func() { state.staged = false; state.dirty = false; state.commitCount = 1; state.localTip = "bbb222" },
@@ -161,10 +235,18 @@ func TestPublishDrivesOrderedSequence(t *testing.T) {
 	}}
 
 	var recorded []LedgerItem
+	var operations []string
+	bindingWasPending := false
 	item := happyItem()
-	record := func(mut func(*LedgerItem)) {
+	record := func(operation string, mut func(*LedgerItem)) error {
 		mut(&item)
+		if operation == "issue-binding" {
+			bindingWasPending = len(item.Outbox) == 1 && !item.Outbox[0].Delivered
+		}
+		operations = append(operations, operation)
+		timeline = append(timeline, "record:"+operation)
 		recorded = append(recorded, item)
+		return nil
 	}
 
 	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, record)
@@ -188,6 +270,19 @@ func TestPublishDrivesOrderedSequence(t *testing.T) {
 	if item.Issue != 31 || item.PR != 32 {
 		t.Errorf("recorded item = %+v, want issue/pr recorded via callback", item)
 	}
+	if !bindingWasPending {
+		t.Fatal("issue binding did not persist the issue and pending event atomically")
+	}
+	if len(item.Outbox) != 1 || !item.Outbox[0].Delivered {
+		t.Fatalf("outbox = %+v, want one delivered issue event", item.Outbox)
+	}
+	event := item.Outbox[0]
+	if event.EventID != "issue:item-test:31" || event.ItemID != item.ItemID || event.Kind != RemoteEventIssue || event.Number != 31 {
+		t.Errorf("outbox event = %+v, want stable issue identity", event)
+	}
+	if len(reporter.events) != 1 || reporter.events[0].EventID != event.EventID {
+		t.Errorf("reported events = %+v, want one event matching the durable outbox", reporter.events)
+	}
 
 	// The issue number must be durably recorded before the PR step runs so
 	// an interrupted run reuses it (Edge Cases).
@@ -199,6 +294,114 @@ func TestPublishDrivesOrderedSequence(t *testing.T) {
 	}
 	if !foundIssueBeforePR {
 		t.Error("issue number was not recorded before the PR step completed")
+	}
+	wantOperations := []string{
+		"publish-stage-changes-intent",
+		"core-attempt-core:item-test:stage-changes:1-running",
+		"core-attempt-core:item-test:stage-changes:1-terminal",
+		"publish-stage-changes-verified",
+		"publish-commit-staged-intent",
+		"core-attempt-core:item-test:commit-staged:2-running",
+		"core-attempt-core:item-test:commit-staged:2-terminal",
+		"publish-commit-staged-verified",
+		"publish-push-intent",
+		"core-attempt-core:item-test:push:3-running",
+		"core-attempt-core:item-test:push:3-terminal",
+		"publish-push-verified",
+		"publish-issue-intent",
+		"core-attempt-core:item-test:issue:4-running",
+		"core-attempt-core:item-test:issue:4-terminal",
+		"issue-binding",
+		"issue-event-delivered",
+		"publish-pr-intent",
+		"core-attempt-core:item-test:pr:5-running",
+		"core-attempt-core:item-test:pr:5-terminal",
+		"pr-binding",
+	}
+	if !reflect.DeepEqual(operations, wantOperations) {
+		t.Errorf("record operations = %v, want %v", operations, wantOperations)
+	}
+	wantIssueSequence := []string{
+		"record:issue-binding",
+		"event:issue:item-test:31",
+		"record:issue-event-delivered",
+		"record:publish-pr-intent",
+	}
+	var issueSequence []string
+	for _, entry := range timeline {
+		if entry == "record:issue-binding" || entry == "event:issue:item-test:31" ||
+			entry == "record:issue-event-delivered" || entry == "record:publish-pr-intent" {
+			issueSequence = append(issueSequence, entry)
+		}
+	}
+	if !reflect.DeepEqual(issueSequence, wantIssueSequence) {
+		t.Errorf("issue publication sequence = %v, want %v", issueSequence, wantIssueSequence)
+	}
+}
+
+func TestPublishReplaysPendingIssueEventBeforePRWithStableIdentity(t *testing.T) {
+	state := &repoState{
+		dirty:       false,
+		commitCount: 1,
+		localTip:    "bbb222",
+		remoteTip:   "bbb222",
+		issues:      map[int]string{31: "renamed and closed"},
+	}
+	git := &remoteGit{t: t, state: state}
+	gh := &remoteGH{t: t, state: state}
+	var output bytes.Buffer
+	terminal := NewTerminalReporter(&output)
+	reporter := &recordingRemoteEventReporter{Reporter: terminal, terminal: terminal}
+	pub := NewRemotePublisher(NewStageMachine(&reviewingEngineer{}, reporter), git, gh, reporter, remoteConfig())
+	item := happyItem()
+	item.Stage = StageIssue
+	item.StageState = StageStateVerified
+	item.Issue = 31
+	item.Outbox = []RemoteEventRecord{{
+		EventID: "issue:item-test:31",
+		ItemID:  item.ItemID,
+		Kind:    RemoteEventIssue,
+		Number:  31,
+	}}
+
+	core := &remoteCore{effects: []func(){func() {
+		state.prNumber = 32
+		state.prBody = "Closes #31"
+	}}}
+	ackAttempts := 0
+	record := func(operation string, mut func(*LedgerItem)) error {
+		if operation == "issue-event-delivered" {
+			ackAttempts++
+			if ackAttempts == 1 {
+				return errors.New("simulated delivery ack failure")
+			}
+		}
+		mut(&item)
+		return nil
+	}
+
+	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, record); err == nil {
+		t.Fatal("first Publish returned nil, want delivery ack failure")
+	}
+	if len(core.prompts) != 0 {
+		t.Fatalf("core runs after failed delivery ack = %d, want 0 before PR work", len(core.prompts))
+	}
+	if item.Outbox[0].Delivered {
+		t.Fatal("failed delivery ack marked the event delivered")
+	}
+
+	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, record)
+	if err != nil {
+		t.Fatalf("second Publish returned error: %v", err)
+	}
+	if result.PR != 32 || !item.Outbox[0].Delivered {
+		t.Errorf("resumed result/item = %+v / %+v, want PR 32 and delivered event", result, item.Outbox)
+	}
+	if len(reporter.events) != 2 || reporter.events[0].EventID != reporter.events[1].EventID {
+		t.Errorf("delivery attempts = %+v, want two attempts with one stable EventID", reporter.events)
+	}
+	if got := strings.Count(output.String(), "[remote] issue #31"); got != 1 {
+		t.Errorf("terminal issue observations = %d, want one idempotent logical output; output=%q", got, output.String())
 	}
 }
 
@@ -217,7 +420,7 @@ func TestPublishNothingToCommitEngineerSteers(t *testing.T) {
 	}}
 
 	item := happyItem()
-	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, func(mut func(*LedgerItem)) { mut(&item) }); err != nil {
+	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil)); err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
 
@@ -256,7 +459,7 @@ func TestPublishPRMustLinkIssue(t *testing.T) {
 	}}
 
 	item := happyItem()
-	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, func(mut func(*LedgerItem)) { mut(&item) })
+	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil))
 	if err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
@@ -265,6 +468,47 @@ func TestPublishPRMustLinkIssue(t *testing.T) {
 	}
 	if len(core.prompts) != 6 {
 		t.Fatalf("core runs = %d, want 6 (PR body fixed once, TC-012): %q", len(core.prompts), core.prompts)
+	}
+}
+
+func TestCPAUT022PublishPRMustTargetConfiguredBaseAndItemBranch(t *testing.T) {
+	state := &repoState{dirty: true, localTip: "aaa111", issues: map[int]string{}}
+	pub, _, _, eng := newPublisher(t, state)
+	eng.reviews = []string{"Retarget the pull request to main from auto/x."}
+
+	core := &remoteCore{effects: []func(){
+		func() { state.staged = true },
+		func() { state.staged = false; state.dirty = false; state.commitCount = 1; state.localTip = "bbb222" },
+		func() { state.remoteTip = state.localTip },
+		func() { state.issues[31] = "Engine memory writes" },
+		func() {
+			state.prNumber = 32
+			state.prBody = "Closes #31"
+			state.prBase = "release"
+			state.prHead = "wrong-branch"
+		},
+		func() {
+			state.prBase = "main"
+			state.prHead = "auto/x"
+		},
+	}}
+
+	item := happyItem()
+	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil))
+	if err != nil {
+		t.Fatalf("Publish returned error: %v", err)
+	}
+	if result.PR != 32 {
+		t.Errorf("result.PR = %d, want 32 after correcting the PR target", result.PR)
+	}
+	if len(core.prompts) != 6 {
+		t.Fatalf("core runs = %d, want 6 (wrong PR target corrected once): %q", len(core.prompts), core.prompts)
+	}
+	if eng.reviewCalls != 1 {
+		t.Errorf("Engineer review calls = %d, want 1 for the wrong PR target", eng.reviewCalls)
+	}
+	if len(eng.gaps) != 1 || !strings.Contains(eng.gaps[0], "main") || !strings.Contains(eng.gaps[0], "auto/x") {
+		t.Errorf("Engineer gaps = %q, want the exact expected base and head", eng.gaps)
 	}
 }
 
@@ -280,7 +524,7 @@ func TestPublishNeverMerges(t *testing.T) {
 	}}
 
 	item := happyItem()
-	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, func(mut func(*LedgerItem)) { mut(&item) }); err != nil {
+	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil)); err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
 
@@ -307,7 +551,7 @@ func TestPublishIdempotentOnResume(t *testing.T) {
 
 	item := happyItem()
 	item.Issue = 31
-	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, func(mut func(*LedgerItem)) { mut(&item) })
+	result, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil))
 	if err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
@@ -336,7 +580,7 @@ func TestPublishEngineerApprovalCannotSkipPush(t *testing.T) {
 	}}
 
 	item := happyItem()
-	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, func(mut func(*LedgerItem)) { mut(&item) }); err != nil {
+	if _, err := pub.Publish(context.Background(), core, Worktree{Path: "/wt", Branch: "auto/x", Slug: "x"}, item, recordRemoteItem(&item, nil)); err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
 	if len(core.prompts) != 4 {

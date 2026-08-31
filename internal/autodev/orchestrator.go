@@ -2,6 +2,7 @@ package autodev
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -85,6 +86,13 @@ func New(deps Deps) *Orchestrator {
 // Cases), seeds the ledger, then processes items one at a time until no
 // in-progress or pending item remains.
 func (o *Orchestrator) Run(ctx context.Context) error {
+	if err := validateConcurrency(o.deps.Config.Concurrency); err != nil {
+		return err
+	}
+	led, err := LoadLedger(filepath.Join(o.deps.RepoRoot, ".foxharness", "autodev-state.json"), o.deps.Clock)
+	if err != nil {
+		return err
+	}
 	if err := o.checkPreconditions(ctx); err != nil {
 		return err
 	}
@@ -100,19 +108,20 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
-	led, err := LoadLedger(filepath.Join(o.deps.RepoRoot, ".foxharness", "autodev-state.json"), o.deps.Clock)
-	if err != nil {
-		return err
-	}
-	led.Seed(items)
+	reconcileErr := led.Seed(items)
 	if err := led.Save(); err != nil {
-		return err
+		return &LedgerCommitError{Operation: "seed", Err: err}
+	}
+	if reconcileErr != nil {
+		return reconcileErr
 	}
 
 	total := len(led.InProgress()) + len(led.Pending())
 	index := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		item, ok := o.nextItem(led)
 		if !ok {
 			break
@@ -141,7 +150,10 @@ func (o *Orchestrator) nextItem(led *Ledger) (LedgerItem, bool) {
 // processItem runs one item end to end: worktree, per-item core runner with
 // the engineer asker installed, SDD stages from the recorded resume point,
 // remote publishing, ledger completion, and worktree cleanup.
-func (o *Orchestrator) processItem(ctx context.Context, index, total int, item LedgerItem, led *Ledger) error {
+func (o *Orchestrator) processItem(ctx context.Context, index, total int, item LedgerItem, led *Ledger) (retErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	o.deps.Reporter.OnItemStart(ctx, index, total, item)
 
 	wt, err := o.worktrees.Create(ctx, item)
@@ -150,58 +162,137 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 	}
 	o.deps.Reporter.OnWorktree(ctx, wt)
 
-	record := func(mut func(*LedgerItem)) {
-		led.Mark(item.Slug, mut)
-		if err := led.Save(); err != nil {
-			o.deps.Reporter.OnInfo(ctx, "WARNING: failed to save ledger: "+err.Error())
+	record := func(operation string, mut func(*LedgerItem)) error {
+		if err := led.Commit(item.Slug, mut); err != nil {
+			return &LedgerCommitError{Operation: operation, Err: err}
 		}
+		return nil
 	}
-	record(func(it *LedgerItem) {
+	if err := record("item-in-progress", func(it *LedgerItem) {
 		it.Status = StatusInProgress
 		it.Branch = wt.Branch
-	})
-
-	core, err := o.deps.CoreFactory.New(ctx, wt.Path, o.deps.Config.Model)
-	if err != nil {
-		return fmt.Errorf("create core runner for %s: %w", item.Slug, err)
+	}); err != nil {
+		return err
 	}
 
 	sc := &StageContext{
-		Item:       Item{Type: "", Title: item.Title, Priority: item.Priority, Description: item.Description},
-		Slug:       item.Slug,
-		WorkDir:    wt.Path,
-		RepoRoot:   o.deps.RepoRoot,
-		Branch:     wt.Branch,
-		BaseBranch: o.deps.Config.BaseBranch,
-		Remote:     o.deps.Config.Remote,
-		FeatureDir: item.FeatureDir,
+		Item:             Item{SourceID: item.SourceID, Type: "", Title: item.Title, Priority: item.Priority, Description: item.Description},
+		ItemID:           item.ItemID,
+		RequirementBytes: item.RequirementBytes,
+		RequirementHash:  item.RequirementHash,
+		Slug:             item.Slug,
+		WorkDir:          wt.Path,
+		RepoRoot:         o.deps.RepoRoot,
+		Branch:           wt.Branch,
+		BaseBranch:       o.deps.Config.BaseBranch,
+		Remote:           o.deps.Config.Remote,
+		FeatureDir:       item.FeatureDir,
 	}
+	bindCoreAttemptRecorder(sc, &item, record)
+	if err := preflightFeatureWorkspace(sc); err != nil {
+		return fmt.Errorf("validate feature workspace for %s: %w", item.Slug, err)
+	}
+	core := newItemCoreRunner(ctx, o.deps.CoreFactory, wt.Path, o.deps.Config.Model)
 	core.SetUserAsker(NewEngineerAsker(o.deps.Engineer, o.deps.Reporter, sc))
-
-	for _, st := range o.pipeline[o.resumeIndex(item):] {
-		record(func(it *LedgerItem) { it.Stage = st.Name })
-		if err := o.machine.RunStep(ctx, core, sc, st); err != nil {
+	coreCloseAttempted := false
+	closeCore := func() error {
+		if coreCloseAttempted {
+			return nil
+		}
+		coreCloseAttempted = true
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coreLifecycleTimeout)
+		defer cancel()
+		if err := core.Close(closeCtx); err != nil {
+			return &CoreLifecycleError{Operation: "close", Err: err}
+		}
+		return nil
+	}
+	defer func() {
+		if err := closeCore(); err != nil {
+			retErr = errors.Join(retErr, err)
+		}
+	}()
+	start := o.resumeIndex(item)
+	for i := start; i < len(o.pipeline); i++ {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if sc.FeatureDir != "" {
-			record(func(it *LedgerItem) { it.FeatureDir = sc.FeatureDir })
+		st := o.pipeline[i]
+		stage, ok := pipelineStage(st.Name)
+		if !ok {
+			return fmt.Errorf("pipeline stage %q is not part of the durable stage vocabulary", st.Name)
+		}
+		resuming := i == start && item.Stage == stage && item.StageState == StageStateRunning
+		if !resuming {
+			if err := record("stage-"+st.Name+"-intent", func(it *LedgerItem) {
+				it.Stage = stage
+				it.StageState = StageStateRunning
+			}); err != nil {
+				return err
+			}
+		}
+		var runErr error
+		if resuming {
+			runErr = o.machine.ResumeStep(ctx, core, sc, st)
+		} else {
+			runErr = o.machine.RunStep(ctx, core, sc, st)
+		}
+		verifiedTerminal := false
+		if runErr != nil {
+			var outcomeErr *CoreOutcomeError
+			verifiedTerminal = errors.As(runErr, &outcomeErr) && outcomeErr.Verified
+		}
+		if runErr != nil && !verifiedTerminal {
+			return runErr
+		}
+		if err := record("stage-"+st.Name+"-verified", func(it *LedgerItem) {
+			it.Stage = stage
+			it.StageState = StageStateVerified
+			if sc.FeatureDir != "" {
+				it.FeatureDir = sc.FeatureDir
+			}
+		}); err != nil {
+			return err
+		}
+		if verifiedTerminal {
+			return runErr
 		}
 	}
 
-	record(func(it *LedgerItem) { it.Stage = "publish" })
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := core.ensure(); err != nil {
+		return err
+	}
 	current, _ := led.Get(item.Slug)
+	if !isPublishingStage(current.Stage) {
+		if err := record("publish-intent", func(it *LedgerItem) {
+			it.Stage = StagePublish
+			it.StageState = StageStateRunning
+		}); err != nil {
+			return err
+		}
+		current, _ = led.Get(item.Slug)
+	}
 	current.Description = item.Description
 	result, err := o.publisher.Publish(ctx, core, wt, current, record)
 	if err != nil {
 		return err
 	}
+	if err := closeCore(); err != nil {
+		return err
+	}
 
-	record(func(it *LedgerItem) {
+	if err := record("item-done", func(it *LedgerItem) {
 		it.Status = StatusDone
-		it.Stage = "done"
+		it.Stage = StageDone
+		it.StageState = StageStateVerified
 		it.Issue = result.Issue
 		it.PR = result.PR
-	})
+	}); err != nil {
+		return err
+	}
 	done, _ := led.Get(item.Slug)
 	o.deps.Reporter.OnItemDone(ctx, done)
 
@@ -213,33 +304,55 @@ func (o *Orchestrator) processItem(ctx context.Context, index, total int, item L
 	return nil
 }
 
-// resumeIndex maps the item's recorded stage to the pipeline position to
-// resume from: unknown/empty stages start at 0, a recorded SDD stage
-// resumes there, and post-pipeline stages (publish/done) skip the SDD
-// stages entirely (REQ-022).
+// resumeIndex maps a running SDD stage to itself and a verified SDD stage
+// to its successor. Post-pipeline stages skip the SDD pipeline entirely;
+// invalid stages have already failed closed while loading the ledger.
 func (o *Orchestrator) resumeIndex(item LedgerItem) int {
-	if item.Stage == "" {
+	if item.Stage == StageNone {
 		return 0
 	}
 	for i, st := range o.pipeline {
-		if st.Name == item.Stage {
+		if PipelineStage(st.Name) == item.Stage {
+			if item.StageState == StageStateVerified {
+				return i + 1
+			}
 			return i
 		}
 	}
 	return len(o.pipeline)
 }
 
+func isPublishingStage(stage PipelineStage) bool {
+	switch stage {
+	case StagePublish, StageStageChanges, StageCommitStaged, StagePush, StageIssue, StagePR:
+		return true
+	default:
+		return false
+	}
+}
+
 // checkPreconditions validates the genuine startup requirements: the repo
 // root is a git work tree and gh is installed and authenticated. These are
 // the only failure paths handled outside the engineer↔core loop (REQ-027).
 func (o *Orchestrator) checkPreconditions(ctx context.Context) error {
-	out, err := o.deps.Git.Run(ctx, o.deps.RepoRoot, "rev-parse", "--is-inside-work-tree")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	result, runErr := o.deps.Git.Run(ctx, o.deps.RepoRoot, "rev-parse", "--is-inside-work-tree")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	out, err := strictCommandStdout(result, runErr)
 	if err != nil || strings.TrimSpace(out) != "true" {
-		return &PreconditionError{Reason: fmt.Sprintf("%s is not a git repository (git rev-parse: %s)", o.deps.RepoRoot, strings.TrimSpace(out))}
+		return &PreconditionError{Reason: fmt.Sprintf("%s is not a git repository (git rev-parse: %s; %v)", o.deps.RepoRoot, strings.TrimSpace(result.Output()), err)}
 	}
 	if o.deps.Config.RemoteFlow.CreateIssue || o.deps.Config.RemoteFlow.OpenPR {
-		if out, err := o.deps.Exec.Run(ctx, o.deps.RepoRoot, "gh", "auth", "status"); err != nil {
-			return &PreconditionError{Reason: fmt.Sprintf("gh is not installed or not authenticated (gh auth status: %s)", strings.TrimSpace(out))}
+		result, runErr := o.deps.Exec.Run(ctx, o.deps.RepoRoot, "gh", "auth", "status")
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := strictCommandStdout(result, runErr); err != nil {
+			return &PreconditionError{Reason: fmt.Sprintf("gh is not installed or not authenticated (gh auth status: %s; %v)", strings.TrimSpace(result.Output()), err)}
 		}
 	}
 	return nil

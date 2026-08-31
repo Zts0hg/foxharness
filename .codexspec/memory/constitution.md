@@ -1,23 +1,21 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version: 1.0.0 → 2.0.0
-Bump Rationale: MAJOR: Establishing TDD as mandatory development practice and redefining documentation standards with Go-specific block-level comment requirements
+Version: 2.0.0 → 2.1.0
+Bump Rationale: MINOR: Add a governing principle for clear, standard developer-facing technical communication
 
 Changes:
-- Modified: Core Principles - Restructured around TDD and engineering documentation standards
-- Modified: Testing Standards - Now mandates TDD with explicit Red-Green-Refactor cycle
-- Modified: Documentation - Now mandates block-level comments per Go best practices, prohibits teaching line comments
-- Added: Code Quality section emphasizing readability, testability, and extensibility
-- Added: Go Documentation Standards section with specific comment style rules
+- Modified: Core Principles - Added clear and standard technical communication requirements
+- Added: Principle 8, Clear and Standard Technical Communication
+- Removed: None
 
 Template Consistency Check:
-- .codexspec/templates/docs/plan-template-*.md: ✅ aligned - Phase 3 now references testing that aligns with TDD
-- .codexspec/templates/docs/spec-template-*.md: ✅ aligned - Requirements sections support TDD acceptance criteria
-- .codexspec/templates/docs/tasks-template-*.md: ✅ aligned - Task structure supports TDD workflow with test tasks before implementation
-- .claude/commands/codexspec/*.md: ✅ aligned - Command files reference constitution generically
-- README.md: ⚠ skipped: file not found
-- CLAUDE.md: ⚠ issues: File should be updated to reflect new TDD and documentation standards (deferred - user can update separately)
+- .codexspec/templates/docs/plan-template-*.md: ✅ aligned
+- .codexspec/templates/docs/spec-template-*.md: ✅ aligned
+- .codexspec/templates/docs/tasks-template-*.md: ✅ aligned
+- .claude/commands/*.md: ✅ aligned - Commands reference the constitution generically
+- README.md: ✅ aligned - No conflicting terminology policy
+- CLAUDE.md: ✅ aligned - Constitution compliance section imports and enforces this file
 
 Deferred TODOs:
 - None
@@ -28,9 +26,9 @@ Deferred TODOs:
 
 # Project Constitution
 
-**Version**: 2.0.0
+**Version**: 2.1.0
 **Ratification Date**: 2025-01-01
-**Last Amended**: 2025-05-15
+**Last Amended**: 2026-08-28
 
 ## Core Principles
 
@@ -198,6 +196,35 @@ Deferred TODOs:
 - Use constant-time comparison for secrets
 - Follow Go security best practices
 
+### 8. Clear and Standard Technical Communication
+
+**Terminology**:
+- Developer-facing communication MUST use common, precise software engineering terms when
+  suitable terms already exist.
+- Contributors MUST NOT invent shorthand labels, compound terms, or acronyms merely to
+  summarize a problem.
+- When a specialized term is necessary, it MUST be defined in plain language at first use and
+  related to a concrete example or established practice.
+
+**Clarity**:
+- Explanations MUST prefer concrete behavior, affected code paths, and observable consequences
+  over abstract labels.
+- Terminology MUST improve precision and understanding; unfamiliar wording that obscures the
+  issue MUST be replaced with clearer language.
+- Communication MUST be written for the intended developer audience without assuming knowledge
+  of uncommon or locally invented vocabulary.
+
+**Why**: Technical terminology is useful only when it gives collaborators a shared and precise
+meaning. Uncommon or invented shorthand increases ambiguity, hides the underlying behavior, and
+makes review and decision-making harder.
+
+**How to apply**:
+- Prefer established terms such as root-cause analysis, change-impact analysis, and regression
+  verification when those terms accurately describe the work.
+- Explain a cross-module rule directly before introducing any shorter label for it.
+- Replace ambiguous summary phrases with the specific condition, trigger, and consequence being
+  discussed.
+
 ## Development Workflow
 
 ### TDD Workflow (Mandatory)
@@ -292,5 +319,5 @@ All contributors MUST:
 
 ---
 
-*Last updated: 2025-05-15*
-*Version: 2.0.0*
+*Last updated: 2026-08-28*
+*Version: 2.1.0*

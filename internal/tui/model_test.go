@@ -11,18 +11,19 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/checkpoint"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/compaction"
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/permission"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/settings"
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/shellcmd"
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -34,27 +35,30 @@ type fakeRunner struct {
 	workDir    string
 	model      string
 
-	runs              []string
-	runModes          []collaboration.Mode
-	runErr            error
-	runErrs           []error
-	setModelErr       error
-	newErr            error
-	nextRunID         int
-	collaborationMode collaboration.Mode
-	contextUsage      string
-	history           []session.MessageRecord
-	historyErr        error
-	truncatedSeq      int64
-	restoreStateSeq   int64
-	restoreStateOK    bool
-	restoreStateErr   error
-	checkpointer      checkpoint.Checkpointer
-	compactResult     *compaction.CompactResult
-	compactErr        error
-	compactInstr      string
-	memoryIndex       string
-	permissionState   *permission.State
+	runs                []string
+	runModes            []collaboration.Mode
+	runErr              error
+	runErrs             []error
+	setModelErr         error
+	newErr              error
+	nextRunID           int
+	collaborationMode   collaboration.Mode
+	contextUsage        string
+	history             []session.MessageRecord
+	historyErr          error
+	truncatedSeq        int64
+	truncateErr         error
+	restoreStateSeq     int64
+	restoreStateOK      bool
+	restoreStateErr     error
+	checkpointer        checkpoint.Checkpointer
+	compactResult       *compaction.CompactResult
+	compactErr          error
+	compactInstr        string
+	memoryIndex         string
+	permissionState     *permission.State
+	supportRestrictions bool
+	supportEffort       bool
 }
 
 // AutoMemoryIndex satisfies the Runner interface for the test double; tests that
@@ -69,7 +73,7 @@ type projectHistoryRunner struct {
 	projectHistoryErr error
 }
 
-func (r *projectHistoryRunner) ProjectInputHistory(limit int) ([]string, error) {
+func (r *projectHistoryRunner) ProjectInputHistory(_ context.Context, limit int) ([]string, error) {
 	if r.projectHistoryErr != nil {
 		return nil, r.projectHistoryErr
 	}
@@ -79,92 +83,109 @@ func (r *projectHistoryRunner) ProjectInputHistory(limit int) ([]string, error) 
 	return append([]string(nil), r.projectHistory...), nil
 }
 
-func (r *fakeRunner) RunInCollaborationMode(ctx context.Context, prompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
-	return r.runInCollaborationMode(ctx, prompt, mode, reporter)
-}
-
-func (r *fakeRunner) runInCollaborationMode(ctx context.Context, prompt string, mode collaboration.Mode, reporter engine.Reporter) (*engine.RunResult, error) {
-	r.runs = append(r.runs, prompt)
-	r.runModes = append(r.runModes, collaboration.Normalize(mode))
+func (r *fakeRunner) Run(ctx context.Context, command app.RunCommand, sink app.NotificationSink) (*app.RunOutcome, error) {
+	r.runs = append(r.runs, command.Prompt)
+	r.runModes = append(r.runModes, collaboration.Normalize(collaboration.Mode(command.CollaborationMode)))
 	r.nextRunID++
 	runID := "run-1"
 	if r.nextRunID > 1 {
 		runID = "run-2"
 	}
-	reporter.OnRunStart(ctx, r.sessionID, runID)
-	reporter.OnThinking(ctx, 1)
-	reporter.OnToolCall(ctx, "bash", `{"command":"date"}`)
-	reporter.OnToolResult(ctx, "bash", "2026年 5月17日 星期日 14时17分46秒 CST", false)
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationRunStarted, SessionID: r.sessionID, RunID: runID})
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationThinking, SessionID: r.sessionID, RunID: runID, Turn: 1})
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationToolCall, SessionID: r.sessionID, RunID: runID, Name: "bash", Content: `{"command":"date"}`})
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationToolResult, SessionID: r.sessionID, RunID: runID, Name: "bash", Content: "2026年 5月17日 星期日 14时17分46秒 CST"})
 	runErr := r.runErr
 	if len(r.runErrs) > 0 {
 		runErr = r.runErrs[0]
 		r.runErrs = r.runErrs[1:]
 	}
 	if runErr != nil {
-		reporter.OnRunError(ctx, r.sessionID, runID, runErr)
+		notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationRunError, SessionID: r.sessionID, RunID: runID, Content: runErr.Error(), IsError: true})
 		return nil, runErr
 	}
-	reporter.OnMessage(ctx, "answer: "+prompt)
-	result := &engine.RunResult{
-		FinalMessage: "answer: " + prompt,
-		SessionID:    r.sessionID,
-		RunID:        runID,
-		MetricsPath:  "/tmp/metrics.jsonl",
-		TracePath:    "/tmp/trace.jsonl",
-	}
-	reporter.OnRunComplete(ctx, *result)
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationMessage, SessionID: r.sessionID, RunID: runID, Content: "answer: " + command.Prompt})
+	result := &app.RunOutcome{FinalMessage: "answer: " + command.Prompt, SessionID: r.sessionID, RunID: runID, MetricsPath: "/tmp/metrics.jsonl", TracePath: "/tmp/trace.jsonl"}
+	notifyFakeRun(ctx, sink, app.Notification{Kind: app.NotificationRunCompleted, SessionID: r.sessionID, RunID: runID})
 	return result, nil
 }
 
-func (r *fakeRunner) NewSession(ctx context.Context) (string, error) {
+func notifyFakeRun(ctx context.Context, sink app.NotificationSink, notification app.Notification) {
+	if sink != nil {
+		sink.Notify(ctx, notification)
+	}
+}
+
+func snapshotConversation(records []session.MessageRecord) []app.ConversationRecord {
+	result := make([]app.ConversationRecord, len(records))
+	for index, record := range records {
+		calls := make([]app.ConversationToolCall, len(record.Message.ToolCalls))
+		for callIndex, call := range record.Message.ToolCalls {
+			calls[callIndex] = app.ConversationToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments)}
+		}
+		result[index] = app.ConversationRecord{
+			Sequence: record.Seq, Time: record.Time, Role: string(record.Message.Role),
+			Content: record.Message.Content, DisplayContent: record.DisplayContent,
+			ToolCallID: record.Message.ToolCallID, ToolCalls: calls,
+			IsMeta: record.IsMeta, IsCompactSummary: record.IsCompactSummary,
+			IsVisibleInTranscriptOnly: record.IsVisibleInTranscriptOnly,
+		}
+	}
+	return result
+}
+
+func (r *fakeRunner) NewSession(context.Context, app.NewSessionCommand) (app.InteractiveSessionState, error) {
 	if r.newErr != nil {
-		return "", r.newErr
+		return app.InteractiveSessionState{}, r.newErr
 	}
 	r.sessionID = "sess-new"
 	r.sessionDir = "/tmp/sess-new"
 	r.collaborationMode = collaboration.ModeDefault
-	return r.sessionID, nil
+	if r.permissionState != nil {
+		r.permissionState.ClearGrants()
+	}
+	return r.State(), nil
 }
 
-func (r *fakeRunner) SessionID() string {
-	return r.sessionID
-}
-
-func (r *fakeRunner) SessionDir() string {
-	return r.sessionDir
-}
-
-func (r *fakeRunner) WorkDir() string {
-	return r.workDir
-}
-
-func (r *fakeRunner) Model() string {
-	return r.model
-}
-
-func (r *fakeRunner) SetModel(model string) error {
+func (r *fakeRunner) UpdateModel(_ context.Context, command app.ModelCommand) (app.InteractiveSessionState, error) {
 	if r.setModelErr != nil {
-		return r.setModelErr
+		return app.InteractiveSessionState{}, r.setModelErr
 	}
-	r.model = model
-	return nil
+	r.model = command.Model
+	return r.State(), nil
 }
 
-func (r *fakeRunner) ContextUsage() string {
+func (r *fakeRunner) State() app.InteractiveSessionState {
+	usage := r.contextUsage
 	if r.contextUsage == "" {
-		return "7%"
+		usage = "7%"
 	}
-	return r.contextUsage
+	return app.InteractiveSessionState{
+		Session: app.SessionInfo{ID: r.sessionID, Directory: r.sessionDir}, WorkDir: r.workDir,
+		Model: r.model, ContextUsage: usage, CollaborationMode: string(collaboration.Normalize(r.collaborationMode)),
+		AutoMemoryIndex: r.memoryIndex,
+		RewindAvailable: r.checkpointer != nil,
+		RunCapabilities: app.RunCapabilities{ToolRestrictions: r.supportRestrictions, EffortOverrides: r.supportEffort},
+	}
 }
 
-func (r *fakeRunner) MessageHistory() ([]session.MessageRecord, error) {
+func (r *fakeRunner) SessionID() string { return r.sessionID }
+func (r *fakeRunner) Model() string     { return r.model }
+func (r *fakeRunner) CollaborationMode() collaboration.Mode {
+	return collaboration.Normalize(r.collaborationMode)
+}
+
+func (r *fakeRunner) Conversation(context.Context) ([]app.ConversationRecord, error) {
 	if r.historyErr != nil {
 		return nil, r.historyErr
 	}
-	return append([]session.MessageRecord(nil), r.history...), nil
+	return snapshotConversation(r.history), nil
 }
 
-func (r *fakeRunner) TruncateMessageHistory(seq int64) error {
+func (r *fakeRunner) truncateMessageHistory(seq int64) error {
+	if r.truncateErr != nil {
+		return r.truncateErr
+	}
 	r.truncatedSeq = seq
 	var next []session.MessageRecord
 	for _, record := range r.history {
@@ -176,7 +197,7 @@ func (r *fakeRunner) TruncateMessageHistory(seq int64) error {
 	return nil
 }
 
-func (r *fakeRunner) RestoreSessionStateBeforeMessage(seq int64) (bool, error) {
+func (r *fakeRunner) restoreSessionStateBeforeMessage(seq int64) (bool, error) {
 	r.restoreStateSeq = seq
 	if r.restoreStateErr != nil {
 		return false, r.restoreStateErr
@@ -184,60 +205,160 @@ func (r *fakeRunner) RestoreSessionStateBeforeMessage(seq int64) (bool, error) {
 	return r.restoreStateOK, nil
 }
 
-func (r *fakeRunner) Checkpointer() checkpoint.Checkpointer {
-	return r.checkpointer
+func (r *fakeRunner) UpdateCollaborationMode(_ context.Context, command app.CollaborationCommand) app.InteractiveSessionState {
+	r.collaborationMode = collaboration.Normalize(collaboration.Mode(command.Mode))
+	return r.State()
 }
 
-func (r *fakeRunner) CollaborationMode() collaboration.Mode {
-	return collaboration.Normalize(r.collaborationMode)
+func (r *fakeRunner) UpdateEffort(context.Context, app.EffortCommand) app.InteractiveSessionState {
+	return r.State()
 }
 
-func (r *fakeRunner) SetCollaborationMode(mode collaboration.Mode) {
-	r.collaborationMode = collaboration.Normalize(mode)
-}
-
-func (r *fakeRunner) CompactNow(ctx context.Context, customInstructions string) (*compaction.CompactResult, error) {
-	r.compactInstr = customInstructions
+func (r *fakeRunner) Compact(_ context.Context, command app.CompactCommand) (app.CompactOutcome, error) {
+	r.compactInstr = command.Instructions
 	if r.compactErr != nil {
-		return nil, r.compactErr
+		return app.CompactOutcome{}, r.compactErr
 	}
 	if r.compactResult != nil {
-		return r.compactResult, nil
+		return app.CompactOutcome{PreTokens: r.compactResult.PreTokens, PostTokens: r.compactResult.PostTokens, MessagesSummarized: r.compactResult.MessagesSummarized}, nil
 	}
-	return &compaction.CompactResult{
+	return app.CompactOutcome{
 		PreTokens:          1000,
 		PostTokens:         200,
 		MessagesSummarized: 15,
 	}, nil
 }
 
-func (r *fakeRunner) PermissionSnapshot() permission.Snapshot {
+func (r *fakeRunner) ProjectInputHistory(context.Context, int) ([]string, error) {
+	return inputHistoryFromMessageHistory(snapshotConversation(r.history)), nil
+}
+
+func (r *fakeRunner) RewindTargets(context.Context) ([]app.RewindTarget, error) {
+	if r.historyErr != nil {
+		return nil, r.historyErr
+	}
+	messages := checkpoint.SelectableMessages(r.history)
+	targets := make([]app.RewindTarget, len(messages))
+	for index, message := range messages {
+		target := app.RewindTarget{Sequence: message.Seq, Content: message.Content, Timestamp: message.Timestamp}
+		if r.checkpointer != nil {
+			stats, err := r.checkpointer.GetDiffStats(strconv.FormatInt(message.Seq, 10))
+			if err != nil {
+				target.DiffError = err.Error()
+			} else if stats != nil {
+				target.Diff = app.RewindDiff{FilesChanged: stats.FilesChanged, Insertions: stats.Insertions, Deletions: stats.Deletions, ChangedFiles: append([]string(nil), stats.ChangedFiles...)}
+			}
+		}
+		targets[index] = target
+	}
+	return targets, nil
+}
+
+func (r *fakeRunner) Rewind(_ context.Context, command app.RewindCommand) app.RewindOutcome {
+	outcome := app.RewindOutcome{}
+	if r.historyErr != nil {
+		outcome.Error = r.historyErr.Error()
+		return outcome
+	}
+	content := ""
+	for _, record := range r.history {
+		if record.Seq == command.Sequence {
+			content = strings.TrimSpace(record.HumanContent())
+			break
+		}
+	}
+	if command.Action == app.RewindBoth || command.Action == app.RewindCode {
+		if r.checkpointer != nil {
+			outcome.CodeAttempted = true
+			files, err := r.checkpointer.Rewind(strconv.FormatInt(command.Sequence, 10))
+			if err != nil {
+				outcome.CodeError = err.Error()
+				if command.Action == app.RewindCode {
+					return outcome
+				}
+			} else {
+				outcome.CodeFiles = files
+			}
+		}
+	}
+	if command.Action != app.RewindBoth && command.Action != app.RewindConversation {
+		return outcome
+	}
+	outcome.ConversationAttempted = true
+	if err := r.truncateMessageHistory(command.Sequence); err != nil {
+		outcome.ConversationError = err.Error()
+		return outcome
+	}
+	outcome.Conversation = snapshotConversation(r.history)
+	outcome.RestoredInput = content
+	outcome.SessionStateAttempted = true
+	restored, err := r.restoreSessionStateBeforeMessage(command.Sequence)
+	if err != nil {
+		outcome.SessionStateError = err.Error()
+		return outcome
+	}
+	outcome.SessionStateRestored = restored
+	return outcome
+}
+
+func (r *fakeRunner) RestoreLatestInput(context.Context) (app.RestoreInputOutcome, error) {
+	index := -1
+	var target checkpoint.SelectableMessage
+	for candidate := len(r.history) - 1; candidate >= 0; candidate-- {
+		messages := checkpoint.SelectableMessages(r.history[candidate : candidate+1])
+		if len(messages) == 0 {
+			continue
+		}
+		index = candidate
+		target = messages[0]
+		break
+	}
+	if index < 0 || !checkpoint.MessagesAfterAreOnlySynthetic(r.history, index) {
+		return app.RestoreInputOutcome{}, nil
+	}
+	outcome := app.RestoreInputOutcome{Attempted: true}
+	if err := r.truncateMessageHistory(target.Seq); err != nil {
+		return outcome, err
+	}
+	return app.RestoreInputOutcome{Attempted: true, Restored: true, Conversation: snapshotConversation(r.history), Input: target.Content}, nil
+}
+
+func (r *fakeRunner) PermissionState() app.PermissionState {
 	if r.permissionState == nil {
 		r.permissionState = permission.NewState(permission.ModeAsk, false)
 	}
-	return r.permissionState.Snapshot()
-}
-
-func (r *fakeRunner) SetPermissionMode(mode permission.Mode, remembered bool) {
-	if r.permissionState == nil {
-		r.permissionState = permission.NewState(mode, remembered)
-		return
+	snapshot := r.permissionState.Snapshot()
+	return app.PermissionState{
+		SelectedMode: app.PermissionMode(snapshot.SelectedMode), EffectiveMode: app.PermissionMode(snapshot.EffectiveMode),
+		FullAccessRemembered:   snapshot.FullAccessRemembered,
+		FullAccessNeedsWarning: snapshot.FullAccessNeedsWarning,
+		SessionGrantCount:      snapshot.SessionGrantCount,
 	}
-	r.permissionState.SetSelected(mode, remembered)
 }
 
-func (r *fakeRunner) ActivateFullAccess(remember bool) {
+func (r *fakeRunner) UpdatePermissionMode(_ context.Context, command app.PermissionModeCommand) app.PermissionState {
+	if r.permissionState == nil {
+		r.permissionState = permission.NewState(permission.Mode(command.Mode), command.FullAccessWarningRemembered)
+		return r.PermissionState()
+	}
+	r.permissionState.SetSelected(permission.Mode(command.Mode), command.FullAccessWarningRemembered)
+	return r.PermissionState()
+}
+
+func (r *fakeRunner) ActivateFullAccess(_ context.Context, command app.FullAccessCommand) app.PermissionState {
 	if r.permissionState == nil {
 		r.permissionState = permission.NewState(permission.ModeAsk, false)
 	}
-	r.permissionState.ActivateFullAccess(remember)
+	r.permissionState.ActivateFullAccess(command.Remember)
+	return r.PermissionState()
 }
 
-func (r *fakeRunner) ClearPermissionGrants() int {
+func (r *fakeRunner) ClearPermissionGrants(context.Context) app.PermissionGrantClearOutcome {
 	if r.permissionState == nil {
-		return 0
+		return app.PermissionGrantClearOutcome{State: r.PermissionState()}
 	}
-	return r.permissionState.ClearGrants()
+	cleared := r.permissionState.ClearGrants()
+	return app.PermissionGrantClearOutcome{Cleared: cleared, State: r.PermissionState()}
 }
 
 type tuiCheckpointer struct {
@@ -399,8 +520,9 @@ func TestModelBangCommandCompletionStartsQueuedPrompt(t *testing.T) {
 	}
 
 	m, queuedCmd := update(t, m, shellCommandFinishedMsg{
-		command: "printf shell",
-		result:  tools.BashCommandResult{Output: "shell"},
+		operationID: m.activeOperationID,
+		command:     "printf shell",
+		result:      shellcmd.Result{Output: "shell"},
 	})
 	if queuedCmd == nil {
 		t.Fatalf("shell command completion did not start queued prompt")
@@ -438,8 +560,9 @@ func TestModelFailedBangCommandCompletionStartsQueuedPrompt(t *testing.T) {
 	}
 
 	m, queuedCmd := update(t, m, shellCommandFinishedMsg{
-		command: "false",
-		result:  tools.BashCommandResult{Err: errors.New("exit status 1"), ExitCode: 1},
+		operationID: m.activeOperationID,
+		command:     "false",
+		result:      shellcmd.Result{Err: errors.New("exit status 1"), ExitCode: 1},
 	})
 	if queuedCmd == nil {
 		t.Fatalf("failed shell command completion did not start queued prompt")
@@ -740,11 +863,11 @@ func TestApprovalDecisionLeavesTranscriptNote(t *testing.T) {
 	cases := []struct {
 		name     string
 		action   int
-		wantKind permission.UserDecisionKind
+		wantKind app.PermissionDecision
 		wantText string
 	}{
-		{name: "allow_once", action: 0, wantKind: permission.UserAllowOnce, wantText: "You approved"},
-		{name: "deny", action: 2, wantKind: permission.UserDeny, wantText: "You did not approve"},
+		{name: "allow_once", action: 0, wantKind: app.PermissionAllowOnce, wantText: "You approved"},
+		{name: "deny", action: 2, wantKind: app.PermissionDeny, wantText: "You did not approve"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -753,10 +876,10 @@ func TestApprovalDecisionLeavesTranscriptNote(t *testing.T) {
 			m.width = 100
 			m.height = 40
 			m.entries = nil
-			reply := make(chan permission.UserDecision, 1)
+			reply := make(chan app.PermissionResponse, 1)
 			m.approvalForm = &approvalForm{
 				req: permissionRequest{
-					approval: permission.ApprovalRequest{Request: permission.Request{Action: "bash rm -f x"}},
+					approval: app.PermissionRequest{Action: "bash rm -f x"},
 					reply:    reply,
 				},
 				action: tc.action,
@@ -767,8 +890,8 @@ func TestApprovalDecisionLeavesTranscriptNote(t *testing.T) {
 
 			select {
 			case d := <-reply:
-				if d.Kind != tc.wantKind {
-					t.Fatalf("delivered decision = %v, want %v", d.Kind, tc.wantKind)
+				if d.Decision != tc.wantKind {
+					t.Fatalf("delivered decision = %v, want %v", d.Decision, tc.wantKind)
 				}
 			default:
 				t.Fatal("no decision delivered to the coordinator")
@@ -796,7 +919,9 @@ func TestOnAutoApprovedEmitsPersistentReviewNotice(t *testing.T) {
 	events := make(chan tea.Msg, 1)
 	bridge := NewPermissionBridge()
 	bridge.SetEvents(events)
-	bridge.OnAutoApproved(permission.Request{Action: "bash rm -f x"}, permission.ReviewResult{Risk: permission.RiskLow})
+	bridge.NotifyInteraction(context.Background(), app.InteractionNotice{
+		Kind: app.InteractionPermissionAutoApproved, Action: "bash rm -f x",
+	})
 
 	select {
 	case msg := <-events:
@@ -986,7 +1111,7 @@ func TestShellCommandRenderingPreservesWhitespace(t *testing.T) {
 
 func TestFormatShellCommandResultTruncatesLargeOutput(t *testing.T) {
 	raw := strings.Repeat("x", maxShellCommandOutputBytes*2)
-	formatted := formatShellCommandResult(tools.BashCommandResult{Output: raw})
+	formatted := formatShellCommandResult(shellcmd.Result{Output: raw})
 
 	if len(formatted) >= len(raw) {
 		t.Fatalf("formatted output length = %d, want shorter than raw length %d", len(formatted), len(raw))
@@ -1001,7 +1126,7 @@ func TestFormatShellCommandResultPreservesWhitespace(t *testing.T) {
 		"  key: value\n\n",
 		" \n\t",
 	} {
-		formatted := formatShellCommandResult(tools.BashCommandResult{Output: output})
+		formatted := formatShellCommandResult(shellcmd.Result{Output: output})
 		if formatted != output {
 			t.Fatalf("formatted output = %q, want original output %q", formatted, output)
 		}
@@ -1088,7 +1213,7 @@ func TestRunFinishedAppendsWorkedForSeparator(t *testing.T) {
 	m.running = true
 	m.runStartedAt = start
 
-	m, _ = update(t, m, runFinishedMsg{result: &engine.RunResult{RunID: "run-1"}})
+	m, _ = update(t, m, runFinishedMsg{result: &app.RunOutcome{RunID: "run-1"}})
 
 	if len(m.entries) != 1 {
 		t.Fatalf("entries len = %d, want worked-for separator: %#v", len(m.entries), m.entries)
@@ -1497,6 +1622,19 @@ func TestStatusCommandRendersGroupedOverview(t *testing.T) {
 	}
 }
 
+func TestStatusCommandReflectsRewindAvailability(t *testing.T) {
+	runner := newFakeRunner()
+	m := NewModel(context.Background(), runner, Config{})
+	if got := stripANSI(m.formatStatusOverview()); !regexp.MustCompile(`Rewind\s+disabled`).MatchString(got) {
+		t.Fatalf("status with no checkpointer did not disable rewind:\n%s", got)
+	}
+
+	runner.checkpointer = &tuiCheckpointer{}
+	if got := stripANSI(m.formatStatusOverview()); !regexp.MustCompile(`Rewind\s+enabled`).MatchString(got) {
+		t.Fatalf("status with checkpointer did not enable rewind:\n%s", got)
+	}
+}
+
 func TestStatusCommandReportsInlineProviderWithoutProfile(t *testing.T) {
 	runner := newFakeRunner()
 	m := NewModel(context.Background(), runner, Config{
@@ -1845,10 +1983,10 @@ func TestApplyThemeUpdatesOverlayStyles(t *testing.T) {
 		t.Fatalf("ask focused foreground = %q, want current accent highlight %q", got, cAccentHi)
 	}
 
-	view := selector.New([]checkpoint.SelectableMessage{{
-		Seq:     7,
-		Content: "restore this",
-	}}, &tuiCheckpointer{}).View()
+	view := selector.New([]app.RewindTarget{{
+		Sequence: 7,
+		Content:  "restore this",
+	}}).View()
 	wantTitle := lipgloss.NewStyle().Bold(true).Foreground(cAccentHi).Render("Rewind")
 	if !strings.Contains(view, wantTitle) {
 		t.Fatalf("selector title did not use current theme highlight %q:\n%s", cAccentHi, view)
@@ -2116,15 +2254,58 @@ func TestAutoRestoreOnCancel(t *testing.T) {
 	cancelled := false
 	m.cancelRun = func() { cancelled = true }
 
-	m, _ = update(t, m, keyCtrlC())
+	m, cmd := update(t, m, keyCtrlC())
 	if !cancelled {
 		t.Fatalf("ctrl+c did not call cancelRun")
 	}
+	if !m.pendingCancelRestore {
+		t.Fatalf("ctrl+c did not mark the deferred auto restore")
+	}
+	// The restore is deferred to the cancelled run's finish message.
+	m, restoreCmd := update(t, m, runFinishedMsg{operationID: m.activeOperationID, err: context.Canceled})
+	if cmd != nil {
+		t.Fatalf("ctrl+c restored synchronously instead of deferring to run finish")
+	}
+	if restoreCmd == nil {
+		t.Fatalf("run finish did not schedule the asynchronous auto restore")
+	}
+	m, _ = update(t, m, restoreCmd())
 	if runner.truncatedSeq != 0 {
 		t.Fatalf("truncated seq = %d, want 0", runner.truncatedSeq)
 	}
 	if got := string(m.input); got != "cancel me" {
 		t.Fatalf("input after auto restore = %q, want cancel me", got)
+	}
+}
+
+func TestAutoRestoreReportsFailureAfterSelectingCandidate(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "restore me"}),
+	}
+	runner.truncateErr = errors.New("history unavailable")
+	m := NewModel(context.Background(), runner, Config{})
+	m.entries = nil
+
+	m.applyCancelRestore(cancelRestoreCmd(context.Background(), runner, &atomic.Uint64{}, 0)().(cancelRestoreFinishedMsg))
+
+	if !entriesContain(m.entries, "error", "history unavailable") {
+		t.Fatalf("auto restore failure was silent: %#v", m.entries)
+	}
+}
+
+func TestRewindReportsHistoryFailureAfterSelection(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(2, "run-1", schema.Message{Role: schema.RoleUser, Content: "restore me"}),
+	}
+	m := NewModel(context.Background(), runner, Config{})
+	runner.historyErr = errors.New("history unavailable")
+
+	m, _ = update(t, m, selector.ResultMsg{Action: selector.ActionRestoreConversation, MessageID: "2"})
+
+	if m.status != "Rewind failed" || !entriesContain(m.entries, "error", "history unavailable") {
+		t.Fatalf("rewind history failure = status %q entries %#v", m.status, m.entries)
 	}
 }
 
@@ -3656,8 +3837,8 @@ func TestModelQueuedPromptKeepsCollaborationModeSelectedAtSubmission(t *testing.
 	// starts. The queued submission must still use the mode selected when Enter
 	// was pressed.
 	m.collaborationMode = collaboration.ModeDefault
-	runner.SetCollaborationMode(collaboration.ModeDefault)
-	m, queuedCmd := update(t, m, runFinishedMsg{result: &engine.RunResult{RunID: "active-run"}})
+	runner.UpdateCollaborationMode(context.Background(), app.CollaborationCommand{Mode: string(collaboration.ModeDefault)})
+	m, queuedCmd := update(t, m, runFinishedMsg{result: &app.RunOutcome{RunID: "active-run"}})
 	if queuedCmd == nil {
 		t.Fatal("active run completion did not start queued prompt")
 	}
@@ -3678,7 +3859,7 @@ func TestModelPromptKeepsCollaborationModeBeforeRunCommandStarts(t *testing.T) {
 		t.Fatal("submitting prompt did not return run command")
 	}
 
-	runner.SetCollaborationMode(collaboration.ModeDefault)
+	runner.UpdateCollaborationMode(context.Background(), app.CollaborationCommand{Mode: string(collaboration.ModeDefault)})
 	_ = cmd()
 	if len(runner.runModes) != 1 || runner.runModes[0] != collaboration.ModeFormalPlan {
 		t.Fatalf("run modes = %#v, want submitted prompt frozen to Formal Plan", runner.runModes)
@@ -4064,12 +4245,12 @@ func TestApprovalFormWideViewKeepsSidebarVisible(t *testing.T) {
 	runner.sessionDir = sessionDir
 	runner.memoryIndex = "Popup layout should not cover the sidebar."
 	m := NewModel(context.Background(), runner, Config{})
-	m.approvalForm = newApprovalForm(permissionRequest{approval: permission.ApprovalRequest{Request: permission.Request{
+	m.approvalForm = newApprovalForm(permissionRequest{approval: app.PermissionRequest{
 		ToolName: "bash",
 		Action:   "bash git status --short",
 		CWD:      workDir,
-		Risk:     permission.RiskLow,
-	}}})
+		Risk:     "low",
+	}})
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 34})
 
 	plainView := stripANSI(m.View())
@@ -4862,12 +5043,14 @@ func TestRunningTickInterval(t *testing.T) {
 
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{
-		sessionID:    "sess-1",
-		sessionDir:   "/tmp/sess-1",
-		workDir:      "/tmp/work",
-		model:        "fake-model",
-		contextUsage: "7%",
-		truncatedSeq: -1,
+		sessionID:           "sess-1",
+		sessionDir:          "/tmp/sess-1",
+		workDir:             "/tmp/work",
+		model:               "fake-model",
+		contextUsage:        "7%",
+		truncatedSeq:        -1,
+		supportRestrictions: true,
+		supportEffort:       true,
 	}
 }
 
@@ -4878,7 +5061,7 @@ func TestPermissionsCommandUpdatesModeAndPersistsSettings(t *testing.T) {
 
 	next, _ := m.handleSlashCommand("/permissions approve")
 	m = next.(Model)
-	if got := runner.PermissionSnapshot().EffectiveMode; got != permission.ModeApprove {
+	if got := runner.PermissionState().EffectiveMode; got != app.PermissionModeApprove {
 		t.Fatalf("EffectiveMode = %q, want approve", got)
 	}
 	loaded, err := settings.Load(home)
@@ -4903,8 +5086,8 @@ func TestPermissionsFullAccessCommandOpensWarningAndConfirmActivates(t *testing.
 	if m.permissionForm.stage != permissionFormStageFullAccessWarning {
 		t.Fatalf("stage = %v, want full access warning", m.permissionForm.stage)
 	}
-	snap := runner.PermissionSnapshot()
-	if snap.EffectiveMode == permission.ModeFullAccess {
+	snap := runner.PermissionState()
+	if snap.EffectiveMode == app.PermissionModeFullAccess {
 		t.Fatal("Full Access activated before confirmation")
 	}
 
@@ -4913,8 +5096,8 @@ func TestPermissionsFullAccessCommandOpensWarningAndConfirmActivates(t *testing.
 		t.Fatal("full access confirmation command is nil")
 	}
 	m, _ = update(t, m, cmd())
-	snap = runner.PermissionSnapshot()
-	if snap.SelectedMode != permission.ModeFullAccess || snap.EffectiveMode != permission.ModeFullAccess {
+	snap = runner.PermissionState()
+	if snap.SelectedMode != app.PermissionModeFullAccess || snap.EffectiveMode != app.PermissionModeFullAccess {
 		t.Fatalf("snapshot = %+v, want selected/effective full access", snap)
 	}
 	loaded, err := settings.Load(home)
@@ -4949,7 +5132,7 @@ func TestPermissionsSelectorApproveMode(t *testing.T) {
 	if m.permissionForm != nil {
 		t.Fatal("permission form still open")
 	}
-	if got := runner.PermissionSnapshot().EffectiveMode; got != permission.ModeApprove {
+	if got := runner.PermissionState().EffectiveMode; got != app.PermissionModeApprove {
 		t.Fatalf("EffectiveMode = %q, want approve", got)
 	}
 	loaded, err := settings.Load(home)
@@ -4977,7 +5160,7 @@ func TestPermissionsSelectorFullAccessShowsWarningBeforeActivation(t *testing.T)
 	if m.permissionForm == nil || m.permissionForm.stage != permissionFormStageFullAccessWarning {
 		t.Fatalf("permission form = %#v, want warning stage", m.permissionForm)
 	}
-	if got := runner.PermissionSnapshot().EffectiveMode; got == permission.ModeFullAccess {
+	if got := runner.PermissionState().EffectiveMode; got == app.PermissionModeFullAccess {
 		t.Fatal("Full Access activated before warning confirmation")
 	}
 
@@ -4986,7 +5169,7 @@ func TestPermissionsSelectorFullAccessShowsWarningBeforeActivation(t *testing.T)
 		t.Fatal("warning confirmation command is nil")
 	}
 	m, _ = update(t, m, cmd())
-	if got := runner.PermissionSnapshot().EffectiveMode; got != permission.ModeFullAccess {
+	if got := runner.PermissionState().EffectiveMode; got != app.PermissionModeFullAccess {
 		t.Fatalf("EffectiveMode = %q, want full access", got)
 	}
 }
@@ -4998,8 +5181,8 @@ func TestPermissionsFullAccessRememberActivatesAndPersistsAcknowledgement(t *tes
 
 	next, _ := m.handleSlashCommand("/permissions full-access remember")
 	m = next.(Model)
-	snap := runner.PermissionSnapshot()
-	if snap.EffectiveMode != permission.ModeFullAccess {
+	snap := runner.PermissionState()
+	if snap.EffectiveMode != app.PermissionModeFullAccess {
 		t.Fatalf("EffectiveMode = %q, want full access", snap.EffectiveMode)
 	}
 	if !snap.FullAccessRemembered {
@@ -5021,8 +5204,8 @@ func TestPermissionsFullAccessConfirmActivatesWithoutRemembering(t *testing.T) {
 
 	next, _ := m.handleSlashCommand("/permissions full-access confirm")
 	m = next.(Model)
-	snap := runner.PermissionSnapshot()
-	if snap.EffectiveMode != permission.ModeFullAccess {
+	snap := runner.PermissionState()
+	if snap.EffectiveMode != app.PermissionModeFullAccess {
 		t.Fatalf("EffectiveMode = %q, want full access", snap.EffectiveMode)
 	}
 	if snap.FullAccessRemembered {
@@ -5042,7 +5225,7 @@ func TestPermissionsStatuslineIsOptionalAndRenderable(t *testing.T) {
 		t.Fatal("permissions must not be in default statusline items")
 	}
 	runner := newFakeRunner()
-	runner.SetPermissionMode(permission.ModeApprove, false)
+	runner.UpdatePermissionMode(context.Background(), app.PermissionModeCommand{Mode: app.PermissionModeApprove})
 	m := NewModel(context.Background(), runner, Config{})
 	m.statuslineItems = []string{"permissions"}
 	if got := m.renderStatuslineItem("permissions"); !strings.Contains(got, "Approve for me") {
@@ -5052,7 +5235,7 @@ func TestPermissionsStatuslineIsOptionalAndRenderable(t *testing.T) {
 
 func TestFullAccessWarningRendersAtBottom(t *testing.T) {
 	runner := newFakeRunner()
-	runner.ActivateFullAccess(false)
+	runner.ActivateFullAccess(context.Background(), app.FullAccessCommand{})
 	m := NewModel(context.Background(), runner, Config{})
 	got := m.renderKeybinds(80)
 	if !strings.Contains(got, "[ full access ]") {
@@ -5108,7 +5291,7 @@ func queuedPromptTexts(prompts []queuedPrompt) []string {
 func historyRecord(seq int64, runID string, msg schema.Message) session.MessageRecord {
 	return session.MessageRecord{
 		Seq:     seq,
-		RunID:   runID,
+		RunID:   session.RunID(runID),
 		Time:    time.Date(2026, 5, 17, 12, 0, int(seq), 0, time.Local),
 		Kind:    session.MessageKindNormal,
 		Message: msg,
@@ -5559,4 +5742,35 @@ func sidebarContent(docs []sidebarDocument, title string) string {
 		}
 	}
 	return ""
+}
+
+func TestAutoRestoreAbandonedWhenNewerRunStartsInFlight(t *testing.T) {
+	runner := newFakeRunner()
+	runner.history = []session.MessageRecord{
+		historyRecord(0, "run-1", schema.Message{Role: schema.RoleUser, Content: "cancel me"}),
+		{Seq: 1, RunID: "run-1", Kind: "progress", Message: schema.Message{Role: schema.RoleAssistant}},
+	}
+	m := NewModel(context.Background(), runner, Config{})
+	m.running = true
+	cancelled := false
+	m.cancelRun = func() { cancelled = true }
+
+	m, _ = update(t, m, keyCtrlC())
+	if !cancelled {
+		t.Fatalf("ctrl+c did not call cancelRun")
+	}
+	m, restoreCmd := update(t, m, runFinishedMsg{operationID: m.activeOperationID, err: context.Canceled})
+	if restoreCmd == nil {
+		t.Fatalf("run finish did not schedule the asynchronous auto restore")
+	}
+	// A newer run starts while the restore is in flight.
+	m.running = true
+	m.beginOperation()
+	m, _ = update(t, m, restoreCmd())
+	if runner.truncatedSeq != -1 {
+		t.Fatalf("stale restore truncated the newer run's records at %d", runner.truncatedSeq)
+	}
+	if m.status == "Cancelled; restored input" {
+		t.Fatalf("stale restore was applied over a newer run")
+	}
 }

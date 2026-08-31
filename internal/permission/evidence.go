@@ -15,9 +15,22 @@ const (
 
 // Evidence is the bounded, trust-labeled context supplied to the reviewer.
 type Evidence struct {
-	Text      string
-	Trusted   string
-	Untrusted string
+	Text        string
+	Trusted     string
+	Untrusted   string
+	Correlation EvidenceCorrelation
+}
+
+// EvidenceCorrelation identifies the runtime lineage authorized by one
+// permission review. Empty fields are valid for root requests whose runtime
+// adapter does not expose child lineage.
+type EvidenceCorrelation struct {
+	ParentSessionID string
+	ParentRunID     string
+	ChildSessionID  string
+	ChildRunID      string
+	DelegationID    string
+	ToolCallID      string
 }
 
 // BuildEvidence creates main-session reviewer context with explicit trust

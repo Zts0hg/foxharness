@@ -13,9 +13,9 @@ import (
 
 func TestSessionRunAndMessageLog(t *testing.T) {
 	workDir := t.TempDir()
-	manager := NewManagerWithHome(workDir, t.TempDir())
+	store := NewFileStoreWithHome(workDir, t.TempDir())
 
-	sess, err := manager.Create(CreateOptions{
+	sess, err := store.Create(CreateOptions{
 		Source:  SOURCECLI,
 		WorkDir: workDir,
 		UserID:  "u1",
@@ -29,15 +29,15 @@ func TestSessionRunAndMessageLog(t *testing.T) {
 		t.Fatalf("messages log was not created: %v", err)
 	}
 
-	run, err := sess.StartRun("inspect bug")
+	run, err := store.StartRun(sess, "inspect bug")
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(run.RootDir, "run.json")); err != nil {
 		t.Fatalf("run metadata was not created: %v", err)
 	}
-	if err := run.Finish(); err != nil {
-		t.Fatalf("Finish() error = %v", err)
+	if err := store.FinishRun(run); err != nil {
+		t.Fatalf("FinishRun() error = %v", err)
 	}
 
 	log := NewMessageLog(sess)
@@ -60,18 +60,31 @@ func TestSessionRunAndMessageLog(t *testing.T) {
 	}
 }
 
+func TestFileStoreCreateLeavesWorkingMemoryToRuntimeInitializer(t *testing.T) {
+	workDir := t.TempDir()
+	store := NewFileStoreWithHome(workDir, t.TempDir())
+	storedSession, err := store.Create(CreateOptions{Source: SOURCECLI, WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	memoryPath := filepath.Join(storedSession.RootDir, "working_memory.md")
+	if _, err := os.Stat(memoryPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Stat(working_memory.md) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestMessageLogNormalizesEmptyToolCallArguments(t *testing.T) {
 	workDir := t.TempDir()
-	manager := NewManagerWithHome(workDir, t.TempDir())
+	store := NewFileStoreWithHome(workDir, t.TempDir())
 
-	sess, err := manager.Create(CreateOptions{
+	sess, err := store.Create(CreateOptions{
 		Source:  SOURCECLI,
 		WorkDir: workDir,
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	run, err := sess.StartRun("inspect")
+	run, err := store.StartRun(sess, "inspect")
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
@@ -100,8 +113,8 @@ func TestMessageLogNormalizesEmptyToolCallArguments(t *testing.T) {
 
 func TestMessageLogAppendReturnsSeq(t *testing.T) {
 	workDir := t.TempDir()
-	manager := NewManagerWithHome(workDir, t.TempDir())
-	sess, err := manager.Create(CreateOptions{
+	store := NewFileStoreWithHome(workDir, t.TempDir())
+	sess, err := store.Create(CreateOptions{
 		Source:  SOURCECLI,
 		WorkDir: workDir,
 	})
@@ -125,8 +138,8 @@ func TestMessageLogAppendReturnsSeq(t *testing.T) {
 
 func TestMessageLogLoadMessagesForRunFiltersByRunID(t *testing.T) {
 	workDir := t.TempDir()
-	manager := NewManagerWithHome(workDir, t.TempDir())
-	sess, err := manager.Create(CreateOptions{
+	store := NewFileStoreWithHome(workDir, t.TempDir())
+	sess, err := store.Create(CreateOptions{
 		Source:  SOURCECLI,
 		WorkDir: workDir,
 	})
@@ -178,8 +191,8 @@ func TestMessageLogLoadMessagesForRunFiltersByRunID(t *testing.T) {
 
 func TestMessageLogTruncateBeforeSeq(t *testing.T) {
 	workDir := t.TempDir()
-	manager := NewManagerWithHome(workDir, t.TempDir())
-	sess, err := manager.Create(CreateOptions{
+	store := NewFileStoreWithHome(workDir, t.TempDir())
+	sess, err := store.Create(CreateOptions{
 		Source:  SOURCECLI,
 		WorkDir: workDir,
 	})
@@ -216,12 +229,12 @@ func TestMessageLogTruncateBeforeSeq(t *testing.T) {
 	}
 }
 
-func TestManagerStoresSessionsUnderHomeProjectDirectory(t *testing.T) {
+func TestFileStoreStoresSessionsUnderHomeProjectDirectory(t *testing.T) {
 	workDir := t.TempDir()
 	homeDir := t.TempDir()
-	manager := NewManagerWithHome(workDir, homeDir)
+	store := NewFileStoreWithHome(workDir, homeDir)
 
-	sess, err := manager.Create(CreateOptions{
+	sess, err := store.Create(CreateOptions{
 		Source:  SOURCECLI,
 		WorkDir: workDir,
 	})
@@ -272,11 +285,11 @@ func TestExportedEncodeProjectPathMatchesUnexported(t *testing.T) {
 	}
 }
 
-func TestManagerOpenAndLatest(t *testing.T) {
+func TestFileStoreOpenAndLatest(t *testing.T) {
 	workDir := t.TempDir()
-	manager := NewManagerWithHome(workDir, t.TempDir())
+	store := NewFileStoreWithHome(workDir, t.TempDir())
 
-	first, err := manager.Create(CreateOptions{
+	first, err := store.Create(CreateOptions{
 		Source:  SOURCECLI,
 		WorkDir: workDir,
 	})
@@ -284,7 +297,7 @@ func TestManagerOpenAndLatest(t *testing.T) {
 		t.Fatalf("Create(first) error = %v", err)
 	}
 	time.Sleep(time.Millisecond)
-	second, err := manager.Create(CreateOptions{
+	second, err := store.Create(CreateOptions{
 		Source:  SOURCEFeishu,
 		WorkDir: workDir,
 		UserID:  "u1",
@@ -294,7 +307,7 @@ func TestManagerOpenAndLatest(t *testing.T) {
 		t.Fatalf("Create(second) error = %v", err)
 	}
 
-	opened, err := manager.Open(first.ID)
+	opened, err := store.Open(first.ID)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -302,7 +315,7 @@ func TestManagerOpenAndLatest(t *testing.T) {
 		t.Fatalf("Open() ID = %s, want %s", opened.ID, first.ID)
 	}
 
-	latest, err := manager.Latest(LookupOptions{
+	latest, err := store.Latest(LookupOptions{
 		Source: SOURCEFeishu,
 		UserID: "u1",
 		ChatID: "c1",
@@ -314,24 +327,24 @@ func TestManagerOpenAndLatest(t *testing.T) {
 		t.Fatalf("Latest() ID = %s, want %s", latest.ID, second.ID)
 	}
 
-	_, err = manager.Latest(LookupOptions{Source: SOURCESubagent})
+	_, err = store.Latest(LookupOptions{Source: SOURCESubagent})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Latest(missing) error = %v, want ErrNotFound", err)
 	}
 }
 
-func TestManagerListFiltersBySource(t *testing.T) {
+func TestFileStoreListFiltersBySource(t *testing.T) {
 	workDir := t.TempDir()
-	manager := NewManagerWithHome(workDir, t.TempDir())
+	store := NewFileStoreWithHome(workDir, t.TempDir())
 
-	cli, err := manager.Create(CreateOptions{
+	cli, err := store.Create(CreateOptions{
 		Source:  SOURCECLI,
 		WorkDir: workDir,
 	})
 	if err != nil {
 		t.Fatalf("Create(cli) error = %v", err)
 	}
-	if _, err := manager.Create(CreateOptions{
+	if _, err := store.Create(CreateOptions{
 		Source:  SOURCEFeishu,
 		WorkDir: workDir,
 		UserID:  "u1",
@@ -340,7 +353,7 @@ func TestManagerListFiltersBySource(t *testing.T) {
 		t.Fatalf("Create(feishu) error = %v", err)
 	}
 
-	sessions, err := manager.List(LookupOptions{Source: SOURCECLI})
+	sessions, err := store.List(LookupOptions{Source: SOURCECLI})
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
@@ -349,18 +362,18 @@ func TestManagerListFiltersBySource(t *testing.T) {
 	}
 }
 
-func TestManagerDoesNotReadLegacyProjectLocalSessions(t *testing.T) {
+func TestFileStoreDoesNotReadLegacyProjectLocalSessions(t *testing.T) {
 	workDir := t.TempDir()
 	homeDir := t.TempDir()
-	manager := NewManagerWithHome(workDir, homeDir)
+	store := NewFileStoreWithHome(workDir, homeDir)
 
 	legacyID := "legacy-session"
 	legacyRoot := filepath.Join(workDir, ".foxharness", "sessions", legacyID)
 	if err := os.MkdirAll(legacyRoot, 0755); err != nil {
 		t.Fatalf("MkdirAll(legacyRoot) error = %v", err)
 	}
-	legacy := &Session{
-		ID:        legacyID,
+	legacy := &StoredSession{
+		ID:        ID(legacyID),
 		Source:    SOURCECLI,
 		WorkDir:   cleanAbsPath(workDir),
 		RootDir:   legacyRoot,
@@ -374,10 +387,10 @@ func TestManagerDoesNotReadLegacyProjectLocalSessions(t *testing.T) {
 		t.Fatalf("WriteFile(legacy session.json) error = %v", err)
 	}
 
-	if _, err := manager.Open(legacyID); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Open(ID(legacyID)); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Open(legacy) error = %v, want ErrNotFound", err)
 	}
-	if _, err := manager.Latest(LookupOptions{}); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Latest(LookupOptions{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Latest() with only legacy sessions error = %v, want ErrNotFound", err)
 	}
 	if _, err := os.Stat(filepath.Join(homeDir, ".foxharness", "projects")); !errors.Is(err, os.ErrNotExist) {
@@ -387,8 +400,8 @@ func TestManagerDoesNotReadLegacyProjectLocalSessions(t *testing.T) {
 
 func TestSessionToolResultsDir(t *testing.T) {
 	workDir := t.TempDir()
-	manager := NewManagerWithHome(workDir, t.TempDir())
-	sess, err := manager.Create(CreateOptions{
+	store := NewFileStoreWithHome(workDir, t.TempDir())
+	sess, err := store.Create(CreateOptions{
 		Source:  SOURCECLI,
 		WorkDir: workDir,
 	})
@@ -405,8 +418,8 @@ func TestSessionToolResultsDir(t *testing.T) {
 
 func TestCompactStateRoundTrip(t *testing.T) {
 	workDir := t.TempDir()
-	manager := NewManagerWithHome(workDir, t.TempDir())
-	sess, err := manager.Create(CreateOptions{
+	store := NewFileStoreWithHome(workDir, t.TempDir())
+	sess, err := store.Create(CreateOptions{
 		Source:  SOURCECLI,
 		WorkDir: workDir,
 	})

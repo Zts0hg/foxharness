@@ -4,27 +4,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Zts0hg/foxharness/internal/checkpoint"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-type selectorCheckpointer struct {
-	stats *checkpoint.DiffStats
-}
-
-func (c selectorCheckpointer) TrackEdit(filePath, messageID string) error { return nil }
-func (c selectorCheckpointer) MakeSnapshot(messageID string) error        { return nil }
-func (c selectorCheckpointer) Rewind(messageID string) ([]string, error)  { return nil, nil }
-func (c selectorCheckpointer) GetDiffStats(messageID string) (*checkpoint.DiffStats, error) {
-	return c.stats, nil
-}
-func (c selectorCheckpointer) HasAnyChanges(messageID string) (bool, error) { return false, nil }
-func (c selectorCheckpointer) SetDisabled(disabled bool)                    {}
-func (c selectorCheckpointer) IsDisabled() bool                             { return false }
-func (c selectorCheckpointer) RestoreStateFromLog() error                   { return nil }
-
 func TestSelectorStateTransition(t *testing.T) {
-	m := New(selectorMessages(), selectorCheckpointer{})
+	m := New(selectorMessages())
 	if m.cursor != len(m.messages)-1 || !m.messages[m.cursor].IsCurrent {
 		t.Fatalf("initial cursor = %d, want current row at bottom", m.cursor)
 	}
@@ -62,7 +47,7 @@ func TestSelectorStateTransition(t *testing.T) {
 }
 
 func TestSelectorResultMsg(t *testing.T) {
-	m := New(selectorMessages(), selectorCheckpointer{})
+	m := New(selectorMessages())
 	next, _ := m.Update(keyMsg("up"))
 	m = next.(Model)
 	next, _ = m.Update(keyMsg("enter"))
@@ -83,9 +68,9 @@ func keyMsg(key string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 }
 
-func selectorMessages() []checkpoint.SelectableMessage {
-	return []checkpoint.SelectableMessage{{
-		Seq:       7,
+func selectorMessages() []app.RewindTarget {
+	return []app.RewindTarget{{
+		Sequence:  7,
 		Content:   "change the parser",
 		Timestamp: time.Date(2026, 5, 22, 12, 0, 0, 0, time.Local),
 	}}

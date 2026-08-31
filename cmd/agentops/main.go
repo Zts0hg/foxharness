@@ -18,9 +18,13 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
-	"sync"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/agentops"
@@ -29,7 +33,21 @@ import (
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
 	"github.com/Zts0hg/foxharness/internal/llmresolve"
 	"github.com/Zts0hg/foxharness/internal/provider"
+	"github.com/Zts0hg/foxharness/internal/session"
 )
+
+const defaultShutdownTimeout = 30 * time.Second
+
+type gatewayService interface {
+	Listen(string) error
+	StopAccepting(context.Context) error
+	Shutdown(context.Context) error
+}
+
+type runnerService interface {
+	Start(context.Context, <-chan agentops.Task)
+	NotifyCancellation(agentops.Task)
+}
 
 func main() {
 	appID := mustEnv("FEISHU_APP_ID")
@@ -47,39 +65,184 @@ func main() {
 	}
 	messenger := feishu.NewMessenger(appID, appSecret)
 	approvalStore := approval.NewStore()
-
-	feishuTasks := make(chan feishu.Task, 64)
-	gateway := feishu.NewGateway(verificationToken, encryptKey, feishuTasks, approvalStore)
-	runner := agentops.NewRunner(llmProvider, workDir, logDir, messenger, approvalStore)
-	deduper := NewDeduper()
-
-	ctx := context.Background()
-	agentTasks := make(chan agentops.Task, 64)
-	go runner.Start(ctx, agentTasks)
-	go func() {
-		defer close(agentTasks)
-		for task := range feishuTasks {
-			if !deduper.Mark(task.MessageID) {
-				continue
-			}
-
-			agentTask := agentops.Parse(task.Text)
-			agentTask.TaskID = task.TaskID
-			agentTask.ChatID = task.ChatID
-			agentTask.SenderID = task.SenderID
-			agentTask.MessageID = task.MessageID
-			select {
-			case agentTasks <- agentTask:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	log.Println("[AgentOps] listening on :7777")
-	if err := gateway.Listen(":7777"); err != nil {
+	deliveryStore, err := newDeliveryStore(homeDir)
+	if err != nil {
 		log.Fatal(err)
 	}
+
+	feishuTasks := make(chan feishu.Task, 64)
+	gateway := feishu.NewGateway(verificationToken, encryptKey, feishuTasks, approvalStore).WithDeliveryStore(deliveryStore)
+	sessionStore := session.NewFileStore(workDir)
+	taskFactory := newAgentOpsTaskExecutionFactory(llmProvider, workDir, logDir, messenger, sessionStore, approvalStore)
+	runner := agentops.NewRunner(taskFactory, messenger).
+		WithDeliveryFailureObserver(agentops.NewLoggingDeliveryFailureObserver(log.Default()))
+
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	if err := serve(signalCtx, gateway, runner, feishuTasks, ":7777", defaultShutdownTimeout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func serve(
+	signalCtx context.Context,
+	gateway gatewayService,
+	runner runnerService,
+	feishuTasks chan feishu.Task,
+	addr string,
+	shutdownTimeout time.Duration,
+) error {
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = defaultShutdownTimeout
+	}
+	runnerCtx, cancelRunner := context.WithCancel(context.Background())
+	defer cancelRunner()
+
+	agentTasks := make(chan agentops.Task, 64)
+	runnerDone := make(chan struct{})
+	go func() {
+		runner.Start(runnerCtx, agentTasks)
+		close(runnerDone)
+	}()
+
+	bridgeDone := make(chan struct{})
+	go func() {
+		bridgeAgentOpsTasks(runnerCtx, feishuTasks, agentTasks, runner.NotifyCancellation)
+		close(bridgeDone)
+	}()
+
+	listenResult := make(chan error, 1)
+	go func() {
+		log.Printf("[AgentOps] listening on %s", addr)
+		listenResult <- gateway.Listen(addr)
+	}()
+
+	select {
+	case listenErr := <-listenResult:
+		// A returned listener ends serve regardless of the error. Drain
+		// gateway admission before closing the shared task channel, so an
+		// in-flight delivery handler that already reserved its message can
+		// never send on a closed channel.
+		waitCtx, cancelWait := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancelWait()
+		admissionErr := gateway.StopAccepting(waitCtx)
+		drainErr := drainAbortedAdmission(gateway, shutdownTimeout)
+		close(feishuTasks)
+		// The runner must stop too; its queued tasks reach cancellation
+		// terminals through the bridge instead of blocking shutdown forever.
+		cancelRunner()
+		return errors.Join(
+			listenErr,
+			admissionErr,
+			drainErr,
+			waitForCompletion(waitCtx, "AgentOps bridge", bridgeDone),
+			waitForCompletion(waitCtx, "AgentOps runner", runnerDone),
+		)
+	case <-signalCtx.Done():
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancelShutdown()
+		admissionErr := gateway.StopAccepting(shutdownCtx)
+		listenerCtx := shutdownCtx
+		var cancelListener context.CancelFunc
+		if shutdownCtx.Err() != nil {
+			listenerCtx, cancelListener = context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancelListener()
+		}
+		shutdownErr := gateway.Shutdown(listenerCtx)
+		listenErr, listenerStopped := waitForListenResult(listenerCtx, listenResult)
+		waitCtx := listenerCtx
+		var cancelWait context.CancelFunc
+		if !listenerStopped {
+			waitCtx, cancelWait = context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancelWait()
+		}
+		drainErr := drainAbortedAdmission(gateway, shutdownTimeout)
+		close(feishuTasks)
+		cancelRunner()
+		return errors.Join(
+			admissionErr,
+			shutdownErr,
+			listenErr,
+			drainErr,
+			waitForCompletion(waitCtx, "AgentOps bridge", bridgeDone),
+			waitForCompletion(waitCtx, "AgentOps runner", runnerDone),
+		)
+	}
+}
+
+// bridgeAgentOpsTasks forwards accepted Feishu tasks to the AgentOps runner.
+// Forwarding keeps draining preference: while the runner consumes, every
+// queued task is handed to it exactly as before cancellation. Only when the
+// capacity-64 buffer is full does the bridge wait context-aware, so shutdown
+// can never deadlock on a runner that stopped consuming: the blocked task and
+// everything still queued receive their cancellation terminal through
+// notifyCancelled instead of hanging serve until its shutdown budget expires.
+func bridgeAgentOpsTasks(
+	ctx context.Context,
+	feishuTasks <-chan feishu.Task,
+	agentTasks chan<- agentops.Task,
+	notifyCancelled func(agentops.Task),
+) {
+	defer close(agentTasks)
+	convert := func(task feishu.Task) agentops.Task {
+		agentTask := agentops.Parse(task.Text)
+		agentTask.TaskID = task.TaskID
+		agentTask.ChatID = task.ChatID
+		agentTask.SenderID = task.SenderID
+		agentTask.MessageID = task.MessageID
+		return agentTask
+	}
+	for task := range feishuTasks {
+		agentTask := convert(task)
+		select {
+		case agentTasks <- agentTask:
+			continue
+		default:
+		}
+		select {
+		case agentTasks <- agentTask:
+		case <-ctx.Done():
+			notifyCancelled(agentTask)
+			for queued := range feishuTasks {
+				notifyCancelled(convert(queued))
+			}
+			return
+		}
+	}
+}
+
+// drainAbortedAdmission covers the path where the bounded admission wait
+// timed out and the gateway aborted its in-flight delivery handlers: the
+// idempotent second StopAccepting call waits until every aborted handler has
+// reached its terminal rollback, so the caller closes the shared task
+// channel under no live sender instead of racing a handler into a send on a
+// closed channel.
+func drainAbortedAdmission(gateway gatewayService, timeout time.Duration) error {
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), timeout)
+	defer cancelDrain()
+	return gateway.StopAccepting(drainCtx)
+}
+
+func waitForListenResult(ctx context.Context, result <-chan error) (error, bool) {
+	select {
+	case err := <-result:
+		return err, true
+	case <-ctx.Done():
+		return fmt.Errorf("wait for AgentOps listener: %w", ctx.Err()), false
+	}
+}
+
+func waitForCompletion(ctx context.Context, name string, done <-chan struct{}) error {
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("wait for %s: %w", name, ctx.Err())
+	}
+}
+
+func newDeliveryStore(homeDir string) (feishu.DeliveryStore, error) {
+	return feishu.NewFileDeliveryStore(homeDir, filepath.Join(".foxharness", "feishu", "deliveries.json"))
 }
 
 func newConfiguredLLMProvider(homeDir string, lookup llmconfig.EnvLookup) (provider.LLMProvider, error) {
@@ -97,71 +260,4 @@ func mustEnv(key string) string {
 		log.Fatalf("missing environment variable: %s", key)
 	}
 	return v
-}
-
-// Deduper prevents duplicate processing of Feishu messages by tracking seen message IDs.
-type Deduper struct {
-	mu   sync.Mutex
-	seen map[string]time.Time
-	ttl  time.Duration
-	now  func() time.Time
-}
-
-const defaultDedupeTTL = 24 * time.Hour
-
-// NewDeduper creates a new Deduper with an empty seen set.
-func NewDeduper() *Deduper {
-	return NewDeduperWithTTL(defaultDedupeTTL)
-}
-
-// NewDeduperWithTTL creates a Deduper that reclaims message IDs after ttl.
-func NewDeduperWithTTL(ttl time.Duration) *Deduper {
-	return &Deduper{seen: make(map[string]time.Time), ttl: ttl, now: time.Now}
-}
-
-// Mark records a message ID and reports whether it was seen for the first time.
-// Returns true if the ID is new (should be processed), false if already seen.
-func (d *Deduper) Mark(id string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	now := d.nowOrDefault()
-	d.cleanupLocked(now)
-	if _, ok := d.seen[id]; ok {
-		return false
-	}
-	d.seen[id] = now
-	return true
-}
-
-// Cleanup removes expired message IDs from the dedupe set.
-func (d *Deduper) Cleanup() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.cleanupLocked(d.nowOrDefault())
-}
-
-// Len returns the number of currently tracked message IDs.
-func (d *Deduper) Len() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return len(d.seen)
-}
-
-func (d *Deduper) cleanupLocked(now time.Time) {
-	ttl := d.ttl
-	if ttl <= 0 {
-		ttl = defaultDedupeTTL
-	}
-	for id, seenAt := range d.seen {
-		if now.Sub(seenAt) > ttl {
-			delete(d.seen, id)
-		}
-	}
-}
-
-func (d *Deduper) nowOrDefault() time.Time {
-	if d.now != nil {
-		return d.now()
-	}
-	return time.Now()
 }

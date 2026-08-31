@@ -50,14 +50,14 @@ type AutodevConfig struct {
 // configFile is the YAML wire form. Booleans are pointers so an absent key
 // is distinguishable from an explicit false.
 type configFile struct {
-	BacklogFile        string `yaml:"backlog_file"`
-	WorktreeDir        string `yaml:"worktree_dir"`
-	BaseBranch         string `yaml:"base_branch"`
-	Remote             string `yaml:"remote"`
-	Concurrency        string `yaml:"concurrency"`
-	Model              string `yaml:"model"`
-	EngineerPrompt     string `yaml:"engineer_prompt"`
-	EngineerPromptFile string `yaml:"engineer_prompt_file"`
+	BacklogFile        string    `yaml:"backlog_file"`
+	WorktreeDir        string    `yaml:"worktree_dir"`
+	BaseBranch         string    `yaml:"base_branch"`
+	Remote             string    `yaml:"remote"`
+	Concurrency        yaml.Node `yaml:"concurrency"`
+	Model              string    `yaml:"model"`
+	EngineerPrompt     string    `yaml:"engineer_prompt"`
+	EngineerPromptFile string    `yaml:"engineer_prompt_file"`
 	Gates              struct {
 		Build *bool `yaml:"build"`
 		Test  *bool `yaml:"test"`
@@ -69,6 +69,34 @@ type configFile struct {
 		LinkIssue   *bool `yaml:"link_issue"`
 		AutoMerge   *bool `yaml:"auto_merge"`
 	} `yaml:"remote_flow"`
+}
+
+// InvalidConcurrencyError reports a value outside the implemented serial
+// scheduler domain. It is a configuration error, not a warning fallback.
+type InvalidConcurrencyError struct {
+	Value string
+	Tag   string
+}
+
+func (e *InvalidConcurrencyError) Error() string {
+	return fmt.Sprintf("invalid autodev concurrency %q (%s): expected exact string \"serial\" or omission", e.Value, e.Tag)
+}
+
+func validateConcurrency(value string) error {
+	if value != "serial" {
+		return &InvalidConcurrencyError{Value: value, Tag: "resolved"}
+	}
+	return nil
+}
+
+func validateConcurrencyNode(node yaml.Node) error {
+	if node.Kind == 0 {
+		return nil
+	}
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!str" || node.Value != "serial" {
+		return &InvalidConcurrencyError{Value: node.Value, Tag: node.Tag}
+	}
+	return nil
 }
 
 // Load reads .foxharness/autodev.yml under repoRoot and returns the resolved
@@ -95,12 +123,17 @@ func Load(repoRoot string) (AutodevConfig, error) {
 	if err := dec.Decode(&file); err != nil {
 		return cfg, fmt.Errorf("parse autodev.yml: %w", err)
 	}
+	if err := validateConcurrencyNode(file.Concurrency); err != nil {
+		return cfg, fmt.Errorf("parse autodev.yml: %w", err)
+	}
 
 	applyString(&cfg.BacklogFile, file.BacklogFile)
 	applyString(&cfg.WorktreeDir, file.WorktreeDir)
 	applyString(&cfg.BaseBranch, file.BaseBranch)
 	applyString(&cfg.Remote, file.Remote)
-	applyString(&cfg.Concurrency, file.Concurrency)
+	if file.Concurrency.Kind != 0 {
+		cfg.Concurrency = file.Concurrency.Value
+	}
 	applyString(&cfg.Model, file.Model)
 	applyString(&cfg.EngineerPrompt, file.EngineerPrompt)
 	applyString(&cfg.EngineerPromptFile, file.EngineerPromptFile)

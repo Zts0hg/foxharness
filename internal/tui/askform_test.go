@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -12,14 +12,14 @@ func key(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }
 
 func runes(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 
-func formFor(questions ...tools.Question) *askForm {
-	return newAskForm(askRequest{questions: questions, reply: make(chan answerResult, 1)})
+func formFor(questions ...app.Question) *askForm {
+	return newAskForm(askRequest{request: app.QuestionRequest{Questions: questions}, reply: make(chan answerResult, 1)})
 }
 
-func singleQ() tools.Question {
-	return tools.Question{
+func singleQ() app.Question {
+	return app.Question{
 		Prompt: "Pick one?",
-		Options: []tools.Option{
+		Options: []app.QuestionOption{
 			{Label: "Alpha", Description: "first", Preview: "ALPHA-PREVIEW"},
 			{Label: "Beta", Description: "second"},
 		},
@@ -53,10 +53,10 @@ func TestAskFormSingleSelectCarriesPreview(t *testing.T) {
 }
 
 func TestAskFormMultiSelectJoins(t *testing.T) {
-	q := tools.Question{
+	q := app.Question{
 		Prompt:      "Pick many?",
 		MultiSelect: true,
-		Options: []tools.Option{
+		Options: []app.QuestionOption{
 			{Label: "a"}, {Label: "b"}, {Label: "c"},
 		},
 	}
@@ -72,7 +72,7 @@ func TestAskFormMultiSelectJoins(t *testing.T) {
 }
 
 func TestAskFormMultiSelectRequiresSelection(t *testing.T) {
-	q := tools.Question{Prompt: "Pick many?", MultiSelect: true, Options: []tools.Option{{Label: "a"}, {Label: "b"}}}
+	q := app.Question{Prompt: "Pick many?", MultiSelect: true, Options: []app.QuestionOption{{Label: "a"}, {Label: "b"}}}
 	f := formFor(q)
 	if cmd := f.update(key(tea.KeyEnter)); cmd != nil { // nothing toggled -> ignored
 		t.Fatal("enter with no selection should be ignored")
@@ -171,8 +171,8 @@ func TestAskFormCancel(t *testing.T) {
 }
 
 func TestAskFormTwoQuestionsOrdered(t *testing.T) {
-	q1 := tools.Question{Prompt: "First?", Options: []tools.Option{{Label: "1a"}, {Label: "1b"}}}
-	q2 := tools.Question{Prompt: "Second?", Options: []tools.Option{{Label: "2a"}, {Label: "2b"}}}
+	q1 := app.Question{Prompt: "First?", Options: []app.QuestionOption{{Label: "1a"}, {Label: "1b"}}}
+	q2 := app.Question{Prompt: "Second?", Options: []app.QuestionOption{{Label: "2a"}, {Label: "2b"}}}
 	f := formFor(q1, q2)
 	f.update(key(tea.KeyEnter)) // answer q1 -> 1a, move to q2 tab
 	if f.done {
@@ -201,8 +201,8 @@ func TestAskFormTwoQuestionsOrdered(t *testing.T) {
 }
 
 func TestAskFormSubmitTabCancel(t *testing.T) {
-	q1 := tools.Question{Prompt: "First?", Options: []tools.Option{{Label: "1a"}, {Label: "1b"}}}
-	q2 := tools.Question{Prompt: "Second?", Options: []tools.Option{{Label: "2a"}, {Label: "2b"}}}
+	q1 := app.Question{Prompt: "First?", Options: []app.QuestionOption{{Label: "1a"}, {Label: "1b"}}}
+	q2 := app.Question{Prompt: "Second?", Options: []app.QuestionOption{{Label: "2a"}, {Label: "2b"}}}
 	f := formFor(q1, q2)
 	f.update(key(tea.KeyEnter)) // q1
 	f.update(key(tea.KeyEnter)) // q2 -> Submit tab
@@ -225,8 +225,8 @@ func TestAskFormViewRendersOptionsAndDescriptions(t *testing.T) {
 }
 
 func TestAskFormViewTabBarForMultipleQuestions(t *testing.T) {
-	q1 := tools.Question{Header: "First", Prompt: "Q1?", Options: []tools.Option{{Label: "a"}, {Label: "b"}}}
-	q2 := tools.Question{Header: "Second", Prompt: "Q2?", Options: []tools.Option{{Label: "c"}, {Label: "d"}}}
+	q1 := app.Question{Header: "First", Prompt: "Q1?", Options: []app.QuestionOption{{Label: "a"}, {Label: "b"}}}
+	q2 := app.Question{Header: "Second", Prompt: "Q2?", Options: []app.QuestionOption{{Label: "c"}, {Label: "d"}}}
 	out := formFor(q1, q2).view(80)
 	for _, want := range []string{"First", "Second", "Submit", "☐"} {
 		if !strings.Contains(out, want) {
@@ -236,10 +236,10 @@ func TestAskFormViewTabBarForMultipleQuestions(t *testing.T) {
 }
 
 func TestAskFormPreviewOnMultiSelectHarmless(t *testing.T) {
-	q := tools.Question{
+	q := app.Question{
 		Prompt:      "Pick many?",
 		MultiSelect: true,
-		Options:     []tools.Option{{Label: "a", Preview: "PREV-A"}, {Label: "b"}},
+		Options:     []app.QuestionOption{{Label: "a", Preview: "PREV-A"}, {Label: "b"}},
 	}
 	f := formFor(q)
 	out := f.view(80) // must not panic; renders numbered checkboxes

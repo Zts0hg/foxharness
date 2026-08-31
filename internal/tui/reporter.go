@@ -7,131 +7,139 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-type channelReporter struct {
-	events    chan<- tea.Msg
-	mu        sync.Mutex
-	streaming bool
+type channelNotificationSink struct {
+	events      chan<- tea.Msg
+	operationID uint64
+	mu          sync.Mutex
+	streaming   bool
 }
 
-func (r *channelReporter) OnRunStart(ctx context.Context, sessionID string, runID string) {
-	r.send(ctx, runEventMsg{
-		status: fmt.Sprintf("Run started: %s", runID),
-	})
+func (s *channelNotificationSink) OnRunStart(ctx context.Context, sessionID string, runID string) {
+	s.Notify(ctx, app.Notification{Kind: app.NotificationRunStarted, SessionID: sessionID, RunID: runID})
 }
 
-func (r *channelReporter) OnThinking(ctx context.Context, turn int) {
-	r.send(ctx, runEventMsg{
-		status: fmt.Sprintf("Thinking turn %d", turn),
-	})
+func (s *channelNotificationSink) OnThinking(ctx context.Context, turn int) {
+	s.Notify(ctx, app.Notification{Kind: app.NotificationThinking, Turn: turn})
 }
 
-func (r *channelReporter) OnCompaction(ctx context.Context, scope string) {
-	r.send(ctx, runEventMsg{
-		role:   "system",
-		title:  "context compacted",
-		body:   fmt.Sprintf("Compacted context scope: %s", scope),
-		status: "Context compacted",
-	})
+func (s *channelNotificationSink) OnCompaction(ctx context.Context, scope string) {
+	s.Notify(ctx, app.Notification{Kind: app.NotificationContextCompacted, Name: scope})
 }
 
-func (r *channelReporter) OnToolCall(ctx context.Context, toolName string, args string) {
-	r.send(ctx, runEventMsg{
-		role:   "tool",
-		title:  "call " + toolName,
-		body:   formatToolInvocation(toolName, args),
-		status: "Calling tool: " + toolName,
-	})
+func (s *channelNotificationSink) OnToolCall(ctx context.Context, name string, arguments string) {
+	s.Notify(ctx, app.Notification{Kind: app.NotificationToolCall, Name: name, Content: arguments})
 }
 
-func (r *channelReporter) OnToolResult(ctx context.Context, toolName string, result string, isError bool) {
-	status := "Tool complete: " + toolName
-	if isError {
-		status = "Tool failed: " + toolName
+func (s *channelNotificationSink) OnToolResult(ctx context.Context, name string, result string, isError bool) {
+	s.Notify(ctx, app.Notification{Kind: app.NotificationToolResult, Name: name, Content: result, IsError: isError})
+}
+
+func (s *channelNotificationSink) OnMessage(ctx context.Context, content string) {
+	s.Notify(ctx, app.Notification{Kind: app.NotificationMessage, Content: content})
+}
+
+func (s *channelNotificationSink) OnMessageDelta(ctx context.Context, content string) {
+	s.Notify(ctx, app.Notification{Kind: app.NotificationMessageDelta, Content: content})
+}
+
+func (s *channelNotificationSink) OnRunError(ctx context.Context, sessionID string, runID string, err error) {
+	content := ""
+	if err != nil {
+		content = err.Error()
 	}
-	r.send(ctx, runEventMsg{
-		role:   "tool",
-		title:  "result " + toolName,
-		body:   strings.TrimSpace(result),
-		status: status,
-		err:    isError,
+	s.Notify(ctx, app.Notification{
+		Kind: app.NotificationRunError, SessionID: sessionID, RunID: runID,
+		Content: content, IsError: true,
 	})
 }
 
-func (r *channelReporter) OnMessage(ctx context.Context, content string) {
-	content = strings.TrimSpace(content)
-	if content == "" {
+func (s *channelNotificationSink) Notify(ctx context.Context, notification app.Notification) {
+	event := runEventMsg{operationID: s.operationID}
+	switch notification.Kind {
+	case app.NotificationRunStarted:
+		event.status = fmt.Sprintf("Run started: %s", notification.RunID)
+	case app.NotificationThinking:
+		event.status = fmt.Sprintf("Thinking turn %d", notification.Turn)
+	case app.NotificationContextCompacted:
+		event.role = "system"
+		event.title = "context compacted"
+		event.body = fmt.Sprintf("Compacted context scope: %s", notification.Name)
+		event.status = "Context compacted"
+	case app.NotificationToolCall:
+		event.role = "tool"
+		event.title = "call " + notification.Name
+		event.body = formatToolInvocation(notification.Name, notification.Content)
+		event.status = "Calling tool: " + notification.Name
+	case app.NotificationToolResult:
+		event.role = "tool"
+		event.title = "result " + notification.Name
+		event.body = strings.TrimSpace(notification.Content)
+		event.status = "Tool complete: " + notification.Name
+		event.err = notification.IsError
+		if notification.IsError {
+			event.status = "Tool failed: " + notification.Name
+		}
+	case app.NotificationMessageDelta:
+		if notification.Content == "" {
+			return
+		}
+		s.mu.Lock()
+		s.streaming = true
+		s.mu.Unlock()
+		event.role = "assistant"
+		event.title = "stream"
+		event.body = notification.Content
+		event.status = "Assistant responding"
+		event.delta = true
+	case app.NotificationMessage:
+		content := strings.TrimSpace(notification.Content)
+		if content == "" {
+			return
+		}
+		s.mu.Lock()
+		streaming := s.streaming
+		s.streaming = false
+		s.mu.Unlock()
+		event.role = "assistant"
+		event.title = "foxharness"
+		event.body = content
+		event.status = "Assistant responded"
+		event.streamFinal = streaming
+	case app.NotificationRunCompleted:
+		event.status = fmt.Sprintf("Run complete: %s", notification.RunID)
+	case app.NotificationRunError:
+		event.role = "error"
+		event.title = "run error"
+		event.body = fmt.Sprintf("Session: %s\nRun: %s\nError: %s", notification.SessionID, notification.RunID, notification.Content)
+		event.status = "Run failed"
+		event.err = true
+	default:
 		return
 	}
-	r.mu.Lock()
-	streaming := r.streaming
-	r.streaming = false
-	r.mu.Unlock()
-	if streaming {
-		r.send(ctx, runEventMsg{
-			role:        "assistant",
-			title:       "foxharness",
-			body:        content,
-			status:      "Assistant responded",
-			streamFinal: true,
-		})
+	s.send(ctx, event)
+}
+
+func (s *channelNotificationSink) send(ctx context.Context, msg tea.Msg) {
+	if s == nil || s.events == nil {
 		return
 	}
-	r.send(ctx, runEventMsg{
-		role:   "assistant",
-		title:  "foxharness",
-		body:   content,
-		status: "Assistant responded",
-	})
-}
-
-func (r *channelReporter) OnMessageDelta(ctx context.Context, content string) {
-	if content == "" {
-		return
-	}
-	r.mu.Lock()
-	r.streaming = true
-	r.mu.Unlock()
-	r.send(ctx, runEventMsg{
-		role:   "assistant",
-		title:  "stream",
-		body:   content,
-		status: "Assistant responding",
-		delta:  true,
-	})
-}
-
-func (r *channelReporter) OnRunComplete(ctx context.Context, result engine.RunResult) {
-	r.send(ctx, runEventMsg{
-		status: fmt.Sprintf("Run complete: %s", result.RunID),
-	})
-}
-
-func (r *channelReporter) OnRunError(ctx context.Context, sessionID string, runID string, err error) {
-	r.send(ctx, runEventMsg{
-		role:   "error",
-		title:  "run error",
-		body:   fmt.Sprintf("Session: %s\nRun: %s\nError: %v", sessionID, runID, err),
-		status: "Run failed",
-		err:    true,
-	})
-}
-
-func (r *channelReporter) send(ctx context.Context, msg tea.Msg) {
-	if r == nil || r.events == nil {
-		return
+	if event, ok := msg.(runEventMsg); ok {
+		if event.operationID == 0 {
+			event.operationID = s.operationID
+		}
+		msg = event
 	}
 	select {
-	case r.events <- msg:
+	case s.events <- msg:
 	case <-ctx.Done():
 	}
 }
 
-var _ engine.Reporter = (*channelReporter)(nil)
-var _ engine.MessageDeltaReporter = (*channelReporter)(nil)
+var _ app.NotificationSink = (*channelNotificationSink)(nil)
 
 func formatToolInvocation(toolName string, args string) string {
 	fields := parseToolArgs(args)

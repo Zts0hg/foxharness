@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -17,8 +17,8 @@ func TestModelOpensRoutesAndCompletesAskForm(t *testing.T) {
 
 	reply := make(chan answerResult, 1)
 	req := askRequest{
-		questions: []tools.Question{{Prompt: "Pick?", Options: []tools.Option{{Label: "A"}, {Label: "B"}}}},
-		reply:     reply,
+		request: app.QuestionRequest{Questions: []app.Question{{Prompt: "Pick?", Options: []app.QuestionOption{{Label: "A"}, {Label: "B"}}}}},
+		reply:   reply,
 	}
 
 	// askUserMsg opens the overlay.
@@ -73,7 +73,7 @@ func TestAskFormRendersInlineWithTranscript(t *testing.T) {
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	reply := make(chan answerResult, 1)
-	req := askRequest{questions: []tools.Question{{Prompt: "Pick?", Options: []tools.Option{{Label: "A"}, {Label: "B"}}}}, reply: reply}
+	req := askRequest{request: app.QuestionRequest{Questions: []app.Question{{Prompt: "Pick?", Options: []app.QuestionOption{{Label: "A"}, {Label: "B"}}}}}, reply: reply}
 	m, _ = update(t, m, askUserMsg{req: req})
 
 	out := m.View()
@@ -92,7 +92,7 @@ func TestModelAskFormCancelReplies(t *testing.T) {
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	reply := make(chan answerResult, 1)
-	req := askRequest{questions: []tools.Question{{Prompt: "Pick?", Options: []tools.Option{{Label: "A"}, {Label: "B"}}}}, reply: reply}
+	req := askRequest{request: app.QuestionRequest{Questions: []app.Question{{Prompt: "Pick?", Options: []app.QuestionOption{{Label: "A"}, {Label: "B"}}}}}, reply: reply}
 	m, _ = update(t, m, askUserMsg{req: req})
 
 	m, cmd := update(t, m, key(tea.KeyEsc))

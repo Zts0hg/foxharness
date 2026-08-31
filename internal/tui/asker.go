@@ -3,7 +3,7 @@ package tui
 import (
 	"context"
 
-	"github.com/Zts0hg/foxharness/internal/tools"
+	"github.com/Zts0hg/foxharness/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -11,14 +11,14 @@ import (
 // to the Bubble Tea update loop, along with the channel on which the loop sends
 // the collected result back.
 type askRequest struct {
-	questions []tools.Question
-	reply     chan answerResult
+	request app.QuestionRequest
+	reply   chan answerResult
 }
 
 // answerResult is the outcome of presenting an askRequest: the collected answers,
 // or cancelled when the user dismissed the prompt.
 type answerResult struct {
-	answers   []tools.Answer
+	answers   []app.QuestionAnswer
 	cancelled bool
 }
 
@@ -40,31 +40,31 @@ func (a *Asker) Requests() <-chan askRequest {
 	return a.requests
 }
 
-// Ask sends the questions to the UI loop and blocks until the user answers or the
-// context is cancelled. It returns tools.ErrUserCancelled if the user dismissed
+// AskQuestions sends the questions to the UI loop and blocks until the user answers or the
+// context is cancelled. It returns app.ErrQuestionCancelled if the user dismissed
 // the prompt, or the context error if cancelled while sending or waiting.
-func (a *Asker) Ask(ctx context.Context, questions []tools.Question) ([]tools.Answer, error) {
+func (a *Asker) AskQuestions(ctx context.Context, request app.QuestionRequest) (app.QuestionResponse, error) {
 	reply := make(chan answerResult, 1)
-	req := askRequest{questions: questions, reply: reply}
+	req := askRequest{request: request, reply: reply}
 
 	select {
 	case a.requests <- req:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return app.QuestionResponse{}, ctx.Err()
 	}
 
 	select {
 	case res := <-reply:
 		if res.cancelled {
-			return nil, tools.ErrUserCancelled
+			return app.QuestionResponse{CorrelationID: request.Correlation.ID}, app.ErrQuestionCancelled
 		}
-		return res.answers, nil
+		return app.QuestionResponse{CorrelationID: request.Correlation.ID, Answers: res.answers}, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return app.QuestionResponse{}, ctx.Err()
 	}
 }
 
-var _ tools.UserAsker = (*Asker)(nil)
+var _ app.QuestionPort = (*Asker)(nil)
 
 // askUserMsg delivers an incoming question request to the Bubble Tea update loop.
 type askUserMsg struct {

@@ -12,7 +12,7 @@ import (
 )
 
 func TestBuildBenchmarkRegistryIncludesTodoTools(t *testing.T) {
-	sess := &session.Session{RootDir: t.TempDir()}
+	sess := &session.StoredSession{RootDir: t.TempDir()}
 	registry := buildBenchmarkRegistry(t.TempDir(), sess)
 	names := map[string]bool{}
 	for _, definition := range registry.GetAvailableTools() {
@@ -79,6 +79,7 @@ func TestBuildHarnessReportsRuntimeFidelity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHarness() error = %v", err)
 	}
+	defer harness.Session.Close(context.Background())
 	if harness.RuntimeFidelity.Warning == "" {
 		t.Fatalf("RuntimeFidelity warning missing: %+v", harness.RuntimeFidelity)
 	}

@@ -22,7 +22,7 @@ const (
 // messages at session scope so future runs can continue from original context.
 type MessageRecord struct {
 	Seq            int64          `json:"seq"`
-	RunID          string         `json:"run_id"`
+	RunID          RunID          `json:"run_id"`
 	Time           time.Time      `json:"time"`
 	Kind           string         `json:"kind,omitempty"`
 	Message        schema.Message `json:"message"`
@@ -52,60 +52,81 @@ type MessageLog struct {
 }
 
 // NewMessageLog creates a MessageLog for the provided session.
-func NewMessageLog(s *Session) *MessageLog {
+func NewMessageLog(s *StoredSession) *MessageLog {
 	return &MessageLog{path: s.MessagesPath()}
+}
+
+/* LoadMessageRecords reads persisted conversation records for a runtime consumer. */
+func (s *FileStore) LoadMessageRecords(storedSession *StoredSession) ([]MessageRecord, error) {
+	return NewMessageLog(storedSession).LoadRecords()
+}
+
+/* AppendMessage persists and returns one runtime-authorized model-visible message record. */
+func (s *FileStore) AppendMessage(storedSession *StoredSession, runID RunID, msg schema.Message, displayContent string) (MessageRecord, error) {
+	return NewMessageLog(storedSession).appendMessageRecord(runID, MessageKindNormal, msg, displayContent)
+}
+
+/* TruncateMessagesBefore removes the selected record and every later record. */
+func (s *FileStore) TruncateMessagesBefore(storedSession *StoredSession, seq int64) error {
+	return NewMessageLog(storedSession).TruncateBeforeSeq(seq)
 }
 
 // Append records a normal model-visible message for a run and returns its
 // assigned sequence number.
-func (l *MessageLog) Append(runID string, msg schema.Message) (int64, error) {
+func (l *MessageLog) Append(runID RunID, msg schema.Message) (int64, error) {
 	return l.AppendKind(runID, MessageKindNormal, msg)
 }
 
 // AppendWithDisplay records a normal model-visible message with an optional
 // human-facing display form.
-func (l *MessageLog) AppendWithDisplay(runID string, msg schema.Message, displayContent string) (int64, error) {
+func (l *MessageLog) AppendWithDisplay(runID RunID, msg schema.Message, displayContent string) (int64, error) {
 	return l.appendRecord(runID, MessageKindNormal, msg, displayContent)
 }
 
 // AppendKind records a model-visible message with a specific kind and returns
 // its assigned sequence number.
-func (l *MessageLog) AppendKind(runID, kind string, msg schema.Message) (int64, error) {
+func (l *MessageLog) AppendKind(runID RunID, kind string, msg schema.Message) (int64, error) {
 	return l.appendRecord(runID, kind, msg, "")
 }
 
-func (l *MessageLog) appendRecord(runID, kind string, msg schema.Message, displayContent string) (int64, error) {
+func (l *MessageLog) appendRecord(runID RunID, kind string, msg schema.Message, displayContent string) (int64, error) {
+	record, err := l.appendMessageRecord(runID, kind, msg, displayContent)
+	return record.Seq, err
+}
+
+func (l *MessageLog) appendMessageRecord(runID RunID, kind string, msg schema.Message, displayContent string) (MessageRecord, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	msg = schema.NormalizeMessage(msg)
 	if err := l.ensureSeqLoaded(); err != nil {
-		return 0, err
+		return MessageRecord{}, err
 	}
 	seq := l.nextSeq
 	l.nextSeq++
 
 	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		return 0, fmt.Errorf("打开消息日志失败: %w", err)
+		return MessageRecord{}, fmt.Errorf("打开消息日志失败: %w", err)
 	}
 	defer f.Close()
 
-	line, err := json.Marshal(MessageRecord{
+	record := MessageRecord{
 		Seq:            seq,
 		RunID:          runID,
 		Time:           time.Now(),
 		Kind:           kind,
 		Message:        msg,
 		DisplayContent: strings.TrimSpace(displayContent),
-	})
+	}
+	line, err := json.Marshal(record)
 	if err != nil {
-		return 0, fmt.Errorf("序列化消息日志失败: %w", err)
+		return MessageRecord{}, fmt.Errorf("序列化消息日志失败: %w", err)
 	}
 	if _, err := f.Write(append(line, '\n')); err != nil {
-		return 0, fmt.Errorf("写入消息日志失败: %w", err)
+		return MessageRecord{}, fmt.Errorf("写入消息日志失败: %w", err)
 	}
-	return seq, nil
+	return record, nil
 }
 
 // NextSeq returns the sequence number that will be assigned to the next
@@ -212,7 +233,7 @@ func (l *MessageLog) LoadMessages() ([]schema.Message, error) {
 // It is timing-independent, so a post-run consumer (e.g. the extraction hook)
 // never picks up a later run's messages even if it reads the log after the next
 // run has started appending.
-func (l *MessageLog) LoadMessagesForRun(runID string) ([]schema.Message, error) {
+func (l *MessageLog) LoadMessagesForRun(runID RunID) ([]schema.Message, error) {
 	records, err := l.LoadRecords()
 	if err != nil {
 		return nil, err

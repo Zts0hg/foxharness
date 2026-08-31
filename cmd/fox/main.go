@@ -35,11 +35,15 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/Zts0hg/foxharness/internal/app"
 	"github.com/Zts0hg/foxharness/internal/autodev"
+	"github.com/Zts0hg/foxharness/internal/childruntime"
+	"github.com/Zts0hg/foxharness/internal/cli"
 	"github.com/Zts0hg/foxharness/internal/configcmd"
 	"github.com/Zts0hg/foxharness/internal/effort"
 	"github.com/Zts0hg/foxharness/internal/llmconfig"
@@ -47,6 +51,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/session"
 	"github.com/Zts0hg/foxharness/internal/settings"
+	"github.com/Zts0hg/foxharness/internal/subagent"
 	"github.com/Zts0hg/foxharness/internal/tui"
 
 	"golang.org/x/term"
@@ -96,6 +101,7 @@ func main() {
 	cfg.Model = resolvedLLM.Model
 	cfg.LLM.Model = resolvedLLM.Model
 	applyPersistedEffort(homeDir, &cfg, resolvedLLM)
+	cfg.NewChildRunner = newChildRunner
 	if err := validateEffortConfig(&cfg, resolvedLLM); err != nil {
 		exitWithError(err)
 	}
@@ -104,9 +110,14 @@ func main() {
 		// The positional argument, when present, is the backlog path.
 		cfg.Prompt = strings.TrimSpace(cfg.Prompt)
 		reporter := autodev.NewTerminalReporter(os.Stdout)
-		if err := app.RunAutodev(context.Background(), cfg, reporter); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(exitCodeForError(err))
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+		err := runAutodevWithSignals(context.Background(), signals, func(ctx context.Context) error {
+			return runAutodev(ctx, cfg, reporter)
+		})
+		signal.Stop(signals)
+		if err != nil {
+			os.Exit(reportAutodevResult(err, os.Stderr))
 		}
 		return
 	}
@@ -128,7 +139,19 @@ func main() {
 			}
 			return nil
 		}
-		if err := app.RunTUI(context.Background(), cfg, onSave); err != nil {
+		autodevLauncher := func(ctx context.Context, backlogPath string, reporter autodev.Reporter) error {
+			return runAutodev(ctx, autodevConfigForTUILaunch(cfg, backlogPath), reporter)
+		}
+		if err := tui.Run(context.Background(), tui.Config{
+			Model: cfg.Model, InitialPrompt: cfg.Prompt, HomeDir: homeDir,
+			EffortOverride: cfg.EffortOverride, ProviderID: cfg.ResolvedLLM.ProviderID,
+			ProviderProfileID: cfg.ResolvedLLM.SettingsProviderID,
+			ProviderProtocol:  cfg.ResolvedLLM.Protocol,
+			Autodev:           autodevLauncher,
+			Initialize: func(ctx context.Context, interactions tui.Interactions) (tui.Startup, error) {
+				return newTUIStartup(ctx, cfg, interactions, onSave)
+			},
+		}); err != nil {
 			exitWithError(err)
 		}
 		return
@@ -140,9 +163,20 @@ func main() {
 	}
 
 	cfg.Prompt = prompt
-	if err := app.RunCLI(context.Background(), cfg); err != nil {
+	if err := cli.Run(context.Background(), cli.Config{
+		Prompt: cfg.Prompt,
+		Initialize: func(ctx context.Context) (cli.Application, error) {
+			return newCLIApplication(ctx, cfg)
+		},
+		Stdout: os.Stdout,
+		Logger: log.Default(),
+	}); err != nil {
 		exitWithError(err)
 	}
+}
+
+func newChildRunner(config childruntime.Config) subagent.Runner {
+	return childruntime.New(config)
 }
 
 func exitWithError(err error) {
@@ -235,7 +269,7 @@ func runRender(subArgs []string, stdout io.Writer) error {
 		if loadErr != nil {
 			return loadErr
 		}
-		html = tui.RenderSessionHTML(records, width, height)
+		html = tui.RenderSessionHTML(renderConversationRecords(records), width, height)
 		defaultBase = "session"
 	} else {
 		html, err = tui.RenderSceneHTML(sceneName, width, height)
@@ -254,6 +288,24 @@ func runRender(subArgs []string, stdout io.Writer) error {
 	return nil
 }
 
+func renderConversationRecords(records []session.MessageRecord) []app.ConversationRecord {
+	result := make([]app.ConversationRecord, len(records))
+	for index, record := range records {
+		calls := make([]app.ConversationToolCall, len(record.Message.ToolCalls))
+		for callIndex, call := range record.Message.ToolCalls {
+			calls[callIndex] = app.ConversationToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments)}
+		}
+		result[index] = app.ConversationRecord{
+			Sequence: record.Seq, Time: record.Time, Role: string(record.Message.Role),
+			Content: record.Message.Content, DisplayContent: record.DisplayContent,
+			ToolCallID: record.Message.ToolCallID, ToolCalls: calls,
+			IsMeta: record.IsMeta, IsCompactSummary: record.IsCompactSummary,
+			IsVisibleInTranscriptOnly: record.IsVisibleInTranscriptOnly,
+		}
+	}
+	return result
+}
+
 // loadSessionRecords loads a session's model-visible message records for
 // replay rendering. The value may be a session directory, a `messages.jsonl`
 // path (a session directory is inferred from it), or a session id resolved
@@ -264,14 +316,14 @@ func loadSessionRecords(value string, workDir string) ([]session.MessageRecord, 
 		if !info.IsDir() {
 			dir = filepath.Dir(value)
 		}
-		sess := &session.Session{RootDir: dir}
+		sess := &session.StoredSession{RootDir: dir}
 		if _, statErr := os.Stat(sess.MessagesPath()); statErr != nil {
 			return nil, fmt.Errorf("render -session %q: no messages.jsonl found (looked at %s)", value, sess.MessagesPath())
 		}
 		return session.NewMessageLog(sess).LoadRecords()
 	}
 
-	sess, err := session.NewManager(workDir).Open(value)
+	sess, err := session.NewFileStore(workDir).Open(session.ID(value))
 	if err != nil {
 		return nil, fmt.Errorf("render -session %q: not a readable path and not a known session id under %q: %w", value, workDir, err)
 	}
@@ -312,6 +364,15 @@ func exitCodeForError(err error) int {
 	if err == nil {
 		return 0
 	}
+	var signalErr *autodevSignalError
+	if errors.As(err, &signalErr) {
+		switch signalErr.Signal {
+		case os.Interrupt:
+			return 130
+		case syscall.SIGTERM:
+			return 143
+		}
+	}
 	var pre *autodev.PreconditionError
 	if errors.As(err, &pre) {
 		return 2
@@ -319,8 +380,49 @@ func exitCodeForError(err error) int {
 	return 1
 }
 
-func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, error) {
-	var cfg app.CLIConfig
+func reportAutodevResult(err error, stderr io.Writer) int {
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+	}
+	return exitCodeForError(err)
+}
+
+type autodevSignalError struct {
+	Signal os.Signal
+	Err    error
+}
+
+func (e *autodevSignalError) Error() string {
+	return fmt.Sprintf("autodev interrupted by %s: %v", e.Signal, e.Err)
+}
+
+func (e *autodevSignalError) Unwrap() error { return e.Err }
+
+func runAutodevWithSignals(parent context.Context, signals <-chan os.Signal, run func(context.Context) error) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	done := make(chan struct{})
+	observed := make(chan os.Signal, 1)
+	go func() {
+		select {
+		case sig := <-signals:
+			observed <- sig
+			cancel()
+		case <-done:
+		}
+	}()
+	err := run(ctx)
+	close(done)
+	select {
+	case sig := <-observed:
+		return &autodevSignalError{Signal: sig, Err: err}
+	default:
+		return err
+	}
+}
+
+func parseArgs(args []string, output io.Writer) (foxConfig, launchMode, error) {
+	var cfg foxConfig
 	mode := launchTUI
 	if len(args) > 0 && args[0] == "exec" {
 		mode = launchPrint
@@ -388,9 +490,13 @@ func parseArgs(args []string, output io.Writer) (app.CLIConfig, launchMode, erro
 		return cfg, mode, fmt.Errorf("-tui/-interactive 不能和 exec、-p/-print 或 autodev 同时使用")
 	}
 
-	positionalPrompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	positionalArgs := fs.Args()
+	positionalPrompt := strings.TrimSpace(strings.Join(positionalArgs, " "))
 	if strings.TrimSpace(cfg.Prompt) != "" && positionalPrompt != "" {
 		return cfg, mode, fmt.Errorf("不能同时使用 -prompt 和位置参数 prompt")
+	}
+	if mode == launchAutodev && len(positionalArgs) > 1 {
+		return cfg, mode, fmt.Errorf("autodev 最多接受一个 backlog-path 位置参数")
 	}
 	if strings.TrimSpace(cfg.Prompt) == "" {
 		cfg.Prompt = positionalPrompt
@@ -402,7 +508,7 @@ func resolveLLMConfig(homeDir string, cli llmconfig.CLIOverrides, lookup llmconf
 	return llmresolve.FromUserSettings(homeDir, cli, lookup)
 }
 
-func validateEffortConfig(cfg *app.CLIConfig, resolved llmconfig.ResolvedConfig) error {
+func validateEffortConfig(cfg *foxConfig, resolved llmconfig.ResolvedConfig) error {
 	if cfg == nil || strings.TrimSpace(cfg.EffortOverride) == "" {
 		return nil
 	}
@@ -414,7 +520,7 @@ func validateEffortConfig(cfg *app.CLIConfig, resolved llmconfig.ResolvedConfig)
 	return nil
 }
 
-func applyPersistedEffort(homeDir string, cfg *app.CLIConfig, resolved llmconfig.ResolvedConfig) {
+func applyPersistedEffort(homeDir string, cfg *foxConfig, resolved llmconfig.ResolvedConfig) {
 	if cfg == nil || strings.TrimSpace(cfg.EffortOverride) != "" {
 		return
 	}

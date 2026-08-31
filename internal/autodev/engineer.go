@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/provider"
 	"github.com/Zts0hg/foxharness/internal/schema"
-	"github.com/Zts0hg/foxharness/internal/tools"
 )
 
 // DefaultEngineerPersona is the engineer Agent's system prompt when the
@@ -58,9 +56,9 @@ type decideResponse struct {
 
 // Decide implements EngineerAgent. It asks the LLM to pick an option (or
 // supply "Other" free text) per question and maps the reply onto
-// []tools.Answer. Unparseable replies and unanswered questions fall back to
+// []Answer. Unparseable replies and unanswered questions fall back to
 // each question's first option so the loop never stalls (PLAN-005).
-func (a *ProviderEngineerAgent) Decide(ctx context.Context, qs []tools.Question, c StageContext) ([]tools.Answer, error) {
+func (a *ProviderEngineerAgent) Decide(ctx context.Context, qs []Question, c StageContext) ([]Answer, error) {
 	resp, err := a.generate(ctx, a.decidePrompt(qs, c))
 	if err != nil {
 		return nil, err
@@ -82,13 +80,13 @@ func (a *ProviderEngineerAgent) Decide(ctx context.Context, qs []tools.Question,
 		}
 	}
 
-	answers := make([]tools.Answer, 0, len(qs))
+	answers := make([]Answer, 0, len(qs))
 	for _, q := range qs {
 		value, ok := byQuestion[q.Prompt]
 		if !ok {
 			value = firstOptionLabel(q)
 		}
-		answers = append(answers, tools.Answer{QuestionText: q.Prompt, Value: value})
+		answers = append(answers, Answer{QuestionText: q.Prompt, Value: value})
 	}
 	return answers, nil
 }
@@ -108,18 +106,30 @@ const reviewApproval = "APPROVE"
 // outcome together with the Go-computed verification gap and returns ""
 // on approval or a corrective instruction to feed back to the core Agent
 // (REQ-014).
-func (a *ProviderEngineerAgent) Review(ctx context.Context, res *engine.RunResult, gap string, c StageContext) (string, error) {
+func (a *ProviderEngineerAgent) Review(ctx context.Context, evidence CoreReviewEvidence, gap string, c StageContext) (string, error) {
 	var b strings.Builder
 	b.WriteString(contextPreamble(c))
 	b.WriteString("You are reviewing the result of the coding agent's last run, like a user supervising it.\n\n")
-	final := ""
-	if res != nil {
-		final = strings.TrimSpace(res.FinalMessage)
+	message := strings.TrimSpace(evidence.Message)
+	if message == "" {
+		message = "(the agent produced no committed assistant text)"
 	}
-	if final == "" {
-		final = "(the agent produced no final message)"
+	label := "Agent final message"
+	if evidence.Partial {
+		label = "Partial evidence only (the core attempt did not succeed)"
 	}
-	b.WriteString("Agent's final message:\n" + final + "\n\n")
+	b.WriteString(label + ":\n" + message + "\n")
+	b.WriteString("Outcome status: " + string(evidence.Status) + "\n")
+	if evidence.SessionID != "" {
+		b.WriteString("Session: " + evidence.SessionID + "\n")
+	}
+	if evidence.RunID != "" {
+		b.WriteString("Run: " + evidence.RunID + "\n")
+	}
+	if evidence.Cause != nil {
+		b.WriteString("Terminal cause: " + evidence.Cause.Error() + "\n")
+	}
+	b.WriteString("\n")
 	if strings.TrimSpace(gap) != "" {
 		b.WriteString("Deterministic ground-truth verification FAILED with this gap:\n" + gap + "\n\n")
 		b.WriteString("The step is NOT complete regardless of what the agent claims. ")
@@ -152,7 +162,7 @@ func (a *ProviderEngineerAgent) generate(ctx context.Context, userPrompt string)
 	return resp.Message.Content, nil
 }
 
-func (a *ProviderEngineerAgent) decidePrompt(qs []tools.Question, c StageContext) string {
+func (a *ProviderEngineerAgent) decidePrompt(qs []Question, c StageContext) string {
 	var b strings.Builder
 	b.WriteString(contextPreamble(c))
 	b.WriteString("The coding agent asked you to choose between options. Decide for each question.\n\n")
@@ -196,22 +206,22 @@ func extractJSON(s string) string {
 	return s[start : end+1]
 }
 
-func firstOptionLabel(q tools.Question) string {
+func firstOptionLabel(q Question) string {
 	if len(q.Options) == 0 {
 		return "Proceed with your best judgement."
 	}
 	return q.Options[0].Label
 }
 
-func fallbackAnswers(qs []tools.Question) []tools.Answer {
-	answers := make([]tools.Answer, 0, len(qs))
+func fallbackAnswers(qs []Question) []Answer {
+	answers := make([]Answer, 0, len(qs))
 	for _, q := range qs {
-		answers = append(answers, tools.Answer{QuestionText: q.Prompt, Value: firstOptionLabel(q)})
+		answers = append(answers, Answer{QuestionText: q.Prompt, Value: firstOptionLabel(q)})
 	}
 	return answers
 }
 
-// EngineerAsker adapts an EngineerAgent to tools.UserAsker so the merged
+// EngineerAsker adapts an EngineerAgent to QuestionAsker so the merged
 // ask_user_question tool is answered by the simulated engineer instead of a
 // human (REQ-013). It never cancels: on any agent failure it falls back to
 // each question's first (recommended) option (PLAN-005).
@@ -227,12 +237,12 @@ func NewEngineerAsker(agent EngineerAgent, reporter Reporter, sc *StageContext) 
 	return &EngineerAsker{agent: agent, reporter: reporter, sc: sc}
 }
 
-var _ tools.UserAsker = (*EngineerAsker)(nil)
+var _ QuestionAsker = (*EngineerAsker)(nil)
 
-// Ask implements tools.UserAsker by delegating to EngineerAgent.Decide and
+// Ask implements QuestionAsker by delegating to EngineerAgent.Decide and
 // streaming the exchange to the reporter. Every question always receives an
 // answer; ErrUserCancelled is never returned.
-func (a *EngineerAsker) Ask(ctx context.Context, questions []tools.Question) ([]tools.Answer, error) {
+func (a *EngineerAsker) Ask(ctx context.Context, questions []Question) ([]Answer, error) {
 	sc := StageContext{}
 	if a.sc != nil {
 		sc = *a.sc
@@ -259,18 +269,18 @@ func (a *EngineerAsker) Ask(ctx context.Context, questions []tools.Question) ([]
 
 // fillMissingAnswers guarantees one answer per question, falling back to
 // the first option for any question the agent skipped.
-func fillMissingAnswers(questions []tools.Question, answers []tools.Answer) []tools.Answer {
-	byQuestion := make(map[string]tools.Answer, len(answers))
+func fillMissingAnswers(questions []Question, answers []Answer) []Answer {
+	byQuestion := make(map[string]Answer, len(answers))
 	for _, ans := range answers {
 		byQuestion[ans.QuestionText] = ans
 	}
-	out := make([]tools.Answer, 0, len(questions))
+	out := make([]Answer, 0, len(questions))
 	for _, q := range questions {
 		if ans, ok := byQuestion[q.Prompt]; ok && strings.TrimSpace(ans.Value) != "" {
 			out = append(out, ans)
 			continue
 		}
-		out = append(out, tools.Answer{QuestionText: q.Prompt, Value: firstOptionLabel(q)})
+		out = append(out, Answer{QuestionText: q.Prompt, Value: firstOptionLabel(q)})
 	}
 	return out
 }
