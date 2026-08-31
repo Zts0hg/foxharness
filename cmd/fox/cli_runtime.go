@@ -134,7 +134,9 @@ func newCLIApplicationWithSession(ctx context.Context, config foxConfig, modelPr
 			if err != nil {
 				return nil, err
 			}
-			base := modelinvoke.New(modelProvider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker, Streaming: true})
+			/* The baseline's exec run issued non-streaming requests; only the
+			 * interactive surfaces stream. */
+			base := modelinvoke.New(modelProvider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker})
 			return journal.WrapModel(base), nil
 		},
 		NewTools: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {

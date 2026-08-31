@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"testing"
 	"time"
 )
@@ -43,8 +44,11 @@ func TestRunCancellationStillKillsProcessTree(t *testing.T) {
 		cancel()
 	}()
 	result := Run(ctx, workDir, "sleep 1; touch "+marker, time.Minute)
-	if !errors.Is(result.Err, context.Canceled) {
-		t.Fatalf("Err = %v, want context canceled", result.Err)
+	/* The killed process's own exit error is the baseline's cancellation
+	 * result: a signal death carries exit code -1, not the context error. */
+	var exitErr *exec.ExitError
+	if !errors.As(result.Err, &exitErr) || result.ExitCode != -1 {
+		t.Fatalf("Err = %v/%d, want the killed process exit error with code -1", result.Err, result.ExitCode)
 	}
 	time.Sleep(1500 * time.Millisecond)
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {

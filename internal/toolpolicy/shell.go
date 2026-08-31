@@ -165,14 +165,46 @@ func synchronousInvocation(call *syntax.CallExpr) bool {
 	// executed program through a named flag instead of a positional word, so
 	// their execution flags are rejected outright.
 	for _, arg := range call.Args[1:] {
-		if text := runtimeStaticText(arg); text != "" && wrapperExecFlagForbidden(command, text) {
-			return false
+		text := runtimeStaticText(arg)
+		if text != "" {
+			if wrapperExecFlagForbidden(command, text) {
+				return false
+			}
+			if !wrapperClusterValueSynchronous(command, text) {
+				return false
+			}
 		}
 		if !synchronousProgramWord(arg) {
 			return false
 		}
 	}
 	return true
+}
+
+/* wrapperClusterValueSynchronous screens the value a bundled short-flag
+ * cluster hands to the executed program: tar -zIsh executes sh, su -csh
+ * executes sh. The value is the cluster remainder after the execution
+ * letter, and it faces the same program screening as a positional word. */
+func wrapperClusterValueSynchronous(command string, text string) bool {
+	letter, ok := wrapperExecFlagLetters[command]
+	if !ok || len(text) < 3 || text[0] != '-' || text[1] == '-' {
+		return true
+	}
+	index := strings.Index(text[1:], letter)
+	if index < 0 {
+		return true
+	}
+	value := text[2+index:]
+	if value == "" {
+		return true
+	}
+	return programWordText(strings.ToLower(value))
+}
+
+// wrapperExecFlagLetters lists, per wrapper, the short option letter whose
+// value is a program to execute.
+var wrapperExecFlagLetters = map[string]string{
+	"flock": "c", "script": "c", "su": "c", "tar": "I",
 }
 
 /* wrapperExecFlagForbidden reports whether one argument word names or binds
@@ -238,7 +270,7 @@ var wrapperCommands = map[string]bool{
 	"perf": true, "proot": true, "proxychains": true,
 	"proxychains4": true, "runcon": true,
 	"runuser": true, "script": true, "setarch": true, "setpriv": true,
-	"gsort": true, "gtar": true, "sort": true, "sshpass": true, "strace": true, "sudo": true,
+	"gsort": true, "gtar": true, "socat": true, "sort": true, "sshpass": true, "strace": true, "sudo": true,
 	"stdbuf": true,
 	"su":     true, "systemd-nspawn": true, "tar": true, "taskset": true, "time": true,
 	"toybox": true, "unshare": true, "valgrind": true, "watch": true,
@@ -357,7 +389,14 @@ func synchronousCommandName(word *syntax.Word) bool {
 // that is not a plain literal could name anything and fails closed; a plain
 // literal fails only when its base name is a detached or scheduler program.
 func synchronousProgramWord(word *syntax.Word) bool {
-	name := strings.ToLower(literalWord(word))
+	return programWordText(strings.ToLower(literalWord(word)))
+}
+
+/* programWordText classifies one runtime program word: a word that is not a
+ * plain literal could name any program and fails closed, path operands that
+ * name no executable pass, and everything else must not name a detached or
+ * interpreter program. */
+func programWordText(name string) bool {
 	if !isPlainCommandName(name) {
 		return false
 	}
@@ -416,13 +455,14 @@ var detachedShellCommands = map[string]bool{
 	"daemon": true, "dash": true,
 	"deno": true, "disown": true, "docker": true, "dtach": true,
 	"dvtm": true, "elvish": true, "env": true, "es": true, "eval": true,
-	"daemonize": true, "exec": true, "ex": true, "expect": true,
-	"fish": true, "gawk": true,
+	"daemonize": true, "dc": true, "exec": true, "ex": true,
+	"expect": true, "fish": true, "gawk": true,
 	"ghci": true, "gio": true, "gmake": true, "gpg-agent": true,
 	"jjs": true, "jruby": true,
 	"kill": true, "killall": true, "ksh": true, "kubectl": true,
-	"launchctl": true, "lksh": true, "make": true,
+	"launchctl": true, "lftp": true, "lksh": true, "make": true,
 	"mapfile": true, "mawk": true, "mksh": true, "mosh": true,
+	"nc": true, "ncat": true, "netcat": true,
 	"nawk": true, "nodejs": true, "nohup": true, "nu": true,
 	"pdksh": true, "parallel": true, "pkill": true, "prlimit": true,
 	"octave": true, "oksh": true, "open": true, "osascript": true,
@@ -430,6 +470,7 @@ var detachedShellCommands = map[string]bool{
 	"psql": true, "pwsh": true, "pythonw": true, "r": true, "rc": true,
 	"readarray": true, "rsh": true, "rsync": true, "rscript": true,
 	"rvim": true, "rview": true, "sash": true, "sbcl": true, "scp": true,
+	"sed":    true,
 	"screen": true, "schtasks": true, "setsid": true, "sftp": true,
 	"sh": true, "sh.exe": true, "shopt": true, "source": true,
 	"ssh": true, "ssh-agent": true,

@@ -63,8 +63,16 @@ func run(ctx context.Context, workDir, command string, timeout time.Duration, st
 	case <-timeoutCtx.Done():
 		cleanupErr = tree.Signal(true)
 		select {
-		case <-wait:
-			err = timeoutCtx.Err()
+		case waitErr := <-wait:
+			/* The killed process's own exit error is the result the baseline
+			 * surfaced for a killed command; the cancellation context only
+			 * takes over when no exit could be observed. */
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
+				err = waitErr
+			} else {
+				err = timeoutCtx.Err()
+			}
 		case <-time.After(processReapTimeout):
 			err = timeoutCtx.Err()
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("shell process tree was not reaped within %s", processReapTimeout))
@@ -79,13 +87,13 @@ func run(ctx context.Context, workDir, command string, timeout time.Duration, st
 		Truncated: output.Truncated(),
 		Err:       err,
 	}
-	if timeoutCtx.Err() == context.DeadlineExceeded {
-		result.TimedOut = true
-		result.Err = errors.Join(result.Err, timeoutCtx.Err())
-	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		result.ExitCode = exitErr.ExitCode()
+	}
+	if timeoutCtx.Err() == context.DeadlineExceeded {
+		result.TimedOut = true
+		result.Err = errors.Join(result.Err, timeoutCtx.Err())
 	}
 	return result
 }

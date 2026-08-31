@@ -301,7 +301,11 @@ func (h *RuntimeHarness) newAgentSession(profile Profile, stored *session.Stored
 		return nil, errors.New("runtime session store returned empty session ID")
 	}
 	profileSnapshot := profile.Snapshot()
-	if stored.Source != profileSnapshot.SessionSource {
+	/* Only the child profile needs the source fence: it must never run a
+	 * parent-sourced session. The user-facing profiles resume whatever
+	 * session was explicitly selected, the way the baseline's -session
+	 * opened any stored session. */
+	if profileSnapshot.Name == ChildRun && stored.Source != profileSnapshot.SessionSource {
 		return nil, fmt.Errorf("stored session source %q does not match profile %s source %q", stored.Source, profileSnapshot.Name, profileSnapshot.SessionSource)
 	}
 	releaseLease, err := h.claim(stored.ID)

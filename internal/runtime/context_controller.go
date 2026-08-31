@@ -84,6 +84,11 @@ type ContextCompactor interface {
 type ContextBudgetRequest struct {
 	Messages        []engine.Message
 	ToolDefinitions []engine.ToolDefinition
+	/* EstimateMessages optionally carries the projection the baseline
+	 * published as the turn's context estimate — the turn-start projection
+	 * without the turn's own notices. Publication prefers it while the
+	 * blocking decision still reads Messages. */
+	EstimateMessages []engine.Message
 }
 
 /* ContextController owns one run's collection, transient projection, and compaction decisions. */
@@ -267,8 +272,9 @@ func (c *ContextController) checkBudget(ctx context.Context, request engine.Conv
 		return nil
 	}
 	return c.compactor.CheckContext(ctx, ContextBudgetRequest{
-		Messages:        cloneContextMessages(c.messages),
-		ToolDefinitions: cloneContextToolDefinitions(request.ToolDefinitions),
+		Messages:         cloneContextMessages(c.messages),
+		ToolDefinitions:  cloneContextToolDefinitions(request.ToolDefinitions),
+		EstimateMessages: cloneContextMessages(c.messagesWithoutTurnNotices(request.Turn)),
 	})
 }
 
@@ -511,9 +517,6 @@ func validateCompactionProposal(trigger ContextCompactionTrigger, proposal Conte
 	}
 	if proposal.CompactState == nil {
 		return nil
-	}
-	if proposal.CompactState.Summary == "" {
-		return errors.New("context compaction returned an empty durable summary")
 	}
 	maxSeq := int64(-1)
 	for _, record := range records {

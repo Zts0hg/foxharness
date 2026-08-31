@@ -88,7 +88,11 @@ func (p *contextEstimatePublisher) Compact(ctx context.Context, request foxrunti
 }
 
 func (p *contextEstimatePublisher) CheckContext(ctx context.Context, request foxruntime.ContextBudgetRequest) error {
-	p.publishEstimate(request.Messages, request.ToolDefinitions)
+	messages := request.Messages
+	if len(request.EstimateMessages) > 0 {
+		messages = request.EstimateMessages
+	}
+	p.publishEstimate(messages, request.ToolDefinitions)
 	return p.inner.CheckContext(ctx, request)
 }
 

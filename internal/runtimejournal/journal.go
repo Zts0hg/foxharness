@@ -366,7 +366,13 @@ func (m journalModelRun) Invoke(ctx context.Context, request engine.RunContext, 
 	m.journal.mu.Unlock()
 	if err != nil {
 		span.End("error", map[string]any{"error": err.Error()})
-		m.journal.finishTurn(request.Turn, "error", map[string]any{"error": err.Error()})
+		/* A prompt-too-long failure hands the turn to the recovery
+		 * preparation and the retrying invocation in the same turn, so the
+		 * turn span stays open for them, the way the baseline's in-turn
+		 * recovery did. */
+		if !errors.Is(err, engine.ErrPromptTooLong) {
+			m.journal.finishTurn(request.Turn, "error", map[string]any{"error": err.Error()})
+		}
 	} else {
 		span.End("ok", map[string]any{"content_bytes": len(result.Message.Content), "tool_calls": len(result.Message.ToolCalls)})
 		if request.Phase == engine.PhaseAction && len(result.Message.ToolCalls) == 0 {

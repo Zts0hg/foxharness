@@ -241,9 +241,10 @@ func (r *Runner) RunRepeat(ctx context.Context, c *Case, repeatIndex int) (retur
 
 	/* The close window above can outlive the case deadline; a run that
 	 * already completed still gets its evaluation instead of failing every
-	 * validation against a consumed deadline. */
+	 * validation against a consumed deadline. A cancelled parent cancels the
+	 * case, and no new validation work starts for it. */
 	validateCtx := caseCtx
-	if caseCtx.Err() != nil && err == nil {
+	if errors.Is(caseCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil && err == nil {
 		validateCtx = context.WithoutCancel(caseCtx)
 	}
 	validationResults := ValidateAll(validateCtx, workspace, caseSnapshot.Validations)
