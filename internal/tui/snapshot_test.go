@@ -119,3 +119,58 @@ func TestRenderSceneANSISceneMarkers(t *testing.T) {
 		}
 	}
 }
+
+func TestRecolorForImagePreservesExtendedColorSequences(t *testing.T) {
+	// The default Monokai Pro theme styles with truecolor SGR sequences whose
+	// RGB components fall inside the 16-color code ranges (#2d2a2e is 45;42;46).
+	// Rewriting must skip an extended-color introducer together with its
+	// arguments and resume on the parameter that follows it.
+	in := "\x1b[38;2;45;42;46mfg\x1b[0m \x1b[1;48;2;45;42;46;4mbg\x1b[0m \x1b[38;5;45mindexed\x1b[0m"
+	out := RecolorForImage(in)
+	for _, want := range []string{
+		"38;2;45;42;46", // truecolor foreground survives intact
+		"48;2;45;42;46", // truecolor background survives intact
+		"38;5;45",       // 256-color index survives intact
+		"4m",            // underline after a consumed extended color is preserved
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("RecolorForImage rewrote an extended color sequence; missing %q:\n%q", want, out)
+		}
+	}
+}
+
+func TestRenderSceneANSIUsesMonokaiProPalette(t *testing.T) {
+	out, err := RenderSceneANSI("transcript", 110, 32)
+	if err != nil {
+		t.Fatalf("RenderSceneANSI error = %v", err)
+	}
+	for _, want := range []string{
+		"38;2;252;252;250", // #fcfcfa primary text
+		"38;2;120;220;232", // #78dce8 accent
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("default-theme frame missing Monokai Pro color %q", want)
+		}
+	}
+}
+
+func TestRenderSceneHTMLCarriesMonokaiProPalette(t *testing.T) {
+	html, err := RenderSceneHTML("transcript", 110, 32)
+	if err != nil {
+		t.Fatalf("RenderSceneHTML error = %v", err)
+	}
+	// The dimmed scale is what distinguishes the theme in an export: the
+	// previous terminal-following default collapsed muted text, dim text, and
+	// dividers onto a single ANSI index.
+	for _, want := range []string{
+		"background:" + SnapshotBackground, // #2d2a2e
+		"color:rgb(252,252,250)",           // #fcfcfa primary text
+		"color:rgb(120,220,232)",           // #78dce8 accent
+		"color:rgb(147,146,147)",           // #939293 muted text
+		"color:rgb(91,89,92)",              // #5b595c dividers
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("exported HTML missing Monokai Pro color %q", want)
+		}
+	}
+}

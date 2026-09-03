@@ -1607,7 +1607,7 @@ func TestStatusCommandRendersGroupedOverview(t *testing.T) {
 		"7%",
 		"UI",
 		"Theme",
-		"codex",
+		"monokai-pro",
 		"Statusline",
 		"model, project, git-branch, context-used",
 		"Sidebar",
@@ -1767,7 +1767,7 @@ func TestStatuslineSetPersistsOrderedItems(t *testing.T) {
 		t.Fatalf("statuslineItems = %#v, want %#v", m.statuslineItems, wantItems)
 	}
 	plain := stripANSI(m.renderStatusBar(120))
-	for _, want := range []string{"theme codex", "queued 0", "sid sess-1"} {
+	for _, want := range []string{"theme monokai-pro", "queued 0", "sid sess-1"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("configured statusline missing %q:\n%s", want, plain)
 		}

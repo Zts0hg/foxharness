@@ -239,7 +239,7 @@ var slashCommands = []slashCommand{
 
 var workingFrames = []string{"✦", "✧"}
 
-const defaultThemeName = "codex"
+const defaultThemeName = "monokai-pro"
 
 const interruptedTurnMessage = "Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue."
 

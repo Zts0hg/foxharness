@@ -28,20 +28,22 @@ const fixedSnapshotSpinnerFrame = 0
 // SnapshotBackground is the window background fill used when exporting a scene
 // to an image. It matches the Monokai Pro dark background so image exports have
 // a fixed, terminal-independent appearance.
-const SnapshotBackground = "#2d2a2e"
+const SnapshotBackground = monokaiBackground
 
 // snapshotForeground is the default text color applied to unstyled cells during
 // image export, matching the Monokai Pro dark foreground.
-const snapshotForeground = "#fcfcfa"
+const snapshotForeground = monokaiText
 
 // monokaiDarkPalette maps the 16 ANSI color indices (0-15) to the Monokai Pro
-// dark palette. The default TUI theme (codex) styles most elements with ANSI
-// palette indices, which an image renderer would otherwise paint with its own
-// palette. Baking these to fixed truecolor keeps exports deterministic and
+// dark palette. Themes and syntax highlighters that style with ANSI palette
+// indices would otherwise be painted by the image renderer's own palette;
+// baking these to fixed truecolor keeps exports deterministic and
 // terminal-independent.
 var monokaiDarkPalette = [16]string{
-	"#2d2a2e", "#ff6188", "#a9dc76", "#ffd866", "#fc9867", "#ab9df2", "#78dce8", "#fcfcfa",
-	"#727072", "#ff6188", "#a9dc76", "#ffd866", "#fc9867", "#ab9df2", "#78dce8", "#fcfcfa",
+	monokaiBackground, monokaiRed, monokaiGreen, monokaiYellow,
+	monokaiOrange, monokaiPurple, monokaiBlue, monokaiText,
+	monokaiDimmed3, monokaiRed, monokaiGreen, monokaiYellow,
+	monokaiOrange, monokaiPurple, monokaiBlue, monokaiText,
 }
 
 var sgrPattern = regexp.MustCompile(`\x1b\[([0-9;]*)m`)
@@ -63,18 +65,28 @@ func RecolorForImage(frame string) string {
 // convertSGRColorParams rewrites the 16-color foreground/background parameters
 // of one SGR sequence to truecolor using the Monokai Pro palette, preserving
 // every non-color parameter.
+//
+// Extended color parameters (38/48/58) are copied together with their arguments
+// and never inspected: a truecolor component such as the 45 in 38;2;45;42;46 is
+// an RGB channel, not the background code that the same number would mean on
+// its own.
 func convertSGRColorParams(params string) string {
 	if params == "" {
 		return "0"
 	}
-	out := make([]string, 0, 8)
-	for _, p := range strings.Split(params, ";") {
-		n, err := strconv.Atoi(p)
+	fields := strings.Split(params, ";")
+	out := make([]string, 0, len(fields))
+	for i := 0; i < len(fields); i++ {
+		n, err := strconv.Atoi(fields[i])
 		if err != nil {
-			out = append(out, p)
+			out = append(out, fields[i])
 			continue
 		}
 		switch {
+		case n == 38 || n == 48 || n == 58:
+			width := extendedColorWidth(fields[i:])
+			out = append(out, fields[i:i+width]...)
+			i += width - 1
 		case n >= 30 && n <= 37:
 			out = append(out, truecolorParams("38", monokaiDarkPalette[n-30]))
 		case n >= 90 && n <= 97:
@@ -86,10 +98,28 @@ func convertSGRColorParams(params string) string {
 		case n == 39:
 			out = append(out, truecolorParams("38", snapshotForeground))
 		default:
-			out = append(out, p)
+			out = append(out, fields[i])
 		}
 	}
 	return strings.Join(out, ";")
+}
+
+// extendedColorWidth returns how many parameters an extended color selector
+// spans, counting the 38/48/58 introducer at fields[0]: 3 for the 256-color
+// form (38;5;n) and 5 for the truecolor form (38;2;r;g;b). An unknown or
+// truncated form spans only what is present, so parsing always advances.
+func extendedColorWidth(fields []string) int {
+	if len(fields) < 2 {
+		return len(fields)
+	}
+	switch fields[1] {
+	case "5":
+		return min(3, len(fields))
+	case "2":
+		return min(5, len(fields))
+	default:
+		return 2
+	}
 }
 
 func truecolorParams(layer string, hex string) string {

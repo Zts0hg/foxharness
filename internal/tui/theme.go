@@ -23,6 +23,16 @@ type tuiTheme struct {
 	progressEmpty string
 	selectionBg   string
 	selectionFg   string
+	// codeHighlight names the chroma style used for fenced code blocks. An
+	// empty value leaves the choice to the detected terminal background, which
+	// is what terminal-following and background-agnostic themes want.
+	codeHighlight string
+	// quote and listMarker color the two markdown elements that carry their own
+	// hue rather than the accent. A theme with a fixed palette names them so
+	// they stay inside the scheme; an empty value keeps the ANSI index, letting
+	// a terminal-following theme use the terminal's own green and blue.
+	quote      string
+	listMarker string
 	// followsTerminal marks a theme that inherits the terminal's own colors
 	// (empty foreground/background plus ANSI-indexed accents) and should be
 	// adapted to the detected terminal background, the way codex does.
@@ -30,6 +40,32 @@ type tuiTheme struct {
 }
 
 var builtInThemes = map[string]tuiTheme{
+	// monokai-pro is the default. It maps Fox's roles onto the published
+	// Monokai Pro filter: blue and purple take the accent slots the codex theme
+	// fills with ANSI cyan and magenta, red carries warnings, and the dimmed
+	// scale supplies the text hierarchy from primary down to dividers. The
+	// markdown quote and list-marker colors follow monokaiDarkPalette, which
+	// already renders their ANSI indices (2 and 12) as this green and orange
+	// when a frame is exported, so terminal and export agree.
+	"monokai-pro": {
+		name:          "monokai-pro",
+		bg:            monokaiBackground,
+		panel:         monokaiDark1,
+		accent:        monokaiBlue,
+		accentHi:      monokaiPurple,
+		warn:          monokaiRed,
+		textPri:       monokaiText,
+		textSec:       monokaiDimmed1,
+		textMuted:     monokaiDimmed2,
+		textDim:       monokaiDimmed3,
+		divider:       monokaiDimmed4,
+		progressEmpty: monokaiDimmed5,
+		selectionBg:   monokaiBlue,
+		selectionFg:   monokaiBackground,
+		codeHighlight: monokaiChromaStyle,
+		quote:         monokaiGreen,
+		listMarker:    monokaiOrange,
+	},
 	"codex": {
 		name:            "codex",
 		bg:              "",

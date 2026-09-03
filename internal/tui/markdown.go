@@ -30,8 +30,9 @@ var localLinkLocationSuffixRE = regexp.MustCompile(`:\d+(?::\d+)?(?:[-–]\d+(?:
 var markdownFenceOpenRE = regexp.MustCompile(`^\s*(` + "`{3,}|~{3,}" + `)\s*([A-Za-z0-9_-]+)?\s*$`)
 
 // markdownCodeHighlightStyle names the chroma style used for fenced code
-// blocks. It tracks the terminal background so highlighting stays legible on
-// both dark and light themes, the way codex adapts its syntax colors.
+// blocks. A theme that carries its own syntax colors names them directly;
+// otherwise the style tracks the terminal background so highlighting stays
+// legible on both dark and light themes, the way codex adapts its syntax colors.
 var markdownCodeHighlightStyle = "github-dark"
 
 // markdownAccentColor is the accent applied to inline code, code blocks, and
@@ -39,23 +40,70 @@ var markdownCodeHighlightStyle = "github-dark"
 // background instead of a fixed cyan.
 var markdownAccentColor = lipgloss.Color("6")
 
+// markdownQuoteColor and markdownListMarkerColor are the two markdown hues that
+// are not the accent. They keep their ANSI index unless the active theme names
+// a replacement, so a fixed palette does not leak the terminal's own colors.
+var (
+	markdownQuoteColor      = lipgloss.Color("2")
+	markdownListMarkerColor = lipgloss.Color("12")
+)
+
 func applyMarkdownTheme(theme tuiTheme, light bool) {
 	if strings.TrimSpace(theme.accent) != "" {
 		markdownAccentColor = lipgloss.Color(theme.accent)
 	} else {
 		markdownAccentColor = lipgloss.Color("6")
 	}
-	if light {
+	markdownQuoteColor = themeColorOrANSI(theme.quote, "2")
+	markdownListMarkerColor = themeColorOrANSI(theme.listMarker, "12")
+	switch {
+	case strings.TrimSpace(theme.codeHighlight) != "":
+		markdownCodeHighlightStyle = theme.codeHighlight
+	case light:
 		markdownCodeHighlightStyle = "github"
-	} else {
+	default:
 		markdownCodeHighlightStyle = "github-dark"
 	}
 }
 
 func newMarkdownStyleRenderer() *lipgloss.Renderer {
 	renderer := lipgloss.NewRenderer(io.Discard)
-	renderer.SetColorProfile(termenv.TrueColor)
+	renderer.SetColorProfile(markdownColorProfile())
 	return renderer
+}
+
+/*
+markdownColorProfile reports the color depth markdown styling must emit.
+
+The markdown renderer writes to io.Discard and so cannot probe a terminal of
+its own; it has to follow the profile the rest of the TUI detected from stdout.
+Emitting truecolor to a terminal that only parses 256 colors is not a graceful
+downgrade but a corruption: macOS Terminal.app reads the components of
+"38;2;252;152;103" as separate SGR codes, so 2 turns the text faint and 103
+paints a bright yellow background over it.
+
+With no terminal at all — tests, piped output, snapshot export — there is
+nothing to follow and nothing to corrupt, so full color is kept rather than
+stripped, which is what keeps offline rendering faithful.
+*/
+func markdownColorProfile() termenv.Profile {
+	if profile := lipgloss.ColorProfile(); profile != termenv.Ascii {
+		return profile
+	}
+	return termenv.TrueColor
+}
+
+// chromaFormatterName maps a color profile onto the chroma terminal formatter
+// that emits at most that depth.
+func chromaFormatterName(profile termenv.Profile) string {
+	switch profile {
+	case termenv.TrueColor:
+		return "terminal16m"
+	case termenv.ANSI256:
+		return "terminal256"
+	default:
+		return "terminal16"
+	}
 }
 
 func renderMarkdown(markdown string, width int) string {
@@ -63,6 +111,7 @@ func renderMarkdown(markdown string, width int) string {
 	if markdown == "" {
 		return ""
 	}
+	markdownStyleRenderer.SetColorProfile(markdownColorProfile())
 	width = max(width, 20)
 	normalized := unwrapMarkdownTableFences(markdown)
 	renderer := codexMarkdownRenderer{
@@ -248,7 +297,7 @@ func highlightCodeBlock(text string, lang string) string {
 	if err != nil {
 		return markdownCodeBlockStyle().Render(text)
 	}
-	formatter := formatters.Get("terminal16m")
+	formatter := formatters.Get(chromaFormatterName(markdownColorProfile()))
 	style := styles.Get(markdownCodeHighlightStyle)
 	var out bytes.Buffer
 	if err := formatter.Format(&out, style, iterator); err != nil {
@@ -700,12 +749,21 @@ func markdownMutedStyle() lipgloss.Style {
 	return markdownStyleRenderer.NewStyle().Foreground(cTextMuted)
 }
 
+// themeColorOrANSI resolves a theme color, falling back to an ANSI palette
+// index when the theme leaves the role unset.
+func themeColorOrANSI(value string, fallback string) lipgloss.Color {
+	if trimmed := strings.TrimSpace(value); trimmed != "" {
+		return lipgloss.Color(trimmed)
+	}
+	return lipgloss.Color(fallback)
+}
+
 func markdownBlockquoteStyle() lipgloss.Style {
-	return markdownStyleRenderer.NewStyle().Foreground(lipgloss.Color("2"))
+	return markdownStyleRenderer.NewStyle().Foreground(markdownQuoteColor)
 }
 
 func markdownOrderedListMarkerStyle() lipgloss.Style {
-	return markdownStyleRenderer.NewStyle().Foreground(lipgloss.Color("12"))
+	return markdownStyleRenderer.NewStyle().Foreground(markdownListMarkerColor)
 }
 
 func (r *codexMarkdownRenderer) localLinkDisplay(dest string) (string, bool) {

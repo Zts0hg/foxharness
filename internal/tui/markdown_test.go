@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func TestCodexMarkdownRendersHeadingsListsAndInlineStyles(t *testing.T) {
@@ -41,6 +42,8 @@ func TestCodexMarkdownRendersHeadingsListsAndInlineStyles(t *testing.T) {
 }
 
 func TestCodexMarkdownUsesCodexAnsiStyles(t *testing.T) {
+	t.Cleanup(func() { applyTheme(defaultThemeName) })
+	applyTheme("codex")
 	rendered := renderMarkdown("> [link](https://example.com) and `code`", 80)
 
 	for _, want := range []string{
@@ -50,6 +53,41 @@ func TestCodexMarkdownUsesCodexAnsiStyles(t *testing.T) {
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("rendered markdown missing ANSI style %q:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestMarkdownFollowsMonokaiProThemeInsteadOfRawAnsi(t *testing.T) {
+	t.Cleanup(func() { applyTheme(defaultThemeName) })
+	applyTheme("monokai-pro")
+	rendered := renderMarkdown("> [link](https://example.com) and `code`\n\n1. first", 80)
+
+	for _, want := range []string{
+		"38;2;120;220;232", // #78dce8 accent on inline code and links
+		"38;2;169;220;118", // #a9dc76 blockquote
+		"38;2;252;152;103", // #fc9867 ordered list marker
+		"\x1b[4;",          // links stay underlined
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered markdown missing style %q:\n%s", want, rendered)
+		}
+	}
+	// A fixed palette must not fall back to the terminal's own ANSI colors.
+	for _, forbidden := range []string{"\x1b[32m", "\x1b[94m"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("rendered markdown still uses raw ANSI style %q:\n%s", forbidden, rendered)
+		}
+	}
+}
+
+func TestMarkdownKeepsAnsiColorsForTerminalFollowingTheme(t *testing.T) {
+	t.Cleanup(func() { applyTheme(defaultThemeName) })
+	applyTheme("codex")
+	rendered := renderMarkdown("> quote\n\n1. first", 80)
+
+	for _, want := range []string{"\x1b[32m", "\x1b[94m"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("terminal-following theme lost ANSI style %q:\n%s", want, rendered)
 		}
 	}
 }
@@ -210,4 +248,44 @@ func currentTestWorkDir(t *testing.T) string {
 		t.Fatalf("resolve cwd: %v", err)
 	}
 	return dir
+}
+
+func TestMarkdownStyleFollowsTerminalColorProfile(t *testing.T) {
+	// The markdown renderer writes to io.Discard and cannot detect a terminal
+	// itself. If it emits truecolor to a terminal that only parses 256 colors
+	// (macOS Terminal.app), the RGB components are read as standalone SGR
+	// codes: #fc9867 becomes "38;2;252;152;103", whose 103 sets a bright yellow
+	// background and whose 2 turns the text faint.
+	prev := lipgloss.ColorProfile()
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prev)
+		applyTheme(defaultThemeName)
+	})
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	applyTheme("monokai-pro")
+
+	rendered := renderMarkdown("> quote\n\n1. first with `code`\n\n```go\nx := 1\n```\n", 80)
+	if strings.Contains(rendered, "\x1b[38;2;") || strings.Contains(rendered, "\x1b[48;2;") {
+		t.Fatalf("markdown emitted truecolor to a 256-color terminal:\n%q", rendered)
+	}
+	if !strings.Contains(rendered, "38;5;") {
+		t.Fatalf("markdown lost its color on a 256-color terminal:\n%q", rendered)
+	}
+}
+
+func TestMarkdownKeepsTruecolorWithoutATerminal(t *testing.T) {
+	// Offline rendering (snapshot export, tests, piped output) has no terminal
+	// to follow, so full color is kept rather than stripped.
+	prev := lipgloss.ColorProfile()
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prev)
+		applyTheme(defaultThemeName)
+	})
+	lipgloss.SetColorProfile(termenv.Ascii)
+	applyTheme("monokai-pro")
+
+	rendered := renderMarkdown("1. first", 80)
+	if !strings.Contains(rendered, "38;2;252;152;103") {
+		t.Fatalf("offline markdown lost its truecolor styling:\n%q", rendered)
+	}
 }
