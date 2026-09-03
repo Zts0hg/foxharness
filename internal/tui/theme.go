@@ -6,6 +6,7 @@ import (
 
 	"github.com/Zts0hg/foxharness/internal/tui/selector"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 type tuiTheme struct {
@@ -158,6 +159,7 @@ func applyTheme(name string) string {
 	}
 	bg, known := terminalBackground()
 	theme = adaptThemeToTerminal(theme, bg, known)
+	theme = adaptThemeToColorDepth(theme, lipgloss.ColorProfile())
 	cBg = lipgloss.Color(theme.bg)
 	cAccent = lipgloss.Color(theme.accent)
 	cAccentHi = lipgloss.Color(theme.accentHi)
@@ -234,4 +236,31 @@ func rebuildStyles() {
 	sidebarFocusedTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(cWarn)
 	sidebarDividerStyle = lipgloss.NewStyle().Foreground(cTextVeryDim)
 	askFocusedStyle = lipgloss.NewStyle().Foreground(cAccentHi)
+}
+
+/*
+adaptThemeToColorDepth resolves a theme's truecolor values to xterm-256 palette
+indices when that is all the terminal can render.
+
+Leaving the conversion to lipgloss would route it through termenv, whose
+grayscale ramp is unreachable (see nearestANSI256), collapsing a fixed dark
+theme's dimmed scale onto one index. Any other profile is returned unchanged:
+a truecolor terminal gets the published palette, and an offline render — which
+has no profile to follow — keeps full color so exports stay faithful.
+*/
+func adaptThemeToColorDepth(theme tuiTheme, profile termenv.Profile) tuiTheme {
+	if profile != termenv.ANSI256 {
+		return theme
+	}
+	for _, field := range []*string{
+		&theme.bg, &theme.panel, &theme.accent, &theme.accentHi, &theme.warn,
+		&theme.textPri, &theme.textSec, &theme.textMuted, &theme.textDim,
+		&theme.divider, &theme.progressEmpty, &theme.selectionBg, &theme.selectionFg,
+		&theme.quote, &theme.listMarker,
+	} {
+		if index, ok := nearestANSI256(*field); ok {
+			*field = index
+		}
+	}
+	return theme
 }
