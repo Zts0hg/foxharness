@@ -37,7 +37,7 @@ func TestTUIRunKeepsBaselineBasePromptRules(t *testing.T) {
 	if _, err := startup.Application.Run(context.Background(), app.RunCommand{Prompt: "hello"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	prompt := model.systemPrompt()
+	prompt := model.systemPromptForUser("hello")
 	for _, want := range []string{
 		"Prefer reading files before editing them.",
 		"After changing code, verify with the smallest relevant test command.",
@@ -75,7 +75,7 @@ func TestTUIRestrictedRunKeepsBaselineBasePromptRules(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	prompt := model.systemPrompt()
+	prompt := model.systemPromptForUser("hello")
 	for _, want := range []string{
 		"Prefer reading files before editing them.",
 		"After changing code, verify with the smallest relevant test command.",
@@ -87,10 +87,29 @@ func TestTUIRestrictedRunKeepsBaselineBasePromptRules(t *testing.T) {
 	}
 }
 
+/* TestSystemPromptTUIProviderSelectsPromptByDirectUserInput reproduces the CI
+ * ordering where asynchronous memory extraction invokes the shared provider
+ * after the foreground TUI run. */
+func TestSystemPromptTUIProviderSelectsPromptByDirectUserInput(t *testing.T) {
+	model := &systemPromptTUIProvider{}
+	_, _ = model.GenerateWithOptions(context.Background(), []schema.Message{
+		{Role: schema.RoleSystem, Content: "foreground prompt"},
+		{Role: schema.RoleUser, Content: "hello"},
+	}, nil, provider.GenerateOptions{})
+	_, _ = model.GenerateWithOptions(context.Background(), []schema.Message{
+		{Role: schema.RoleSystem, Content: "memory extraction prompt"},
+		{Role: schema.RoleUser, Content: "conversation transcript"},
+	}, nil, provider.GenerateOptions{})
+
+	if got := model.systemPromptForUser("hello"); got != "foreground prompt" {
+		t.Fatalf("systemPromptForUser(hello) = %q, want foreground prompt", got)
+	}
+}
+
 /* systemPromptTUIProvider records the system prompt the model receives. */
 type systemPromptTUIProvider struct {
-	mu     sync.Mutex
-	prompt string
+	mu      sync.Mutex
+	prompts map[string]string
 }
 
 func (p *systemPromptTUIProvider) Generate(ctx context.Context, messages []schema.Message, definitions []schema.ToolDefinition) (*provider.GenerateResponse, error) {
@@ -98,18 +117,23 @@ func (p *systemPromptTUIProvider) Generate(ctx context.Context, messages []schem
 }
 
 func (p *systemPromptTUIProvider) GenerateWithOptions(_ context.Context, messages []schema.Message, _ []schema.ToolDefinition, _ provider.GenerateOptions) (*provider.GenerateResponse, error) {
-	p.mu.Lock()
+	var prompt string
 	for _, message := range messages {
 		if message.Role == schema.RoleSystem {
-			p.prompt = message.Content
+			prompt = message.Content
 		}
 	}
+	p.mu.Lock()
+	if p.prompts == nil {
+		p.prompts = make(map[string]string)
+	}
+	p.prompts[lastDirectUserMessage(messages)] = prompt
 	p.mu.Unlock()
 	return &provider.GenerateResponse{Message: &schema.Message{Role: schema.RoleAssistant, Content: "done"}}, nil
 }
 
-func (p *systemPromptTUIProvider) systemPrompt() string {
+func (p *systemPromptTUIProvider) systemPromptForUser(userInput string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.prompt
+	return p.prompts[userInput]
 }
