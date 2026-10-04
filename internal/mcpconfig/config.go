@@ -111,15 +111,28 @@ func (s Snapshot) Redacted() Snapshot {
 			server.Definition.Headers[key] = "[redacted]"
 		}
 		server.Definition.Args = nil
-		if u, err := url.Parse(server.Definition.URL); err == nil {
-			u.User = nil
-			u.RawQuery = ""
-			u.Fragment = ""
-			server.Definition.URL = u.String()
-		}
+		server.Definition.URL = redactURL(server.Definition.URL)
+		server.Definition.Auth.Issuer = redactURL(server.Definition.Auth.Issuer)
+		server.Definition.Auth.ClientMetadataURL = redactURL(server.Definition.Auth.ClientMetadataURL)
 		copy.Servers[name] = server
 	}
 	return copy
+}
+
+func redactURL(value string) string {
+	if value == "" {
+		return ""
+	}
+	u, err := url.Parse(value)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Opaque != "" {
+		return "[redacted invalid URL]"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String()
 }
 
 /* Load reads both scopes, replaces same-name definitions, and resolves secret references. */
