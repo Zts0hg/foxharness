@@ -103,12 +103,14 @@ type ToolSnapshot interface {
 
 /* ToolExecutionResult contains distinct full, model-visible, and observer result forms. */
 type ToolExecutionResult struct {
-	CallID          string
-	FullContent     string
-	ModelContent    string
-	ObserverContent string
-	ArtifactPath    string
-	IsError         bool
+	CallID            string
+	FullContent       string
+	ModelContent      string
+	ObserverContent   string
+	ArtifactPath      string
+	IsError           bool
+	ContentParts      []schema.ContentPart
+	StructuredContent json.RawMessage
 }
 
 /* ToolBatch contains tool results in the same order as their corresponding calls. */
@@ -561,6 +563,8 @@ func (e *AgentEngine) executeTools(
 		if result.CallID != call.ID {
 			return state, fmt.Errorf("tool result %d call ID = %q, want %q", index, result.CallID, call.ID)
 		}
+		result.ContentParts = schema.CloneContentParts(result.ContentParts)
+		result.StructuredContent = append([]byte(nil), result.StructuredContent...)
 		state.Results = append(state.Results, result)
 		observerContent := result.ObserverContent
 		if observerContent == "" {
@@ -575,6 +579,9 @@ func (e *AgentEngine) executeTools(
 			Kind: ConversationAppendMessage,
 			Message: schema.Message{
 				Role: schema.RoleUser, Content: result.ModelContent, ToolCallID: call.ID,
+				ContentParts:      schema.CloneContentParts(result.ContentParts),
+				StructuredContent: append([]byte(nil), result.StructuredContent...),
+				IsError:           result.IsError && (len(result.ContentParts) > 0 || len(result.StructuredContent) > 0),
 			},
 		})
 	}
@@ -685,12 +692,7 @@ func cloneMessages(messages []schema.Message) []schema.Message {
 }
 
 func cloneMessage(message schema.Message) schema.Message {
-	message.ToolCalls = cloneToolCalls(message.ToolCalls)
-	if message.Usage != nil {
-		usage := *message.Usage
-		message.Usage = &usage
-	}
-	return message
+	return message.Clone()
 }
 
 func cloneToolCalls(calls []schema.ToolCall) []schema.ToolCall {

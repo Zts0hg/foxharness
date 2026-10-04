@@ -269,9 +269,11 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 			}
 		}
 		return schema.ToolResult{
-			ToolCallID: call.ID,
-			Output:     result.Output,
-			IsError:    result.Failed,
+			ToolCallID:        call.ID,
+			Output:            result.Output,
+			IsError:           result.Failed,
+			ContentParts:      schema.CloneContentParts(result.ContentParts),
+			StructuredContent: append([]byte(nil), result.StructuredContent...),
 		}
 	}
 

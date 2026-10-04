@@ -83,6 +83,9 @@ func TestViolationRulesDetectConfirmedForbiddenEdges(t *testing.T) {
 
 func TestViolationRulesAllowConfirmedEdges(t *testing.T) {
 	tests := []importEdge{
+		{From: "internal/toolprotocol", To: "internal/schema"},
+		{From: "internal/media", To: "internal/schema"},
+		{From: "internal/toolruntime", To: "internal/media"},
 		{From: "internal/engine", To: "internal/schema"},
 		{From: "internal/turnpolicy", To: "internal/engine"},
 		{From: "internal/turnpolicy", To: "internal/recovery"},
@@ -554,6 +557,10 @@ func violationReason(edge importEdge) string {
 	}
 
 	switch {
+	case edge.From == "internal/toolprotocol" || edge.From == "internal/media":
+		if edge.To != "internal/schema" {
+			return "tool protocol and media may depend only on schema"
+		}
 	case edge.From == "internal/prompt":
 		return "prompt renderer must not depend on project mechanisms"
 	case edge.From == "internal/session" && edge.To == "internal/runtime":

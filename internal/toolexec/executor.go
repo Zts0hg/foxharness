@@ -126,6 +126,8 @@ func executeOne(ctx context.Context, snapshot *capabilitySnapshot, call schema.T
 		return failureResult(call.ID, fmt.Sprintf("Error executing %s: executable capability is missing", call.Name))
 	}
 	result = capability.Execute(ctx, cloneCall(call))
+	result.ContentParts = schema.CloneContentParts(result.ContentParts)
+	result.StructuredContent = append([]byte(nil), result.StructuredContent...)
 	if result.CallID == "" {
 		result.CallID = call.ID
 	}

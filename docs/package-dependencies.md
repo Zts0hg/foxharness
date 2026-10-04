@@ -43,6 +43,8 @@ flowchart TD
     TOOLRUNTIME[internal/toolruntime] --> TOOLEXEC
     TOOLRUNTIME --> ENGINE
     TOOLRUNTIME --> TOOLRESULT[internal/toolresult]
+    TOOLRUNTIME --> MEDIA[internal/media]
+    MEDIA --> SCHEMA
     REGISTRYEXEC[internal/registryexec] --> TOOLEXEC
     REGISTRYEXEC --> TOOLS
     REGISTRYEXEC --> TOOLPROTOCOL
@@ -51,6 +53,7 @@ flowchart TD
     SHELLCMD[internal/shellcmd] --> PROCESSTREE
     SLASH[internal/slash] --> TOOLPROTOCOL
     SUB --> TOOLPROTOCOL
+    TOOLPROTOCOL --> SCHEMA
     MODELINVOKE[internal/modelinvoke] --> ENGINE
     MODELINVOKE --> PROVIDER[internal/provider]
     RUNTIMECOMPACT[internal/runtimecompaction] --> RUNTIME
