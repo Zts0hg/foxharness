@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -61,8 +62,14 @@ func (m *Manager) Login(ctx context.Context, server mcpconfig.Server, prompt Log
 	httpServer := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	defer httpServer.Close()
 	go httpServer.Serve(listener)
+	var resource string
 	config := &auth.AuthorizationCodeHandlerConfig{RedirectURL: redirect, Client: oauthClient(), RequestRefreshToken: true,
 		AuthorizationCodeFetcher: func(fetchCtx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+			authorizationURL, err := url.Parse(args.URL)
+			if err != nil || authorizationURL.Query().Get("resource") == "" {
+				return nil, fmt.Errorf("OAuth resource is unavailable")
+			}
+			resource = authorizationURL.Query().Get("resource")
 			if err := prompt(fetchCtx, args.URL); err != nil {
 				return nil, fmt.Errorf("authorization interaction failed")
 			}
@@ -74,7 +81,7 @@ func (m *Manager) Login(ctx context.Context, server mcpconfig.Server, prompt Log
 			}
 		},
 		NewTokenSource: func(_ context.Context, cfg *oauth2.Config, token *oauth2.Token) (oauth2.TokenSource, error) {
-			if err := m.save(ctx, key(server), credential{Config: *cfg, Token: *token}); err != nil {
+			if err := m.save(ctx, key(server), credential{Config: *cfg, Token: *token, Resource: resource}); err != nil {
 				return nil, err
 			}
 			return oauth2.StaticTokenSource(token), nil

@@ -20,8 +20,9 @@ import (
 )
 
 type credential struct {
-	Config oauth2.Config
-	Token  oauth2.Token
+	Config   oauth2.Config
+	Token    oauth2.Token
+	Resource string
 }
 
 /* Manager stores credentials separately from shareable project configuration. */
@@ -149,7 +150,20 @@ func (m *Manager) Token(ctx context.Context, server mcpconfig.Server) (string, e
 			return false, fmt.Errorf("authorization expired; run fox mcp login for this server")
 		}
 		refreshCtx := context.WithValue(ctx, oauth2.HTTPClient, oauthClient())
-		updated, err := record.Config.TokenSource(refreshCtx, &record.Token).Token()
+		resource := record.Resource
+		if resource == "" {
+			resource = server.Definition.URL
+		}
+		config := record.Config
+		config.RedirectURL = ""
+		/* TokenSource cannot carry RFC 8707 resource parameters. Exchange supports
+		custom grant parameters while retaining client authentication and token
+		rotation; an empty code is ignored under RFC 6749 section 3.2. */
+		updated, err := config.Exchange(refreshCtx, "",
+			oauth2.SetAuthURLParam("grant_type", "refresh_token"),
+			oauth2.SetAuthURLParam("refresh_token", record.Token.RefreshToken),
+			oauth2.SetAuthURLParam("resource", resource),
+		)
 		if err != nil {
 			return false, fmt.Errorf("authorization refresh failed; run fox mcp login for this server")
 		}

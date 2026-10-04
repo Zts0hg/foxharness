@@ -117,6 +117,8 @@ explicit login failure, not an unattended browser prompt.
 Tokens and refresh configuration are stored in the user-local
 `~/.foxharness/mcp-credentials.json` with mode 0600 (directory 0700), separately
 from project configuration. Refresh is serialized and persisted atomically.
+The authorized MCP resource is persisted and included in refresh requests,
+including after restart.
 Credentials are bound to endpoint, client and effective configuration scope.
 `logout` removes the local credential; reconnect active sessions afterward.
 Unattended entries never launch login and report authorization requirements.

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Zts0hg/foxharness/internal/mcpconfig"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
 )
 
@@ -38,6 +39,11 @@ func TestOAuthLoginRefreshRestartLogoutAndScope(t *testing.T) {
 			r.ParseForm()
 			if r.Form.Get("grant_type") == "refresh_token" {
 				refreshes.Add(1)
+				if r.Form.Get("resource") != endpoint+"/mcp" {
+					w.WriteHeader(400)
+					json.NewEncoder(w).Encode(map[string]string{"error": "invalid_target"})
+					return
+				}
 				json.NewEncoder(w).Encode(map[string]any{"access_token": "refreshed", "refresh_token": "refresh2", "token_type": "Bearer", "expires_in": 3600})
 				return
 			}
@@ -83,6 +89,14 @@ func TestOAuthLoginRefreshRestartLogoutAndScope(t *testing.T) {
 	if err := m.Login(context.Background(), server, prompt); err != nil {
 		t.Fatal(err)
 	}
+	if err := m.withStore(context.Background(), func(records map[string]credential) (bool, error) {
+		if records[key(server)].Resource != endpoint+"/mcp" {
+			t.Fatal("login did not persist the authorized resource")
+		}
+		return false, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	info, err := os.Stat(filepath.Join(home, ".foxharness", "mcp-credentials.json"))
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatalf("credential permissions: %v %v", info, err)
@@ -103,16 +117,132 @@ func TestOAuthLoginRefreshRestartLogoutAndScope(t *testing.T) {
 	if refreshes.Load() != 1 {
 		t.Fatalf("refresh calls=%d", refreshes.Load())
 	}
-	other := server
-	other.ScopeDir = t.TempDir()
-	if _, err := m.Token(context.Background(), other); err == nil {
-		t.Fatal("reused another project token")
+	for _, change := range []func(*mcpconfig.Server){
+		func(s *mcpconfig.Server) { s.ScopeDir = t.TempDir() },
+		func(s *mcpconfig.Server) { s.Definition.URL += "/other" },
+		func(s *mcpconfig.Server) { s.Definition.Auth.ClientID = "other" },
+		func(s *mcpconfig.Server) { s.Definition.Auth.Scopes = []string{"other"} },
+	} {
+		other := server
+		change(&other)
+		if _, err := m.Token(context.Background(), other); err == nil {
+			t.Fatal("reused another resource/client/scope token")
+		}
 	}
 	if err := m.Logout(context.Background(), server); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := restarted.Token(context.Background(), server); err == nil {
 		t.Fatal("logout did not invalidate live source")
+	}
+}
+
+func TestRefreshRetainsAuthorizedResourceAcrossRotationAndRestart(t *testing.T) {
+	for _, rotate := range []bool{false, true} {
+		t.Run(map[bool]string{false: "reuse", true: "rotate"}[rotate], func(t *testing.T) {
+			home := t.TempDir()
+			const resource = "https://resource.example/"
+			refresh, calls := "refresh-1", 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r.ParseForm()
+				user, secret, ok := r.BasicAuth()
+				if r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("resource") != resource || r.Form.Get("refresh_token") != refresh || r.Form.Get("redirect_uri") != "" || !ok || user != "client" || secret != "client-secret" {
+					t.Error("refresh lost authorized resource, token, or client authentication")
+					w.WriteHeader(400)
+					return
+				}
+				calls++
+				response := map[string]any{"access_token": "updated", "token_type": "Bearer", "expires_in": 1}
+				if rotate {
+					refresh += "-rotated"
+					response["refresh_token"] = refresh
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+			}))
+			defer srv.Close()
+			server := mcpconfig.Server{Definition: mcpconfig.Definition{URL: resource + "mcp", Auth: mcpconfig.Auth{Type: "oauth", ClientID: "client"}}}
+			record := credential{Resource: resource, Config: oauth2.Config{ClientID: "client", ClientSecret: "client-secret", RedirectURL: "http://127.0.0.1/old-callback", Endpoint: oauth2.Endpoint{TokenURL: srv.URL, AuthStyle: oauth2.AuthStyleInHeader}}, Token: oauth2.Token{AccessToken: "expired", RefreshToken: refresh, Expiry: time.Now().Add(-time.Hour)}}
+			if err := NewManager(home).save(context.Background(), key(server), record); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				if token, err := NewManager(home).Token(context.Background(), server); err != nil || token != "updated" {
+					t.Fatalf("refresh: %q %v", token, err)
+				}
+			}
+			if calls != 2 {
+				t.Fatalf("refresh requests=%d", calls)
+			}
+		})
+	}
+}
+
+func TestBothHTTPTransportsUseResourceBoundRefreshedCredentials(t *testing.T) {
+	for _, transport := range []string{"streamable-http", "sse"} {
+		t.Run(transport, func(t *testing.T) {
+			home := t.TempDir()
+			var endpoint string
+			var refreshes, calls atomic.Int32
+			server := mcp.NewServer(&mcp.Implementation{Name: "oauth", Version: "1"}, nil)
+			server.AddTool(&mcp.Tool{Name: "echo", InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				calls.Add(1)
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "authorized"}}}, nil
+			})
+			var protocol http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+			if transport == "sse" {
+				protocol = mcp.NewSSEHandler(func(*http.Request) *mcp.Server { return server }, nil)
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/token" {
+					r.ParseForm()
+					if r.Form.Get("resource") != endpoint+"/mcp" || r.Form.Get("refresh_token") != "refresh" {
+						w.WriteHeader(400)
+						return
+					}
+					refreshes.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]any{"access_token": "updated", "token_type": "Bearer", "expires_in": 3600})
+					return
+				}
+				want := "Bearer initial"
+				if refreshes.Load() > 0 {
+					want = "Bearer updated"
+				}
+				if r.Header.Get("Authorization") != want {
+					w.WriteHeader(401)
+					return
+				}
+				protocol.ServeHTTP(w, r)
+			}))
+			defer srv.Close()
+			endpoint = srv.URL
+			definition := mcpconfig.Server{Definition: mcpconfig.Definition{URL: endpoint + "/mcp", Transport: transport, Auth: mcpconfig.Auth{Type: "oauth"}}}
+			manager := NewManager(home)
+			record := credential{Resource: endpoint + "/mcp", Config: oauth2.Config{ClientID: "client", Endpoint: oauth2.Endpoint{TokenURL: endpoint + "/token", AuthStyle: oauth2.AuthStyleInParams}}, Token: oauth2.Token{AccessToken: "initial", RefreshToken: "refresh", Expiry: time.Now().Add(time.Hour)}}
+			ctx := context.Background()
+			if err := manager.save(ctx, key(definition), record); err != nil {
+				t.Fatal(err)
+			}
+			client := mcp.NewClient(&mcp.Implementation{Name: "oauth-test", Version: "1"}, nil)
+			var wire mcp.Transport = &mcp.StreamableClientTransport{Endpoint: definition.Definition.URL, HTTPClient: NewManager(home).HTTPClient(definition), DisableStandaloneSSE: true, MaxRetries: -1}
+			if transport == "sse" {
+				wire = &mcp.SSEClientTransport{Endpoint: definition.Definition.URL, HTTPClient: NewManager(home).HTTPClient(definition)}
+			}
+			session, err := client.Connect(ctx, wire, &mcp.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			record.Token.Expiry = time.Now().Add(-time.Hour)
+			if err := manager.save(ctx, key(definition), record); err != nil {
+				t.Fatal(err)
+			}
+			result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "echo", Arguments: map[string]any{}})
+			if err != nil || result.IsError || calls.Load() != 1 || refreshes.Load() != 1 {
+				t.Fatalf("refresh consumer: %+v %v calls=%d refreshes=%d", result, err, calls.Load(), refreshes.Load())
+			}
+		})
 	}
 }
 
