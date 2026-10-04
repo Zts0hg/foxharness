@@ -205,8 +205,15 @@ MCP 0.0.83. It requires an installed Chrome browser.
 The separate live-model subtest runs only when `FOX_MCP_LIVE_MODEL` is set, with
 `FOX_MCP_LIVE_PROTOCOL`, `FOX_MCP_LIVE_BASE_URL`, and `FOX_MCP_LIVE_API_KEY`.
 It asks the model to identify a visual property from the screenshot. On
-2026-10-04, the configured `zhipu` profile (`glm-5.2`, Claude-compatible protocol)
-returned “blue” for the controlled page’s orange badge, so that live-model
-acceptance **failed**. Browser operation and exact provider image encoding passed.
-A successful demonstration with an image-capable model remains required; neither
-a skipped test nor successful request encoding proves model visual reasoning.
+2026-10-04, `glm-5.3-flash` through the existing Zhipu Claude-compatible endpoint
+correctly identified the controlled page's orange badge, passing the live-model
+acceptance together with the complete browser workflow. The earlier `glm-5.2`
+run answered blue and failed; selecting a model that can process the image is
+necessary. Successful request encoding alone does not prove visual reasoning.
+
+For example, supply the endpoint and key through `FOX_MCP_LIVE_BASE_URL` and
+`FOX_MCP_LIVE_API_KEY`, then run:
+
+```sh
+FOX_MCP_PLAYWRIGHT=1 FOX_MCP_LIVE_PROTOCOL=claude FOX_MCP_LIVE_MODEL=glm-5.3-flash go test ./internal/mcpintegration -run '^TestPlaywrightAcceptance$' -count=1 -v
+```

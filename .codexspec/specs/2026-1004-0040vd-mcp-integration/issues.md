@@ -11,4 +11,4 @@
 - **Task**: T013-S05 / SC-007 / T015
 - **Error**: The existing default Fox `zhipu / glm-5.2` profile accepted the Claude-compatible image request but answered blue for the controlled page's orange badge.
 - **Attempted**: Repaired the live test's unsupported auth setting, ran the real Playwright integration with the local default profile, independently inspected the orange screenshot, and verified exact screenshot bytes in both provider request fixtures. Asked the user for a configured image-capable model; no credentials are requested in chat.
-- **Status**: Blocked on successful live-model visual acceptance. Browser and deterministic request-encoding acceptance remain green; T015 is incomplete.
+- **Status**: Resolved on 2026-10-04 using user-selected `glm-5.3-flash` with the existing Zhipu Claude-compatible endpoint and credentials. The model correctly answered orange and the full Playwright acceptance passed. T015 remains pending independent final review.
