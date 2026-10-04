@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/automemory"
@@ -271,8 +272,12 @@ func (f *autodevRuntimeCoreFactory) New(ctx context.Context, workDir, model stri
 		Close: func(ctx context.Context) error {
 			waitErr := waitForExtraction(ctx, &extraction)
 			cancelExtraction()
-			recoveryErr := agentSession.RecoverRunFinish(ctx)
-			closeErr := agentSession.Close(ctx)
+			recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 5*time.Second)
+			recoveryErr := agentSession.RecoverRunFinish(recoveryCtx)
+			cancelRecovery()
+			closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+			closeErr := agentSession.Close(closeCtx)
+			cancelClose()
 			return errors.Join(waitErr, recoveryErr, closeErr)
 		},
 	})
