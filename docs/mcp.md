@@ -148,6 +148,8 @@ tool surface.
 Calls to one server are serial; queue wait counts toward its timeout. Default
 startup/call bounds are 30/120 seconds, individually configurable. Connection
 cleanup is bounded to five seconds and subprocess descendants are terminated.
+Terminal close still releases external connections if persisting run completion
+fails; the persistence error remains available for recovery. Cleanup runs once.
 Protocol frames/SSE events are limited to 32 MiB, subprocess stderr to 64 KiB.
 MCP tool `isError` is distinct from a transport failure. A call whose response is
 lost may already have executed: Fox reports uncertainty and does not replay it.

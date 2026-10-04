@@ -12,6 +12,7 @@ import (
 type serviceFixture struct {
 	closed, reconnected int
 	closeContextErr     error
+	closeErr            error
 }
 
 func (s *serviceFixture) Capabilities() []ExternalCapability {
@@ -20,7 +21,7 @@ func (s *serviceFixture) Capabilities() []ExternalCapability {
 func (s *serviceFixture) Close(ctx context.Context) error {
 	s.closed++
 	s.closeContextErr = ctx.Err()
-	return nil
+	return s.closeErr
 }
 func (s *serviceFixture) Reconnect(context.Context, string) error { s.reconnected++; return nil }
 
@@ -133,4 +134,55 @@ func TestExternalChildCapabilitiesPreserveReadOnlyAndEmptyRestrictions(t *testin
 	if err != nil || len(got) != 0 {
 		t.Fatal("empty child restriction broadened")
 	}
+}
+
+func TestCloseReleasesServicesEvenWhenRunFinishNeedsRecovery(t *testing.T) {
+	store := newLifecycleStore()
+	cleanupFailure := errors.New("external cleanup failed")
+	services := &serviceFixture{closeErr: cleanupFailure}
+	h, err := NewRuntimeHarness(store, HarnessDependencies{NewSessionServices: func(context.Context, AgentSessionSnapshot) (SessionServices, error) { return services, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := h.CreateSession(context.Background(), CLIExec, SessionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := live.BeginRun(context.Background(), RunSpec{Prompt: "finish"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.failNextFinish(errors.New("metadata write failed"))
+	if err := live.FinishRun(scope); err == nil {
+		t.Fatal("finish failure hidden")
+	}
+	store.failNextFinish(errors.New("metadata still unavailable"))
+	if err := live.RecoverRunFinish(context.Background()); err == nil {
+		t.Fatal("recovery failure hidden")
+	}
+	for range 2 {
+		if err := live.Close(context.Background()); !errors.Is(err, ErrSessionRecoveryRequired) || !errors.Is(err, cleanupFailure) {
+			t.Fatalf("recovery status lost: %v", err)
+		}
+	}
+	if services.closed != 1 || services.closeContextErr != nil {
+		t.Fatalf("terminal recovery failure leaked or repeated service close: count=%d ctx=%v", services.closed, services.closeContextErr)
+	}
+	if _, err := h.OpenSession(context.Background(), CLIExec, live.Snapshot().ID); !errors.Is(err, ErrSessionAlreadyOpen) {
+		t.Fatalf("recovery lease released early: %v", err)
+	}
+	if err := live.RecoverRunFinish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := live.Close(context.Background()); !errors.Is(err, cleanupFailure) {
+		t.Fatalf("cleanup failure lost after recovery: %v", err)
+	}
+	if services.closed != 1 {
+		t.Fatal("service close repeated after persistence recovery")
+	}
+	reopened, err := h.OpenSession(context.Background(), CLIExec, live.Snapshot().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened.Close(context.Background())
 }

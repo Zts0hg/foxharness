@@ -74,6 +74,8 @@ type RuntimeHarness struct {
 /* AgentSession coordinates admission and recoverable state for one live session. */
 type AgentSession struct {
 	services               SessionServices
+	servicesCloseOnce      sync.Once
+	servicesCloseErr       error
 	harness                *RuntimeHarness
 	store                  SessionStore
 	profile                Profile
@@ -289,7 +291,11 @@ func (s *AgentSession) RecoverRunFinish(ctx context.Context) error {
 	return scope.finish()
 }
 
-/* Close prevents future runs after any admitted run has completed. */
+/*
+	Close releases external services after admitted work ends, even while durable
+
+finish needs recovery. Persistence recovery retains its lease until retried.
+*/
 func (s *AgentSession) Close(ctx context.Context) error {
 	if err := contextError(ctx); err != nil {
 		return err
@@ -297,27 +303,31 @@ func (s *AgentSession) Close(ctx context.Context) error {
 	if err := s.lock(ctx); err != nil {
 		return err
 	}
+	defer s.release()
 	s.stateMu.Lock()
 	if s.closed {
 		s.stateMu.Unlock()
-		s.release()
 		return nil
 	}
 	if s.recovery != nil {
 		s.stateMu.Unlock()
-		s.release()
-		return ErrSessionRecoveryRequired
+		return errors.Join(ErrSessionRecoveryRequired, s.closeServices())
 	}
 	s.closed = true
 	s.stateMu.Unlock()
-	s.release()
 	s.releaseLease()
-	if s.services != nil {
-		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return s.services.Close(cleanup)
-	}
-	return nil
+	return s.closeServices()
+}
+
+func (s *AgentSession) closeServices() error {
+	s.servicesCloseOnce.Do(func() {
+		if s.services != nil {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			s.servicesCloseErr = s.services.Close(cleanup)
+		}
+	})
+	return s.servicesCloseErr
 }
 
 func (h *RuntimeHarness) newAgentSession(profile Profile, stored *session.StoredSession) (*AgentSession, error) {
