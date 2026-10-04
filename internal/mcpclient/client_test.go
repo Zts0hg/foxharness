@@ -251,11 +251,18 @@ func TestPaginatedDiscoveryResourceReadAndUncertainCallNeverReplays(t *testing.T
 				result = map[string]any{"tools": []any{map[string]any{"name": "two", "inputSchema": map[string]any{"type": "object"}}}}
 			}
 		case "resources/read":
-			if request.Params.URI != "test://page" {
+			mime, body := "text/plain", "page body"
+			switch request.Params.URI {
+			case "test://page":
+			case "test://json":
+				mime, body = "application/json", `{"answer":42}`
+			case "test://xml":
+				mime, body = "application/xml", `<answer>42</answer>`
+			default:
 				io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(request.ID)+`,"error":{"code":-32002,"message":"resource not found"}}`)
 				return
 			}
-			result = map[string]any{"contents": []any{map[string]any{"uri": "test://page", "mimeType": "text/plain", "text": "page body"}}}
+			result = map[string]any{"contents": []any{map[string]any{"uri": request.Params.URI, "mimeType": mime, "text": body}}}
 		case "tools/call":
 			calls.Add(1)
 			conn, _, err := w.(http.Hijacker).Hijack()
@@ -281,6 +288,15 @@ func TestPaginatedDiscoveryResourceReadAndUncertainCallNeverReplays(t *testing.T
 	resource, err := s.ReadResource(context.Background(), "test://page")
 	if err != nil || resource.ContentParts[0].URI != "test://page" || resource.Output != "page body" {
 		t.Fatalf("read: %#v %v", resource, err)
+	}
+	for _, tc := range []struct{ uri, mime, body string }{
+		{"test://json", "application/json", `{"answer":42}`},
+		{"test://xml", "application/xml", `<answer>42</answer>`},
+	} {
+		resource, err := s.ReadResource(context.Background(), tc.uri)
+		if err != nil || resource.Output != tc.body || len(resource.ContentParts) != 1 || resource.ContentParts[0].URI != tc.uri || resource.ContentParts[0].MIMEType != tc.mime {
+			t.Fatalf("text resource read: %+v %v", resource, err)
+		}
 	}
 	if _, err := s.ReadResource(context.Background(), "test://missing"); err == nil {
 		t.Fatal("unavailable resource advertised as success")

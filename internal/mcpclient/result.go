@@ -33,10 +33,10 @@ func convertResult(result *mcp.CallToolResult) toolprotocol.ExecutionResult {
 				break
 			}
 			r := c.Resource
-			if strings.HasPrefix(r.MIMEType, "image/") {
-				part = imagePart(r.MIMEType, r.Blob)
-			} else if r.Blob == nil && (r.MIMEType == "" || strings.HasPrefix(r.MIMEType, "text/")) {
+			if r.Blob == nil {
 				part = schema.ContentPart{Type: "text", Text: r.Text, MIMEType: r.MIMEType}
+			} else if strings.HasPrefix(r.MIMEType, "image/") {
+				part = imagePart(r.MIMEType, r.Blob)
 			} else {
 				part = schema.ContentPart{Type: "text", Text: "unsupported embedded resource format"}
 			}

@@ -12,3 +12,9 @@
 - **Error**: The existing default Fox `zhipu / glm-5.2` profile accepted the Claude-compatible image request but answered blue for the controlled page's orange badge.
 - **Attempted**: Repaired the live test's unsupported auth setting, ran the real Playwright integration with the local default profile, independently inspected the orange screenshot, and verified exact screenshot bytes in both provider request fixtures. Asked the user for a configured image-capable model; no credentials are requested in chat.
 - **Status**: Resolved on 2026-10-04 using user-selected `glm-5.3-flash` with the existing Zhipu Claude-compatible endpoint and credentials. The model correctly answered orange and the full Playwright acceptance passed. T015 remains pending independent final review.
+
+## Feishu browser continuity across ordinary messages
+- **Task**: T012-S03 / T015; review follow-up `FU-CG-002` from target `sha256:e5ed84c41038c5191eef5f95702ed38c39b39001809442244e8f9ae475351479`.
+- **Error**: Each Feishu message can reuse the persisted session ID but opens a new live AgentSession; task drain closes its MCP connection. Browser state and the MCP configuration snapshot therefore do not survive ordinary consecutive messages.
+- **Attempted**: Verified the factory/runner lifecycle against REQ-006/013, DEC-005/006 and the design's distinction between persisted records and live sessions. Requested an explicit choice between keeping browser state until a new session/service shutdown, and retaining task-local connections with a clear notice. The independent text-resource defect has been repaired and all deterministic checks pass.
+- **Status**: Needs Discussion. User decision is pending; no requirement was weakened or lifecycle changed by assumption. The implement-tasks skill requires requesting a decision when finding verification needs a new product or architecture decision. Final review and T015 completion remain pending.
