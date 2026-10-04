@@ -20,7 +20,9 @@ fox exec "Open the page, take a screenshot, and analyze its layout"
 `fox mcp --workdir /path/to/project status` selects a project explicitly.
 The command runs before LLM configuration is loaded. `status` opens and closes
 **temporary probe connections**; it does not inspect or reconnect another Fox
-process. In TUI, `/mcp status` reports the active session's actual connections.
+process. `status NAME` probes only the selected server; `list` shows the effective
+redacted configuration without opening connections. In TUI, `/mcp` and
+`/mcp status` report the active session's actual connections.
 Playwright 0.0.83 returns some automatic snapshots as file links; call
 `browser_snapshot` for the inline accessibility snapshot. Its interaction tools
 accept `target` (an element reference or unique selector). Fox uses discovered
@@ -31,7 +33,8 @@ schemas rather than hard-coding Playwright tool arguments.
 Fox reads `~/.foxharness/mcp.json` and `<workDir>/.foxharness/mcp.json`.
 A project definition **replaces the entire** same-named user definition,
 including credentials and enablement. Fox does not search parent directories.
-Missing files mean no MCP servers. A malformed file is reported and is never
+Missing files mean no MCP servers. Special files such as named pipes are rejected
+before reading. A malformed file is reported and is never
 overwritten by a management edit; invalid definitions disable only that server.
 
 ```json
@@ -75,7 +78,8 @@ add NAME --scope user|project --json '{"transport":"stdio","command":"server"}'
 remove NAME --scope user|project
 enable NAME --scope user|project
 disable NAME --scope user|project
-status
+list
+status [NAME]
 login NAME
 logout NAME
 ```
@@ -94,7 +98,8 @@ disabled, connecting, ready, authorization-required, failed, and closed states.
 
 ## Authentication
 
-`auth.type` accepts `none`, `bearer`, or `oauth`. OAuth is explicit:
+`auth.type` accepts `none`, `headers`, `bearer`, or `oauth`. `headers` uses the
+configured header fields. OAuth is explicit:
 
 ```sh
 fox mcp add remote --scope user --transport streamable-http --url https://mcp.example.com/mcp --auth oauth
@@ -146,6 +151,10 @@ MCP tool `isError` is distinct from a transport failure. A call whose response i
 lost may already have executed: Fox reports uncertainty and does not replay it.
 Reconnect is explicit and can lose browser state. Other servers/internal tools
 remain usable when a server fails; status and startup diagnostics identify it.
+Active call timeouts and resource connection failures mark the server unavailable
+until an explicit reconnect. Post-connect authorization failures instead request
+login followed by reconnect. Canceling a queued request or a caller's otherwise
+healthy operation does not invalidate the shared connection.
 
 ## Screenshots and models
 

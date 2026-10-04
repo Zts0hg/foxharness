@@ -35,6 +35,12 @@ func TestAgentOpsMCPTaskOwnsConnection(t *testing.T) {
 	if f.Active() != 1 {
 		t.Fatalf("task connection count %d", f.Active())
 	}
+	if err := a.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.Active() != 0 {
+		t.Fatal("AgentOps drain left an MCP session open")
+	}
 }
 
 func TestAgentOpsProviderForwardsImageCapability(t *testing.T) {

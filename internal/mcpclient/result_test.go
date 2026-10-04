@@ -9,6 +9,13 @@ import (
 	"testing"
 )
 
+func TestEmptyToolErrorRetainsRichErrorContent(t *testing.T) {
+	r := convertResult(&mcp.CallToolResult{IsError: true})
+	if !r.Failed || len(r.ContentParts) != 1 || r.ContentParts[0].Type != "text" || r.Output == "" || r.ContentParts[0].Text != r.Output {
+		t.Fatalf("empty MCP failure would lose persisted error flag: %+v", r)
+	}
+}
+
 func TestRichConversionPreservesOrderStructuredDataAndErrors(t *testing.T) {
 	var imageData bytes.Buffer
 	if err := png.Encode(&imageData, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {

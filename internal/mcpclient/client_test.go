@@ -3,6 +3,7 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,50 @@ import (
 	"github.com/Zts0hg/foxharness/internal/mcpconfig"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+type refreshFailureTransport struct {
+	failed   atomic.Bool
+	attempts atomic.Int32
+}
+
+func (r *refreshFailureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if r.failed.Load() {
+		r.attempts.Add(1)
+		return nil, errors.New("authorization refresh failed; run fox mcp login for this server; secret-detail")
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+func TestPostConnectRefreshFailureRetainsLoginHint(t *testing.T) {
+	for _, transport := range []string{"streamable-http", "sse"} {
+		for _, resource := range []bool{false, true} {
+			t.Run(transport+map[bool]string{false: "/tool", true: "/resource"}[resource], func(t *testing.T) {
+				var handler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return fixtureServer() }, nil)
+				if transport == "sse" {
+					handler = mcp.NewSSEHandler(func(*http.Request) *mcp.Server { return fixtureServer() }, nil)
+				}
+				srv := httptest.NewServer(handler)
+				defer srv.Close()
+				rt := &refreshFailureTransport{}
+				s, err := Connect(context.Background(), mcpconfig.Server{Definition: mcpconfig.Definition{Transport: transport, URL: srv.URL}}, &http.Client{Transport: rt}, Options{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s.Close()
+				rt.failed.Store(true)
+				if resource {
+					_, err = s.ReadResource(context.Background(), "test://page")
+				} else {
+					_, err = s.Call(context.Background(), "echo", json.RawMessage(`{}`))
+				}
+				if !errors.Is(err, ErrAuthorizationRequired) || !strings.Contains(err.Error(), "login") || strings.Contains(err.Error(), "secret-detail") || rt.attempts.Load() != 1 {
+					t.Fatalf("refresh classification/replay: %v attempts=%d", err, rt.attempts.Load())
+				}
+				rt.failed.Store(false)
+			})
+		}
+	}
+}
 
 func fixtureServer() *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)

@@ -9,6 +9,21 @@ import (
 
 type fakeMCP struct{ command app.MCPCommand }
 
+func TestBareMCPShowsStatusThroughSharedPort(t *testing.T) {
+	f := &fakeMCP{}
+	m := NewModel(context.Background(), &fakeRunner{workDir: t.TempDir()}, Config{MCP: f})
+	next, cmd := m.handleSlashCommand("/mcp")
+	if cmd == nil {
+		t.Fatal("bare /mcp did not request status")
+	}
+	m = next.(Model)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if f.command.Action != "status" || !entriesContain(m.entries, "command", "management complete") {
+		t.Fatal("bare /mcp status missing")
+	}
+}
+
 func (f *fakeMCP) ExecuteMCP(ctx context.Context, c app.MCPCommand, p app.MCPLoginPrompt) (app.MCPResult, error) {
 	f.command = c
 	if c.Action == "login" {

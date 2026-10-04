@@ -15,9 +15,23 @@ func TestParseRequiresScopeAndPreservesArguments(t *testing.T) {
 	if c.Scope != "project" || c.Name != "browser" || string(c.Definition) == "" {
 		t.Fatalf("bad command: %#v", c)
 	}
-	for _, args := range [][]string{{"status", "unexpected"}, {"wat"}, {"remove", "browser"}, {"login"}, {"status", "--scope", "typo"}} {
+	for _, args := range [][]string{{"status", "one", "two"}, {"list", "unexpected"}, {"wat"}, {"remove", "browser"}, {"login"}, {"status", "--scope", "typo"}} {
 		if _, err := Parse(args); err == nil {
 			t.Fatalf("accepted %v", args)
+		}
+	}
+}
+
+func TestListNamedStatusAndBareStatus(t *testing.T) {
+	for _, tc := range []struct {
+		args         []string
+		action, name string
+	}{
+		{nil, "status", ""}, {[]string{"status", "browser"}, "status", "browser"}, {[]string{"list"}, "list", ""},
+	} {
+		c, err := Parse(tc.args)
+		if err != nil || c.Action != tc.action || c.Name != tc.name {
+			t.Fatalf("%v: %+v %v", tc.args, c, err)
 		}
 	}
 }

@@ -26,11 +26,16 @@ func NewManager(home, work string, current func() *foxruntime.AgentSession) *Man
 
 /* ExecuteMCP mutates only explicit scopes and never reconnects another process. */
 func (m *Manager) ExecuteMCP(ctx context.Context, c app.MCPCommand, prompt app.MCPLoginPrompt) (result app.MCPResult, resultErr error) {
-	if c.Action != "status" && c.Name == "" {
+	if c.Action != "status" && c.Action != "list" && c.Name == "" {
 		return result, fmt.Errorf("MCP server name is required")
 	}
 	var err error
 	switch c.Action {
+	case "list":
+		snapshot := mcpconfig.Load(m.home, m.work, nil).Redacted()
+		result.Message = "Effective MCP configuration (no connections opened; project definitions replace same-named user definitions)."
+		result.Configuration, err = json.MarshalIndent(snapshot, "", "  ")
+		return result, err
 	case "add":
 		var d mcpconfig.Definition
 		if err = json.Unmarshal(c.Definition, &d); err != nil {
@@ -49,7 +54,7 @@ func (m *Manager) ExecuteMCP(ctx context.Context, c app.MCPCommand, prompt app.M
 			}
 		}
 		if h == nil {
-			h, err = New(ctx, m.home, m.work, m.Connector)
+			h, err = newHost(ctx, m.home, m.work, m.Connector, c.Name)
 			if err != nil {
 				return result, err
 			}
@@ -63,7 +68,13 @@ func (m *Manager) ExecuteMCP(ctx context.Context, c app.MCPCommand, prompt app.M
 			result.Message = "Active session MCP connections (configuration edits apply after reconnect or a new session)."
 		}
 		for _, s := range h.Statuses() {
+			if c.Name != "" && s.Name != c.Name {
+				continue
+			}
 			result.Servers = append(result.Servers, app.MCPServerStatus{Name: s.Name, Scope: string(s.Scope), Transport: s.Transport, State: s.State, Protocol: s.Protocol, Reason: s.Reason, ToolCount: s.ToolCount, Generation: s.Generation})
+		}
+		if c.Name != "" && len(result.Servers) == 0 {
+			return result, fmt.Errorf("MCP server not found; use fox mcp list to inspect configuration")
 		}
 		return result, nil
 	case "reconnect":

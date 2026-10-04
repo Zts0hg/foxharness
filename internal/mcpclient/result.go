@@ -61,6 +61,11 @@ func convertResult(result *mcp.CallToolResult) toolprotocol.ExecutionResult {
 			text = append(text, string(data))
 		}
 	}
+	if result.IsError && len(out.ContentParts) == 0 && len(out.StructuredContent) == 0 {
+		notice := "MCP tool reported an error without details"
+		out.ContentParts = []schema.ContentPart{{Type: "text", Text: notice}}
+		text = append(text, notice)
+	}
 	out.Output = strings.Join(text, "\n")
 	return out
 }

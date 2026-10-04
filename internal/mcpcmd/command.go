@@ -11,18 +11,23 @@ import (
 )
 
 /* Usage documents commands shared by fox mcp and /mcp. */
-const Usage = "mcp status | add NAME --scope user|project [--json DEFINITION | --transport stdio -- COMMAND ARGS... | --transport http|streamable-http|sse --url URL] | remove|enable|disable NAME --scope user|project | login|logout|reconnect NAME"
+const Usage = "mcp list | status [NAME] | add NAME --scope user|project [--json DEFINITION | --transport stdio -- COMMAND ARGS... | --transport http|streamable-http|sse --url URL] | remove|enable|disable NAME --scope user|project | login|logout|reconnect NAME"
 
 /* Parse preserves shell-supplied arguments and requires an explicit mutation scope. */
 func Parse(args []string) (app.MCPCommand, error) {
 	var c app.MCPCommand
 	if len(args) == 0 {
-		return c, fmt.Errorf("%s", Usage)
+		return app.MCPCommand{Action: "status"}, nil
 	}
 	c.Action = args[0]
 	args = args[1:]
 	switch c.Action {
 	case "status":
+		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+			c.Name = args[0]
+			args = args[1:]
+		}
+	case "list":
 	case "add", "remove", "enable", "disable", "login", "logout", "reconnect":
 		if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 			return c, fmt.Errorf("MCP server name is required")
@@ -99,6 +104,10 @@ func Parse(args []string) (app.MCPCommand, error) {
 func Format(r app.MCPResult) string {
 	var b strings.Builder
 	b.WriteString(r.Message)
+	if len(r.Configuration) > 0 {
+		b.WriteByte('\n')
+		b.Write(r.Configuration)
+	}
 	for _, s := range r.Servers {
 		fmt.Fprintf(&b, "\n%s [%s] %s %s tools=%d generation=%d protocol=%s", s.Name, s.Scope, s.Transport, s.State, s.ToolCount, s.Generation, s.Protocol)
 		if s.Reason != "" {

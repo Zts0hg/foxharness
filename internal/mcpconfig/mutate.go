@@ -18,14 +18,25 @@ type document struct {
 
 func readDocument(file string) (document, error) {
 	doc := document{fields: make(map[string]json.RawMessage), servers: make(map[string]json.RawMessage)}
-	f, err := os.Open(file)
+	info, err := os.Stat(file)
 	if errors.Is(err, os.ErrNotExist) {
 		return doc, nil
 	}
 	if err != nil {
 		return doc, fmt.Errorf("cannot read configuration")
 	}
+	if !info.Mode().IsRegular() {
+		return doc, fmt.Errorf("configuration is not a regular file")
+	}
+	f, err := os.OpenFile(file, configurationReadFlags, 0)
+	if err != nil {
+		return doc, fmt.Errorf("cannot read configuration")
+	}
 	defer f.Close()
+	info, err = f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return doc, fmt.Errorf("configuration is not a regular file")
+	}
 	data, err := io.ReadAll(io.LimitReader(f, 4*1024*1024+1))
 	if err != nil || len(data) > 4*1024*1024 {
 		return doc, fmt.Errorf("configuration exceeds limit or cannot be read")

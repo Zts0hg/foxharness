@@ -121,6 +121,11 @@ func TestHostOwnsIsolatedSessionsBorrowersAndGeneration(t *testing.T) {
 	if clients[2].closed.Load() != 1 {
 		t.Fatal("root close not idempotent")
 	}
+	for _, s := range h.Statuses() {
+		if s.State != "closed" {
+			t.Fatalf("closed status missing: %+v", s)
+		}
+	}
 }
 
 func TestServerQueueCancellationDoesNotDispatchAndReconnectDrains(t *testing.T) {
@@ -219,6 +224,11 @@ func TestSlowReconnectDoesNotBlockHealthyServer(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- h.Reconnect(context.Background(), "browser") }()
 	<-started
+	for _, s := range h.Statuses() {
+		if s.Name == "browser" && s.State != "connecting" {
+			t.Fatalf("connecting status missing: %+v", s)
+		}
+	}
 	called := make(chan schema.ToolResult, 1)
 	go func() { called <- r.Execute(context.Background(), schema.ToolCall{Name: ToolName("bad", "click")}) }()
 	select {

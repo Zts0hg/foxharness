@@ -80,6 +80,10 @@ func Factory(home string) func(context.Context, foxruntime.AgentSessionSnapshot)
 
 /* New resolves configuration once and isolates each connection failure in status. */
 func New(ctx context.Context, home, work string, connector Connector) (*Host, error) {
+	return newHost(ctx, home, work, connector, "")
+}
+
+func newHost(ctx context.Context, home, work string, connector Connector, selected string) (*Host, error) {
 	if connector == nil {
 		auth := mcpauth.NewManager(home)
 		connector = func(ctx context.Context, server mcpconfig.Server) (Client, error) {
@@ -92,6 +96,9 @@ func New(ctx context.Context, home, work string, connector Connector) (*Host, er
 	h.configErrors = append([]string(nil), snapshot.Errors...)
 	names := make([]string, 0, len(snapshot.Servers))
 	for name := range snapshot.Servers {
+		if selected != "" && selected != name {
+			continue
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -302,6 +309,7 @@ func (b *borrowed) Reconnect(context.Context, string) error {
 func (b *borrowed) Close(context.Context) error { return nil }
 
 func (h *Host) invoke(ctx context.Context, entry *serverState, generation uint64, name, remote string, resource bool, args json.RawMessage) (toolprotocol.ExecutionResult, error) {
+	caller := ctx
 	h.mu.RLock()
 	timeout := entry.definition.Definition.CallTimeout()
 	h.mu.RUnlock()
@@ -325,6 +333,7 @@ func (h *Host) invoke(ctx context.Context, entry *serverState, generation uint64
 	closed := h.closed
 	client := entry.client
 	current := entry.generation
+	state := entry.status.State
 	h.mu.RUnlock()
 	if closed || client == nil {
 		return toolprotocol.ExecutionResult{}, fmt.Errorf("MCP server is unavailable")
@@ -332,6 +341,11 @@ func (h *Host) invoke(ctx context.Context, entry *serverState, generation uint64
 	if current != generation {
 		return toolprotocol.ExecutionResult{}, fmt.Errorf("stale MCP tool adapter; rediscover tools after reconnect")
 	}
+	if state != "ready" {
+		return toolprotocol.ExecutionResult{}, fmt.Errorf("MCP server is unavailable; check status and reconnect explicitly")
+	}
+	var result toolprotocol.ExecutionResult
+	var err error
 	if resource {
 		var request struct {
 			URI string `json:"uri"`
@@ -350,15 +364,23 @@ func (h *Host) invoke(ctx context.Context, entry *serverState, generation uint64
 		if !allowed {
 			return toolprotocol.ExecutionResult{}, fmt.Errorf("resource link is unknown or originating tool is forbidden")
 		}
-		return client.ReadResource(ctx, request.URI)
+		result, err = client.ReadResource(ctx, request.URI)
+	} else {
+		result, err = client.Call(ctx, remote, args)
 	}
-	result, err := client.Call(ctx, remote, args)
 	if err != nil {
-		if ctx.Err() == nil {
+		authorizationRequired := errors.Is(err, mcpclient.ErrAuthorizationRequired)
+		if caller.Err() == nil || authorizationRequired {
 			h.mu.Lock()
 			if !h.closed {
 				entry.status.State = "failed"
 				entry.status.Reason = "MCP call failed; side effects or browser state may be uncertain. No replay was attempted; reconnect explicitly."
+				if authorizationRequired {
+					entry.status.State = "authorization-required"
+					entry.status.Reason = "Authorization required; run fox mcp login, then reconnect explicitly. No replay was attempted."
+				} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					entry.status.Reason = "MCP call timed out; side effects or browser state may be uncertain. No replay was attempted; reconnect explicitly."
+				}
 			}
 			h.mu.Unlock()
 		}

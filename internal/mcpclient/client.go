@@ -26,6 +26,9 @@ import (
 /* MaxFrameBytes caps a protocol frame or server-sent event. */
 const MaxFrameBytes = 32 * 1024 * 1024
 
+/* ErrAuthorizationRequired identifies credential failures without exposing remote diagnostics. */
+var ErrAuthorizationRequired = errors.New("MCP authorization required; run fox mcp login for this server")
+
 /* Options selects a supported handshake version; empty negotiates from the latest SDK version. */
 type Options struct{ ProtocolVersion string }
 
@@ -39,6 +42,7 @@ type Session struct {
 	timeout  time.Duration
 	once     sync.Once
 	closeErr error
+	monitor  *responseMonitor
 }
 
 /* Connect negotiates and fully discovers a server under its startup deadline. */
@@ -125,6 +129,7 @@ func Connect(ctx context.Context, server mcpconfig.Server, httpClient *http.Clie
 			base = http.DefaultTransport
 		}
 		monitor = &responseMonitor{base: base}
+		s.monitor = monitor
 		copy.Transport = monitor
 		if d.Transport == "sse" {
 			transport = &mcp.SSEClientTransport{Endpoint: d.URL, HTTPClient: &copy, MaxEventSize: MaxFrameBytes}
@@ -150,6 +155,9 @@ func Connect(ctx context.Context, server mcpconfig.Server, httpClient *http.Clie
 	for {
 		page, err := s.client.ListTools(owner, &mcp.ListToolsParams{Cursor: cursor})
 		if err != nil {
+			if monitor != nil && monitor.authorizationRequired.Load() {
+				return nil, ErrAuthorizationRequired
+			}
 			return nil, fmt.Errorf("MCP tool discovery failed")
 		}
 		for _, tool := range page.Tools {
@@ -199,6 +207,9 @@ func (s *Session) Call(ctx context.Context, name string, arguments json.RawMessa
 	}
 	result, err := s.client.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
 	if err != nil {
+		if s.monitor != nil && s.monitor.authorizationRequired.Load() {
+			return toolprotocol.ExecutionResult{}, fmt.Errorf("%w; side effects may be uncertain, call was not replayed", ErrAuthorizationRequired)
+		}
 		return toolprotocol.ExecutionResult{}, fmt.Errorf("MCP tool call failed; side effects may be uncertain, call was not replayed")
 	}
 	return convertResult(result), nil
@@ -210,6 +221,9 @@ func (s *Session) ReadResource(ctx context.Context, uri string) (toolprotocol.Ex
 	defer cancel()
 	result, err := s.client.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
 	if err != nil {
+		if s.monitor != nil && s.monitor.authorizationRequired.Load() {
+			return toolprotocol.ExecutionResult{}, ErrAuthorizationRequired
+		}
 		return toolprotocol.ExecutionResult{}, fmt.Errorf("MCP resource read failed")
 	}
 	content := make([]mcp.Content, 0, len(result.Contents))

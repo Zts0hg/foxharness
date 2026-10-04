@@ -20,8 +20,9 @@ type MCPServerStatus struct {
 
 /* MCPResult distinguishes a temporary probe from an active session snapshot. */
 type MCPResult struct {
-	Message string
-	Servers []MCPServerStatus
+	Message       string
+	Servers       []MCPServerStatus
+	Configuration json.RawMessage
 }
 
 /* MCPLoginPrompt presents an explicit login URL; cancellation uses the operation context. */

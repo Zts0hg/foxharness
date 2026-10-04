@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Zts0hg/foxharness/internal/app"
+	"github.com/Zts0hg/foxharness/internal/mcpcmd"
 	"github.com/Zts0hg/foxharness/internal/mcpconfig"
 	"strings"
 	"testing"
@@ -45,6 +46,49 @@ func TestManagementScopesProbeCleanupAndNoCrossProcessReconnect(t *testing.T) {
 	result, err = manager.ExecuteMCP(ctx, app.MCPCommand{Action: "status"}, nil)
 	if err != nil || result.Servers[0].State != "disabled" {
 		t.Fatalf("disabled: %#v %v", result, err)
+	}
+}
+
+func TestListRedactsEffectiveConfigurationWithoutConnecting(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	for _, scope := range []mcpconfig.Scope{mcpconfig.UserScope, mcpconfig.ProjectScope} {
+		if err := mcpconfig.Add(home, work, scope, "browser", mcpconfig.Definition{Transport: "http", URL: "https://example.invalid/mcp?token=secret-query", Headers: map[string]string{"X-Key": "secret-header"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := NewManager(home, work, nil)
+	m.Connector = func(context.Context, mcpconfig.Server) (Client, error) {
+		t.Fatal("list opened connection")
+		return nil, nil
+	}
+	r, err := m.ExecuteMCP(context.Background(), app.MCPCommand{Action: "list"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	display := mcpcmd.Format(r)
+	if !strings.Contains(display, "project") || !strings.Contains(display, "browser") || !strings.Contains(display, "https://example.invalid/mcp") || strings.Contains(display, "secret-") {
+		t.Fatalf("incorrect effective list: %s", display)
+	}
+}
+
+func TestNamedStatusSelectsOneServerAndReportsUnknownName(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	hostConfig(t, work, "fixture")
+	m := NewManager(home, work, nil)
+	calls := 0
+	m.Connector = func(_ context.Context, s mcpconfig.Server) (Client, error) {
+		calls++
+		if s.Name != "browser" {
+			t.Errorf("unrelated server probed: %s", s.Name)
+		}
+		return &fakeClient{}, nil
+	}
+	r, err := m.ExecuteMCP(context.Background(), app.MCPCommand{Action: "status", Name: "browser"}, nil)
+	if err != nil || len(r.Servers) != 1 || r.Servers[0].Name != "browser" || calls != 1 {
+		t.Fatalf("named status: %+v %v calls=%d", r, err, calls)
+	}
+	if _, err := m.ExecuteMCP(context.Background(), app.MCPCommand{Action: "status", Name: "missing"}, nil); err == nil {
+		t.Fatal("unknown server hidden")
 	}
 }
 

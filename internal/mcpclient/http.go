@@ -24,6 +24,9 @@ func (m *responseMonitor) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	m.status.Store(int32(resp.StatusCode))
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		m.authorizationRequired.Store(true)
+	}
 	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		resp.Body = &limitedBody{ReadCloser: resp.Body, remaining: MaxFrameBytes}
 	}
@@ -40,7 +43,7 @@ func connectionError(ctx context.Context, m *responseMonitor) error {
 		return fmt.Errorf("MCP startup cancelled or timed out: %w", err)
 	}
 	if m != nil && (m.authorizationRequired.Load() || m.status.Load() == 401 || m.status.Load() == 403) {
-		return fmt.Errorf("MCP authorization required; run fox mcp login for this server")
+		return ErrAuthorizationRequired
 	}
 	return fmt.Errorf("MCP connection failed; verify command, endpoint, transport, and protocol compatibility")
 }

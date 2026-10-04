@@ -39,6 +39,9 @@ func TestCLIMCPCompositionCallsAndHydratesScreenshot(t *testing.T) {
 	if images != 1 || f.Calls.Load() != 1 {
 		t.Fatalf("images=%d calls=%d", images, f.Calls.Load())
 	}
+	if f.Active() != 0 {
+		t.Fatal("CLI drain left an MCP session open")
+	}
 }
 func TestAutodevMCPUsesItemWorkspace(t *testing.T) {
 	home, work := t.TempDir(), t.TempDir()
@@ -58,6 +61,12 @@ func TestAutodevMCPUsesItemWorkspace(t *testing.T) {
 	images, _ := model.Counts()
 	if images != 1 || f.Calls.Load() != 1 {
 		t.Fatalf("images=%d calls=%d", images, f.Calls.Load())
+	}
+	if err := core.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.Active() != 0 {
+		t.Fatal("Autodev close left an MCP session open")
 	}
 }
 
