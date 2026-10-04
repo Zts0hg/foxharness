@@ -28,6 +28,9 @@ func (m *Manager) Login(ctx context.Context, server mcpconfig.Server, prompt Log
 	if server.Definition.Auth.Type != "oauth" {
 		return fmt.Errorf("server does not use OAuth")
 	}
+	if err := server.Definition.Auth.ValidateOAuthClient(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", server.Definition.Auth.RedirectPort))
@@ -63,6 +66,7 @@ func (m *Manager) Login(ctx context.Context, server mcpconfig.Server, prompt Log
 	defer httpServer.Close()
 	go httpServer.Serve(listener)
 	var resource string
+	completed := false
 	config := &auth.AuthorizationCodeHandlerConfig{RedirectURL: redirect, Client: oauthClient(), RequestRefreshToken: true,
 		AuthorizationCodeFetcher: func(fetchCtx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 			authorizationURL, err := url.Parse(args.URL)
@@ -84,6 +88,7 @@ func (m *Manager) Login(ctx context.Context, server mcpconfig.Server, prompt Log
 			if err := m.save(ctx, key(server), credential{Config: *cfg, Token: *token, Resource: resource}); err != nil {
 				return nil, err
 			}
+			completed = true
 			return oauth2.StaticTokenSource(token), nil
 		},
 	}
@@ -94,7 +99,7 @@ func (m *Manager) Login(ctx context.Context, server mcpconfig.Server, prompt Log
 		config.ClientIDMetadataDocumentConfig = &auth.ClientIDMetadataDocumentConfig{URL: server.Definition.Auth.ClientMetadataURL}
 	}
 	if server.Definition.Auth.ClientID != "" {
-		config.PreregisteredClient = &oauthex.ClientCredentials{ClientID: server.Definition.Auth.ClientID}
+		config.PreregisteredClient = &oauthex.ClientCredentials{ClientID: server.Definition.Auth.ClientID, Issuer: server.Definition.Auth.Issuer}
 		if ref := server.Definition.Auth.ClientSecretEnv; ref != "" {
 			secret := os.Getenv(ref)
 			if secret == "" {
@@ -137,6 +142,9 @@ func (m *Manager) Login(ctx context.Context, server mcpconfig.Server, prompt Log
 	}
 	if err := handler.Authorize(ctx, req, resp); err != nil {
 		return fmt.Errorf("OAuth login failed; verify authorization, client registration, and server metadata")
+	}
+	if !completed {
+		return fmt.Errorf("OAuth login did not obtain credentials; verify server access and its authorization challenge")
 	}
 	return nil
 }

@@ -58,6 +58,7 @@ Runtime consumes its own ports; it does not import any concrete MCP package. Eng
 
 - **Responsibility**: Resolve static secret references, perform explicit OAuth authorization, persist and refresh credentials, and provide noninteractive token sources to normal runs.
 - **Interface**: `Login(ctx, definition, browserPrompt)`, `Logout(ctx, credentialKey)`, `TokenSource(ctx, definition)`, and an injectable credential store. Login owns a bounded loopback callback listener and browser authorization URL; normal tool execution cannot invoke interactive login.
+- **Issuer binding**: A preregistered confidential client must configure `auth.client_id`, `auth.client_secret_env`, and `auth.issuer`. Validate the issuer URL and compare it with discovered authorization-server metadata before requesting authorization or transmitting the secret. Include configured issuer in credential identity. Explicit login succeeds only after credentials have been obtained and persisted.
 - **Storage contract**: `~/.foxharness/mcp-credentials.json`, directory mode 0700 and file mode 0600, same-directory temporary file and atomic replacement. A per-file lock serializes CLI/TUI updates; a per-credential lock serializes refresh. Keys bind effective endpoint, issuer/client identity, and configuration scope/project identity, not merely a display name. OAuth registration metadata, tokens, and refresh configuration are user-local. Sensitive values are redacted from status, errors, transcripts, and logs.
 - **Covers**: REQ-007, REQ-008, REQ-009, NFR-004.
 

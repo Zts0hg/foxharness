@@ -109,9 +109,12 @@ fox mcp login remote
 Open the displayed URL in a browser. Fox owns a temporary loopback callback,
 validates state/issuer, and uses PKCE. Login expires after five minutes and closes
 the listener on cancellation. OAuth configuration also accepts `client_id`,
-`client_secret_env`, `client_metadata_url`, `scopes`, and `redirect_port` through
-JSON. Without an existing client ID or metadata URL, the authorization server
-must support dynamic client registration. Unsupported server registration is an
+`issuer`, `client_secret_env`, `client_metadata_url`, `scopes`, and `redirect_port`
+through JSON. A client secret requires both `client_id` and the trusted `issuer`
+URL from that client registration. Fox rejects conflicting discovered issuers
+before presenting authorization or sending the secret. Changing the configured
+issuer also changes credential identity; log in again after such a change.
+Without an existing client ID or metadata URL, the authorization server must support dynamic client registration. Unsupported server registration is an
 explicit login failure, not an unattended browser prompt.
 
 Tokens and refresh configuration are stored in the user-local
@@ -201,6 +204,9 @@ MCP 0.0.83. It requires an installed Chrome browser.
 
 The separate live-model subtest runs only when `FOX_MCP_LIVE_MODEL` is set, with
 `FOX_MCP_LIVE_PROTOCOL`, `FOX_MCP_LIVE_BASE_URL`, and `FOX_MCP_LIVE_API_KEY`.
-It asks the model to identify a visual property from the screenshot. It was
-**not run** during implementation because no explicit live-model credentials
-were supplied; a skipped subtest is not evidence of model visual reasoning.
+It asks the model to identify a visual property from the screenshot. On
+2026-10-04, the configured `zhipu` profile (`glm-5.2`, Claude-compatible protocol)
+returned “blue” for the controlled page’s orange badge, so that live-model
+acceptance **failed**. Browser operation and exact provider image encoding passed.
+A successful demonstration with an image-capable model remains required; neither
+a skipped test nor successful request encoding proves model visual reasoning.

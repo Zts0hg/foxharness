@@ -206,7 +206,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T013 — Add and run pinned Playwright acceptance
 
-- [x] **Outcome**: A separately runnable workflow proves the complete browser sequence and screenshot model-input behavior against a controlled local page.
+- [ ] **Outcome**: A separately runnable workflow proves the complete browser sequence and screenshot model-input behavior against a controlled local page.
 - **Paths**: new `internal/mcpintegration/playwright_integration_test.go` and local fixture page; documented pinned dependency/prerequisite data.
 - **Dependencies**: T012.
 - **Covers**: REQ-023, REQ-024, NFR-005; **Plan**: P07; **Design**: C09, DD09.

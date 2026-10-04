@@ -27,10 +27,25 @@ type Auth struct {
 	Type              string   `json:"type,omitempty"`
 	TokenEnv          string   `json:"token_env,omitempty"`
 	ClientID          string   `json:"client_id,omitempty"`
+	Issuer            string   `json:"issuer,omitempty"`
 	ClientSecretEnv   string   `json:"client_secret_env,omitempty"`
 	ClientMetadataURL string   `json:"client_metadata_url,omitempty"`
 	Scopes            []string `json:"scopes,omitempty"`
 	RedirectPort      int      `json:"redirect_port,omitempty"`
+}
+
+/* ValidateOAuthClient checks the trusted issuer binding for preregistered credentials. */
+func (a Auth) ValidateOAuthClient() error {
+	if a.ClientSecretEnv != "" && (a.ClientID == "" || a.Issuer == "") {
+		return fmt.Errorf("OAuth client_secret_env requires client_id and its intended issuer")
+	}
+	if a.Issuer != "" {
+		u, err := url.Parse(a.Issuer)
+		if a.ClientID == "" || err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+			return fmt.Errorf("OAuth issuer requires client_id and an HTTP(S) URL without credentials, query, or fragment")
+		}
+	}
+	return nil
 }
 
 /* Definition is a complete server configuration, never field-merged across scopes. */
@@ -217,6 +232,9 @@ func resolve(d *Definition, lookup func(string) string) error {
 		}
 		headers["Authorization"] = "Bearer " + token
 	case "oauth":
+		if err := d.Auth.ValidateOAuthClient(); err != nil {
+			return err
+		}
 		if headers["Authorization"] != "" {
 			return fmt.Errorf("competing authorization sources")
 		}

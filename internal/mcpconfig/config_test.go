@@ -134,3 +134,31 @@ func TestMutationLockAndInvalidNewDefinition(t *testing.T) {
 		t.Fatal("locked mutation changed config")
 	}
 }
+
+func TestOAuthIssuerConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name, auth string
+		invalid    bool
+	}{
+		{"public", `{"type":"oauth","client_id":"client"}`, false},
+		{"confidential", `{"type":"oauth","client_id":"client","client_secret_env":"SECRET","issuer":"https://issuer.example/tenant"}`, false},
+		{"missing-issuer", `{"type":"oauth","client_id":"client","client_secret_env":"SECRET"}`, true},
+		{"missing-client", `{"type":"oauth","client_secret_env":"SECRET","issuer":"https://issuer.example"}`, true},
+		{"unbound-issuer", `{"type":"oauth","issuer":"https://issuer.example"}`, true},
+		{"relative", `{"type":"oauth","client_id":"client","issuer":"/issuer"}`, true},
+		{"userinfo", `{"type":"oauth","client_id":"client","issuer":"https://secret@issuer.example"}`, true},
+		{"query", `{"type":"oauth","client_id":"client","issuer":"https://issuer.example?token=secret"}`, true},
+		{"fragment", `{"type":"oauth","client_id":"client","issuer":"https://issuer.example#issuer"}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var d Definition
+			if err := json.Unmarshal([]byte(`{"transport":"http","url":"https://resource.example/mcp","auth":`+tc.auth+`}`), &d); err != nil {
+				t.Fatal(err)
+			}
+			err := resolve(&d, func(string) string { return "fixture-only-secret" })
+			if (err != nil) != tc.invalid {
+				t.Fatalf("invalid=%v err=%v", tc.invalid, err)
+			}
+		})
+	}
+}

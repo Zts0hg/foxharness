@@ -37,7 +37,8 @@ func key(server mcpconfig.Server) string {
 	identity := struct {
 		Endpoint, Client, Metadata, SecretReference, Scope, Directory string
 		Scopes                                                        []string
-	}{server.Definition.URL, server.Definition.Auth.ClientID, server.Definition.Auth.ClientMetadataURL, server.Definition.Auth.ClientSecretEnv, string(server.Scope), filepath.Clean(server.ScopeDir), scopes}
+		Issuer                                                        string `json:"Issuer,omitempty"`
+	}{server.Definition.URL, server.Definition.Auth.ClientID, server.Definition.Auth.ClientMetadataURL, server.Definition.Auth.ClientSecretEnv, string(server.Scope), filepath.Clean(server.ScopeDir), scopes, server.Definition.Auth.Issuer}
 	data, _ := json.Marshal(identity)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

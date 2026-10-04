@@ -159,7 +159,7 @@ func TestPlaywrightAcceptance(t *testing.T) {
 		if os.Getenv("FOX_MCP_LIVE_MODEL") == "" {
 			t.Skip("not run: FOX_MCP_LIVE_MODEL and explicit endpoint/auth credentials were not provided")
 		}
-		cfg := llmconfig.ResolvedConfig{Protocol: os.Getenv("FOX_MCP_LIVE_PROTOCOL"), BaseURL: os.Getenv("FOX_MCP_LIVE_BASE_URL"), Model: os.Getenv("FOX_MCP_LIVE_MODEL"), Auth: "bearer", APIKey: os.Getenv("FOX_MCP_LIVE_API_KEY"), ImageInput: "enabled"}
+		cfg := llmconfig.ResolvedConfig{Protocol: os.Getenv("FOX_MCP_LIVE_PROTOCOL"), BaseURL: os.Getenv("FOX_MCP_LIVE_BASE_URL"), Model: os.Getenv("FOX_MCP_LIVE_MODEL"), Auth: llmconfig.AuthAPIKey, APIKey: os.Getenv("FOX_MCP_LIVE_API_KEY"), ImageInput: "enabled"}
 		p, err := provider.NewProvider(cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -168,6 +168,7 @@ func TestPlaywrightAcceptance(t *testing.T) {
 		if !strings.Contains(strings.ToLower(answer), "orange") {
 			t.Fatalf("model did not identify visual badge color: %s", answer)
 		}
+		t.Logf("model %s (%s) screenshot analysis: %s", cfg.Model, cfg.Protocol, answer)
 	})
 	t.Log("Playwright MCP 0.0.83: navigate, snapshot, type, click, child continuity, screenshot persistence and both provider image encodings verified")
 }
