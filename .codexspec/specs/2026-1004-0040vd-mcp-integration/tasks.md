@@ -228,7 +228,8 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T015 — Establish full verification and complete-feature review
 
-- [ ] **Outcome**: All task scenarios map to substantive test assertions, required checks are green, and the complete-feature strict review reaches a valid terminal verdict.
+- [x] **Outcome**: All task scenarios map to substantive test assertions, required checks are green, and the complete-feature strict review reaches a valid terminal verdict.
+- **Completion Evidence**: Final isolated schema-v2 complete-feature review PASS at source commit `498f186`; 115 inventory members, 12 contracts and 22 partitions complete, zero findings/gaps, both incoming obligations verified. Caller validated the exact fingerprint and all 76 scenario mappings. See the final entry in `implementation-log.md`.
 - **Paths**: Whole feature diff and tests; `implementation-log.md` and `issues.md` in this workspace as needed.
 - **Dependencies**: T014.
 - **Covers**: REQ-001–024, NFR-001–006; **Plan**: P07; **Design**: C01–C09.
