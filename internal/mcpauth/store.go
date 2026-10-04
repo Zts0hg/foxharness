@@ -45,6 +45,22 @@ func key(server mcpconfig.Server) string {
 }
 
 func (m *Manager) withStore(ctx context.Context, operation func(map[string]credential) (bool, error)) error {
+	return m.withLock(ctx, "mcp-credentials.json.lock", func(root *os.Root) error {
+		return updateStore(root, operation)
+	})
+}
+
+/* withCredential serializes one identity across managers and processes, including
+ * login and logout, so a completed refresh cannot resurrect removed credentials.
+ * The shared file lock is held only for short read or merge/write operations. */
+func (m *Manager) withCredential(ctx context.Context, identity string, operation func() error) error {
+	sum := sha256.Sum256([]byte(identity))
+	return m.withLock(ctx, ".credential-"+hex.EncodeToString(sum[:])+".lock", func(*os.Root) error {
+		return operation()
+	})
+}
+
+func (m *Manager) withLock(ctx context.Context, name string, operation func(*os.Root) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -61,7 +77,7 @@ func (m *Manager) withStore(ctx context.Context, operation func(map[string]crede
 		return fmt.Errorf("cannot protect credential directory")
 	}
 	for {
-		err = root.Mkdir("mcp-credentials.json.lock", 0700)
+		err = root.Mkdir(name, 0700)
 		if err == nil {
 			break
 		}
@@ -76,7 +92,11 @@ func (m *Manager) withStore(ctx context.Context, operation func(map[string]crede
 		case <-timer.C:
 		}
 	}
-	defer root.Remove("mcp-credentials.json.lock")
+	defer root.Remove(name)
+	return operation(root)
+}
+
+func updateStore(root *os.Root, operation func(map[string]credential) (bool, error)) error {
 	records := make(map[string]credential)
 	if info, err := root.Lstat("mcp-credentials.json"); err == nil {
 		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
@@ -123,32 +143,45 @@ func (m *Manager) withStore(ctx context.Context, operation func(map[string]crede
 }
 
 func (m *Manager) save(ctx context.Context, identity string, record credential) error {
-	return m.withStore(ctx, func(records map[string]credential) (bool, error) { records[identity] = record; return true, nil })
+	return m.withCredential(ctx, identity, func() error {
+		return m.withStore(ctx, func(records map[string]credential) (bool, error) { records[identity] = record; return true, nil })
+	})
 }
 
 /* Logout removes local credentials; it does not claim remote token revocation. */
 func (m *Manager) Logout(ctx context.Context, server mcpconfig.Server) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	return m.withStore(ctx, func(records map[string]credential) (bool, error) { delete(records, key(server)); return true, nil })
+	identity := key(server)
+	return m.withCredential(ctx, identity, func() error {
+		return m.withStore(ctx, func(records map[string]credential) (bool, error) { delete(records, identity); return true, nil })
+	})
 }
 
-/* Token reuses or refreshes one service's credential under the file lock. */
+/* Token reuses or refreshes one service's credential under its own identity lock. */
 func (m *Manager) Token(ctx context.Context, server mcpconfig.Server) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var token string
-	err := m.withStore(ctx, func(records map[string]credential) (bool, error) {
-		record, ok := records[key(server)]
-		if !ok {
-			return false, fmt.Errorf("authorization required; run fox mcp login for this server")
+	identity := key(server)
+	err := m.withCredential(ctx, identity, func() error {
+		var record credential
+		if err := m.withStore(ctx, func(records map[string]credential) (bool, error) {
+			var ok bool
+			record, ok = records[identity]
+			if !ok {
+				return false, fmt.Errorf("authorization required; run fox mcp login for this server")
+			}
+			return false, nil
+		}); err != nil {
+			return err
 		}
 		if record.Token.Valid() {
 			token = record.Token.AccessToken
-			return false, nil
+			return nil
 		}
 		if record.Token.RefreshToken == "" {
-			return false, fmt.Errorf("authorization expired; run fox mcp login for this server")
+			return fmt.Errorf("authorization expired; run fox mcp login for this server")
 		}
 		refreshCtx := context.WithValue(ctx, oauth2.HTTPClient, oauthClient())
 		resource := record.Resource
@@ -166,12 +199,17 @@ func (m *Manager) Token(ctx context.Context, server mcpconfig.Server) (string, e
 			oauth2.SetAuthURLParam("resource", resource),
 		)
 		if err != nil {
-			return false, fmt.Errorf("authorization refresh failed; run fox mcp login for this server")
+			return fmt.Errorf("authorization refresh failed; run fox mcp login for this server")
 		}
 		record.Token = *updated
-		records[key(server)] = record
+		if err := m.withStore(ctx, func(records map[string]credential) (bool, error) {
+			records[identity] = record
+			return true, nil
+		}); err != nil {
+			return err
+		}
 		token = updated.AccessToken
-		return true, nil
+		return nil
 	})
 	return token, err
 }

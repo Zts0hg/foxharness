@@ -392,3 +392,33 @@ func TestCredentialsNeverFollowCrossOriginRedirect(t *testing.T) {
 		t.Fatal("credentials followed cross-origin redirect")
 	}
 }
+
+func TestUnrelatedCredentialSurvivesSlowRefresh(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+	}))
+	defer func() { close(release); stalled.Close() }()
+	slow := mcpconfig.Server{Definition: mcpconfig.Definition{URL: "https://slow.example/mcp", Auth: mcpconfig.Auth{Type: "oauth"}}}
+	good := mcpconfig.Server{Definition: mcpconfig.Definition{URL: "https://healthy.example/mcp", Auth: mcpconfig.Auth{Type: "oauth"}}}
+	if err := manager.save(context.Background(), key(slow), credential{Config: oauth2.Config{Endpoint: oauth2.Endpoint{TokenURL: stalled.URL, AuthStyle: oauth2.AuthStyleInParams}}, Token: oauth2.Token{AccessToken: "expired", RefreshToken: "refresh", Expiry: time.Now().Add(-time.Hour)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.save(context.Background(), key(good), credential{Token: oauth2.Token{AccessToken: "healthy", Expiry: time.Now().Add(time.Hour)}}); err != nil {
+		t.Fatal(err)
+	}
+	slowCtx, cancelSlow := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	defer func() { cancelSlow(); <-done }()
+	go func() { defer close(done); _, _ = manager.Token(slowCtx, slow) }()
+	<-started
+	goodCtx, cancelGood := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancelGood()
+	token, err := NewManager(manager.home).Token(goodCtx, good)
+	if err != nil || token != "healthy" {
+		t.Fatalf("unrelated valid credential blocked by slow refresh: token=%q error=%v", token, err)
+	}
+}
