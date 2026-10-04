@@ -190,11 +190,11 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 - [x] **Outcome**: All applicable entry compositions use shared MCP integration, preserve their policies, and pass rich results to the actual model path.
 - **Paths**: `cmd/fox/cli_runtime.go`, `tui_runtime.go`, `autodev_runtime.go`; `cmd/feishu/runtime_execution.go`, `cmd/agentops/runtime_execution.go`, `cmd/bench/main.go`; `internal/benchmark/runtime_spec.go`, `internal/childruntime/runner.go`; app/remote result DTOs as required by C06/C09.
 - **Dependencies**: T004, T011.
-- **Covers**: REQ-010, REQ-011, REQ-012, REQ-014, REQ-015, REQ-019, REQ-020, REQ-021, NFR-001, NFR-002; **Plan**: P06; **Design**: C06, C07, C09.
+- **Covers**: REQ-006, REQ-010, REQ-011, REQ-012, REQ-013, REQ-014, REQ-015, REQ-019, REQ-020, REQ-021, NFR-001, NFR-002; **Plan**: P06; **Design**: C06, C07, C09.
 - **Test Scenarios**:
   - T012-S01: CLIExec composition discovers/calls a permitted MCP tool, receives rich content, and closes the owned session.
   - T012-S02: TUIInteractive preserves MCP state across turns and new-session/reconnect boundaries while using its existing approval flow.
-  - T012-S03: FeishuRemote permits/denies calls through existing remote approvals, reuses its session, and handles unavailable interaction explicitly.
+  - T012-S03: FeishuRemote permits/denies calls through existing remote approvals, reuses its live session and frozen configuration across consecutive same-chat/user messages (including task failure/cancellation), and handles unavailable interaction explicitly. Per-message approvals and artifacts remain independent; different chat/users own separate connections; explicit new session closes the old owner; service shutdown closes all owners and propagates cleanup failures (DEC-010).
   - T012-S04: AgentOpsTask isolates task-owned MCP state and preserves remote approval and terminal cleanup.
   - T012-S05: AutodevPipeline uses the item workspace and full-access/no-human policy, closing resources per attempt.
   - T012-S06: BenchmarkEval uses a frozen case/repeat MCP capability snapshot, records fidelity, and isolates repeats without requiring live services in ordinary tests.
@@ -253,14 +253,14 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 | REQ-003 | T005 |
 | REQ-004 | T005 |
 | REQ-005 | T005, T011 |
-| REQ-006 | T005, T009, T011 |
+| REQ-006 | T005, T009, T011, T012 |
 | REQ-007 | T006, T007 |
 | REQ-008 | T006, T011 |
 | REQ-009 | T006, T011 |
 | REQ-010 | T010, T012 |
 | REQ-011 | T010, T012 |
 | REQ-012 | T009, T010, T012 |
-| REQ-013 | T009 |
+| REQ-013 | T009, T012 |
 | REQ-014 | T007, T009, T011, T012 |
 | REQ-015 | T005, T007, T009, T011, T012 |
 | REQ-016 | T007, T009 |

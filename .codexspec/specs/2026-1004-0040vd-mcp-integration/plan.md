@@ -78,10 +78,11 @@ This is one Go module using Go 1.25.0, existing OpenAI/Anthropic adapters, Bubbl
 ### P06 — Management and production entry rollout
 
 - **Outcome**: All seven execution categories use C04; users can manage scopes/authentication/status via CLI and TUI, including current-session reconnect.
+- **Feishu clarification (DEC-010)**: Retain live sessions by chat/user, inject per-task factories at Run, recover without closing after a message, and close on explicit replacement/service shutdown. Verify cross-message connection/configuration continuity, separate approval/run state, unrelated users, cancellation, new session and shutdown errors.
 - **Paths**: new `internal/app/mcp.go`, `internal/mcpcmd`, `cmd/fox/mcp.go`, `internal/tui/mcp.go`; existing `cmd/fox/main.go`, `cli_runtime.go`, `tui_runtime.go`, `autodev_runtime.go`, `cmd/feishu/runtime_execution.go`, `cmd/agentops/runtime_execution.go`, `cmd/bench/main.go`, `internal/benchmark/runtime_spec.go`, `internal/childruntime/runner.go`; slash dispatch and application interfaces as required by C08.
 - **Verification**: CLI parse/output and TUI message/update tests; exact scoped CRUD/status/login/logout behavior; temporary probe cleanup; no claimed cross-process reconnect; execution/denial/result/cleanup contract matrix for every entry, unchanged no-coordinator/full-access policies, benchmark fidelity and repeat isolation.
 - **Dependencies**: P02, P05.
-- **Covers**: REQ-005, REQ-006, REQ-008, REQ-009, REQ-010, REQ-011, REQ-012, REQ-014, REQ-015, REQ-019, REQ-020, REQ-021, NFR-001, NFR-002; **Design**: C08, C09.
+- **Covers**: REQ-005, REQ-006, REQ-008, REQ-009, REQ-010, REQ-011, REQ-012, REQ-013, REQ-014, REQ-015, REQ-019, REQ-020, REQ-021, NFR-001, NFR-002; **Design**: C08, C09.
 
 ### P07 — Browser acceptance, compatibility documentation, and final verification
 

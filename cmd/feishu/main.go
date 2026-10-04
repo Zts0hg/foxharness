@@ -86,10 +86,17 @@ func serve(
 	tasks chan feishu.Task,
 	addr string,
 	shutdownTimeout time.Duration,
-) error {
+) (resultErr error) {
 	if shutdownTimeout <= 0 {
 		shutdownTimeout = defaultShutdownTimeout
 	}
+	defer func() {
+		if closer, ok := runner.(interface{ Close(context.Context) error }); ok {
+			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancelCleanup()
+			resultErr = errors.Join(resultErr, closer.Close(cleanupCtx))
+		}
+	}()
 	runnerCtx, cancelRunner := context.WithCancel(context.Background())
 	defer cancelRunner()
 	runnerDone := make(chan struct{})

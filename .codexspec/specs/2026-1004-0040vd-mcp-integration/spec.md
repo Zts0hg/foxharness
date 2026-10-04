@@ -118,7 +118,7 @@ A tool returns text, structured data, an image, embedded resource content, or a 
 - **REQ-010**: MCP capabilities MUST be available through CLI, TUI, Feishu, AgentOps, Autodev, Benchmark, and authorized child-agent execution, within each entry's existing permission and capability restrictions. Sources: NEED-003, CON-001, CON-002.
 - **REQ-011**: Tool advertisement and execution MUST both enforce effective caller restrictions. Server metadata alone MUST NOT grant permission. Sources: CON-001, DEC-007.
 - **REQ-012**: A main agent and its children MUST share the enclosing Fox session's MCP session and browser state, while authorization is checked separately for each caller. Child completion MUST NOT close connections owned by the enclosing session. Sources: DEC-002, DEC-006, CON-001.
-- **REQ-013**: Independent Fox sessions MUST own separate client connections. Connections MUST persist across normal turns and calls to an individual server MUST execute serially by default, including parent/child calls. Separate connections MUST NOT be represented as a guarantee of isolation inside a remotely managed server. Sources: DEC-002, DEC-006.
+- **REQ-013**: Independent Fox sessions MUST own separate client connections. Connections MUST persist across normal turns and calls to an individual server MUST execute serially by default, including parent/child calls. Feishu messages from the same chat/user MUST retain the live session, browser state and frozen MCP configuration across task completion, cancellation and failure, until an explicit new-session directive or service shutdown closes the owner. Per-message permissions, approval correlation and run artifacts remain independent. Restarting the service restores history only, subject to REQ-016. Separate connections MUST NOT be represented as a guarantee of isolation inside a remotely managed server. Sources: DEC-002, DEC-006, DEC-010.
 - **REQ-014**: Fox MUST expose configurable bounded startup/call timeouts, cancellation, cleanup, and explicit reconnect. The owning session MUST close its owned connections and local server processes when it ends. Sources: DEC-006.
 - **REQ-015**: Connection failure, timeout, incompatible protocol, and reauthorization requirements MUST make the affected server's state visible without blocking unrelated servers or internal tools; dependent operations MUST return explicit errors. Sources: NEED-009, DEC-004, DEC-007.
 - **REQ-016**: Fox MUST NOT automatically replay a tool call whose side effects are uncertain. If a server session is lost or replaced, Fox MUST report possible loss of browser state and MUST NOT equate restored conversation history with restored live browser state. Sources: DEC-006.
@@ -231,6 +231,7 @@ No additional product assumptions are needed. Live acceptance requires an instal
 | DEC-004 | REQ-002, REQ-024; SC-001 | Full |
 | DEC-005 | REQ-004–006; Story 4 | Full |
 | DEC-006 | REQ-012–016; NFR-003; Story 5 | Full |
+| DEC-010 | REQ-006, REQ-013, REQ-014, REQ-016; Feishu message continuity | Full |
 | DEC-007 | REQ-008–009, REQ-011; NFR-004 | Full |
 | DEC-008 | REQ-017–022; NFR-002, NFR-006; Story 7 | Full |
 | DEC-009 | REQ-003, REQ-024; NFR-003, NFR-005; deferred-decisions table | Full |

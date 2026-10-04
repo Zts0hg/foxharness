@@ -135,9 +135,12 @@ connections, so an authorized writable child can continue the parent's browser
 page. Child completion does not close the parent connection. Independent roots,
 benchmark repeats, reconnects, and reopened sessions create separate connections;
 external shared browser profiles can still share state outside Fox. Use
-Playwright `--isolated` when independent browser state is needed. Remote task
-completion ends that task's live runtime; reopening persisted conversation
-history cannot restore an old browser process.
+Playwright `--isolated` when independent browser state is needed. Feishu retains
+one live session per chat/user across messages, including failed or cancelled
+tasks. Its browser state and MCP configuration persist until explicit reconnect,
+new session or service shutdown; approvals and run artifacts remain task-specific.
+Other task-owned remote runtimes end at task completion. Service restart and
+reopening persisted conversation history cannot restore an old browser process.
 
 Host-generated tool names include a bounded server/tool prefix and a stable
 hash. External names enter capability ceilings before the normal profile,

@@ -9,7 +9,7 @@ quotes needed to resolve later interpretation disputes.
 
 **Feature ID**: `2026-1004-0040vd`
 **Status**: Confirmed
-**Last Confirmed**: 2026-10-04 02:13 +08:00 (final stage summary)
+**Last Confirmed**: 2026-10-04 (Feishu lifecycle clarification, DEC-010)
 
 ## Authority Rules
 
@@ -147,6 +147,13 @@ quotes needed to resolve later interpretation disputes.
 - **Evidence Type**: Proposed during discovery and explicitly accepted by the user in the final consolidated stage summary.
 - **Profile Evidence**: P-2026-0808-17255q-1 and P-2026-0808-17255q-4 (candidate guidance).
 
+### DEC-010: Feishu conversation lifetime
+
+- **Status**: confirmed
+- **Decision**: Consecutive messages from the same Feishu chat/user retain one live Fox session, its MCP connections, browser state and resolved MCP configuration. Per-message completion, cancellation or failure does not end that session. An explicit new-session directive closes the previous live session before creating its replacement; service shutdown closes all retained sessions. Task-specific approval correlation, permission evidence, journals and memory extraction remain independent. Process restart may reopen history but does not restore browser state; connection loss and explicit reconnect retain DEC-006 semantics.
+- **User Evidence**: The user selected "1" after the summary offered "共享浏览器状态，直到新建会话或服务退出（推荐）" versus per-message connections.
+- **Confirmation State**: Confirmed directly by this explicit lifecycle choice on 2026-10-04; no further scope approval is pending.
+
 ### DEC-007: OAuth and unattended authorization
 
 - **Status**: confirmed
@@ -241,6 +248,12 @@ There are no blocking product-scope questions. OPEN-001 through OPEN-005 are exp
 - **Historical Note**: This was an AI assumption presented for confirmation, never binding authority. The user asked whether it would impair Playwright MCP usage; the revised proposal distinguishes standalone feature entry points from tool-result handling and necessary resource retrieval.
 
 ## Confirmation Log
+
+### Feishu lifecycle clarification — 2026-10-04
+
+- **Summary Presented**: Share browser state across consecutive Feishu messages until explicit new session or service exit.
+- **User Confirmation**: "1" (the shared-state option).
+- **Entries Confirmed**: DEC-010, clarifying DEC-005/006 for Feishu normal message boundaries.
 
 ### Session 2026-10-04 01:11 +08:00 — Playwright compatibility and screenshots
 

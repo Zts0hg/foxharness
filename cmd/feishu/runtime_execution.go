@@ -43,6 +43,9 @@ type feishuTaskExecutionFactory struct {
 	messenger feishu.TextMessenger
 	store     *session.FileStore
 	approvals *approval.Store
+	mu        sync.Mutex
+	closed    bool
+	sessions  map[feishuConversationKey]*feishuLiveSession
 }
 
 func newFeishuTaskExecutionFactory(
@@ -51,18 +54,47 @@ func newFeishuTaskExecutionFactory(
 	messenger feishu.TextMessenger,
 	store *session.FileStore,
 	approvals *approval.Store,
-) feishu.TaskExecutionFactory {
+) *feishuTaskExecutionFactory {
 	return &feishuTaskExecutionFactory{
 		provider: modelProvider, workDir: workDir, messenger: messenger, store: store, approvals: approvals,
+		sessions: make(map[feishuConversationKey]*feishuLiveSession),
 	}
 }
 
 func (f *feishuTaskExecutionFactory) PrepareTask(ctx context.Context, request feishu.TaskExecutionRequest) (feishu.PreparedTaskExecution, error) {
-	stored, created, err := f.selectSession(request)
+	live, err := f.conversation(ctx, request)
 	if err != nil {
 		return feishu.PreparedTaskExecution{}, err
 	}
-	application, err := f.newApplication(ctx, request, stored)
+	defer live.unlock()
+	if request.ForceNewSession && live.session != nil {
+		if err := closeFeishuSession(ctx, live.session); err != nil {
+			return feishu.PreparedTaskExecution{}, err
+		}
+		live.session, live.stored = nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return feishu.PreparedTaskExecution{}, err
+	}
+	created := false
+	if live.stored == nil {
+		live.stored, created, err = f.selectSession(request)
+		if err != nil {
+			return feishu.PreparedTaskExecution{}, err
+		}
+	}
+	stored := live.stored
+	if live.session == nil {
+		harness, harnessErr := foxruntime.NewRuntimeHarness(f.store, feishuSessionDependencies(f.store.HomeDir()))
+		if harnessErr != nil {
+			return feishu.PreparedTaskExecution{}, harnessErr
+		}
+		live.session, err = harness.OpenSession(ctx, foxruntime.FeishuRemote, stored.ID)
+		if err != nil {
+			return feishu.PreparedTaskExecution{}, err
+		}
+	}
+	application, err := f.newApplication(request, stored, live.session)
 	if err != nil {
 		return feishu.PreparedTaskExecution{
 			Session: app.SessionInfo{
@@ -106,7 +138,7 @@ func (f *feishuTaskExecutionFactory) selectSession(request feishu.TaskExecutionR
 	return stored, true, nil
 }
 
-func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request feishu.TaskExecutionRequest, stored *session.StoredSession) (*app.RuntimeApplication, error) {
+func (f *feishuTaskExecutionFactory) newApplication(request feishu.TaskExecutionRequest, stored *session.StoredSession, agentSession *foxruntime.AgentSession) (*app.RuntimeApplication, error) {
 	metadata := snapshotFeishuProvider(f.provider)
 	autoMemory := automemory.NewStore(f.store.HomeDir(), f.workDir)
 	workingMemory := memory.NewSessionStore(f.workDir, stored.RootDir)
@@ -130,7 +162,6 @@ func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request
 	}
 	assets := &feishuRunAssets{}
 	dependencies := foxruntime.HarnessDependencies{
-		NewSessionServices: mcpintegration.Factory(f.store.HomeDir()),
 		NewArtifactJournal: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.SessionArtifactJournal, error) {
 			return assets.journalFor(assembly)
 		},
@@ -172,26 +203,12 @@ func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request
 			return collector, runtimecompaction.New(compactor), nil
 		},
 	}
-	harness, err := foxruntime.NewRuntimeHarness(f.store, dependencies)
-	if err != nil {
-		return nil, err
-	}
-	agentSession, err := harness.OpenSession(ctx, foxruntime.FeishuRemote, stored.ID)
-	if err != nil {
-		return nil, err
-	}
-	failed := true
-	defer func() {
-		if failed {
-			_ = agentSession.Close(context.Background())
-		}
-	}()
 	runSpec := foxruntime.RunSpec{
 		ForceNewSession:  request.ForceNewSession,
 		ProviderProtocol: metadata.protocol, Model: metadata.model, WorkDir: f.workDir,
 	}
 	application, err := app.NewRuntimeApplication(app.RuntimeApplicationConfig{
-		Session: agentSession,
+		Session: feishuTaskRuntime{session: agentSession, dependencies: dependencies},
 		Info: app.SessionInfo{
 			ID: string(stored.ID), Directory: stored.RootDir, TranscriptPath: stored.TranscriptPath(),
 		},
@@ -208,13 +225,12 @@ func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request
 			hooks.Fire(stored, string(result.RunID), tracker)
 		},
 		Drain: func(ctx context.Context) error {
-			return errors.Join(agentSession.RecoverRunFinish(ctx), agentSession.Close(ctx))
+			return agentSession.RecoverRunFinish(ctx)
 		},
 	})
 	if err != nil {
 		return nil, err
 	}
-	failed = false
 	return application, nil
 }
 
