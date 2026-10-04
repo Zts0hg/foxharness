@@ -38,6 +38,14 @@ func (e ImprovedRoughEstimator) EstimateMessages(messages []schema.Message) int 
 	total := 0
 	for _, msg := range messages {
 		total += e.EstimateText(msg.Content)
+		total += e.EstimateText(string(msg.StructuredContent))
+		for _, part := range msg.ContentParts {
+			if part.Type == "image" {
+				total += 4096
+			} else {
+				total += e.EstimateText(part.Text) + e.EstimateText(part.URI)
+			}
+		}
 		for _, call := range msg.ToolCalls {
 			total += e.EstimateText(call.ID)
 			total += e.EstimateText(call.Name)

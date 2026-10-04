@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -24,6 +25,7 @@ import (
 //   - Tool/function calling with proper parameter schemas
 //   - Multi-turn conversations with full conversation history
 type OpenAIProvider struct {
+	imageInput string
 	// client is the OpenAI SDK client for making API requests.
 	client openai.Client
 	// model specifies the model identifier to use for generation.
@@ -65,9 +67,10 @@ func newOpenAIProviderWithRetry(config llmconfig.ResolvedConfig, retry RetryConf
 	}
 
 	return &OpenAIProvider{
-		client: newOpenAIClient(clientOptions...),
-		model:  config.Model,
-		retry:  retry,
+		imageInput: config.ImageInput,
+		client:     newOpenAIClient(clientOptions...),
+		model:      config.Model,
+		retry:      retry,
 	}, nil
 }
 
@@ -149,15 +152,34 @@ func (p *OpenAIProvider) GenerateWithOptions(ctx context.Context, messages []sch
 
 func (p *OpenAIProvider) chatCompletionParams(messages []schema.Message, availableTools []schema.ToolDefinition, options GenerateOptions) (openai.ChatCompletionNewParams, error) {
 	var openaiMessages []openai.ChatCompletionMessageParamUnion
+	var pendingImages []openai.ChatCompletionContentPartUnionParam
+	flushImages := func() {
+		if len(pendingImages) > 0 {
+			openaiMessages = append(openaiMessages, openai.UserMessage(pendingImages))
+			pendingImages = nil
+		}
+	}
 
 	for _, message := range messages {
+		if message.ToolCallID == "" {
+			flushImages()
+		}
 		switch message.Role {
 		case schema.RoleSystem:
 			openaiMessages = append(openaiMessages, openai.SystemMessage((message.Content)))
 
 		case schema.RoleUser:
+			var images []openai.ChatCompletionContentPartUnionParam
+			for _, part := range message.ContentParts {
+				if part.Type == "image" && len(part.Data) > 0 {
+					images = append(images, openai.TextContentPart("Image from tool call "+message.ToolCallID), openai.ImageContentPart(openai.ChatCompletionContentPartImageImageURLParam{URL: "data:" + part.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(part.Data)}))
+				}
+			}
 			if message.ToolCallID != "" {
 				openaiMessages = append(openaiMessages, openai.ToolMessage(message.Content, message.ToolCallID))
+				pendingImages = append(pendingImages, images...)
+			} else if len(images) > 0 {
+				openaiMessages = append(openaiMessages, openai.UserMessage(append([]openai.ChatCompletionContentPartUnionParam{openai.TextContentPart(message.Content)}, images...)))
 			} else {
 				openaiMessages = append(openaiMessages, openai.UserMessage(message.Content))
 			}
@@ -194,6 +216,7 @@ func (p *OpenAIProvider) chatCompletionParams(messages []schema.Message, availab
 	}
 
 	var openaiTools []openai.ChatCompletionToolUnionParam
+	flushImages()
 	for _, toolDef := range availableTools {
 		var params shared.FunctionParameters
 

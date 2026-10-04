@@ -45,7 +45,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T003 — Encode actual image input and explicit unsupported-model fallback
 
-- [ ] **Outcome**: Both existing provider adapters receive actual screenshot data, with same-model text fallback only for explicit capability/verified unsupported-image conditions.
+- [x] **Outcome**: Both existing provider adapters receive actual screenshot data, with same-model text fallback only for explicit capability/verified unsupported-image conditions.
 - **Paths**: `internal/modelinvoke`, `internal/provider/openai.go`, `internal/provider/claude.go`, `internal/llmconfig/config.go`, settings/config presentation where the capability is exposed; corresponding tests.
 - **Dependencies**: T002.
 - **Covers**: REQ-019, REQ-020, REQ-021, NFR-002, NFR-006; **Plan**: P02; **Design**: C07.
@@ -60,7 +60,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T004 — Preserve image semantics across context preparation and replay
 
-- [ ] **Outcome**: Compaction, context budget, rewind, and replay retain correct image references and do not count image input as free or claim omitted images were viewed.
+- [x] **Outcome**: Compaction, context budget, rewind, and replay retain correct image references and do not count image input as free or claim omitted images were viewed.
 - **Paths**: `internal/compaction`, `internal/runtime/context_controller.go`, `internal/runtimecompaction`, `internal/session`; corresponding tests.
 - **Dependencies**: T003.
 - **Covers**: REQ-020, REQ-021, NFR-002, NFR-006; **Plan**: P02; **Design**: C07.
@@ -75,7 +75,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T005 — Implement scoped configuration and atomic management mutations
 
-- [ ] **Outcome**: Effective server definitions resolve predictably with validated inputs and explicit scope.
+- [x] **Outcome**: Effective server definitions resolve predictably with validated inputs and explicit scope.
 - **Paths**: new `internal/mcpconfig`; `go.mod`, `go.sum` for the pinned SDK as needed; dependency documentation/checks.
 - **Dependencies**: None.
 - **Covers**: REQ-003, REQ-004, REQ-005, REQ-006, REQ-015; **Plan**: P03; **Design**: C01, DD03.
@@ -90,7 +90,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T006 — Implement persisted credentials, explicit OAuth login/logout, and refresh
 
-- [ ] **Outcome**: Static and OAuth authentication work with user-local secret storage and bounded interactive/noninteractive behavior.
+- [x] **Outcome**: Static and OAuth authentication work with user-local secret storage and bounded interactive/noninteractive behavior.
 - **Paths**: new `internal/mcpauth`, new OAuth helpers under `internal/testsupport/mcpfixture`; SDK pin in `go.mod`/`go.sum`; corresponding architecture updates.
 - **Dependencies**: T005.
 - **Covers**: REQ-007, REQ-008, REQ-009, NFR-004, NFR-005; **Plan**: P03; **Design**: C02, DD07.

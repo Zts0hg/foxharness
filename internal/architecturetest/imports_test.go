@@ -557,6 +557,12 @@ func violationReason(edge importEdge) string {
 	}
 
 	switch {
+	case edge.From == "internal/mcpauth":
+		if edge.To != "internal/mcpconfig" {
+			return "MCP authentication may depend only on MCP configuration"
+		}
+	case edge.From == "internal/mcpconfig":
+		return "MCP configuration must not depend on runtime mechanisms"
 	case edge.From == "internal/toolprotocol" || edge.From == "internal/media":
 		if edge.To != "internal/schema" {
 			return "tool protocol and media may depend only on schema"

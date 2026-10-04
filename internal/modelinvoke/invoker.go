@@ -16,6 +16,7 @@ import (
 
 /* Config supplies invocation lifecycle hooks selected by composition. */
 type Config struct {
+	ResolveImage    func(schema.ContentPart) ([]byte, error)
 	OnSuccess       func()
 	IsPromptTooLong func(error) bool
 	Streaming       bool
@@ -44,12 +45,30 @@ type runInvoker struct {
 	provider          provider.LLMProvider
 	config            Config
 	streamingDisabled bool
+	imagesDisabled    bool
 }
 
 func (i *runInvoker) Invoke(ctx context.Context, request engine.RunContext, emit engine.ModelFactEmitter) (engine.ModelResult, error) {
 	messages := cloneMessages(request.Messages)
+	mode := "auto"
+	if capable, ok := i.provider.(interface{ ImageInput() string }); ok && capable.ImageInput() != "" {
+		mode = capable.ImageInput()
+	}
+	messages, notices, hasImages := i.projectImages(messages, mode == "disabled" || i.imagesDisabled)
 	definitions := cloneDefinitions(request.ToolDefinitions)
-	response, err := i.generate(ctx, messages, definitions, provider.GenerateOptions{Effort: request.Effort}, emit)
+	emitted := false
+	wrappedEmit := func(f engine.ModelFact) {
+		emitted = true
+		if emit != nil {
+			emit(f)
+		}
+	}
+	response, err := i.generate(ctx, messages, definitions, provider.GenerateOptions{Effort: request.Effort}, wrappedEmit)
+	if err != nil && !emitted && hasImages && mode == "auto" && provider.IsImageInputUnsupported(err) {
+		i.imagesDisabled = true
+		messages, notices, _ = i.projectImages(cloneMessages(request.Messages), true)
+		response, err = i.generate(ctx, messages, definitions, provider.GenerateOptions{Effort: request.Effort}, wrappedEmit)
+	}
 	if err != nil {
 		isPromptTooLong := i.config.IsPromptTooLong
 		if isPromptTooLong == nil {
@@ -64,6 +83,9 @@ func (i *runInvoker) Invoke(ctx context.Context, request engine.RunContext, emit
 		return engine.ModelResult{}, errors.New("provider returned empty response")
 	}
 	message := cloneMessage(schema.NormalizeMessage(*response.Message))
+	if notices != "" {
+		message.Content = notices + "\n" + message.Content
+	}
 	usage := response.Usage
 	message.Usage = &usage
 	finishReason := "stop"
@@ -146,15 +168,7 @@ func cloneMessages(messages []schema.Message) []schema.Message {
 }
 
 func cloneMessage(message schema.Message) schema.Message {
-	message.ToolCalls = append([]schema.ToolCall(nil), message.ToolCalls...)
-	for index := range message.ToolCalls {
-		message.ToolCalls[index].Arguments = append([]byte(nil), message.ToolCalls[index].Arguments...)
-	}
-	if message.Usage != nil {
-		usage := *message.Usage
-		message.Usage = &usage
-	}
-	return message
+	return message.Clone()
 }
 
 func cloneDefinitions(definitions []schema.ToolDefinition) []schema.ToolDefinition {

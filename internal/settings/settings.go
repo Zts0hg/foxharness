@@ -427,6 +427,7 @@ func mergeProviderRaw(raw json.RawMessage, profile llmconfig.Profile) json.RawMe
 		m = make(map[string]json.RawMessage)
 	}
 	setStringField(m, "protocol", profile.Protocol)
+	setStringField(m, "image_input", profile.ImageInput)
 	setStringField(m, "base_url", profile.BaseURL)
 	setStringField(m, "model", profile.Model)
 	setStringField(m, "auth", profile.Auth)

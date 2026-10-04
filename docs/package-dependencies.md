@@ -2,6 +2,10 @@
 
 This document is the authoritative human-readable package dependency contract for Fox. Automated enforcement lives in `internal/architecturetest/imports_test.go`; `baseline_allowlist.json` preserves the immutable pre-refactor ceiling and `allowlist.json` records the now-empty migration ledger. A dependency-changing commit must update the document and enforcement together.
 
+`internal/mcpconfig` owns scoped MCP configuration and uses only the standard library. `internal/media` owns confined image storage and depends only on schema. Model invocation consumes an injected image resolver; providers remain independent of filesystem storage.
+
+`internal/mcpauth` depends on `internal/mcpconfig` and the pinned official MCP Go SDK (`v1.8.0`) OAuth client. It owns loopback login, user-local credential locking, bounded refresh, and credential-scoped HTTP clients; it has no runtime or presentation dependency.
+
 ## Target Import Graph
 
 ```mermaid

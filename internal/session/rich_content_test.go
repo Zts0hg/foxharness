@@ -1,11 +1,53 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
+	"github.com/Zts0hg/foxharness/internal/media"
 	"github.com/Zts0hg/foxharness/internal/schema"
+	"image"
+	"image/png"
 	"path/filepath"
 	"testing"
 )
+
+func TestImageReplayAfterMessageRewindKeepsArtifact(t *testing.T) {
+	dir := t.TempDir()
+	store := media.NewStore(dir)
+	var data bytes.Buffer
+	if err := png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	part, err := store.Put("image/png", data.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := &MessageLog{path: filepath.Join(dir, "messages.jsonl")}
+	message := schema.Message{Role: schema.RoleUser, ToolCallID: "shot", ContentParts: []schema.ContentPart{part}}
+	for i := 0; i < 2; i++ {
+		if _, err := log.Append("run", message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := log.TruncateBeforeSeq(1); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := log.LoadMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("rewind messages: %d", len(loaded))
+	}
+	got, err := store.Resolve(loaded[0].ContentParts[0])
+	if err != nil || !bytes.Equal(got, data.Bytes()) {
+		t.Fatalf("artifact lost: %v", err)
+	}
+	seq, err := log.Append("restored", message)
+	if err != nil || seq != 1 {
+		t.Fatalf("restore sequence: %d %v", seq, err)
+	}
+}
 
 func TestMessageLogPersistsRichContentAndReturnsOwnedRecord(t *testing.T) {
 	log := &MessageLog{path: filepath.Join(t.TempDir(), "messages.jsonl")}

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -16,9 +17,10 @@ import (
 // ClaudeProvider implements LLMProvider using the Anthropic Messages protocol.
 // It can talk to Claude-compatible endpoints through a configured base URL.
 type ClaudeProvider struct {
-	client anthropic.Client
-	model  string
-	retry  RetryConfig
+	imageInput string
+	client     anthropic.Client
+	model      string
+	retry      RetryConfig
 }
 
 // NewClaudeProvider creates a Claude-compatible provider from resolved LLM
@@ -62,9 +64,10 @@ func newClaudeProviderWithRetry(config llmconfig.ResolvedConfig, retry RetryConf
 	}
 
 	return &ClaudeProvider{
-		client: anthropic.NewClient(clientOptions...),
-		model:  config.Model,
-		retry:  retry,
+		imageInput: config.ImageInput,
+		client:     anthropic.NewClient(clientOptions...),
+		model:      config.Model,
+		retry:      retry,
 	}, nil
 }
 
@@ -239,8 +242,15 @@ func toAnthropicMessages(messages []schema.Message) ([]anthropic.MessageParam, [
 			}
 		case schema.RoleUser:
 			if msg.ToolCallID != "" {
+				block := anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, msg.IsError)
+				for _, part := range msg.ContentParts {
+					if part.Type == "image" && len(part.Data) > 0 {
+						img := anthropic.NewImageBlockBase64(part.MIMEType, base64.StdEncoding.EncodeToString(part.Data))
+						block.OfToolResult.Content = append(block.OfToolResult.Content, anthropic.ToolResultBlockParamContentUnion{OfImage: img.OfImage})
+					}
+				}
 				anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(
-					anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, false),
+					block,
 				))
 				continue
 			}
