@@ -16,6 +16,7 @@ const terminalObserverTimeout = 5 * time.Second
 
 /* RunAssembly is the immutable identity and policy snapshot supplied to one run factory. */
 type RunAssembly struct {
+	Services     SessionServices
 	Session      AgentSessionSnapshot
 	Run          RunScopeSnapshot
 	Spec         RunSnapshot
@@ -97,6 +98,7 @@ func (r RunResult) ReturnedResult() bool {
 
 /* HarnessDependencies contains immutable factories and shared dependency hooks. */
 type HarnessDependencies struct {
+	NewSessionServices  func(context.Context, AgentSessionSnapshot) (SessionServices, error)
 	InitializeSession   func(context.Context, AgentSessionSnapshot) error
 	NewModel            func(context.Context, RunAssembly) (engine.ModelInvoker, error)
 	NewTools            func(context.Context, RunAssembly) (engine.ToolExecutor, error)
@@ -113,7 +115,8 @@ func (s *AgentSession) Run(ctx context.Context, spec RunSpec) (result RunResult,
 		return RunResult{}, err
 	}
 	assembly := RunAssembly{
-		Session: s.Snapshot(), Run: scope.Snapshot(), Spec: scope.resolved.Snapshot(),
+		Services: s.services,
+		Session:  s.Snapshot(), Run: scope.Snapshot(), Spec: scope.resolved.Snapshot(),
 		AllowedTools: scope.AllowedTools(), Permission: scope.Permission(),
 	}
 	observer := newRuntimeObserver(assembly, scope.Observer())

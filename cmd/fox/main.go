@@ -67,6 +67,12 @@ const (
 
 func main() {
 	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "mcp" {
+		if err := dispatchMCP(args[1:]); err != nil {
+			exitWithError(err)
+		}
+		return
+	}
 	if subArgs, ok := splitConfigArgs(args); ok {
 		homeDir, _ := os.UserHomeDir()
 		if err := runConfig(homeDir, subArgs); err != nil {

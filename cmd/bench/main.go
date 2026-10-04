@@ -18,6 +18,8 @@ package main
 import (
 	"context"
 	"flag"
+	"github.com/Zts0hg/foxharness/internal/mcpintegration"
+	"github.com/Zts0hg/foxharness/internal/media"
 	"log"
 	"os"
 	"path/filepath"
@@ -169,18 +171,22 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 	var llmProvider provider.LLMProvider
 	var compactor *compaction.Compactor
 	dependencies := foxruntime.HarnessDependencies{
+		NewSessionServices: mcpintegration.Factory(store.HomeDir()),
 		InitializeSession: func(_ context.Context, snapshot foxruntime.AgentSessionSnapshot) error {
 			return memory.NewSessionStore(workDir, snapshot.RootDir).EnsureFiles()
 		},
-		NewModel: func(context.Context, foxruntime.RunAssembly) (engine.ModelInvoker, error) {
-			return modelinvoke.New(llmProvider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker}), nil
+		NewModel: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ModelInvoker, error) {
+			return modelinvoke.New(llmProvider, modelinvoke.Config{ResolveImage: media.NewStore(assembly.Session.RootDir).Resolve, OnSuccess: compactor.ResetCircuitBreaker}), nil
 		},
 		NewTools: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {
 			registry := buildBenchmarkRegistry(workDir, &session.StoredSession{RootDir: assembly.Session.RootDir})
+			if err := mcpintegration.Mount(registry, assembly.Services); err != nil {
+				return nil, err
+			}
 			return toolruntime.New(
 				registryexec.Capabilities(registry, assembly.AllowedTools, nil),
 				toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results"),
-			), nil
+			).WithImageStore(media.NewStore(assembly.Session.RootDir)), nil
 		},
 		NewPolicy: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.TurnPolicy, error) {
 			return newBenchmarkTurnPolicy(assembly.Session.RootDir), nil
@@ -224,10 +230,11 @@ func buildHarness(ctx context.Context, workDir string, c *benchmark.Case) (*benc
 		taskTimeout := time.Duration(c.TimeoutSeconds) * time.Second
 		runSpec.TaskTimeout = &taskTimeout
 	}
-	runtimeSpec, err := benchmark.ResolveRuntimeSpec(runSpec)
+	runtimeSpec, err := benchmark.ResolveRuntimeSpec(runSpec, agentSession.Services().Capabilities())
 	if err != nil {
 		return nil, err
 	}
+	runSpec.AllowedTools = append([]string{}, runtimeSpec.ToolSurface...)
 	compCfg := compaction.DefaultCompactionConfig()
 	compCfg.Model = runtimeSpec.Model
 	compCfg.SessionDir = agentSession.Snapshot().RootDir

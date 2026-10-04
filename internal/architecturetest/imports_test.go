@@ -188,7 +188,7 @@ func TestOnlyAuthorizedRuntimeClientsHaveProductionImports(t *testing.T) {
 			callers = append(callers, edge.From)
 		}
 	}
-	want := []string{"cmd/agentops", "cmd/bench", "cmd/feishu", "cmd/fox", "internal/app", "internal/autodev", "internal/benchmark", "internal/childruntime", "internal/runtimecompaction", "internal/runtimejournal"}
+	want := []string{"cmd/agentops", "cmd/bench", "cmd/feishu", "cmd/fox", "internal/app", "internal/autodev", "internal/benchmark", "internal/childruntime", "internal/mcpintegration", "internal/runtimecompaction", "internal/runtimejournal"}
 	if fmt.Sprint(callers) != fmt.Sprint(want) {
 		t.Fatalf("target runtime production callers = %v, want authorized clients %v", callers, want)
 	}
@@ -202,7 +202,7 @@ func TestOnlyDocumentedToolProtocolConsumersImportProtocol(t *testing.T) {
 			callers = append(callers, edge.From)
 		}
 	}
-	want := []string{"internal/registryexec", "internal/slash", "internal/subagent", "internal/tools"}
+	want := []string{"internal/mcpclient", "internal/mcpintegration", "internal/registryexec", "internal/slash", "internal/subagent", "internal/tools"}
 	if fmt.Sprint(callers) != fmt.Sprint(want) {
 		t.Fatalf("toolprotocol production consumers = %v, want documented consumers %v", callers, want)
 	}
@@ -557,6 +557,18 @@ func violationReason(edge importEdge) string {
 	}
 
 	switch {
+	case edge.From == "internal/mcpcmd":
+		if edge.To != "internal/app" {
+			return "MCP command parsing depends only on the application port"
+		}
+	case edge.From == "internal/mcpclient":
+		if !oneOf(edge.To, "internal/mcpconfig", "internal/media", "internal/processtree", "internal/schema", "internal/toolprotocol") {
+			return "MCP protocol adapter may depend only on configuration, process ownership, media, and result contracts"
+		}
+	case edge.From == "internal/mcpintegration":
+		if !oneOf(edge.To, "internal/app", "internal/runtime", "internal/mcpconfig", "internal/mcpauth", "internal/mcpclient", "internal/schema", "internal/toolpolicy", "internal/toolprotocol", "internal/tools") {
+			return "MCP composition dependency exceeds its documented ports"
+		}
 	case edge.From == "internal/mcpauth":
 		if edge.To != "internal/mcpconfig" {
 			return "MCP authentication may depend only on MCP configuration"
@@ -618,6 +630,7 @@ func isPresentationForbiddenTarget(path string) bool {
 		"internal/compaction", "internal/provider", "internal/tools", "internal/memory",
 		"internal/automemory", "internal/metrics", "internal/tracing", "internal/schema",
 		"internal/permission", "internal/toolpolicy",
+		"internal/mcpconfig", "internal/mcpauth", "internal/mcpclient", "internal/mcpintegration", "internal/media",
 	)
 }
 

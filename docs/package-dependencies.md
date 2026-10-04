@@ -365,3 +365,21 @@ The initial allowlist contains 68 exact edges. Its latest deletion boundaries ar
 | `M25` | Old engine concrete infrastructure imports. |
 
 At M27 the migration ledger is empty at SHA-256 `c6c5c5ddfb7d7a5198b30c5bc2f9ee0ebb6156dfabc193837c10fd97251ed3ca`. The immutable B00 ceiling remains available only to prove that no migration commit broadened the violation set; it is not an exception list for current code. This document, the automated rules, and production imports agree on zero forbidden edges.
+
+### MCP session composition
+
+`internal/mcpclient` depends on `mcpconfig`, `processtree`, `media`, `schema`, and
+`toolprotocol`, and owns the pinned SDK boundary. `internal/mcpintegration`
+depends on these focused MCP packages plus `runtime`, `app`, `tools`, `schema`,
+`toolpolicy`, and `toolprotocol`. It implements the runtime-owned session service
+port and the application-owned management port. Runtime itself keeps its existing
+engine/session/prompt dependency ceiling and never imports MCP implementations.
+`internal/mcpcmd` depends only on `app`; CLI and TUI share its parser. Presentation
+packages may not import concrete MCP packages or media. Composition roots and
+`childruntime` mount tools before permission decorators, supply media stores to
+executors/model invocation, and pass borrowed services into child execution.
+
+The additional production consumers of `toolprotocol` are `mcpclient` and
+`mcpintegration`; the additional runtime consumer is `mcpintegration`. The
+`internal/testsupport/mcpfixture` package exists only for hermetic tests and is
+not imported by production composition.

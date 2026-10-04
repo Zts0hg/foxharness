@@ -110,6 +110,10 @@ func (e *Executor) Execute(ctx context.Context, frozen engine.ToolSnapshot, call
 					part = schema.ContentPart{Type: "text", Text: notice}
 				} else {
 					stored.URI, stored.Name = part.URI, part.Name
+					notice := "\nScreenshot artifact: " + stored.ArtifactKey
+					result.FullContent += notice
+					result.ModelContent += notice
+					result.ObserverContent += notice
 					part = stored
 				}
 			}

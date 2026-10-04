@@ -4,6 +4,8 @@ package childruntime
 import (
 	"context"
 	"errors"
+	"github.com/Zts0hg/foxharness/internal/mcpintegration"
+	"github.com/Zts0hg/foxharness/internal/media"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -39,6 +41,7 @@ type Config struct {
 	ProviderProtocol  string
 	Model             string
 	Effort            string
+	Services          foxruntime.SessionServices
 	ParentTools       []string
 	Permission        *permission.Coordinator
 	ParentEvidence    permission.EvidenceProvider
@@ -199,7 +202,7 @@ func (r *Runner) Run(ctx context.Context, request subagent.Request) (*subagent.R
 					return nil, err
 				}
 			}
-			return journal.WrapModel(modelinvoke.New(r.config.Provider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker})), nil
+			return journal.WrapModel(modelinvoke.New(r.config.Provider, modelinvoke.Config{ResolveImage: media.NewStore(assembly.Session.RootDir).Resolve, OnSuccess: compactor.ResetCircuitBreaker})), nil
 		},
 		NewTools: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {
 			journal, err := r.journals.get(assembly)
@@ -213,7 +216,7 @@ func (r *Runner) Run(ctx context.Context, request subagent.Request) (*subagent.R
 			return journal.WrapTools(toolruntime.New(
 				registryexec.Capabilities(registry, assembly.AllowedTools, nil), toolresult.OSFileSystem{},
 				filepath.Join(assembly.Session.RootDir, "tool-results"),
-			)), nil
+			).WithImageStore(media.NewStore(assembly.Session.RootDir))), nil
 		},
 		NewPolicy: func(context.Context, foxruntime.RunAssembly) (engine.TurnPolicy, error) {
 			return turnpolicy.New(turnpolicy.Config{}), nil
@@ -241,7 +244,7 @@ func (r *Runner) Run(ctx context.Context, request subagent.Request) (*subagent.R
 		Profile: foxruntime.ProfileName(r.config.ParentProfile), SessionID: session.ID(request.ParentSessionID),
 		RunID: session.RunID(request.ParentRunID), WorkDir: r.config.WorkDir,
 		ProviderProtocol: r.config.ProviderProtocol, Model: r.config.Model, Effort: r.config.Effort,
-		AllowedTools: parentTools, Permission: permissionScope, Context: ctx,
+		Services: r.config.Services, AllowedTools: parentTools, Permission: permissionScope, Context: ctx,
 	})
 	if err != nil {
 		return nil, err
@@ -287,10 +290,14 @@ func (r *Runner) parentTools() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if profile.Snapshot().ToolCeiling == "" {
-		return []string{}, nil
+	if r.config.Services != nil {
+		profile = profile.WithExternalCapabilities(r.config.Services.Capabilities())
 	}
-	return strings.Split(profile.Snapshot().ToolCeiling, ","), nil
+	resolved, err := profile.Resolve(foxruntime.RunSpec{})
+	if err != nil {
+		return nil, err
+	}
+	return resolved.AllowedTools(), nil
 }
 
 func newCompactor(modelProvider provider.LLMProvider, model, sessionDir string) (*compaction.Compactor, error) {
@@ -311,6 +318,9 @@ func (r *Runner) buildRegistry(store *session.FileStore, assembly foxruntime.Run
 		registry.Register(tools.NewSupervisedBashTool(r.config.WorkDir, supervisor))
 		registry.Register(tools.NewWriteFileTool(r.config.WorkDir))
 		registry.Register(tools.NewEditFileTool(r.config.WorkDir))
+	}
+	if err := mcpintegration.Mount(registry, assembly.Services); err != nil {
+		return nil, err
 	}
 	registry = tools.NewFilteredRegistry(registry, assembly.AllowedTools)
 	scope, ok := assembly.Permission.(*permissionScope)

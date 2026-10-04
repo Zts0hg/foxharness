@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Zts0hg/foxharness/internal/mcpintegration"
+	"github.com/Zts0hg/foxharness/internal/media"
 	"log"
 	"path/filepath"
 	"reflect"
@@ -128,6 +130,7 @@ func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request
 	}
 	assets := &feishuRunAssets{}
 	dependencies := foxruntime.HarnessDependencies{
+		NewSessionServices: mcpintegration.Factory(f.store.HomeDir()),
 		NewArtifactJournal: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.SessionArtifactJournal, error) {
 			return assets.journalFor(assembly)
 		},
@@ -139,14 +142,18 @@ func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request
 			if err != nil {
 				return nil, err
 			}
-			return journal.WrapModel(modelinvoke.New(f.provider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker})), nil
+			return journal.WrapModel(modelinvoke.New(f.provider, modelinvoke.Config{ResolveImage: media.NewStore(assembly.Session.RootDir).Resolve, OnSuccess: compactor.ResetCircuitBreaker})), nil
 		},
 		NewTools: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {
 			journal, err := assets.journalFor(assembly)
 			if err != nil {
 				return nil, err
 			}
-			registry := f.buildTools(stored, metadata, coordinator, evidence)
+			registry := f.buildTools(stored, metadata, coordinator, evidence, assembly)
+			if err := mcpintegration.Mount(registry, assembly.Services); err != nil {
+				return nil, err
+			}
+			registry = permission.DecorateRegistry(registry, coordinator, evidence)
 			capabilities := registryexec.CapabilitiesWithContext(
 				registry, assembly.AllowedTools,
 				func(ctx context.Context) context.Context {
@@ -154,7 +161,7 @@ func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request
 				},
 				hooks.RecordCallback(tracker),
 			)
-			base := toolruntime.New(capabilities, toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results"))
+			base := toolruntime.New(capabilities, toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results")).WithImageStore(media.NewStore(assembly.Session.RootDir))
 			return journal.WrapTools(base), nil
 		},
 		NewPolicy: func(context.Context, foxruntime.RunAssembly) (engine.TurnPolicy, error) {
@@ -278,7 +285,12 @@ func (f *feishuTaskExecutionFactory) buildTools(
 	metadata feishuProviderMetadata,
 	coordinator *permission.Coordinator,
 	evidence permission.EvidenceProvider,
+	assemblies ...foxruntime.RunAssembly,
 ) tools.Registry {
+	var assembly foxruntime.RunAssembly
+	if len(assemblies) > 0 {
+		assembly = assemblies[0]
+	}
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(f.workDir))
 	registry.Register(tools.NewWriteFileTool(f.workDir))
@@ -287,13 +299,17 @@ func (f *feishuTaskExecutionFactory) buildTools(
 	registry.Register(tools.NewReadTodoTool(stored.RootDir))
 	registry.Register(tools.NewUpdateTodoTool(stored.RootDir))
 	child := childruntime.New(childruntime.Config{
+		Services: assembly.Services, ParentTools: assembly.AllowedTools,
 		Provider: f.provider, WorkDir: f.workDir, HomeDir: f.store.HomeDir(),
 		ParentProfile:    childruntime.FeishuRemote,
 		ProviderProtocol: metadata.protocol, Model: metadata.model,
 		Permission: coordinator, ParentEvidence: evidence,
 	})
 	registry.Register(subagent.NewTool(child, string(stored.ID)))
-	return permission.DecorateRegistry(registry, coordinator, evidence)
+	if len(assemblies) == 0 {
+		return permission.DecorateRegistry(registry, coordinator, evidence)
+	}
+	return registry
 }
 
 type feishuProviderMetadata struct {

@@ -108,7 +108,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T007 — Connect stdio, Streamable HTTP, and legacy SSE with bounded lifecycle
 
-- [ ] **Outcome**: The pinned SDK adapter negotiates supported protocols, discovers all tool pages, and owns process/HTTP cleanup without uncertain call replay.
+- [x] **Outcome**: The pinned SDK adapter negotiates supported protocols, discovers all tool pages, and owns process/HTTP cleanup without uncertain call replay.
 - **Paths**: new `internal/mcpclient`, fixture transport/server code under `internal/testsupport/mcpfixture`; consume `internal/processtree`.
 - **Dependencies**: T002, T006.
 - **Covers**: REQ-001, REQ-002, REQ-007, REQ-014, REQ-015, REQ-016, REQ-024, NFR-003; **Plan**: P04; **Design**: C03, DD01, DD02, DD08.
@@ -124,7 +124,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T008 — Convert rich results and authorized resource payloads
 
-- [ ] **Outcome**: Protocol results map to the rich Fox contracts without false success or silent loss.
+- [x] **Outcome**: Protocol results map to the rich Fox contracts without false success or silent loss.
 - **Paths**: `internal/mcpclient` result conversion/read support, existing rich contracts and fixtures.
 - **Dependencies**: T007.
 - **Covers**: REQ-017, REQ-018, REQ-022; **Plan**: P04; **Design**: C03, C05, C06.
@@ -139,7 +139,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T009 — Add owned/borrowed session services and safe lifecycle transitions
 
-- [ ] **Outcome**: New and reopened sessions own services, child sessions borrow, and reconnect/close preserve correct generations and state boundaries.
+- [x] **Outcome**: New and reopened sessions own services, child sessions borrow, and reconnect/close preserve correct generations and state boundaries.
 - **Paths**: `internal/runtime/runtime_harness.go`, `session_lifecycle.go`, `child_runner.go`; new `internal/mcpintegration` host; existing architecture enforcement/documentation.
 - **Dependencies**: T008.
 - **Covers**: REQ-006, REQ-012, REQ-013, REQ-014, REQ-015, REQ-016, NFR-001, NFR-003; **Plan**: P05; **Design**: C04, DD04.
@@ -155,7 +155,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T010 — Mount external tools within existing capability and permission boundaries
 
-- [ ] **Outcome**: Discovered tools and linked-resource helpers are callable only within effective host/profile/child restrictions, with frozen matching definitions and dispatch.
+- [x] **Outcome**: Discovered tools and linked-resource helpers are callable only within effective host/profile/child restrictions, with frozen matching definitions and dispatch.
 - **Paths**: `internal/mcpintegration/tools.go`, `internal/runtime/profile.go`, `internal/runtime/child_runner.go`, `internal/childruntime/runner.go`; `internal/toolpolicy` and registry adapters as required.
 - **Dependencies**: T009.
 - **Covers**: REQ-001, REQ-010, REQ-011, REQ-012, REQ-018, NFR-002; **Plan**: P05; **Design**: C04, C05, DD05.
@@ -172,7 +172,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T011 — Add shared management ports, CLI commands, and TUI interactions
 
-- [ ] **Outcome**: Users can manage configuration scopes, inspect redacted actual/probed state, login/logout, and reconnect the active TUI session.
+- [x] **Outcome**: Users can manage configuration scopes, inspect redacted actual/probed state, login/logout, and reconnect the active TUI session.
 - **Paths**: new `internal/app/mcp.go`, `internal/mcpcmd`, `cmd/fox/mcp.go`, `internal/tui/mcp.go`; existing main/slash/application dispatch and corresponding tests.
 - **Dependencies**: T010.
 - **Covers**: REQ-005, REQ-006, REQ-008, REQ-009, REQ-014, REQ-015, NFR-001; **Plan**: P06; **Design**: C08.
@@ -187,7 +187,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T012 — Wire all production entries and image-aware presentation
 
-- [ ] **Outcome**: All applicable entry compositions use shared MCP integration, preserve their policies, and pass rich results to the actual model path.
+- [x] **Outcome**: All applicable entry compositions use shared MCP integration, preserve their policies, and pass rich results to the actual model path.
 - **Paths**: `cmd/fox/cli_runtime.go`, `tui_runtime.go`, `autodev_runtime.go`; `cmd/feishu/runtime_execution.go`, `cmd/agentops/runtime_execution.go`, `cmd/bench/main.go`; `internal/benchmark/runtime_spec.go`, `internal/childruntime/runner.go`; app/remote result DTOs as required by C06/C09.
 - **Dependencies**: T004, T011.
 - **Covers**: REQ-010, REQ-011, REQ-012, REQ-014, REQ-015, REQ-019, REQ-020, REQ-021, NFR-001, NFR-002; **Plan**: P06; **Design**: C06, C07, C09.
@@ -206,7 +206,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T013 — Add and run pinned Playwright acceptance
 
-- [ ] **Outcome**: A separately runnable workflow proves the complete browser sequence and screenshot model-input behavior against a controlled local page.
+- [x] **Outcome**: A separately runnable workflow proves the complete browser sequence and screenshot model-input behavior against a controlled local page.
 - **Paths**: new `internal/mcpintegration/playwright_integration_test.go` and local fixture page; documented pinned dependency/prerequisite data.
 - **Dependencies**: T012.
 - **Covers**: REQ-023, REQ-024, NFR-005; **Plan**: P07; **Design**: C09, DD09.
@@ -220,7 +220,7 @@ The paths below marked new are proposed by design.md. Tests sit with their packa
 
 ### T014 — Document configuration, compatibility, and architecture
 
-- [ ] **Outcome**: Users can reproduce MCP configuration/authorization/Playwright setup and understand state, permissions, image fallback, and supported versions.
+- [x] **Outcome**: Users can reproduce MCP configuration/authorization/Playwright setup and understand state, permissions, image fallback, and supported versions.
 - **Paths**: new `docs/mcp.md`, relevant README links, `docs/package-dependencies.md`, feature implementation evidence.
 - **Dependencies**: T013.
 - **Covers**: REQ-024, NFR-001; **Plan**: P07; **Design**: C09, DD01, DD09.

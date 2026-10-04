@@ -7,6 +7,7 @@ import (
 	"log"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
 	"github.com/Zts0hg/foxharness/internal/session"
@@ -38,6 +39,7 @@ type SessionStore interface {
 
 /* SessionOptions contains persistence metadata for a newly created AgentSession. */
 type SessionOptions struct {
+	Services        SessionServices
 	WorkDir         string
 	UserID          string
 	ChatID          string
@@ -71,6 +73,7 @@ type RuntimeHarness struct {
 
 /* AgentSession coordinates admission and recoverable state for one live session. */
 type AgentSession struct {
+	services               SessionServices
 	harness                *RuntimeHarness
 	store                  SessionStore
 	profile                Profile
@@ -153,6 +156,13 @@ func (h *RuntimeHarness) CreateSession(ctx context.Context, name ProfileName, op
 			return nil, fmt.Errorf("initialize runtime session: %w", err)
 		}
 	}
+	if !isNilRuntimeDependency(options.Services) {
+		agentSession.services = options.Services
+	} else {
+		if err := agentSession.initializeServices(ctx); err != nil {
+			return nil, err
+		}
+	}
 	return agentSession, nil
 }
 
@@ -175,7 +185,14 @@ func (h *RuntimeHarness) OpenSession(ctx context.Context, name ProfileName, id s
 	if stored.ID != id {
 		return nil, fmt.Errorf("opened session ID %q does not match requested ID %q", stored.ID, id)
 	}
-	return h.newAgentSession(profile, stored)
+	opened, err := h.newAgentSession(profile, stored)
+	if err != nil {
+		return nil, err
+	}
+	if err := opened.initializeServices(ctx); err != nil {
+		return nil, err
+	}
+	return opened, nil
 }
 
 /* Snapshot returns immutable identity and persistence metadata for the live session. */
@@ -198,8 +215,16 @@ func (s *AgentSession) BeginRun(ctx context.Context, spec RunSpec) (*RunScope, e
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	resolved, err := s.profile.Resolve(spec)
+	if err := s.acquire(ctx); err != nil {
+		return nil, err
+	}
+	profile := s.profile
+	if s.services != nil {
+		profile = profile.WithExternalCapabilities(s.services.Capabilities())
+	}
+	resolved, err := profile.Resolve(spec)
 	if err != nil {
+		s.release()
 		return nil, err
 	}
 	/* The admission line announces a user-requested main-run slash
@@ -207,9 +232,6 @@ func (s *AgentSession) BeginRun(ctx context.Context, spec RunSpec) (*RunScope, e
 	 * announcing it would mislabel every delegation as a slash restriction. */
 	if spec.AllowedTools != nil && s.profile.Snapshot().Name != ChildRun {
 		log.Printf("[slash] restricting next run to allowed tools: %v", resolved.AllowedTools())
-	}
-	if err := s.acquire(ctx); err != nil {
-		return nil, err
 	}
 	if err := s.acquireCapacity(ctx); err != nil {
 		s.release()
@@ -290,6 +312,11 @@ func (s *AgentSession) Close(ctx context.Context) error {
 	s.stateMu.Unlock()
 	s.release()
 	s.releaseLease()
+	if s.services != nil {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return s.services.Close(cleanup)
+	}
 	return nil
 }
 

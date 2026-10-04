@@ -121,7 +121,7 @@ Runtime consumes its own ports; it does not import any concrete MCP package. Eng
 ### DD01 — Pin the official SDK and isolate its APIs
 
 - **Context**: Three transports, protocol negotiation, rich content, and OAuth are required; the repository currently has no MCP dependency.
-- **Decision**: Pin `github.com/modelcontextprotocol/go-sdk v1.8.0` (Go 1.25.0 compatible) behind C03/C02. Verified SDK transports: `IOTransport`, `StreamableClientTransport`, `SSEClientTransport`. The SDK supports negotiation with 2026-07-28, 2025-11-25, 2025-06-18, 2025-03-26, and 2024-11-05; Fox's tests exercise the selected client behavior against each negotiated version while avoiding a claim to implement unrelated optional MCP capabilities.
+- **Decision**: Pin `github.com/modelcontextprotocol/go-sdk v1.8.0` (Go 1.25.0 compatible) behind C03/C02. Verified SDK transports: `IOTransport`, `StreamableClientTransport`, `SSEClientTransport`. The SDK supports negotiation with 2026-07-28, 2025-11-25, 2025-06-18, 2025-03-26, and 2024-11-05; Fox's tests exercise the selected client behavior against each negotiated version while avoiding a claim to implement unrelated optional MCP capabilities. Verified transport-specific boundary: legacy SSE downgrades a 2026-07-28 request to 2025-11-25; the 2026-07-28 HTTP fixture uses the SDK's stateless mode.
 - **Alternatives**: A custom JSON-RPC implementation increases lifecycle/protocol work; a second SDK would duplicate contracts.
 - **Trade-off**: OAuth client APIs are documented as experimental; the pin, wrapper, and fixture tests contain that dependency risk. SDK transitive version changes require the repository regression suite.
 - **Covers**: REQ-001, REQ-002, REQ-007, REQ-024.

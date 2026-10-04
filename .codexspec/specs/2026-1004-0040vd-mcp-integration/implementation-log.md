@@ -70,3 +70,72 @@
 - T006-S07: permissions assertion in login test; TestRefreshFailureAndStoreFailureAreExplicit covers locked store and redacted refresh rejection.
 - TestCredentialsNeverFollowCrossOriginRedirect verifies no credential dispatch to another origin.
 - Full T003–T006 verification: `go test ./...` passed in the clean verification copy (including SDK transitive upgrades).
+
+## T007–T008 — Protocol transport and content conversion
+
+- Red: initial transport tests failed to compile before Connect/Session existed. Behavioral regressions cover malformed discovery, authorization classification, and bounded stdio output. Green: `go test -race ./internal/mcpclient ./internal/mcpintegration ./internal/runtime` passed; final expanded package checks run again below.
+- T007-S01/S07: mcpclient.TestAllTransportsAndProtocolVersions exercises three transports, five requested versions, actual calls, cancellation, retained owner, and idempotent close. SSE's 2026 request negotiates 2025-11-25; 2026 HTTP uses stateless semantics.
+- T007-S02: TestPaginatedDiscoveryResourceReadAndUncertainCallNeverReplays; TestMalformedDiscoveryAndUnsupportedProtocolAreRejected.
+- T007-S03: TestHTTPFallbackExcludesAuthorizationFailures.
+- T007-S04: TestCredentialsReachBothHTTPTransports; mcpauth.TestOAuthLoginRefreshRestartLogoutAndScope and TestCredentialsNeverFollowCrossOriginRedirect assert refresh and origin confinement.
+- T007-S05: TestStartupTimeoutIsBounded; TestStdioLimitsAndFailedStartupReapDescendants; cancellation cases in TestAllTransportsAndProtocolVersions.
+- T007-S06: TestPaginatedDiscoveryResourceReadAndUncertainCallNeverReplays counts the single dispatched uncertain call.
+- T008-S01/S02/S03: TestRichConversionPreservesOrderStructuredDataAndErrors; TestUnsupportedImageFormatsAndOversizedPayloadsAreExplicit. Correlation and persistence additionally use T001/T002 tests.
+- T008-S04: TestPaginatedDiscoveryResourceReadAndUncertainCallNeverReplays checks supported resource reads and unavailable resources; embedded image decoding is asserted by TestRichConversionPreservesOrderStructuredDataAndErrors.
+
+## T009–T010 — Runtime services, borrowing, and permissions
+
+- Red: new runtime services APIs were absent. TestSlowReconnectDoesNotBlockHealthyServer exposed a global lock held during network work; reconnect now builds outside that lock. TestCloseCancelsActiveCallsAndCleansAllServers exposed close timeout before canceling active calls; host shutdown now cancels ownership and starts all connection cleanup. TestTransportFailureUpdatesVisibleStatusWithoutRetry exposed invisible call failure status. TestUnattendedOAuthStatusIsActionable exposed erased authorization diagnostics between credential transport and SDK error conversion.
+- T009-S01: runtime.TestOwnedServicesInitializeOnCreateAndOpenAndExtendBeforeNarrowing plus existing nil-factory lifecycle tests.
+- T009-S02: runtime.TestPartialServiceFailureClosesAndReleasesSessionLease.
+- T009-S03: mcpintegration.TestHostOwnsIsolatedSessionsBorrowersAndGeneration; childruntime.TestChildBorrowsParentBrowserAndHydratesLocalImages; existing runtime.TestChildRunnerPropagatesCancellationAndCleansBeforeReturning pins child terminal cleanup.
+- T009-S04/S05: TestServerQueueCancellationDoesNotDispatchAndReconnectDrains; TestHostOwnsIsolatedSessionsBorrowersAndGeneration.
+- T009-S06: TestCloseCancelsActiveCallsAndCleansAllServers; runtime.TestOwnedServicesInitializeOnCreateAndOpenAndExtendBeforeNarrowing; mcpclient process-tree/idempotent-close tests.
+- T009-S07: TestSlowReconnectDoesNotBlockHealthyServer; TestTransportFailureUpdatesVisibleStatusWithoutRetry; tui.TestMCPNewSessionExplainsBrowserStateBoundary; isolated failure in TestHostOwnsIsolatedSessionsBorrowersAndGeneration.
+- T010-S01: TestNamesAndExternalPermissionAssessment and collision assertion in TestKnownLinksRequireOriginCapabilityAndUnknownMetadataNeverGrantsPermission.
+- T010-S02/S03: runtime.TestOwnedServicesInitializeOnCreateAndOpenAndExtendBeforeNarrowing; TestExternalChildCapabilitiesPreserveReadOnlyAndEmptyRestrictions; childruntime.TestMCPChildReadOnlyAndExplicitEmptyCannotExecuteExternalTools.
+- T010-S04: childruntime.TestChildBorrowsParentBrowserAndHydratesLocalImages; TestMCPChildReadOnlyAndExplicitEmptyCannotExecuteExternalTools.
+- T010-S05: TestNamesAndExternalPermissionAssessment; cmd/fox.TestTUIMCPDenialPreservesStateAcrossTurns; TestTUIMCPReconnectAndNewSessionPreserveOwnership; remote actual approval tests in both remote roots; CLI/Autodev success cases preserve their existing policy.
+- T010-S06: TestKnownLinksRequireOriginCapabilityAndUnknownMetadataNeverGrantsPermission asserts unknown URI, origin restriction, cross-server rejection, and authorized read.
+- A composition test caught use of the static profile snapshot for fallback child ceilings. Child composition now resolves the extended profile before obtaining allowed names.
+
+## T011–T012 — Management and all entry compositions
+
+- Red: management tests failed for missing application DTO/manager/parser APIs. Entry tests failed on missing external tools and image-policy forwarding. TUI tests first failed for absent management injection; probe-cleanup and visible artifact tests independently reproduced hidden errors/output. Green: all targeted entry/provider/management tests passed.
+- T011-S01: mcpcmd.TestParseRequiresScopeAndPreservesArguments; TestSplitQuotedArguments; mcpintegration.TestManagementScopesProbeCleanupAndNoCrossProcessReconnect; mcpconfig scoped mutation tests. Both presentations use the same parser and management port.
+- T011-S02: host ready/disabled/failure/authorization tests and runtime close assertions; mcpauth/mcpconfig redaction tests; TestTransportFailureUpdatesVisibleStatusWithoutRetry.
+- T011-S03: TestManagementScopesProbeCleanupAndNoCrossProcessReconnect; TestProbeReportsCleanupFailure; cmd/fox.TestMCPManagementRunsWithoutLLMConfiguration.
+- T011-S04: cmd/fox.TestTUIMCPReconnectAndNewSessionPreserveOwnership plus host active-call drain and stale-generation tests.
+- T011-S05: tui.TestMCPCommandUsesSharedPortAndDisplaysLogin; TestMCPCancelEndsPendingManagementAndShowsFailure; mcpauth callback/logout tests.
+- T011-S06: mcpconfig malformed/isolated validation tests and host isolated-failure tests; management commands run independently of LLM configuration.
+- T012-S01: cmd/fox.TestCLIMCPCompositionCallsAndHydratesScreenshot.
+- T012-S02: cmd/fox.TestTUIMCPDenialPreservesStateAcrossTurns; TestTUIMCPReconnectAndNewSessionPreserveOwnership.
+- T012-S03: cmd/feishu.TestRemoteMCPApprovalAndDenial; TestFeishuMCPRequiresRemoteApproval; existing Feishu session-selection/profile tests.
+- T012-S04: cmd/agentops.TestRemoteMCPApprovalAndDenial; TestAgentOpsMCPTaskOwnsConnection.
+- T012-S05: cmd/fox.TestAutodevMCPUsesItemWorkspace; TestAutodevProviderForwardsImageCapability.
+- T012-S06: cmd/bench.TestBenchmarkMCPFreezesFidelityAndIsolatesRepeats. Effective external names enter the frozen case run spec and fidelity.
+- T012-S07: childruntime.TestChildBorrowsParentBrowserAndHydratesLocalImages; TestMCPChildReadOnlyAndExplicitEmptyCannotExecuteExternalTools.
+- T012-S08: cmd/fox.TestCLIActualProvidersReceiveMCPImagesAndTextFallback sends real PNG bytes through the full CLI runtime and both actual HTTP provider adapters, covering enabled/disabled modes and absence of base64 in final presentation.
+- toolruntime.TestExecutorPersistsImageBeforeReturningReference additionally asserts a user-visible artifact reference after persistence.
+
+## T013 — Live Playwright acceptance
+
+- Command: `FOX_MCP_PLAYWRIGHT=1 go test ./internal/mcpintegration -run TestPlaywrightAcceptance -count=1 -v` — PASS on 2026-10-04 with Node 22.18.0, npm 10.9.3, Playwright MCP 0.0.83, installed Chrome.
+- T013-S01: TestPlaywrightAcceptance asserts navigate → inline snapshot → type → click → `Hello Ada` on a controlled loopback page. Initial test assumptions were corrected against the pinned server's discovered schema: automatic snapshots may be file links, and version 0.0.83 accepts `target` rather than `ref`.
+- T013-S02: The test runs actual childruntime with borrowed services, checks the same page text, then calls the parent snapshot again.
+- T013-S03: PNG bytes are persisted by the normal executor, resolved for replay, and matched against actual outbound HTTP request bodies from both provider adapters.
+- T013-S04: Both disabled-mode subtests assert absent image request data, explicit limitation, and retained readable artifact.
+- T013-S05: Live-model subtest implemented but **NOT RUN**: no explicit live-model endpoint/model/credentials were supplied. Its skip reason is visible; browser/request-encoding acceptance does not claim visual reasoning by a live model.
+
+## T014 — Documentation
+
+- Added docs/mcp.md and README link, with scope precedence, supported commands/transports, OAuth lifecycle, permission/ownership boundaries, screenshot capability/fallback, exact pins, and acceptance reproduction.
+- Dependency document and architecture tests updated together. Runtime and presentation retain their existing inward dependency boundaries.
+- Documented SDK transport-specific negotiation, Playwright's pinned argument schema, and remote live-task/browser-state boundaries.
+
+## Pre-review verification
+
+- `go test ./...` passed in `/tmp/fox-mcp-check.xqMuIv`, a clean archive overlaid with all tracked/nonignored current feature files; ordinary live-browser test reports skipped by default.
+- Original checkout `go test ./...` still fails only architecture scans over pre-existing nested historical worktrees; see issues.md. Those trees and all immutable fixture payloads remain untouched.
+- Focused race suite passed for mcpconfig, mcpauth, mcpclient, mcpintegration, runtime, childruntime, media, and modelinvoke.
+- Final scenario-to-test self-check and isolated complete-feature review are the remaining T015 gate; no PASS review verdict is claimed yet.

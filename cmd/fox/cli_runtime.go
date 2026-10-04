@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Zts0hg/foxharness/internal/mcpintegration"
+	"github.com/Zts0hg/foxharness/internal/media"
 	"log"
 	"os"
 	"path/filepath"
@@ -123,6 +125,7 @@ func newCLIApplicationWithSession(ctx context.Context, config foxConfig, modelPr
 	messageID := &runtimeMessageID{}
 	journals := &cliJournalSet{}
 	dependencies := foxruntime.HarnessDependencies{
+		NewSessionServices: mcpintegration.Factory(store.HomeDir()),
 		NewArtifactJournal: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.SessionArtifactJournal, error) {
 			return journals.get(assembly)
 		},
@@ -136,7 +139,7 @@ func newCLIApplicationWithSession(ctx context.Context, config foxConfig, modelPr
 			}
 			/* The baseline's exec run issued non-streaming requests; only the
 			 * interactive surfaces stream. */
-			base := modelinvoke.New(modelProvider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker})
+			base := modelinvoke.New(modelProvider, modelinvoke.Config{ResolveImage: media.NewStore(assembly.Session.RootDir).Resolve, OnSuccess: compactor.ResetCircuitBreaker})
 			return journal.WrapModel(base), nil
 		},
 		NewTools: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {
@@ -144,7 +147,10 @@ func newCLIApplicationWithSession(ctx context.Context, config foxConfig, modelPr
 			if err != nil {
 				return nil, err
 			}
-			registry := buildCLIToolRegistry(config, workDir, store.HomeDir(), stored, modelProvider, checkpointer, messageID, skillRegistry)
+			registry := buildCLIToolRegistry(config, workDir, store.HomeDir(), stored, modelProvider, checkpointer, messageID, skillRegistry, assembly)
+			if err := mcpintegration.Mount(registry, assembly.Services); err != nil {
+				return nil, err
+			}
 			resultHook := combineResultHooks(conditionalSkillHook(skillRegistry), hooks.RecordCallback(tracker))
 			capabilities := registryexec.CapabilitiesWithContext(
 				registry, assembly.AllowedTools,
@@ -153,7 +159,7 @@ func newCLIApplicationWithSession(ctx context.Context, config foxConfig, modelPr
 				},
 				resultHook,
 			)
-			base := toolruntime.New(capabilities, toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results"))
+			base := toolruntime.New(capabilities, toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results")).WithImageStore(media.NewStore(assembly.Session.RootDir))
 			return journal.WrapTools(base), nil
 		},
 		NewPolicy: func(context.Context, foxruntime.RunAssembly) (engine.TurnPolicy, error) {
@@ -291,7 +297,12 @@ func buildCLIToolRegistry(
 	checkpointer checkpoint.Checkpointer,
 	messageID *runtimeMessageID,
 	skillRegistry *slash.Registry,
+	assemblies ...foxruntime.RunAssembly,
 ) tools.Registry {
+	var assembly foxruntime.RunAssembly
+	if len(assemblies) > 0 {
+		assembly = assemblies[0]
+	}
 	registry := tools.NewRegistry()
 	registry.Use(middleware.NewCheckpointMiddleware(checkpointer, messageID.get, workDir))
 	registry.Register(tools.NewReadFileTool(workDir))
@@ -304,7 +315,7 @@ func buildCLIToolRegistry(
 	var child subagent.Runner
 	if config.NewChildRunner != nil {
 		child = config.NewChildRunner(childruntime.Config{
-			Provider: modelProvider, WorkDir: workDir, HomeDir: homeDir, ParentProfile: childruntime.ParentProfile(foxruntime.CLIExec),
+			Services: assembly.Services, ParentTools: assembly.AllowedTools, Provider: modelProvider, WorkDir: workDir, HomeDir: homeDir, ParentProfile: childruntime.ParentProfile(foxruntime.CLIExec),
 			ProviderProtocol: strings.ToLower(strings.TrimSpace(config.ResolvedLLM.Protocol)),
 			Model:            config.Model, Effort: config.EffortOverride,
 		})

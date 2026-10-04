@@ -52,6 +52,9 @@ func TestExecutorPersistsImageBeforeReturningReference(t *testing.T) {
 			if got.IsError || len(got.ContentParts) != 1 || len(got.ContentParts[0].Data) > 0 {
 				t.Fatalf("bad stored result: %#v", got)
 			}
+			if !strings.Contains(got.ObserverContent, got.ContentParts[0].ArtifactKey) || !strings.Contains(got.ModelContent, got.ContentParts[0].ArtifactKey) {
+				t.Fatal("screenshot user artifact reference is not visible")
+			}
 			loaded, err := store.Resolve(got.ContentParts[0])
 			if err != nil || !bytes.Equal(loaded, data.Bytes()) {
 				t.Fatalf("image not readable before commit: %v", err)
