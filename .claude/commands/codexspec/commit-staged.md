@@ -1,7 +1,7 @@
 ---
-description: 分析暂存的 git 更改并生成符合 Conventional Commits 规范的提交信息
+description: 仅根据暂存改动生成提交信息并执行已授权的提交；-p 只预览，不执行提交。
 argument-hint: "[-p] 使用 -p 仅预览提交信息而不执行提交"
-allowed-tools: Bash(git diff --staged:*), Bash(git diff --cached:*), Bash(git status:*), Bash(git commit:*)
+allowed-tools: Bash(git diff:*), Bash(git status:*), Bash(git rev-parse:*), Bash(git write-tree:*), Bash(codexspec _commit-staged-helper:*), Bash(python3:*), Bash(python:*), Bash(py:*)
 forbidden-tools: Bash(git add:*), Bash(git reset:*), Bash(git checkout:*), Bash(git restore:*), Bash(git stash:*), Bash(git rm:*)
 ---
 
@@ -64,99 +64,202 @@ forbidden-tools: Bash(git add:*), Bash(git reset:*), Bash(git checkout:*), Bash(
 - Only the description part should use the configured language
 - Technical terms (e.g., API, JWT, OAuth) may remain in English when appropriate
 
-## Parameter Check
+## Expression Standard
 
-Check if `$ARGUMENTS` contains `-p`:
+**IMPORTANT**: Everything this command produces — documents, reviews, reports, commit messages, diagnostics, and replies — is written for a reader who cannot see your working context. Apply the rules below to every artifact and message you output:
 
-- **If `-p` is present**: Preview mode - only output the commit message, do not execute `git commit`
-- **If `-p` is NOT present**: Execute mode - generate the message and execute `git commit` directly
+- **Write for the reader at hand-off.** Every reference must resolve without access to this session: no session-only identifiers or section numbers, no narration of what changed during the conversation, no arguments with absent reviewers. State current reality and cite committed, reachable sources.
+- **Preserve every proposition.** Before summarizing or trimming, list the facts a passage carries: actors, conditions, ordering, modalities (must, never), negative guarantees, and consequences. Remove only reasoning transcripts, repetition, and decoration. Shorter is not clearer if any fact is lost.
+- **State what the surface requires.** Diagnostics name what failed, which rule was violated, and the correction. Problem reports carry the defect, its location, its impact, and the evidence. Decisions record the alternatives they beat. Rejections give the reason in one line. Shipped work is described in the present tense; plans and open questions are labeled as such.
+- **Define terms before relying on them.** Prefer the concrete rule, field, or behavior over a coined label; give a project-specific term a plain-language definition at first use, then use it consistently.
+- **Be honest, not agreeable.** Verify claims before accepting them; fix or rebut on technical grounds. One substantiated blocker is worth more than a list of nitpicks. When a decision is needed, present only viable options, recommend one, and state the real difference between them.
+- **Declare what is binding.** Say explicitly which instructions are hard requirements and where judgment is required. Keep one explanation in one place and link to it, but keep at the point of use the contract a reader needs there.
 
-## Forbidden Operations (CRITICAL)
+## Workspace Routing Before Writes
 
-**SAFETY PRINCIPLE**: This command must NEVER modify the staging area. Only read staged changes and commit them as-is.
+This section governs the location of every later file, index, branch, and commit mutation.
+Record `SOURCE_ROOT` as the explicitly selected checkout (otherwise the invoking checkout) before
+changing working directories. Read its `.codexspec/config.yml`: `workflow.worktrees` defaults to
+on; only the literal boolean `false` disables it. Configuration remains checkout-local. Read-only
+inspection keeps its original source target and does not create a worktree merely to read files.
 
-**UNDER NO CIRCUMSTANCES**:
+- With `CODEXSPEC_AUTO_DEV_DELEGATION`, use the dedicated worktree supplied by auto-dev as
+  `OUTPUT_ROOT` throughout. `blueprint` and `auto-dev` themselves retain their existing fixed branch
+  `codexspec/auto-dev` and worktree `worktree-for-codexspec-auto-dev`; they always use the new shared
+  `<repository-name>-codexspec-worktrees` parent, irrespective of the ordinary isolation switch.
+- With ordinary isolation disabled, `OUTPUT_ROOT` is `SOURCE_ROOT` and existing in-place behavior
+  applies. `codexspec init`, both first-time setup and installation updates, is explicitly exempt:
+  it operates on its selected checkout regardless of this switch.
+- For a new ordinary feature (`specify`, `quick`, or another feature-creation entry), invoke the
+  installed platform create-new-feature script or `codexspec _worktree-helper create --name
+  <short-name>` before the first artifact write. Parse returned JSON rather than evaluating shell
+  output. `workspace`, `feature_dir`, and `requirements_file` are absolute paths; `branch` is the
+  full `<feature-id>-<feature-name>`. Set `OUTPUT_ROOT` to that workspace.
+- For an existing ordinary feature, resolve its explicit feature path/name first, otherwise its
+  current feature branch, using `codexspec _worktree-helper resolve --feature <full-feature-name>`.
+  Reuse that returned worktree. Do not silently pick another feature or create a replacement
+  from main. If an explicit feature path names another checkout, use that checkout's configuration
+  and preserve the identity of its documents and code.
+- For standalone project-level writes without a selected ordinary feature, use
+  `codexspec _worktree-helper route` from `SOURCE_ROOT`. An active feature workspace is reused;
+  otherwise the helper uses `worktree-for-codexspec-maintenance`. Use the returned absolute
+  workspace as `OUTPUT_ROOT`. Revalidate both source and destination rather than interpreting an
+  arbitrary existing directory as a managed workspace.
 
-- `git add` - Do not stage new files
-- `git reset` - Do not unstage or rollback
-- `git checkout` / `git restore` - Do not restore files
-- `git stash` - Do not stash changes
-- `git rm` - Do not remove files
-- Any operation that modifies what is staged
+When creation is interrupted, retain the returned `branch` and `workspace` even in an error
+response. Resume the same identity with `codexspec _worktree-helper create --feature
+<full-feature-name>`; a `creating` response from resolve requires this recovery step before
+merge verification. A new `--name` request never adopts an existing identity after a random
+name collision; report that collision and retry a new identity only for a genuinely new feature.
 
-**THE ONLY EXCEPTION** - Pre-commit Hook File Modifications:
+A `ready` response is required before writing feature artifacts or continuing development. Exit
+status 3 with `merge_requires_resolution` or `merge_requires_verification` is a preparation handoff,
+not success. Resolve and stage conflicts only in the returned worktree. Leave a pending
+merge uncommitted. Run the project's required checks against the prepared files, then take a
+`codexspec _commit-staged-helper snapshot` in that worktree with its original index (no inherited
+GIT_INDEX_FILE). For a contentful merge, invoke `/codexspec:commit-staged -p` on that exact
+snapshot and retain its complete message. Describe changes as integrated changes; do not attribute
+all incoming code to conflict resolution. If the snapshot contains `default_message`, the merge
+only connects history: keep its message unchanged by supplying `message: null`.
 
-- If a pre-commit hook modifies file content during commit, you MAY re-stage ONLY the files the hook modified
-- This is the ONLY case where `git add` is permitted
-- The hook output will indicate which files were modified
+Call `codexspec _worktree-helper finish --feature <full-feature-name> --verification <json-file>`
+(use `worktree-for-codexspec-maintenance` for maintenance preparation). The JSON contains the
+verified `head`, staged `tree`, `checks` entries with `command` and integer `exit_code`, and,
+for a pending merge, the complete `analysis` snapshot and `message`. The finish helper rechecks
+and commits the same index. Never commit the pending merge directly or bypass a rejected snapshot.
+If recovery finds the commit already created, verify its current HEAD/tree and submit head/tree/checks
+without a new message. Never claim checks ran when they did not. If conflicts or checks cannot
+be resolved, stop and retain the same identity; do not create a second feature to bypass preparation.
+Fetch warnings indicate potentially stale remote information, not permission to bypass checks.
 
-**If something seems wrong**: ABORT and inform the user. DO NOT attempt to "fix" or "repair" the staging area.
+Initial fixed auto-dev/blueprint workspace creation follows the same pending handoff. If acquisition
+or blueprint setup exits 3 with `merge_requires_resolution` or `merge_requires_verification`, use
+its returned `workspace`, resolve/stage/check/analyze as above, and call
+`codexspec _worktree-helper finish-initial --verification <json-file>`. Retry the original setup
+only after `ready`. The helper excludes active auto-dev owners and retains interrupted preparation.
 
-## Instructions
+Every mutating tool call and later SDD invocation must explicitly use `OUTPUT_ROOT` or paths inside
+it. Before each file write, verify real filesystem containment: refuse symbolic links in the
+output path and existing destination files with multiple hard links. A lexical path beneath
+`OUTPUT_ROOT` alone does not establish isolation; never write through a link into another checkout.
+A `cd` in one shell subprocess does not change the agent's later tool working directories.
+Carry the same absolute workspace across stage handoffs. If required installation assets are
+absent in a new worktree, run normal installation explicitly against that destination, preserving
+existing project-authored files; stop if the required runtime or setup is unavailable.
 
-### Pre-commit Verification
+Preserve input provenance: artifact-only reviews/reverse specification can read `SOURCE_ROOT`
+while writing reports to `OUTPUT_ROOT`; their artifact containment checks apply to `OUTPUT_ROOT`.
+Source edits and executable checks use the selected feature workspace. `commit-staged` preview
+reads the original index; execution must stop if routing would substitute a different index or
+mutate the protected main checkout. Do not copy, stash, stage, reset, or discard caller-owned changes
+to make routing appear successful. Report an incompatible input/workspace and the required target
+instead. Existing command-specific prohibitions still apply.
 
-Before analyzing changes, verify the staged state:
+For configuration edits, decide routing from `SOURCE_ROOT`'s setting, then read and modify the
+configuration in `OUTPUT_ROOT`. A bare toggle uses the destination's value. Report the exact path
+and explain that other checkouts receive the setting through Git integration; do not add a shared
+override or imply immediate changes to main's effective value. Completion retains worktrees; it
+does not automatically merge to main or delete them. Any occupied path, invalid identity, failed
+creation, or unusable baseline is an explicit stop, never permission to fall back to main writes.
 
-1. Run `git diff --staged --name-only` to confirm what is staged
-2. If the list is empty, ABORT and inform the user (see Error Handling)
-3. If the list seems incorrect or unexpected, ABORT and inform the user
-4. DO NOT attempt to modify the staging area - only report what you see
+## Parameter Check and Input Identity
 
-### Change Analysis
+If `$ARGUMENTS` contains `-p`, analyze and return the message without committing.
+Otherwise analyze and execute the authorized commit through the guarded helper.
 
-**Source of truth**: The staged diff is the *only* authoritative input for the commit message. Do NOT infer intent, motivation, or scope from prior conversation turns, earlier session messages, or any discussion unrelated to what is actually staged. If the diff alone is insufficient to write a clear and accurate message, ABORT and ask the user for clarification rather than guessing.
+By default the input is the invoking checkout's original staging area. Never
+route analysis to another checkout or substitute an index to make a commit work.
+A helper caller may explicitly supply its prepared `workspace`, `index_file`,
+`head`, `tree`, and `required_scope`; this is a preview-only invocation. Use the
+returned workspace and set `GIT_INDEX_FILE` to that exact prepared index for every
+Git read in this invocation. Scope constrains formatting, not message intent.
+Do not execute a helper-owned preparation here: return its message to its caller.
 
-1. Execute `git diff --staged` to retrieve staged changes.
+## Staging Boundary
 
-2. Analyze the changes and generate a commit message that strictly follows **Conventional Commits** specification:
-   - Format: `type(scope): description`
-   - Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
-   - If the project has a `CLAUDE.md` with custom commit conventions, follow those instead
-   - **DO NOT** include any AI attribution in the commit message
-   - Do not add `Co-Authored-By` lines or any references to AI tools/agents
-   - The commit message should focus solely on describing the changes present in the staged diff
+The caller chooses and stages the intended changes before invoking this command.
+This command must never run `git add`, `git reset`, `git checkout`, `git restore`,
+`git stash`, or `git rm`, including after a hook failure. It must not select files,
+repair staging, or include unstaged changes. Report unexpected or empty staging.
 
-3. **If preview mode (`-p`)**: Display the generated commit message and stop.
+## Commit Runtime
 
-4. **If execute mode (default)**: Execute `git commit -m "..."` directly with the generated message.
+Resolve one runtime for this invocation, without changing the input workspace:
 
-### Pre-commit Hook Handling
+- When loaded from a Claude plugin, use its bundled
+  `${CLAUDE_PLUGIN_ROOT}/.claude/commands/codexspec/commit-staged-helper.py`.
+- After project initialization (including one-time `uvx` initialization), use
+  `<original workspace>/.codexspec/scripts/commit-staged-helper.py` when present.
+- Otherwise, an installed `codexspec _commit-staged-helper` is the same protocol.
 
-If `git commit` fails due to a pre-commit hook modifying files:
+Run a bundled helper with an available Python 3.11+ interpreter, for example
+`python3 -I -S "<absolute helper path>" snapshot` (Windows: `py -3.11`, or a
+verified newer Python). Quote the helper path. Keep that same runtime for commit.
+The standalone file uses only the Python standard library and Git; it requires
+neither a persistent CodexSpec CLI nor an LLM client. The agent generates the
+message; the runtime only snapshots, validates, and executes Git.
 
-1. Check the hook output to identify which files were modified
-2. Re-stage ONLY those specific files: `git add <modified-files>`
-3. Retry the commit with the same message
-4. If it still fails or the situation is unclear, ABORT and inform the user
+If no runtime is available, report the missing installation asset or Python/Git
+prerequisite; do not install packages automatically or bypass validation.
+Existing workspace-routing requirements still apply to execution. Preview never
+requires creating or resolving another worktree. This runtime does not replace
+the CLI used by blueprint, auto-dev, or worktree routing.
 
-## Important Notes
+## Analysis
 
-- In execute mode (default), execute `git commit` directly after generating the message
-- In preview mode (`-p`), only display the commit message without executing
-- For breaking changes, include `BREAKING CHANGE:` in the commit body
-- Keep the description concise and in imperative mood (e.g., "add feature" not "added feature")
+1. For the original index, invoke the selected runtime with `snapshot` and retain
+   its exact JSON object (`workspace`, `index_file`, nullable `head`, `tree`, plus
+   `merge_heads` and optional `default_message` during a merge).
+   For a helper-owned preview, verify `git rev-parse HEAD` and `git write-tree`
+   against the supplied `head` and `tree`, with its explicit index selected.
+   For a pending merge whose snapshot contains `default_message`, its staged tree
+   equals HEAD: skip semantic generation in steps 2–3 and retain that message unchanged. Preview
+   returns that default text; execution sends `message: null` with the exact snapshot.
+   Non-merge empty staging remains an error.
+2. Run `git diff --staged --name-status` and `git diff --staged` against that same
+   index. The staged diff is the only authoritative input for semantic claims.
+   Do not infer intent from earlier conversation or describe unstaged changes.
+   For a merge, these are changes integrated relative to the current HEAD. Do not
+   imply that all incoming changes were authored as conflict resolutions.
+   If the diff is insufficient, stop and report what cannot be established.
+3. Generate a Conventional Commits subject, `type(scope): description`, respecting
+   the project's conventions, required helper scope, and configured commit
+   language. Type and scope remain in English. Use a concise subject and a body
+   when needed to cover all material staged changes: relevant behavior, affected
+   components, removals, compatibility changes, and tests actually present in
+   the diff. Do not claim tests passed based on conversation or test-file presence.
+   Include `BREAKING CHANGE:` when the staged change supports it. Never add AI
+   attribution or `Co-Authored-By` lines.
+4. Verify the complete snapshot again, including merge parents/default message when present. If it changed, discard the stale message
+   and analyze again after the caller has prepared the intended content. Do not
+   keep the old message merely because file names are unchanged.
+5. In preview mode, return the full message only, retaining the validated input
+   identity for the calling workflow. Do not create a commit or invoke distill.
+6. In execute mode, invoke the selected runtime with `commit`, sending exactly
+   this JSON on stdin in the same workspace:
 
-## Error Handling
+```json
+{"analysis":{"workspace":"<original workspace>","index_file":"<original index>","head":"<HEAD or null>","tree":"<analyzed tree>"},"message":"<full subject and optional body>"}
+```
 
-**If no staged changes exist**:
+For merges, include every field from the exact snapshot in `analysis`; use null
+for `message` only when `default_message` is present.
 
-- Inform the user: "No staged changes found"
-- Suggest: "Use `git add <files>` to stage files first"
-- DO NOT attempt to stage files automatically
+Use structured input or a UTF-8 temporary file; never interpolate the message into
+shell code. The helper preserves hooks and checks the actual commit index before
+creation. Report success only after its `committed` response.
 
-**If unexpected state is detected**:
+## Failure and Retry
 
-- ABORT immediately
-- Report the issue clearly to the user
-- DO NOT use `git reset`, `git checkout`, `git restore`, or any repair operations
-- Let the user decide how to proceed
-
-**If commit fails for unknown reasons**:
-
-- Report the error message to the user
-- DO NOT attempt to "fix" the situation
-- The user should investigate and resolve manually
+- Empty, unexpected, or insufficient staged input: report the condition; do not
+  stage or guess a message.
+- `stale_analysis`: return to caller preparation and analyze again. A prepared
+  helper index must be refreshed by that helper, not repaired here.
+- Hook-modified files: the caller may stage only the authorized fixes, then must
+  invoke this command again to analyze the new staged content before retrying.
+  This command never restages or retries with a message from different content.
+- Other failures: report the exact error and preserve existing state. Never
+  bypass hooks, switch indexes, or fall back to raw `git commit`.
 
 ## Automatic Distillation
 
