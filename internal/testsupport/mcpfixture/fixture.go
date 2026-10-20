@@ -115,8 +115,10 @@ func (m *Model) Counts() (int, int) { m.mu.Lock(); defer m.mu.Unlock(); return m
 /* Active counts actual negotiated sessions rather than attempted HTTP requests. */
 func (f *Fixture) Active() int {
 	n := 0
-	for range f.protocol.Sessions() {
-		n++
+	for s := range f.protocol.Sessions() {
+		if s.InitializeParams() != nil {
+			n++
+		}
 	}
 	return n
 }

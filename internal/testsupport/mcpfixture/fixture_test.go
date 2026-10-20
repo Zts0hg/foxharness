@@ -36,3 +36,34 @@ func TestFixtureServesImageAndTracksSessionLifetime(t *testing.T) {
 		t.Fatal("closed session retained")
 	}
 }
+
+func TestFixtureExcludesUninitializedProtocolProbes(t *testing.T) {
+	f := Start(t, t.TempDir())
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	probe, err := f.protocol.Connect(context.Background(), serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close()
+	if got := f.Active(); got != 0 {
+		t.Fatalf("uninitialized protocol probe counted as negotiated owner: %d", got)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "probe-test", Version: "1"}, nil)
+	negotiated, err := client.Connect(context.Background(), clientTransport, &mcp.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer negotiated.Close()
+	if got := f.Active(); got != 1 {
+		t.Fatalf("negotiated owner count = %d, want 1", got)
+	}
+	if err := negotiated.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Active(); got != 0 {
+		t.Fatalf("closed owner retained: %d", got)
+	}
+}
