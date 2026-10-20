@@ -2,6 +2,10 @@
 
 This document is the authoritative human-readable package dependency contract for Fox. Automated enforcement lives in `internal/architecturetest/imports_test.go`; `baseline_allowlist.json` preserves the immutable pre-refactor ceiling and `allowlist.json` records the now-empty migration ledger. A dependency-changing commit must update the document and enforcement together.
 
+`internal/mcpconfig` owns scoped MCP configuration and uses only the standard library. `internal/media` owns confined image storage and depends only on schema. Model invocation consumes an injected image resolver; providers remain independent of filesystem storage.
+
+`internal/mcpauth` depends on `internal/mcpconfig` and the pinned official MCP Go SDK (`v1.8.0`) OAuth client. It owns loopback login, user-local credential locking, bounded refresh, and credential-scoped HTTP clients; it has no runtime or presentation dependency.
+
 ## Target Import Graph
 
 ```mermaid
@@ -43,6 +47,8 @@ flowchart TD
     TOOLRUNTIME[internal/toolruntime] --> TOOLEXEC
     TOOLRUNTIME --> ENGINE
     TOOLRUNTIME --> TOOLRESULT[internal/toolresult]
+    TOOLRUNTIME --> MEDIA[internal/media]
+    MEDIA --> SCHEMA
     REGISTRYEXEC[internal/registryexec] --> TOOLEXEC
     REGISTRYEXEC --> TOOLS
     REGISTRYEXEC --> TOOLPROTOCOL
@@ -51,6 +57,7 @@ flowchart TD
     SHELLCMD[internal/shellcmd] --> PROCESSTREE
     SLASH[internal/slash] --> TOOLPROTOCOL
     SUB --> TOOLPROTOCOL
+    TOOLPROTOCOL --> SCHEMA
     MODELINVOKE[internal/modelinvoke] --> ENGINE
     MODELINVOKE --> PROVIDER[internal/provider]
     RUNTIMECOMPACT[internal/runtimecompaction] --> RUNTIME
@@ -358,3 +365,21 @@ The initial allowlist contains 68 exact edges. Its latest deletion boundaries ar
 | `M25` | Old engine concrete infrastructure imports. |
 
 At M27 the migration ledger is empty at SHA-256 `c6c5c5ddfb7d7a5198b30c5bc2f9ee0ebb6156dfabc193837c10fd97251ed3ca`. The immutable B00 ceiling remains available only to prove that no migration commit broadened the violation set; it is not an exception list for current code. This document, the automated rules, and production imports agree on zero forbidden edges.
+
+### MCP session composition
+
+`internal/mcpclient` depends on `mcpconfig`, `processtree`, `media`, `schema`, and
+`toolprotocol`, and owns the pinned SDK boundary. `internal/mcpintegration`
+depends on these focused MCP packages plus `runtime`, `app`, `tools`, `schema`,
+`toolpolicy`, and `toolprotocol`. It implements the runtime-owned session service
+port and the application-owned management port. Runtime itself keeps its existing
+engine/session/prompt dependency ceiling and never imports MCP implementations.
+`internal/mcpcmd` depends only on `app`; CLI and TUI share its parser. Presentation
+packages may not import concrete MCP packages or media. Composition roots and
+`childruntime` mount tools before permission decorators, supply media stores to
+executors/model invocation, and pass borrowed services into child execution.
+
+The additional production consumers of `toolprotocol` are `mcpclient` and
+`mcpintegration`; the additional runtime consumer is `mcpintegration`. The
+`internal/testsupport/mcpfixture` package exists only for hermetic tests and is
+not imported by production composition.

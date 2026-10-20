@@ -22,10 +22,13 @@ type BenchmarkRuntimeSpec struct {
 }
 
 /* ResolveRuntimeSpec derives benchmark fidelity from the authoritative runtime profile and resolved run. */
-func ResolveRuntimeSpec(runSpec foxruntime.RunSpec) (BenchmarkRuntimeSpec, error) {
+func ResolveRuntimeSpec(runSpec foxruntime.RunSpec, external ...[]foxruntime.ExternalCapability) (BenchmarkRuntimeSpec, error) {
 	profile, err := foxruntime.ResolveProfile(foxruntime.BenchmarkEval)
 	if err != nil {
 		return BenchmarkRuntimeSpec{}, err
+	}
+	if len(external) > 0 {
+		profile = profile.WithExternalCapabilities(external[0])
 	}
 	resolved, err := profile.Resolve(runSpec)
 	if err != nil {

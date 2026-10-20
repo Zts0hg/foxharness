@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Zts0hg/foxharness/internal/mcpintegration"
+	"github.com/Zts0hg/foxharness/internal/media"
 	"log"
 	"os"
 	"path/filepath"
@@ -272,7 +274,8 @@ func newTUIStartupWithProviderFactory(
 	)
 
 	dependencies := foxruntime.HarnessDependencies{
-		InitializeSession: composition.initializeSession,
+		NewSessionServices: mcpintegration.Factory(store.HomeDir()),
+		InitializeSession:  composition.initializeSession,
 		NewArtifactJournal: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.SessionArtifactJournal, error) {
 			return composition.journals.get(assembly)
 		},
@@ -341,6 +344,11 @@ func newTUIStartupWithProviderFactory(
 	composition.application = application
 	composition.mu.Unlock()
 	return tui.Startup{
+		MCP: mcpintegration.NewManager(store.HomeDir(), workDir, func() *foxruntime.AgentSession {
+			composition.mu.Lock()
+			defer composition.mu.Unlock()
+			return composition.current
+		}),
 		Application: application, Registry: composition.registry, Executor: composition.executor,
 		SessionLogDir: stored.RootDir,
 		Close: func(ctx context.Context) error {
@@ -479,7 +487,7 @@ func (c *tuiRuntimeComposition) newModel(_ context.Context, assembly foxruntime.
 	if err != nil {
 		return nil, err
 	}
-	return journal.WrapModel(modelinvoke.New(modelProvider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker, Streaming: true})), nil
+	return journal.WrapModel(modelinvoke.New(modelProvider, modelinvoke.Config{ResolveImage: media.NewStore(assembly.Session.RootDir).Resolve, OnSuccess: compactor.ResetCircuitBreaker, Streaming: true})), nil
 }
 
 func (c *tuiRuntimeComposition) newTools(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {
@@ -495,6 +503,9 @@ func (c *tuiRuntimeComposition) newTools(_ context.Context, assembly foxruntime.
 	tracker := hooks.NewTracker()
 	evidence := c.permissionEvidence(resource.stored, assembly.Spec)
 	registry, skillRegistered := c.buildToolRegistry(assembly, resource, modelProvider)
+	if err := mcpintegration.Mount(registry, assembly.Services); err != nil {
+		return nil, err
+	}
 	registry = permission.DecorateRegistry(registry, c.permissions, evidence)
 	var lifecycle *planruntime.Lifecycle
 	capabilityNames := assembly.AllowedTools
@@ -538,7 +549,7 @@ func (c *tuiRuntimeComposition) newTools(_ context.Context, assembly foxruntime.
 	if err != nil {
 		return nil, err
 	}
-	base := toolruntime.NewDynamic(capabilitySource, beginTurn, toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results"))
+	base := toolruntime.NewDynamic(capabilitySource, beginTurn, toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results")).WithImageStore(media.NewStore(assembly.Session.RootDir))
 	return journal.WrapTools(base), nil
 }
 
@@ -565,6 +576,7 @@ func (c *tuiRuntimeComposition) buildToolRegistry(assembly foxruntime.RunAssembl
 	var child subagent.Runner
 	if c.config.NewChildRunner != nil {
 		child = c.config.NewChildRunner(childruntime.Config{
+			Services: assembly.Services, ParentTools: assembly.AllowedTools,
 			Provider: modelProvider, WorkDir: c.workDir, HomeDir: c.store.HomeDir(), ParentProfile: childruntime.ParentProfile(foxruntime.TUIInteractive),
 			ProviderProtocol: assembly.Spec.ProviderProtocol, Model: assembly.Run.Model, Effort: assembly.Run.Effort,
 			Permission: c.permissions, ParentEvidence: c.permissionEvidence(resource.stored, foxruntime.RunSnapshot{}),
@@ -1201,6 +1213,7 @@ func (r *tuiForkRunner) Run(ctx context.Context, task string, agentType string, 
 	}
 	invocation, _ := tools.InvocationContextFrom(ctx)
 	child := r.composition.config.NewChildRunner(childruntime.Config{
+		Services: current.Services(),
 		Provider: modelProvider, WorkDir: r.composition.workDir, HomeDir: r.composition.store.HomeDir(),
 		ParentProfile:    childruntime.ParentProfile(foxruntime.TUIInteractive),
 		ProviderProtocol: strings.ToLower(strings.TrimSpace(r.composition.config.ResolvedLLM.Protocol)),

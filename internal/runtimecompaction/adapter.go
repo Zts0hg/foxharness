@@ -185,11 +185,7 @@ func moveRecordSplitToProtocolBoundary(records []session.MessageRecord, split in
 func cloneMessages(messages []engine.Message) []engine.Message {
 	result := make([]engine.Message, len(messages))
 	for index, message := range messages {
-		message.ToolCalls = append([]schema.ToolCall(nil), message.ToolCalls...)
-		for callIndex := range message.ToolCalls {
-			message.ToolCalls[callIndex].Arguments = append([]byte(nil), message.ToolCalls[callIndex].Arguments...)
-		}
-		result[index] = message
+		result[index] = message.Clone()
 	}
 	return result
 }

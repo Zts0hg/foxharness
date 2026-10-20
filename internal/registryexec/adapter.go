@@ -51,11 +51,13 @@ func CapabilitiesWithContext(registry tools.Registry, allowedNames []string, con
 				if resultHook != nil {
 					copy := call
 					copy.Arguments = append([]byte(nil), call.Arguments...)
-					resultHook(copy, executed)
+					resultHook(copy, executed.Clone())
 				}
 				return engine.ToolExecutionResult{
 					CallID: executed.ToolCallID, FullContent: executed.Output,
 					ModelContent: executed.Output, ObserverContent: executed.Output, IsError: executed.IsError,
+					ContentParts:      schema.CloneContentParts(executed.ContentParts),
+					StructuredContent: append([]byte(nil), executed.StructuredContent...),
 				}
 			},
 		})

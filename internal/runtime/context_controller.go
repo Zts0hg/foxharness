@@ -740,12 +740,7 @@ func cloneContextMessages(messages []engine.Message) []engine.Message {
 }
 
 func cloneContextMessage(message engine.Message) engine.Message {
-	copy := message
-	copy.ToolCalls = append([]engine.ToolCall(nil), message.ToolCalls...)
-	for index := range copy.ToolCalls {
-		copy.ToolCalls[index].Arguments = append([]byte(nil), message.ToolCalls[index].Arguments...)
-	}
-	return copy
+	return message.Clone()
 }
 
 func cloneContextToolDefinitions(definitions []engine.ToolDefinition) []engine.ToolDefinition {

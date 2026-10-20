@@ -20,6 +20,7 @@ import (
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/collaboration"
 	"github.com/Zts0hg/foxharness/internal/effort"
+	"github.com/Zts0hg/foxharness/internal/mcpcmd"
 	"github.com/Zts0hg/foxharness/internal/settings"
 	"github.com/Zts0hg/foxharness/internal/shellcmd"
 	"github.com/Zts0hg/foxharness/internal/slash"
@@ -48,6 +49,7 @@ type Runner interface {
 
 // Config controls the initial TUI presentation.
 type Config struct {
+	MCP           app.MCPManager
 	Model         string
 	InitialPrompt string
 	HomeDir       string
@@ -99,6 +101,7 @@ type Interactions struct {
 
 /* Startup contains the composed application and session-scoped adapter resources. */
 type Startup struct {
+	MCP           app.MCPManager
 	Application   Runner
 	Registry      *slash.Registry
 	Executor      *slash.Executor
@@ -111,6 +114,8 @@ type AutodevLauncher func(context.Context, string, autodev.Reporter) error
 
 /* Run owns interactive port creation, application initialization, and terminal program lifetime. */
 func Run(ctx context.Context, cfg Config) (runErr error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	if cfg.Initialize == nil {
 		return errors.New("TUI application initializer is required")
 	}
@@ -138,6 +143,7 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	cfg.Permissions = permissionBridge
 	cfg.Registry = startup.Registry
 	cfg.Executor = startup.Executor
+	cfg.MCP = startup.MCP
 	m := NewModel(ctx, startup.Application, cfg)
 	if cfg.Registry != nil {
 		m = m.WithRegistry(cfg.Registry, cfg.Executor)
@@ -234,6 +240,7 @@ var slashCommands = []slashCommand{
 	{Name: "/cancel", Description: "cancel the active run"},
 	{Name: "/sidebar", Description: "show or hide right sidebar"},
 	{Name: "/help", Description: "show available commands"},
+	{Name: "/mcp", Description: "manage MCP connections and login"},
 	{Name: "/exit", Description: "quit"},
 }
 
@@ -277,6 +284,8 @@ type queuedPrompt struct {
 }
 
 type Model struct {
+	mcpManager    app.MCPManager
+	mcpCancel     context.CancelFunc
 	ctx           context.Context
 	runner        Runner
 	events        chan tea.Msg
@@ -414,6 +423,7 @@ func NewModel(ctx context.Context, runner Runner, cfg Config) Model {
 		})
 	}
 	return Model{
+		mcpManager:         cfg.MCP,
 		ctx:                ctx,
 		runner:             runner,
 		operationGen:       &atomic.Uint64{},
@@ -473,6 +483,17 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case mcpURLMsg:
+		m.appendCommandEntry("MCP login", "Open this URL to authorize: "+string(msg))
+		return m, waitForRunEvent(m.ctx, m.events)
+	case mcpResultMsg:
+		m.mcpCancel = nil
+		if msg.err != nil {
+			m.appendEntry("error", "MCP", msg.err.Error(), true)
+		} else {
+			m.appendCommandEntry("MCP", mcpcmd.Format(msg.result))
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = max(msg.Width, minWidth)
 		m.height = max(msg.Height, 1)
@@ -684,6 +705,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg.state.WorkDir,
 			msg.state.Model,
 		))
+		if m.mcpManager != nil {
+			m.appendCommandEntry("MCP", "New session connections do not restore previous browser state.")
+		}
 		return m, nil
 
 	case runningTickMsg:
@@ -2624,6 +2648,8 @@ func (m Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 	fields := strings.Fields(text)
 	cmd := strings.ToLower(fields[0])
 	switch cmd {
+	case "/mcp":
+		return m.handleMCP(text)
 	case "/help":
 		m.appendCommandEntry("Commands", slashCommandHelp())
 		m.status = "Help"

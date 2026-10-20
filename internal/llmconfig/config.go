@@ -26,12 +26,13 @@ var ErrNoProviderConfigured = errors.New("no LLM provider configured")
 
 // Profile contains one named LLM provider configuration from settings.
 type Profile struct {
-	Protocol  string `json:"protocol,omitempty"`
-	BaseURL   string `json:"base_url,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Auth      string `json:"auth,omitempty"`
-	APIKeyEnv string `json:"api_key_env,omitempty"`
-	APIKey    string `json:"api_key,omitempty"`
+	ImageInput string `json:"image_input,omitempty"`
+	Protocol   string `json:"protocol,omitempty"`
+	BaseURL    string `json:"base_url,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Auth       string `json:"auth,omitempty"`
+	APIKeyEnv  string `json:"api_key_env,omitempty"`
+	APIKey     string `json:"api_key,omitempty"`
 }
 
 // Settings contains the LLM section of ~/.foxharness/settings.json.
@@ -67,6 +68,7 @@ type EnvOverrides struct {
 // ResolvedConfig is the complete, validated provider configuration used to
 // construct an LLM provider.
 type ResolvedConfig struct {
+	ImageInput         string
 	ProviderID         string
 	SettingsProviderID string
 	Protocol           string
@@ -127,6 +129,7 @@ func Resolve(settings Settings, env EnvOverrides, cli CLIOverrides, lookup EnvLo
 	}
 
 	resolved := ResolvedConfig{
+		ImageInput:         normalize(strings.ToLower(profile.ImageInput)),
 		ProviderID:         providerID,
 		SettingsProviderID: settingsProviderID,
 		Protocol:           normalize(strings.ToLower(profile.Protocol)),
@@ -138,6 +141,9 @@ func Resolve(settings Settings, env EnvOverrides, cli CLIOverrides, lookup EnvLo
 	}
 	if resolved.Auth == "" {
 		resolved.Auth = AuthAPIKey
+	}
+	if resolved.ImageInput == "" {
+		resolved.ImageInput = "auto"
 	}
 
 	if !found && providerID != "" && !hasCompleteInlineConfig(resolved) {
@@ -232,6 +238,9 @@ func hasCompleteInlineConfig(cfg ResolvedConfig) bool {
 }
 
 func validateRequired(cfg ResolvedConfig) error {
+	if cfg.ImageInput != "auto" && cfg.ImageInput != "enabled" && cfg.ImageInput != "disabled" {
+		return fmt.Errorf("image_input must be auto, enabled, or disabled")
+	}
 	switch {
 	case cfg.Protocol == "":
 		return fmt.Errorf("missing LLM protocol")

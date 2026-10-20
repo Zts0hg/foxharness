@@ -30,7 +30,7 @@ func TestUITUI003BuiltinCatalogCancellationAndExitAliases(t *testing.T) {
 	wantNames := []string{
 		"/status", "/session", "/clear", "/rewind", "/checkpoint", "/new",
 		"/plan", "/model", "/theme", "/statusline", "/permissions", "/effort",
-		"/compact", "/autodev", "/cancel", "/sidebar", "/help", "/exit",
+		"/compact", "/autodev", "/cancel", "/sidebar", "/help", "/mcp", "/exit",
 	}
 	if !reflect.DeepEqual(gotNames, wantNames) {
 		t.Fatalf("built-in command catalog = %#v, want %#v", gotNames, wantNames)

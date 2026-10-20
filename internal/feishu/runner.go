@@ -63,6 +63,15 @@ func (r *Runner) WithDeliveryFailureObserver(observer DeliveryFailureObserver) *
 	return r
 }
 
+/* Close releases session resources owned by the execution factory after Start
+ * has drained or cancelled accepted work. Cleanup errors remain observable. */
+func (r *Runner) Close(ctx context.Context) error {
+	if closer, ok := r.executionFactory.(interface{ Close(context.Context) error }); ok {
+		return closer.Close(ctx)
+	}
+	return nil
+}
+
 // Start begins consuming tasks from the tasks channel.  Each task is
 // dispatched to a separate goroutine.  Start blocks until the context is
 // cancelled or the tasks channel is closed.

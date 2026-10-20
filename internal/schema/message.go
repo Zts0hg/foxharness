@@ -25,11 +25,14 @@ const (
 // consumption; it enables hybrid token counting without a separate tracking
 // channel and is omitted from JSON when absent for backward compatibility.
 type Message struct {
-	Role       Role       `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Usage      *Usage     `json:"usage,omitempty"`
+	Role              Role            `json:"role"`
+	Content           string          `json:"content"`
+	ToolCalls         []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID        string          `json:"tool_call_id,omitempty"`
+	Usage             *Usage          `json:"usage,omitempty"`
+	ContentParts      []ContentPart   `json:"content_parts,omitempty"`
+	StructuredContent json.RawMessage `json:"structured_content,omitempty"`
+	IsError           bool            `json:"is_error,omitempty"`
 }
 
 // Usage reports token consumption attributed to a single LLM API response.
@@ -55,9 +58,11 @@ type ToolCall struct {
 // correlated by ToolCallID. IsError distinguishes error responses from normal
 // output.
 type ToolResult struct {
-	ToolCallID string `json:"tool_call_id"`
-	Output     string `json:"output"`
-	IsError    bool   `json:"is_error"`
+	ToolCallID        string          `json:"tool_call_id"`
+	Output            string          `json:"output"`
+	IsError           bool            `json:"is_error"`
+	ContentParts      []ContentPart   `json:"content_parts,omitempty"`
+	StructuredContent json.RawMessage `json:"structured_content,omitempty"`
 }
 
 // ToolDefinition describes a tool's name, human-readable description, and
@@ -73,6 +78,7 @@ type ToolDefinition struct {
 // JSON-marshalable. Model providers can occasionally return an empty argument
 // string for a tool call; encoding/json rejects an empty json.RawMessage.
 func NormalizeMessage(msg Message) Message {
+	msg = msg.Clone()
 	for i := range msg.ToolCalls {
 		msg.ToolCalls[i] = NormalizeToolCall(msg.ToolCalls[i])
 	}

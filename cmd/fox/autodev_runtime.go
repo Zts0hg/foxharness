@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Zts0hg/foxharness/internal/mcpintegration"
+	"github.com/Zts0hg/foxharness/internal/media"
 	"log"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Zts0hg/foxharness/internal/autodev"
 	"github.com/Zts0hg/foxharness/internal/automemory"
@@ -98,21 +101,32 @@ func (f *autodevRuntimeCoreFactory) New(ctx context.Context, workDir, model stri
 		autoMemory: autoMemory,
 		byRun:      make(map[session.RunID]*autodevRunAsset),
 	}
-	childFor := func() subagent.Runner {
+	var parentSession *foxruntime.AgentSession
+	childFor := func(assemblies ...foxruntime.RunAssembly) subagent.Runner {
+		var services foxruntime.SessionServices
+		var allowed []string
+		if len(assemblies) > 0 {
+			services = assemblies[0].Services
+			allowed = assemblies[0].AllowedTools
+		} else if parentSession != nil {
+			services = parentSession.Services()
+		}
 		if f.newChildRunner == nil {
 			return nil
 		}
 		return f.newChildRunner(childruntime.Config{
+			Services: services, ParentTools: allowed,
 			Provider: providerState, WorkDir: workDir, HomeDir: store.HomeDir(),
 			ParentProfile:    childruntime.ParentProfile(foxruntime.AutodevPipeline),
 			ProviderProtocol: strings.ToLower(strings.TrimSpace(providerState.configSnapshot().Protocol)),
 			Model:            providerState.model(), Permission: permissions,
 		})
 	}
-	fork := &autodevForkRunner{newRunner: childFor, parentSessionID: string(stored.ID)}
+	fork := &autodevForkRunner{newRunner: func() subagent.Runner { return childFor() }, parentSessionID: string(stored.ID)}
 	slashExecutor := slash.NewExecutor(slash.WithWorkDir(workDir), slash.WithForkRunner(fork))
 
 	dependencies := foxruntime.HarnessDependencies{
+		NewSessionServices: mcpintegration.Factory(store.HomeDir()),
 		NewArtifactJournal: func(_ context.Context, assembly foxruntime.RunAssembly) (foxruntime.SessionArtifactJournal, error) {
 			asset, err := assets.get(assembly)
 			if err != nil {
@@ -132,7 +146,7 @@ func (f *autodevRuntimeCoreFactory) New(ctx context.Context, workDir, model stri
 			if err != nil {
 				return nil, err
 			}
-			return asset.journal.WrapModel(modelinvoke.New(providerState, modelinvoke.Config{OnSuccess: asset.compactor.ResetCircuitBreaker})), nil
+			return asset.journal.WrapModel(modelinvoke.New(providerState, modelinvoke.Config{ResolveImage: media.NewStore(assembly.Session.RootDir).Resolve, OnSuccess: asset.compactor.ResetCircuitBreaker})), nil
 		},
 		NewTools: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {
 			asset, err := assets.get(assembly)
@@ -147,15 +161,18 @@ func (f *autodevRuntimeCoreFactory) New(ctx context.Context, workDir, model stri
 			registry.Register(tools.NewEditFileTool(workDir))
 			registry.Register(tools.NewReadTodoTool(stored.RootDir))
 			registry.Register(tools.NewUpdateTodoTool(stored.RootDir))
-			registry.Register(subagent.NewTool(childFor(), string(stored.ID)))
+			registry.Register(subagent.NewTool(childFor(assembly), string(stored.ID)))
 			registry.Register(skilltool.NewSkillTool(skillRegistry, slashExecutor, func() string { return string(stored.ID) }))
 			registry.Register(tools.NewAskUserQuestionTool(questionBridge))
+			if err := mcpintegration.Mount(registry, assembly.Services); err != nil {
+				return nil, err
+			}
 			registry = permission.DecorateRegistry(registry, permissions)
 			hook := combineResultHooks(conditionalSkillHook(skillRegistry), asset.hooks.RecordCallback(asset.tracker))
 			capabilities := registryexec.CapabilitiesWithContext(registry, assembly.AllowedTools, func(ctx context.Context) context.Context {
 				return tools.WithRunContext(ctx, string(assembly.Session.ID), string(assembly.Run.RunID))
 			}, hook)
-			base := toolruntime.New(capabilities, toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results"))
+			base := toolruntime.New(capabilities, toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results")).WithImageStore(media.NewStore(assembly.Session.RootDir))
 			return asset.journal.WrapTools(base), nil
 		},
 		NewPolicy: func(context.Context, foxruntime.RunAssembly) (engine.TurnPolicy, error) {
@@ -192,6 +209,7 @@ func (f *autodevRuntimeCoreFactory) New(ctx context.Context, workDir, model stri
 		cancelExtraction()
 		return nil, err
 	}
+	parentSession = agentSession
 	failed := true
 	defer func() {
 		if failed {
@@ -254,8 +272,12 @@ func (f *autodevRuntimeCoreFactory) New(ctx context.Context, workDir, model stri
 		Close: func(ctx context.Context) error {
 			waitErr := waitForExtraction(ctx, &extraction)
 			cancelExtraction()
-			recoveryErr := agentSession.RecoverRunFinish(ctx)
-			closeErr := agentSession.Close(ctx)
+			recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 5*time.Second)
+			recoveryErr := agentSession.RecoverRunFinish(recoveryCtx)
+			cancelRecovery()
+			closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+			closeErr := agentSession.Close(closeCtx)
+			cancelClose()
 			return errors.Join(waitErr, recoveryErr, closeErr)
 		},
 	})
@@ -487,3 +509,5 @@ func autodevConfigForTUILaunch(config foxConfig, backlogPath string) foxConfig {
 var _ provider.LLMProvider = (*autodevProviderState)(nil)
 var _ provider.OptionsGenerator = (*autodevProviderState)(nil)
 var _ tools.UserAsker = (*autodevQuestionBridge)(nil)
+
+func (s *autodevProviderState) ImageInput() string { return s.configSnapshot().ImageInput }

@@ -69,8 +69,7 @@ func Run(ctx context.Context, config Config) error {
 		fmt.Fprintln(config.Stdout, "Trace: ", result.TracePath)
 	}
 
-	_ = application.Drain(context.Background())
-	return runErr
+	return errors.Join(runErr, application.Drain(context.Background()))
 }
 
 func isNilApplication(value Application) bool {

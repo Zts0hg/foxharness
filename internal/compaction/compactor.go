@@ -491,6 +491,11 @@ func renderMessagesForSummary(messages []schema.Message) string {
 		if msg.ToolCallID != "" {
 			b.WriteString(fmt.Sprintf("[tool_result_for] %s\n", msg.ToolCallID))
 		}
+		for _, part := range msg.ContentParts {
+			if part.Type == "image" {
+				fmt.Fprintf(&b, "[image artifact] %s (image data not included in this summary request)\n", part.ArtifactKey)
+			}
+		}
 	}
 
 	return b.String()

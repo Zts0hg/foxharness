@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/Zts0hg/foxharness/internal/engine"
+	"github.com/Zts0hg/foxharness/internal/media"
 	"github.com/Zts0hg/foxharness/internal/schema"
 	"github.com/Zts0hg/foxharness/internal/toolexec"
 	"github.com/Zts0hg/foxharness/internal/toolresult"
@@ -26,6 +27,13 @@ type Executor struct {
 	dir          string
 	mu           sync.Mutex
 	seenIDs      map[string]bool
+	images       *media.Store
+}
+
+/* WithImageStore configures session-owned artifacts before the executor is used. */
+func (e *Executor) WithImageStore(store *media.Store) *Executor {
+	e.images = store
+	return e
 }
 
 /* NewDynamic constructs an executor whose immutable capabilities are rediscovered once per turn. */
@@ -89,6 +97,30 @@ func (e *Executor) Execute(ctx context.Context, frozen engine.ToolSnapshot, call
 	persisted := make([]toolresult.PersistedResult, len(batch.Results))
 	full := make([]string, len(batch.Results))
 	for index, result := range batch.Results {
+		parts := make([]schema.ContentPart, 0, len(result.ContentParts))
+		for _, part := range result.ContentParts {
+			if part.Type == "image" && len(part.Data) > 0 {
+				stored, err := e.images.Put(part.MIMEType, part.Data)
+				if err != nil {
+					notice := "image unavailable: " + err.Error()
+					result.IsError = true
+					result.FullContent += "\n" + notice
+					result.ModelContent += "\n" + notice
+					result.ObserverContent += "\n" + notice
+					part = schema.ContentPart{Type: "text", Text: notice}
+				} else {
+					stored.URI, stored.Name = part.URI, part.Name
+					notice := "\nScreenshot artifact: " + stored.ArtifactKey
+					result.FullContent += notice
+					result.ModelContent += notice
+					result.ObserverContent += notice
+					part = stored
+				}
+			}
+			parts = append(parts, part)
+		}
+		result.ContentParts = parts
+		batch.Results[index] = result
 		full[index] = toolresult.TruncateToCap(result.FullContent)
 		persisted[index] = toolresult.PersistIfNeeded(e.fs, e.dir, schema.ToolResult{
 			ToolCallID: result.CallID, Output: full[index], IsError: result.IsError,

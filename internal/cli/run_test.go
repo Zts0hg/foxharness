@@ -137,15 +137,15 @@ func TestRunRejectsMissingOrNilApplicationComposition(t *testing.T) {
 	}
 }
 
-func TestRunIgnoresDrainFailure(t *testing.T) {
+func TestRunPreservesRunFailureAlongsideDrainFailure(t *testing.T) {
 	runErr := errors.New("run failed")
 	application := &recordingApplication{
 		session: app.SessionInfo{ID: "s", Directory: "/session", TranscriptPath: "/transcript"},
 		runErr:  runErr, drainErr: errors.New("drain failed"),
 	}
 	err := Run(context.Background(), Config{Prompt: "task", Application: application, Stdout: new(bytes.Buffer), Logger: log.New(new(bytes.Buffer), "", 0)})
-	if !errors.Is(err, runErr) {
-		t.Fatalf("Run() error = %v, want run error %v", err, runErr)
+	if !errors.Is(err, runErr) || !errors.Is(err, application.drainErr) {
+		t.Fatalf("Run() error = %v, want both run and drain failures", err)
 	}
 }
 

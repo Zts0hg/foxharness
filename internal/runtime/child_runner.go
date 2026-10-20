@@ -86,6 +86,7 @@ type ChildRunResult struct {
 
 /* FrozenParentRun carries one already-admitted parent run into child composition. */
 type FrozenParentRun struct {
+	Services         SessionServices
 	Profile          ProfileName
 	SessionID        session.ID
 	RunID            session.RunID
@@ -101,6 +102,7 @@ type FrozenParentRun struct {
 
 /* ChildRunner freezes one live parent run as the sole authority for nested execution. */
 type ChildRunner struct {
+	services           SessionServices
 	harness            *RuntimeHarness
 	parentSession      AgentSessionSnapshot
 	parentRun          RunScopeSnapshot
@@ -121,7 +123,8 @@ func (s *AgentSession) NewChildRunner(scope *RunScope) (*ChildRunner, error) {
 		return nil, errors.New("runtime child runner requires its owning harness")
 	}
 	return &ChildRunner{
-		harness: s.harness, parentSession: s.Snapshot(), parentRun: scope.Snapshot(),
+		services: s.services,
+		harness:  s.harness, parentSession: s.Snapshot(), parentRun: scope.Snapshot(),
 		parentSpec: scope.resolved.Snapshot(), parentTools: scope.AllowedTools(),
 		permission: scope.Permission(), permissionRequired: requiresChildPermission(scope.Snapshot().PermissionPolicy),
 		parentContext: scope.Context(), parentMaxDepth: scope.profile.MaxDelegationDepth,
@@ -143,7 +146,8 @@ func (h *RuntimeHarness) NewChildRunnerFromFrozenParent(parent FrozenParentRun) 
 	}
 	snapshot := profile.Snapshot()
 	return &ChildRunner{
-		harness: h,
+		services: parent.Services,
+		harness:  h,
 		parentSession: AgentSessionSnapshot{
 			ID: parent.SessionID, Profile: parent.Profile, Source: snapshot.SessionSource,
 			WorkDir: parent.WorkDir,
@@ -235,8 +239,17 @@ func (r *ChildRunner) Run(ctx context.Context, request ChildRunRequest) (result 
 		workDir = r.parentSession.WorkDir
 	}
 	var err error
+	var borrowed SessionServices
+	if r.services != nil {
+		borrower, ok := r.services.(interface{ Borrow() SessionServices })
+		if !ok {
+			return result, errors.New("external services do not support borrowing")
+		}
+		borrowed = borrower.Borrow()
+	}
 	child, err = r.harness.CreateSession(childContext, ChildRun, SessionOptions{
-		WorkDir: workDir, UserID: "subagent-of-" + string(r.parentSession.ID),
+		Services: borrowed,
+		WorkDir:  workDir, UserID: "subagent-of-" + string(r.parentSession.ID),
 		ParentSessionID: r.parentSession.ID, ParentRunID: r.parentRun.RunID,
 		DelegationID: request.DelegationID, Agent: request.Agent,
 	})
@@ -247,7 +260,11 @@ func (r *ChildRunner) Run(ctx context.Context, request ChildRunRequest) (result 
 
 	depth := 1
 	readOnly := request.ReadOnly
-	allowed, err := resolveChildAllowedTools(readOnly, intersectChildTools(r.parentTools, request.AgentAllowedTools, request.AllowedTools))
+	var external []ExternalCapability
+	if child.services != nil {
+		external = child.services.Capabilities()
+	}
+	allowed, err := resolveChildAllowedTools(readOnly, intersectChildTools(r.parentTools, request.AgentAllowedTools, request.AllowedTools), external)
 	if err != nil {
 		return result, err
 	}
@@ -366,10 +383,13 @@ func cloneChildRunRequest(request ChildRunRequest) ChildRunRequest {
 	return request
 }
 
-func resolveChildAllowedTools(readOnly bool, allowed []string) ([]string, error) {
+func resolveChildAllowedTools(readOnly bool, allowed []string, external ...[]ExternalCapability) ([]string, error) {
 	profile, err := ResolveProfile(ChildRun)
 	if err != nil {
 		return nil, err
+	}
+	for _, capabilities := range external {
+		profile = profile.WithExternalCapabilities(capabilities)
 	}
 	resolved, err := profile.Resolve(RunSpec{ReadOnly: &readOnly, AllowedTools: allowed})
 	if err != nil {

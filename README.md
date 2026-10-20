@@ -606,3 +606,7 @@ To publish a specific version manually, create and push a version tag:
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
+
+### MCP 接入
+
+支持 Playwright 等 MCP 工具、截图模型输入和用户/项目配置。参见 [MCP 配置与使用](docs/mcp.md)。

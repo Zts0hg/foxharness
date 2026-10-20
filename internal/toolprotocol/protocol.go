@@ -1,7 +1,11 @@
 /* Package toolprotocol defines narrow values shared by tool adapters and executors. */
 package toolprotocol
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"github.com/Zts0hg/foxharness/internal/schema"
+)
 
 type invocationContextKey struct{}
 type capabilityContextKey struct{}
@@ -38,8 +42,10 @@ func HasCapabilities(ctx context.Context) bool {
 
 /* ExecutionResult carries output together with a model-visible failure flag. */
 type ExecutionResult struct {
-	Output string
-	Failed bool
+	Output            string
+	Failed            bool
+	ContentParts      []schema.ContentPart
+	StructuredContent json.RawMessage
 }
 
 /* WithRun returns a context carrying the current runtime run identity. */

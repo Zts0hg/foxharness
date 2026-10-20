@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Zts0hg/foxharness/internal/mcpintegration"
+	"github.com/Zts0hg/foxharness/internal/media"
 	"log"
 	"path/filepath"
 	"reflect"
@@ -41,6 +43,9 @@ type feishuTaskExecutionFactory struct {
 	messenger feishu.TextMessenger
 	store     *session.FileStore
 	approvals *approval.Store
+	mu        sync.Mutex
+	closed    bool
+	sessions  map[feishuConversationKey]*feishuLiveSession
 }
 
 func newFeishuTaskExecutionFactory(
@@ -49,18 +54,47 @@ func newFeishuTaskExecutionFactory(
 	messenger feishu.TextMessenger,
 	store *session.FileStore,
 	approvals *approval.Store,
-) feishu.TaskExecutionFactory {
+) *feishuTaskExecutionFactory {
 	return &feishuTaskExecutionFactory{
 		provider: modelProvider, workDir: workDir, messenger: messenger, store: store, approvals: approvals,
+		sessions: make(map[feishuConversationKey]*feishuLiveSession),
 	}
 }
 
 func (f *feishuTaskExecutionFactory) PrepareTask(ctx context.Context, request feishu.TaskExecutionRequest) (feishu.PreparedTaskExecution, error) {
-	stored, created, err := f.selectSession(request)
+	live, err := f.conversation(ctx, request)
 	if err != nil {
 		return feishu.PreparedTaskExecution{}, err
 	}
-	application, err := f.newApplication(ctx, request, stored)
+	defer live.unlock()
+	if request.ForceNewSession && live.session != nil {
+		if err := closeFeishuSession(ctx, live.session); err != nil {
+			return feishu.PreparedTaskExecution{}, err
+		}
+		live.session, live.stored = nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return feishu.PreparedTaskExecution{}, err
+	}
+	created := false
+	if live.stored == nil {
+		live.stored, created, err = f.selectSession(request)
+		if err != nil {
+			return feishu.PreparedTaskExecution{}, err
+		}
+	}
+	stored := live.stored
+	if live.session == nil {
+		harness, harnessErr := foxruntime.NewRuntimeHarness(f.store, feishuSessionDependencies(f.store.HomeDir()))
+		if harnessErr != nil {
+			return feishu.PreparedTaskExecution{}, harnessErr
+		}
+		live.session, err = harness.OpenSession(ctx, foxruntime.FeishuRemote, stored.ID)
+		if err != nil {
+			return feishu.PreparedTaskExecution{}, err
+		}
+	}
+	application, err := f.newApplication(request, stored, live.session)
 	if err != nil {
 		return feishu.PreparedTaskExecution{
 			Session: app.SessionInfo{
@@ -104,7 +138,7 @@ func (f *feishuTaskExecutionFactory) selectSession(request feishu.TaskExecutionR
 	return stored, true, nil
 }
 
-func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request feishu.TaskExecutionRequest, stored *session.StoredSession) (*app.RuntimeApplication, error) {
+func (f *feishuTaskExecutionFactory) newApplication(request feishu.TaskExecutionRequest, stored *session.StoredSession, agentSession *foxruntime.AgentSession) (*app.RuntimeApplication, error) {
 	metadata := snapshotFeishuProvider(f.provider)
 	autoMemory := automemory.NewStore(f.store.HomeDir(), f.workDir)
 	workingMemory := memory.NewSessionStore(f.workDir, stored.RootDir)
@@ -139,14 +173,18 @@ func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request
 			if err != nil {
 				return nil, err
 			}
-			return journal.WrapModel(modelinvoke.New(f.provider, modelinvoke.Config{OnSuccess: compactor.ResetCircuitBreaker})), nil
+			return journal.WrapModel(modelinvoke.New(f.provider, modelinvoke.Config{ResolveImage: media.NewStore(assembly.Session.RootDir).Resolve, OnSuccess: compactor.ResetCircuitBreaker})), nil
 		},
 		NewTools: func(_ context.Context, assembly foxruntime.RunAssembly) (engine.ToolExecutor, error) {
 			journal, err := assets.journalFor(assembly)
 			if err != nil {
 				return nil, err
 			}
-			registry := f.buildTools(stored, metadata, coordinator, evidence)
+			registry := f.buildTools(stored, metadata, coordinator, evidence, assembly)
+			if err := mcpintegration.Mount(registry, assembly.Services); err != nil {
+				return nil, err
+			}
+			registry = permission.DecorateRegistry(registry, coordinator, evidence)
 			capabilities := registryexec.CapabilitiesWithContext(
 				registry, assembly.AllowedTools,
 				func(ctx context.Context) context.Context {
@@ -154,7 +192,7 @@ func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request
 				},
 				hooks.RecordCallback(tracker),
 			)
-			base := toolruntime.New(capabilities, toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results"))
+			base := toolruntime.New(capabilities, toolresult.OSFileSystem{}, filepath.Join(assembly.Session.RootDir, "tool-results")).WithImageStore(media.NewStore(assembly.Session.RootDir))
 			return journal.WrapTools(base), nil
 		},
 		NewPolicy: func(context.Context, foxruntime.RunAssembly) (engine.TurnPolicy, error) {
@@ -165,26 +203,12 @@ func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request
 			return collector, runtimecompaction.New(compactor), nil
 		},
 	}
-	harness, err := foxruntime.NewRuntimeHarness(f.store, dependencies)
-	if err != nil {
-		return nil, err
-	}
-	agentSession, err := harness.OpenSession(ctx, foxruntime.FeishuRemote, stored.ID)
-	if err != nil {
-		return nil, err
-	}
-	failed := true
-	defer func() {
-		if failed {
-			_ = agentSession.Close(context.Background())
-		}
-	}()
 	runSpec := foxruntime.RunSpec{
 		ForceNewSession:  request.ForceNewSession,
 		ProviderProtocol: metadata.protocol, Model: metadata.model, WorkDir: f.workDir,
 	}
 	application, err := app.NewRuntimeApplication(app.RuntimeApplicationConfig{
-		Session: agentSession,
+		Session: feishuTaskRuntime{session: agentSession, dependencies: dependencies},
 		Info: app.SessionInfo{
 			ID: string(stored.ID), Directory: stored.RootDir, TranscriptPath: stored.TranscriptPath(),
 		},
@@ -201,13 +225,12 @@ func (f *feishuTaskExecutionFactory) newApplication(ctx context.Context, request
 			hooks.Fire(stored, string(result.RunID), tracker)
 		},
 		Drain: func(ctx context.Context) error {
-			return errors.Join(agentSession.RecoverRunFinish(ctx), agentSession.Close(ctx))
+			return agentSession.RecoverRunFinish(ctx)
 		},
 	})
 	if err != nil {
 		return nil, err
 	}
-	failed = false
 	return application, nil
 }
 
@@ -278,7 +301,12 @@ func (f *feishuTaskExecutionFactory) buildTools(
 	metadata feishuProviderMetadata,
 	coordinator *permission.Coordinator,
 	evidence permission.EvidenceProvider,
+	assemblies ...foxruntime.RunAssembly,
 ) tools.Registry {
+	var assembly foxruntime.RunAssembly
+	if len(assemblies) > 0 {
+		assembly = assemblies[0]
+	}
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(f.workDir))
 	registry.Register(tools.NewWriteFileTool(f.workDir))
@@ -287,13 +315,17 @@ func (f *feishuTaskExecutionFactory) buildTools(
 	registry.Register(tools.NewReadTodoTool(stored.RootDir))
 	registry.Register(tools.NewUpdateTodoTool(stored.RootDir))
 	child := childruntime.New(childruntime.Config{
+		Services: assembly.Services, ParentTools: assembly.AllowedTools,
 		Provider: f.provider, WorkDir: f.workDir, HomeDir: f.store.HomeDir(),
 		ParentProfile:    childruntime.FeishuRemote,
 		ProviderProtocol: metadata.protocol, Model: metadata.model,
 		Permission: coordinator, ParentEvidence: evidence,
 	})
 	registry.Register(subagent.NewTool(child, string(stored.ID)))
-	return permission.DecorateRegistry(registry, coordinator, evidence)
+	if len(assemblies) == 0 {
+		return permission.DecorateRegistry(registry, coordinator, evidence)
+	}
+	return registry
 }
 
 type feishuProviderMetadata struct {
